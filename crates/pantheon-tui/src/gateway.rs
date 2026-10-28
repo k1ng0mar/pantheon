@@ -482,6 +482,7 @@ pub fn cmd_gateway(args: &[String]) {
 
 /// One gateway chat surface: a named channel bound to a platform, a bot
 /// token, and the agent profile that serves it.
+#[derive(Clone)]
 struct ChannelSpec {
     /// Channel name - keys outbound queues, cursor files, and thread ids.
     name: String,
@@ -647,6 +648,114 @@ fn cursor_file(state_dir: &Path, spec: &ChannelSpec) -> PathBuf {
     }
 }
 
+/// One supervised poller: the spec (cloneable, so the supervisor can
+/// respawn it), its stop flag, its heartbeat, its watchdog budget, and
+/// the live thread handle (replaced on respawn; the old handle is
+/// dropped, detaching the abandoned thread).
+struct SupervisedPoller {
+    spec: ChannelSpec,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    heartbeat: Arc<pantheon_gateway::GatewayHeartbeat>,
+    watchdog: pantheon_gateway::GatewayWatchdog,
+    handle: Option<std::thread::JoinHandle<()>>,
+    supervised: bool,
+}
+
+/// Spawn one channel's poller thread: the transport + daemon loop for
+/// that channel. The daemon touches `heartbeat` each loop iteration;
+/// the supervisor watches it and restarts the poller at most once when
+/// it goes quiet (see [`pantheon_gateway::watchdog`]).
+///
+/// The Discord poller spawns an inner gateway thread and joins it after
+/// the daemon loop returns, so abandoning a Discord poller abandons
+/// both threads together - the inner thread is never orphaned on its
+/// own.
+#[allow(clippy::too_many_arguments)]
+fn spawn_poller(
+    spec: ChannelSpec,
+    queue: Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>,
+    sink: Arc<RuntimeSink>,
+    voice: pantheon_gateway::VoicePipes,
+    state_dir: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    heartbeat: Arc<pantheon_gateway::GatewayHeartbeat>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let surface = SurfaceSink {
+            inner: sink.as_ref(),
+            gateway: &spec.name,
+        };
+        let cursor = cursor_file(&state_dir, &spec);
+        match spec.platform.as_str() {
+            "telegram" => {
+                let channel = Arc::new(
+                    pantheon_gateway::TelegramChannel::rest(&spec.token).with_voice(voice),
+                );
+                let named = NamedChannel::new(spec.name.clone(), channel.clone() as Arc<_>);
+                let transport = Arc::new(pantheon_gateway::TelegramRestTransport::new(&spec.token));
+                let daemon = pantheon_gateway::ChannelDaemon::new(cursor).with_heartbeat(heartbeat);
+                daemon.run(
+                    vec![named as Arc<dyn pantheon_gateway::Channel>],
+                    Some((&channel, &transport)),
+                    &surface,
+                    queue.as_ref(),
+                    &|| stop.load(std::sync::atomic::Ordering::Acquire),
+                );
+            }
+            "discord" => {
+                // The Discord channel owns both directions: the gateway
+                // websocket feeds its inbox, the daemon drains it, and replies
+                // go out over Discord REST. (It used to be a MemoryChannel
+                // whose outbox nobody read - replies accumulated in RAM and
+                // the user got silence.)
+                let discord =
+                    Arc::new(pantheon_gateway::DiscordChannel::rest(&spec.token).with_voice(voice));
+                let named = NamedChannel::new(spec.name.clone(), discord.clone() as Arc<_>);
+                let gateway = pantheon_gateway::discord_gateway::DiscordGateway::new(&spec.token);
+                let gw_inbox = discord.clone();
+                let gw_stop = stop.clone();
+                let gw = std::thread::spawn(move || {
+                    gateway.run(&gw_inbox, &|| {
+                        gw_stop.load(std::sync::atomic::Ordering::Acquire)
+                    })
+                });
+                // Drain thread: route inbox events through the daemon plumbing.
+                let daemon = pantheon_gateway::ChannelDaemon::new(cursor).with_heartbeat(heartbeat);
+                daemon.run(
+                    vec![named as Arc<dyn pantheon_gateway::Channel>],
+                    None,
+                    &surface,
+                    queue.as_ref(),
+                    &|| stop.load(std::sync::atomic::Ordering::Acquire),
+                );
+                let _ = gw.join();
+            }
+            other => {
+                eprintln!(
+                    "gateway: channel '{}': unsupported platform '{other}'; skipping",
+                    spec.name
+                );
+            }
+        }
+    })
+}
+
+/// Persistent watchdog report: the failure record for a channel that
+/// hung twice. The operator (and the agent, when asked about gateway
+/// health) reads `gateway/watchdog-<channel>.json`; the file is the
+/// report - the supervisor deliberately does not restart a third time
+/// or fabricate a conversation the channel cannot deliver to.
+fn write_watchdog_report(state_dir: &Path, channel: &str, last_heartbeat_ms: u64) {
+    let body = format!(
+        "{{\n  \"channel\": {channel:?},\n  \"status\": \"reported\",\n  \"restarted_once\": true,\n  \"last_heartbeat_ms\": {last_heartbeat_ms},\n  \"reported_at_ms\": {}\n}}\n",
+        pantheon_gateway::watchdog::now_ms()
+    );
+    let path = state_dir.join(format!("watchdog-{channel}.json"));
+    if let Err(e) = std::fs::write(&path, body) {
+        eprintln!("gateway watchdog: channel '{channel}': cannot write report: {e}");
+    }
+}
+
 fn run_gateway_foreground() {
     // The scheduler loop starts unconditionally: a scheduler-only install
     // (no bot tokens) is the main always-on use case, and a service that
@@ -791,76 +900,121 @@ fn run_gateway_foreground() {
 
     // One poller thread per channel. Two channels on the same platform
     // are fully independent: separate transports, separate cursors,
-    // separate queues, and (via the sink) separate agents.
+    // separate queues, and (via the sink) separate agents. Each poller
+    // gets its own stop flag and heartbeat, watched by the supervisor
+    // thread below: a poller that stops ticking is restarted ONCE, and
+    // a second hang is reported, never restarted again (see
+    // pantheon_gateway::watchdog - no infinite restart loop).
+    let mut supervised: Vec<SupervisedPoller> = Vec::new();
     for spec in specs {
         let queue = match queues.get(&spec.name).cloned() {
             Some(q) => q,
             None => continue,
         };
-        let voice = voices.remove(&spec.name);
+        let voice = voices.remove(&spec.name).unwrap_or_default();
         let sink = sink.clone();
-        let stop = stop.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let heartbeat = Arc::new(pantheon_gateway::GatewayHeartbeat::new());
+        let handle = spawn_poller(
+            spec.clone(),
+            queue,
+            sink,
+            voice,
+            state_dir.clone(),
+            stop.clone(),
+            heartbeat.clone(),
+        );
+        supervised.push(SupervisedPoller {
+            spec,
+            stop,
+            heartbeat,
+            watchdog: pantheon_gateway::GatewayWatchdog::new(pantheon_gateway::HANG_BUDGET),
+            handle: Some(handle),
+            supervised: true,
+        });
+    }
+
+    // Hung-gateway supervisor: ticks every 10 s (the hang budget is
+    // 90 s, so detection lags at most ~100 s). On a first breach it
+    // abandons the hung thread - it cannot be killed from outside, so
+    // its stop flag is set and its handle dropped - and spawns a
+    // replacement poller with rebuilt voice pipes. On a second breach
+    // it reports (loud log + persistent report file) and stops
+    // supervising that channel: a twice-hung channel is broken, and
+    // restarting it forever would flap cursors and hide the breakage.
+    {
+        let queues = queues.clone();
+        let sink = sink.clone();
         let state_dir = state_dir.clone();
-        handles.push(std::thread::spawn(move || {
-            let surface = SurfaceSink {
-                inner: sink.as_ref(),
-                gateway: &spec.name,
-            };
-            let cursor = cursor_file(&state_dir, &spec);
-            match spec.platform.as_str() {
-                "telegram" => {
-                    let channel = Arc::new(
-                        pantheon_gateway::TelegramChannel::rest(&spec.token)
-                            .with_voice(voice.unwrap_or_default()),
-                    );
-                    let named = NamedChannel::new(spec.name.clone(), channel.clone() as Arc<_>);
-                    let transport =
-                        Arc::new(pantheon_gateway::TelegramRestTransport::new(&spec.token));
-                    let daemon = pantheon_gateway::ChannelDaemon::new(cursor);
-                    daemon.run(
-                        vec![named as Arc<dyn pantheon_gateway::Channel>],
-                        Some((&channel, &transport)),
-                        &surface,
-                        queue.as_ref(),
-                        &|| stop.load(std::sync::atomic::Ordering::Acquire),
-                    );
+        // Voice pipes are not cloneable (boxed providers), so the
+        // supervisor rebuilds them from the same config sections the
+        // initial spawn used.
+        let voice_tools = gw_cfg.as_ref().and_then(|c| c.tools.clone());
+        let voice_stt = gw_cfg.as_ref().and_then(|c| c.stt.clone());
+        let voice_tts = gw_cfg.as_ref().and_then(|c| c.tts.clone());
+        let voice_secrets = secrets.clone();
+        handles.push(std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            for p in supervised.iter_mut() {
+                if !p.supervised {
+                    continue;
                 }
-                "discord" => {
-                    // The Discord channel owns both directions: the gateway
-                    // websocket feeds its inbox, the daemon drains it, and replies
-                    // go out over Discord REST. (It used to be a MemoryChannel
-                    // whose outbox nobody read - replies accumulated in RAM and
-                    // the user got silence.)
-                    let discord = Arc::new(
-                        pantheon_gateway::DiscordChannel::rest(&spec.token)
-                            .with_voice(voice.unwrap_or_default()),
-                    );
-                    let named = NamedChannel::new(spec.name.clone(), discord.clone() as Arc<_>);
-                    let gateway =
-                        pantheon_gateway::discord_gateway::DiscordGateway::new(&spec.token);
-                    let gw_inbox = discord.clone();
-                    let gw_stop = stop.clone();
-                    let gw = std::thread::spawn(move || {
-                        gateway.run(&gw_inbox, &|| {
-                            gw_stop.load(std::sync::atomic::Ordering::Acquire)
-                        })
-                    });
-                    // Drain thread: route inbox events through the daemon plumbing.
-                    let daemon = pantheon_gateway::ChannelDaemon::new(cursor);
-                    daemon.run(
-                        vec![named as Arc<dyn pantheon_gateway::Channel>],
-                        None,
-                        &surface,
-                        queue.as_ref(),
-                        &|| stop.load(std::sync::atomic::Ordering::Acquire),
-                    );
-                    let _ = gw.join();
+                let last = p.heartbeat.last_ms();
+                if last > 0 {
+                    p.watchdog.heartbeat_at(last);
                 }
-                other => {
-                    eprintln!(
-                        "gateway: channel '{}': unsupported platform '{other}'; skipping",
-                        spec.name
-                    );
+                match p.watchdog.check() {
+                    pantheon_gateway::WatchdogAction::Ok => {}
+                    pantheon_gateway::WatchdogAction::Restart => {
+                        eprintln!(
+                            "gateway watchdog: channel '{}' hung (no heartbeat for >90s); restarting its poller ONCE; the hung thread is abandoned, not killed",
+                            p.spec.name
+                        );
+                        p.stop.store(true, std::sync::atomic::Ordering::Release);
+                        let queue = match queues.get(&p.spec.name).cloned() {
+                            Some(q) => q,
+                            None => {
+                                p.supervised = false;
+                                continue;
+                            }
+                        };
+                        let pipes = pantheon_gateway::VoicePipes::from_config(
+                            voice_tools.as_ref(),
+                            voice_stt.as_ref(),
+                            voice_tts.as_ref(),
+                            &voice_secrets,
+                            p.spec.voice_replies,
+                        );
+                        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let heartbeat = Arc::new(pantheon_gateway::GatewayHeartbeat::new());
+                        // The replacement just started: it is not hung.
+                        p.watchdog
+                            .heartbeat_at(pantheon_gateway::watchdog::now_ms());
+                        let handle = spawn_poller(
+                            p.spec.clone(),
+                            queue,
+                            sink.clone(),
+                            pipes,
+                            state_dir.clone(),
+                            stop.clone(),
+                            heartbeat.clone(),
+                        );
+                        let _ = p.handle.replace(handle);
+                        p.stop = stop;
+                        p.heartbeat = heartbeat;
+                    }
+                    pantheon_gateway::WatchdogAction::Report => {
+                        eprintln!(
+                            "gateway watchdog: channel '{}' hung AGAIN after its one restart; NOT restarting (no infinite restart loop); report written to gateway/watchdog-{}.json - manual intervention needed",
+                            p.spec.name, p.spec.name
+                        );
+                        write_watchdog_report(
+                            &state_dir,
+                            &p.spec.name,
+                            p.heartbeat.last_ms(),
+                        );
+                        p.supervised = false;
+                    }
                 }
             }
         }));
