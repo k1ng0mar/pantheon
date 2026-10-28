@@ -142,10 +142,16 @@ pub struct TickDriver {
     /// counter lets an [`OverlapPolicy::Replace`] fire disown the run it
     /// supersedes without racing its cleanup.
     in_flight: Mutex<HashMap<String, u64>>,
-    /// Job ids that became due while running and asked to queue. Durable
-    /// twin: the [`DurableClaimLedger`] drain queue - the in-memory set is
-    /// the fast path, the store is what survives a crash.
-    queued: Mutex<HashSet<String>>,
+    /// Job ids that became due while running and asked to queue, mapped
+    /// to the occurrence stamp of the fire they stand for ("" when the
+    /// occurrence is unknown, e.g. a crash-recovered drain row, which
+    /// carries no stamp). Durable twin: the [`DurableClaimLedger`]
+    /// drain queue - the in-memory map is the fast path, the store is
+    /// what survives a crash. The stamp is what makes a queue drain
+    /// deduplicate: a drain claims its occurrence key, so a drain for
+    /// an occurrence that already ran is skipped instead of firing a
+    /// second run for the same event (see [`TickDriver::run_worker`]).
+    queued: Mutex<HashMap<String, String>>,
     paused_check: std::sync::RwLock<Option<PausedCheck>>,
 }
 
@@ -154,7 +160,7 @@ impl TickDriver {
         Self {
             ledger,
             in_flight: Mutex::new(HashMap::new()),
-            queued: Mutex::new(HashSet::new()),
+            queued: Mutex::new(HashMap::new()),
             paused_check: std::sync::RwLock::new(None),
         }
     }
@@ -175,8 +181,8 @@ impl TickDriver {
         self.in_flight.lock().ok()
     }
 
-    /// Lock the queued set; see [`TickDriver::lock_in_flight`].
-    fn lock_queued(&self) -> Option<std::sync::MutexGuard<'_, HashSet<String>>> {
+    /// Lock the queued map; see [`TickDriver::lock_in_flight`].
+    fn lock_queued(&self) -> Option<std::sync::MutexGuard<'_, HashMap<String, String>>> {
         self.queued.lock().ok()
     }
 
@@ -203,6 +209,19 @@ impl TickDriver {
         last_fire_ms: Option<i64>,
         execute: Arc<dyn Fn() + Send + Sync + 'static>,
     ) -> TickDecision {
+        // The due decision and its occurrence stamp come first: the
+        // recovery path below seeds the queue with this stamp, and the
+        // worker drain claims it, so a drain for an occurrence that
+        // already ran is skipped instead of firing twice (catch-up
+        // multi-fire: one fire per event, ever, enforced at the
+        // source - the claim - not by suppressing duplicates
+        // downstream).
+        let is_due = job.due(now_ms, last_fire_ms);
+        let due_stamp = if is_due {
+            job.occurrence_stamp(now_ms, last_fire_ms)
+        } else {
+            None
+        };
         // Crash recovery for the durable drain queue: a previous process
         // may have died owing this job a queued fire. Atomic take - this
         // process now owns the owed fire.
@@ -219,22 +238,29 @@ impl TickDriver {
                     "tick: job {} owed a queued fire at shutdown; paused now, dropping it",
                     job.id
                 );
-            } else if !job.due(now_ms, last_fire_ms) && self.generation_of(&job.id).is_none() {
+            } else if !is_due && self.generation_of(&job.id).is_none() {
                 // Not due and nothing running: nothing would drain a
                 // seeded queue entry, so fire the owed run directly as a
                 // drain-claimed fire, exactly like a worker drain does.
                 return self.fire_drain(job, now_ms, execute);
             } else if let Some(mut queued) = self.lock_queued() {
-                // Also due (or busy): seed the in-memory queue and let
-                // the normal overlap path below drain the owed fire after
-                // the natural fire, or behind the in-flight run.
-                queued.insert(job.id.clone());
+                // Also due (or busy): seed the in-memory queue with the
+                // due occurrence's stamp when known, so the worker drain
+                // claims that occurrence: if the due fire below already
+                // claimed it, the drain loses the claim and is skipped
+                // (one fire for the event); if the due fire is skipped
+                // (overlap=skip) or queued behind the in-flight run, the
+                // drain wins the claim and fires it once. A busy-but-
+                // not-due recovery has no due stamp: seed with "" (the
+                // drain fires on a unique key, as before).
+                let stamp = due_stamp.map(|s| s.to_string()).unwrap_or_default();
+                queued.insert(job.id.clone(), stamp);
             }
         }
-        if !job.due(now_ms, last_fire_ms) {
+        if !is_due {
             return TickDecision::NotDue;
         }
-        let Some(stamp) = job.occurrence_stamp(now_ms, last_fire_ms) else {
+        let Some(stamp) = due_stamp else {
             return TickDecision::NotDue;
         };
 
@@ -263,7 +289,7 @@ impl TickDriver {
                     OverlapPolicy::Queue => {
                         match self.lock_queued() {
                             Some(mut queued) => {
-                                queued.insert(job.id.clone());
+                                queued.insert(job.id.clone(), stamp.to_string());
                             }
                             None => {
                                 return TickDecision::ClaimFailed(
@@ -373,10 +399,12 @@ impl TickDriver {
             if in_flight.contains_key(&job.id) {
                 // Raced with a natural fire between the recovery check
                 // and this lock: seed the queue and let the in-flight
-                // run's worker drain the owed fire.
+                // run's worker drain the owed fire. The owed occurrence
+                // is unknown here (a recovery event, not a due tick),
+                // so the drain fires on a unique key, as before.
                 drop(in_flight);
                 if let Some(mut queued) = self.lock_queued() {
-                    queued.insert(job.id.clone());
+                    queued.insert(job.id.clone(), String::new());
                 }
                 let _ = self.ledger.enqueue_drain(&job.id);
                 return TickDecision::Queued;
@@ -400,10 +428,13 @@ impl TickDriver {
         tx: mpsc::Sender<RunOutcome>,
     ) {
         let timeout = Duration::from_secs(job.effective_timeout_secs());
-        // The suffix keeps each drain's claim key unique; the owed fire
-        // itself is durable (the ledger's drain queue) and only deleted
-        // once taken - a crash before the take is recovered at the next
-        // `tick_job` entry.
+        // Drain claim keys: a queued entry with a known occurrence
+        // stamp claims that occurrence's key (dedup, see below); only
+        // unknown-stamp entries (crash-recovery events with no stamp)
+        // use a unique wall-clock suffix, so the owed fire still runs
+        // once. The owed fire itself is durable (the ledger's drain
+        // queue) and only deleted once taken - a crash before the take
+        // is recovered at the next `tick_job` entry.
         let mut drain_seq: u64 = 0;
         loop {
             let (done_tx, done_rx) = mpsc::channel();
@@ -445,7 +476,7 @@ impl TickDriver {
                 return;
             }
             let _ = tx.send(outcome);
-            if self.take_queued(&job.id) {
+            if let Some(queued_stamp) = self.take_queued(&job.id) {
                 // The durable row is deleted when the drain is TAKEN,
                 // before the drain run completes (take-before-complete):
                 // a crash in between loses the owed run, but deleting
@@ -465,10 +496,30 @@ impl TickDriver {
                     );
                     break;
                 }
+                // Deduplicate the drain at the source: when the queued
+                // entry carries its occurrence stamp, the drain claims
+                // that occurrence's key. A lost claim means the
+                // occurrence already ran (the due fire claimed it, or
+                // the in-flight run was itself that occurrence), so the
+                // drain is consumed WITHOUT firing: one fire per event,
+                // ever. An unknown stamp ("") keeps the old behaviour -
+                // a unique key, so a genuinely owed recovery fire still
+                // runs once.
                 drain_seq += 1;
-                let key = occurrence_key(&job, &format!("{}:q{drain_seq}", now_ms()));
+                let key = if queued_stamp.is_empty() {
+                    occurrence_key(&job, &format!("{}:q{drain_seq}", now_ms()))
+                } else {
+                    occurrence_key(&job, &queued_stamp)
+                };
                 match self.ledger.claim(&key) {
-                    Ok(_) => continue,
+                    Ok(true) => continue,
+                    Ok(false) => {
+                        eprintln!(
+                            "tick: queue-drain for {} already claimed (occurrence {queued_stamp}); skipping duplicate fire",
+                            job.id
+                        );
+                        break;
+                    }
                     Err(e) => {
                         eprintln!(
                             "tick: queue-drain claim failed for {}: {e}; dropping the queued fire",
@@ -513,9 +564,9 @@ impl TickDriver {
         }
     }
 
-    fn take_queued(&self, id: &str) -> bool {
+    fn take_queued(&self, id: &str) -> Option<String> {
         // Poisoned: don't drain - fail closed.
-        self.lock_queued().is_some_and(|mut q| q.remove(id))
+        self.lock_queued().and_then(|mut q| q.remove(id))
     }
 
     fn clear_queued(&self, id: &str) {
@@ -583,10 +634,17 @@ mod tick_drain_queue_tests {
         }
     }
 
-    /// When the job is also due, the recovered fire seeds the in-memory
-    /// queue and drains after the natural fire - no duplicate, no loss.
+    /// When the job is also due, the recovered fire does NOT produce a
+    /// second run: the due fire below claims the one-shot's occurrence,
+    /// and the worker drain claims the same occurrence key, loses, and
+    /// is consumed without firing. One fire per event, ever.
+    ///
+    /// NOTE: this test previously expected TWO executions (natural fire
+    /// + recovered drain, back to back). For a one-shot that is a
+    /// duplicate: there is only one event (its `at_ms`), and firing it
+    /// twice is the catch-up multi-fire this fix removes.
     #[test]
-    fn recovery_seeds_queue_when_also_due() {
+    fn recovery_plus_due_fires_once_not_twice() {
         let dir = tempfile::tempdir().unwrap();
         DurableClaimLedger::open(&dir.path().join("claims.db"))
             .unwrap()
@@ -606,24 +664,81 @@ mod tick_drain_queue_tests {
 
         match driver.tick_job(&job, now_ms(), None, counter_execute(&ran)) {
             TickDecision::Fired { completion } => {
-                // Natural fire + the recovered drain, back to back.
                 assert_eq!(
                     completion.recv_timeout(Duration::from_secs(10)),
                     Ok(RunOutcome::Completed)
                 );
+                // No second run: the drain for the same occurrence is
+                // skipped, so the sender drops and the channel closes.
                 assert_eq!(
                     completion.recv_timeout(Duration::from_secs(10)),
-                    Ok(RunOutcome::Completed)
+                    Err(mpsc::RecvTimeoutError::Disconnected)
                 );
             }
             d => panic!("expected Fired, got {d:?}"),
         }
-        assert_eq!(ran.load(Ordering::SeqCst), 2);
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
+
+    /// A tick that queues behind an in-flight run for the SAME
+    /// occurrence must not fire again when the run drains: the drain
+    /// claims the occurrence key the in-flight run already won and is
+    /// skipped. A genuinely newer occurrence still drains normally
+    /// (its claim wins).
+    #[test]
+    fn queued_same_occurrence_drain_is_skipped() {
+        use std::sync::Mutex as StdMutex;
+        let dir = tempfile::tempdir().unwrap();
+        let driver = reopen_driver(&dir);
+        let mut job = Job::new(
+            "rj3",
+            ScheduleKind::OneShot {
+                at_ms: now_ms() - 1_000,
+            },
+            "agent",
+        );
+        job.overlap = OverlapPolicy::Queue;
+        let ran = Arc::new(AtomicUsize::new(0));
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Arc::new(StdMutex::new(release_rx));
+        let ran_w = Arc::clone(&ran);
+        let release_w = Arc::clone(&release_rx);
+        let blocking: Arc<dyn Fn() + Send + Sync + 'static> = Arc::new(move || {
+            ran_w.fetch_add(1, Ordering::SeqCst);
+            // Block until the test releases this run.
+            let _ = release_w.lock().unwrap().recv();
+        });
+
+        let completion = match driver.tick_job(&job, now_ms(), None, blocking) {
+            TickDecision::Fired { completion } => completion,
+            d => panic!("expected Fired, got {d:?}"),
+        };
+        // Same occurrence, still running: the second tick queues.
+        match driver.tick_job(&job, now_ms(), None, counter_execute(&ran)) {
+            TickDecision::Queued => {}
+            d => panic!("expected Queued, got {d:?}"),
+        }
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            completion.recv_timeout(Duration::from_secs(10)),
+            Ok(RunOutcome::Completed)
+        );
+        // The drain for the same occurrence is skipped: no second run,
+        // and the channel closes when the worker returns.
+        assert_eq!(
+            completion.recv_timeout(Duration::from_secs(10)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
     }
 
     /// The Queue overlap path writes the durable row: a fresh handle on
     /// the same DB (a stand-in for the post-crash process) sees the owed
     /// fire even though the in-memory set died with the old process.
+    /// The row's presence is the contract, not a second run: the queued
+    /// tick observed the same one-shot occurrence the natural fire
+    /// already claimed, so the drain is consumed as a duplicate (one
+    /// fire per event, ever) and never runs.
     #[test]
     fn queue_path_persists_drain_durably() {
         let dir = tempfile::tempdir().unwrap();
@@ -653,8 +768,10 @@ mod tick_drain_queue_tests {
         let fresh = DurableClaimLedger::open(&dir.path().join("claims.db")).unwrap();
         assert!(fresh.take_pending_drain("qj").unwrap());
 
-        // Release both runs: the natural fire, then its drain.
-        block_tx.send(()).unwrap();
+        // Release the natural fire only. The drain is NOT a second
+        // run: it observed the same occurrence the natural fire
+        // already claimed, so it is consumed as a duplicate and its
+        // completion never arrives - the channel closes instead.
         block_tx.send(()).unwrap();
         if let TickDecision::Fired { completion } = first {
             assert_eq!(
@@ -663,7 +780,7 @@ mod tick_drain_queue_tests {
             );
             assert_eq!(
                 completion.recv_timeout(Duration::from_secs(10)),
-                Ok(RunOutcome::Completed)
+                Err(mpsc::RecvTimeoutError::Disconnected)
             );
         }
     }
