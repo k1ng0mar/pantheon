@@ -663,6 +663,12 @@ pub struct TuiState {
     /// end, never out of range. Vim mode keeps its own cursor and
     /// ignores this field.
     pub input_cursor: usize,
+    /// Stored column for vertical cursor moves: Up onto a short line
+    /// then Down must return to the original column, not clamp to the
+    /// short line's length. Set on the first vertical move, cleared
+    /// by any horizontal move or edit. `None` means "use the current
+    /// column".
+    pub composer_goal_col: Option<usize>,
     /// Submitted composer messages, oldest first, for Up/Down recall.
     /// Capped (see `INPUT_HISTORY_CAP`); consecutive duplicates are
     /// not stored twice.
@@ -961,6 +967,7 @@ impl Default for TuiState {
             blocks: Vec::new(),
             input: String::new(),
             input_cursor: 0,
+            composer_goal_col: None,
             input_history: Vec::new(),
             input_history_idx: None,
             input_history_draft: String::new(),
@@ -1140,6 +1147,7 @@ impl TuiState {
             blocks: Vec::new(),
             input: String::new(),
             input_cursor: 0,
+            composer_goal_col: None,
             input_history: Vec::new(),
             input_history_idx: None,
             input_history_draft: String::new(),
@@ -1369,25 +1377,36 @@ impl TuiState {
 
     /// Live token estimate: ~4 chars per token, updated on every streamed
     /// delta so the counter ticks smoothly. Snapped to the
-    /// authoritative number when Usage arrives.
+    /// authoritative number when Usage arrives. Counted in chars, not
+    /// bytes: a byte count inflates CJK/emoji text ~3x.
     fn bump_estimate(&mut self, text: &str) {
-        self.turn_estimate += (text.len() as u32).div_ceil(4);
+        self.turn_estimate += (text.chars().count() as u32).div_ceil(4);
     }
 
     /// Stamp the trailing thinking block's duration when reasoning
     /// ends: the first non-reasoning event after a reasoning stream
     /// settles it, so the collapsed summary can show a measured
-    /// duration. No-op when not reasoning.
+    /// duration. No-op when not reasoning. Robust to intervening
+    /// blocks: a Status line or provider-error card landing between
+    /// the reasoning stream and the next text/tool event used to
+    /// consume `thinking_started_at` while the last block was no
+    /// longer Thinking, losing the duration entirely. Now the most
+    /// recent still-unstamped Thinking block is stamped wherever it
+    /// sits, and the start time is only consumed when a block was
+    /// actually stamped.
     fn settle_thinking(&mut self) {
-        let Some(start) = self.thinking_started_at.take() else {
+        let Some(start) = self.thinking_started_at else {
             return;
         };
-        if let Some(TranscriptBlock {
-            kind: BlockKind::Thinking { duration, .. },
-            ..
-        }) = self.blocks.last_mut()
-        {
-            *duration = Some(start.elapsed());
+        let stamped = self.blocks.iter_mut().rev().find_map(|b| match &mut b.kind {
+            BlockKind::Thinking { duration, .. } if duration.is_none() => {
+                *duration = Some(start.elapsed());
+                Some(())
+            }
+            _ => None,
+        });
+        if stamped.is_some() {
+            self.thinking_started_at = None;
         }
     }
 
@@ -1890,12 +1909,24 @@ impl TuiState {
             .is_some_and(|a| matches!(a.kind, pantheon_api::ui::ActionKind::Approval { .. }))
     }
 
-    /// Toggle the session sidebar (`^b`). At ≥100 cols this flips the
-    /// split sidebar; below 100 cols it flips the floating overlay,
-    /// which is never open by default.
+    /// Toggle the session sidebar (`^b`). At ≥160 cols this flips the
+    /// split sidebar; below 160 cols it flips the floating overlay,
+    /// which is never open by default. The overlay is armed ONLY when
+    /// toggled on below 160: arming it unconditionally used to make
+    /// narrowing a wide terminal pop the overlay open unprompted,
+    /// contradicting "never opens by itself".
     pub fn toggle_sidebar(&mut self) {
         self.show_sidebar = !self.show_sidebar;
-        self.sidebar_overlay = self.show_sidebar;
+        self.sidebar_overlay = self.show_sidebar && self.term_width < 160;
+    }
+
+    /// Whether the floating sidebar overlay is open this frame: the
+    /// overlay flag AND a sub-160-col terminal. The single predicate
+    /// for both rendering and Esc dismissal, so the two can never
+    /// drift (Esc used to check <100 while rendering floated below
+    /// 160, leaving 100-159 cols undismissable).
+    pub fn sidebar_overlay_open(&self) -> bool {
+        self.sidebar_overlay && self.term_width < 160
     }
 
     /// Whether the sidebar is actually drawn this frame: ≥160 cols
@@ -2038,20 +2069,16 @@ impl TuiState {
                     }
                 }
             }
-            RuntimeErrorEvent::ToolCompleted { tool, call_id, .. } => {
+            RuntimeErrorEvent::ToolCompleted { call_id, .. } => {
                 if let Some(t) = self.bg_tasks.iter_mut().find(|t| t.run_id == run_id) {
-                    // Exact call id first; fall back to the newest live
-                    // step for this tool when the start carried no card.
-                    let target =
-                        match t.steps.iter_mut().rev().find(|s| {
-                            s.call_id == *call_id && s.status == activity::StepStatus::Running
-                        }) {
-                            Some(s) => Some(s),
-                            None => t.steps.iter_mut().rev().find(|s| {
-                                s.name == *tool && s.status == activity::StepStatus::Running
-                            }),
-                        };
-                    if let Some(s) = target {
+                    // Exact call id only. The old fallback to the
+                    // newest live step for this tool could finish the
+                    // wrong parallel call's step; an unmatched
+                    // completion leaves the step running (its start
+                    // carried no card) rather than misattributing it.
+                    if let Some(s) = t.steps.iter_mut().rev().find(|s| {
+                        s.call_id == *call_id && s.status == activity::StepStatus::Running
+                    }) {
                         s.finish(true);
                     }
                 }
@@ -2195,20 +2222,16 @@ impl TuiState {
                     });
                 }
             }
-            RuntimeErrorEvent::ToolCompleted { tool, call_id, .. } => {
-                // Flip the matching still-running card. Prefer the exact
-                // call id; fall back to the newest still-running card for
-                // this tool when the start event carried no card.
+            RuntimeErrorEvent::ToolCompleted { call_id, .. } => {
+                // Flip the matching still-running card on exact call
+                // id only. The old fallback to the newest still-running
+                // card for this tool flipped the wrong parallel call's
+                // duration/tokens; an unmatched completion now leaves
+                // cards running rather than misattributing it.
                 self.tools_used = self.tools_used.saturating_add(1);
-                let by_id = self.blocks.iter_mut().rev().find(|b| {
+                let target = self.blocks.iter_mut().rev().find(|b| {
                     matches!(&b.kind, BlockKind::ToolCall { call_id: c, ok: None, .. } if c == call_id)
                 });
-                let target = match by_id {
-                    Some(b) => Some(b),
-                    None => self.blocks.iter_mut().rev().find(|b| {
-                        matches!(&b.kind, BlockKind::ToolCall { name: n, ok: None, .. } if n == tool)
-                    }),
-                };
                 if let Some(block) = target {
                     if let BlockKind::ToolCall {
                         ok,
@@ -2478,12 +2501,22 @@ impl TuiState {
     /// Collapse the newest still-pending approval card to its resolved
     /// marker (`● approved` / `● denied`).
     fn resolve_approval_block(&mut self, decision: Option<bool>) {
-        if let Some(block) = self
-            .blocks
-            .iter_mut()
-            .rev()
-            .find(|b| matches!(&b.kind, BlockKind::Approval { decision: None, .. }))
-        {
+        self.resolve_approval_block_for(None, decision);
+    }
+
+    /// Collapse a still-pending approval card to its decided marker.
+    /// With a tool name, the newest pending card FOR THAT TOOL
+    /// collapses: resolving purely by recency collapsed the wrong
+    /// card when two runs (parallel/background tabs) had pending
+    /// cards. Without a tool name it falls back to the newest
+    /// pending card, as before.
+    fn resolve_approval_block_for(&mut self, tool: Option<&str>, decision: Option<bool>) {
+        if let Some(block) = self.blocks.iter_mut().rev().find(|b| match &b.kind {
+            BlockKind::Approval {
+                tool: t, decision: None, ..
+            } => tool.is_none_or(|want| t == want),
+            _ => false,
+        }) {
             if let BlockKind::Approval { decision: d, .. } = &mut block.kind {
                 *d = decision;
             }
@@ -2622,11 +2655,46 @@ impl TuiState {
             "Thinking...".to_string()
         });
         // Fresh per-turn telemetry: the last turn's in/out must not leak
-        // into this turn's status bar.
+        // into this turn's status bar. The live estimate resets too:
+        // it used to carry the previous turn's total into the new
+        // turn's counter, and a provider that never reports Usage
+        // accumulated it forever. `tokens_used` stays cumulative (it
+        // is the session spend, snapped by Usage, not a per-turn
+        // figure).
         self.turn_in = None;
         self.turn_out = None;
+        self.turn_estimate = 0;
         self.turn_started_at = Some(Instant::now());
         true
+    }
+
+    /// Clear transient modal/overlay state: every piece of UI that
+    /// acts on the visible session and must not survive a tab switch,
+    /// a new tab, or a reset. Durable parked decisions (the
+    /// `approvals`/`clarifies` maps, tab dots) are NOT touched here:
+    /// `switch_to_run` rehydrates the target run's cards from them
+    /// after clearing. Callers that mean "this session's decisions
+    /// are gone" (reset) clear the maps separately.
+    pub fn clear_transient_modals(&mut self) {
+        self.rewind_offer = None;
+        self.pending_confirm = None;
+        self.pending_reflect = None;
+        self.pending_approval = None;
+        self.pending_clarify = None;
+        self.pending_ui_approval = None;
+        self.form_fill = None;
+        self.editor = None;
+        self.timeline = None;
+        self.mention = None;
+        self.palette = None;
+        self.models = None;
+        self.providers = None;
+        self.history = None;
+        self.history_rename = None;
+        self.show_shortcuts = false;
+        self.sidebar_overlay = false;
+        self.img.preview = None;
+        self.checkpoint_names.clear();
     }
 
     /// Take the message queued while a turn was running, if any.
@@ -2656,7 +2724,20 @@ impl TuiState {
         self.turn_started_at = None;
         self.turn_in = None;
         self.turn_out = None;
-        self.rewind_offer = None;
+        self.turn_estimate = 0;
+        // A reset used to clear the transcript while leaving every
+        // decision modal armed, so keys stayed in approval mode with
+        // no card on screen. Clear all transient modal state, and
+        // drop this session's parked decisions + tab dot with it:
+        // the card is gone, so the decision point is gone too. The
+        // token meter resets with the transcript.
+        self.clear_transient_modals();
+        let id = self.session_id.clone();
+        self.approvals.remove(&id);
+        self.clarifies.remove(&id);
+        self.tabs.set_approval(&id, false);
+        self.tokens_used = 0;
+        self.cost_cents = 0;
         was_running
     }
 
@@ -2841,6 +2922,7 @@ impl TuiState {
     /// editor take, rewind draft, tab-switch restore, form-fill start.
     pub fn set_composer_text(&mut self, text: String) {
         self.input = text;
+        self.composer_goal_col = None;
         self.input_cursor = self.input.chars().count();
         self.input_history_idx = None;
         self.input_history_draft.clear();
@@ -2849,6 +2931,7 @@ impl TuiState {
     /// Clear the composer and its recall state.
     pub fn clear_composer(&mut self) {
         self.input.clear();
+        self.composer_goal_col = None;
         self.input_cursor = 0;
         self.input_history_idx = None;
         self.input_history_draft.clear();
@@ -2869,6 +2952,7 @@ impl TuiState {
         }
         let at = self.composer_byte_at(self.composer_cursor());
         self.input.insert_str(at, text);
+        self.composer_goal_col = None;
         self.input_cursor = self.composer_cursor() + text.chars().count();
         self.input_history_idx = None;
         self.input_history_draft.clear();
@@ -2883,6 +2967,7 @@ impl TuiState {
         let start = self.composer_byte_at(cur - 1);
         let end = self.composer_byte_at(cur);
         self.input.drain(start..end);
+        self.composer_goal_col = None;
         self.input_cursor = cur - 1;
         self.input_history_idx = None;
         self.input_history_draft.clear();
@@ -2899,28 +2984,37 @@ impl TuiState {
         let start = self.composer_byte_at(cur);
         let end = self.composer_byte_at(cur + 1);
         self.input.drain(start..end);
+        self.composer_goal_col = None;
         self.input_history_idx = None;
         self.input_history_draft.clear();
     }
 
     pub fn composer_move_left(&mut self) {
+        self.composer_goal_col = None;
         self.input_cursor = self.composer_cursor().saturating_sub(1);
     }
 
     pub fn composer_move_right(&mut self) {
+        self.composer_goal_col = None;
         self.input_cursor = (self.composer_cursor() + 1).min(self.input.chars().count());
     }
 
     pub fn composer_move_home(&mut self) {
+        self.composer_goal_col = None;
         self.input_cursor = 0;
     }
 
     pub fn composer_move_end(&mut self) {
+        self.composer_goal_col = None;
         self.input_cursor = self.input.chars().count();
     }
 
     /// Move the cursor one line up/down within a multi-line draft,
-    /// keeping the column where the target line allows it. Returns
+    /// keeping the column where the target line allows it. The column
+    /// is the stored goal column once set, so Up onto a short line
+    /// then Down returns to the original column instead of clamping
+    /// to the short line (the old code recomputed the column from
+    /// the current position on every move and lost it). Returns
     /// true when the draft is multi-line (i.e. the key was a cursor
     /// move); single-line drafts return false so the caller can use
     /// Up/Down for history recall instead.
@@ -2951,8 +3045,11 @@ impl TuiState {
         if new_row == row {
             return true;
         }
+        // First vertical move stores the column; later moves reuse it
+        // even after crossing a shorter line.
+        let goal = self.composer_goal_col.get_or_insert(col);
         let new_len = lines[new_row].chars().count();
-        let new_col = col.min(new_len);
+        let new_col = (*goal).min(new_len);
         let mut pos = 0usize;
         for line in lines.iter().take(new_row) {
             pos += line.chars().count() + 1;
@@ -3240,8 +3337,14 @@ fn new_tab(state: &mut TuiState, session: &Arc<Session>, status: &str) {
     state.blocks.clear();
     state.title = None;
     state.scroll_offset = 0;
-    state.pending_approval = None;
-    state.pending_clarify = None;
+    // Fresh tab, fresh meter and no inherited modals/checkpoints:
+    // the old tab's transient state must not leak into the new one.
+    state.clear_transient_modals();
+    state.tokens_used = 0;
+    state.turn_estimate = 0;
+    state.turn_in = None;
+    state.turn_out = None;
+    state.cost_cents = 0;
     // A new conversation is a new objective: the /goal iteration gate
     // belongs to the old work and must not block the new session.
     state.goal = None;
@@ -3286,9 +3389,28 @@ fn close_active_tab(state: &mut TuiState, session: &Arc<Session>) {
 /// block ("resumed", "forked").
 fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &str) {
     if id == state.session_id {
+        // Same tab re-selected: no transcript rebuild, but transient
+        // modal state still must not linger across the switch.
+        state.clear_transient_modals();
         state.attention_clear();
         return;
     }
+    // Transient modals act on the visible session; a mouse click that
+    // switches tabs used to leave them armed over the new tab's
+    // transcript (and acting on the wrong session). Clear first so
+    // the hydrate below only re-arms the target run's own decisions.
+    state.clear_transient_modals();
+    // The context meter belongs to the visible tab: the previous
+    // tab's tokens used to keep showing after a switch. Tabs carry
+    // no stored model/profile (model is global session config, not
+    // per-tab state), so the meter resets rather than reloading a
+    // per-tab model that does not exist; it re-fills from the new
+    // tab's Usage events and its context limit below.
+    state.tokens_used = 0;
+    state.turn_estimate = 0;
+    state.turn_in = None;
+    state.turn_out = None;
+    state.cost_cents = 0;
     // Stash the draft of the tab we're leaving; the target's restores
     // below. Switching tabs never eats a draft.
     let old = state.session_id.clone();
@@ -3410,9 +3532,15 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
 /// they never ghost over fullscreen UI.
 pub fn render(state: &mut TuiState, f: &mut Frame) {
     // Reset per frame; render_transcript / render_image_preview set these
-    // when they actually draw.
+    // when they actually draw. Tab geometry resets here too: the
+    // fullscreen-overlay branches of `render_main` return before
+    // drawing a tab bar, and stale geometry from the previous frame
+    // used to let tab-bar clicks switch sessions behind /history
+    // and friends. Normal frames re-set both below.
     state.img.view = None;
     state.img.preview_area = None;
+    state.tab_bar_area = None;
+    state.tab_hits.clear();
     render_main(state, f);
     let _ = state.img.paint();
     if let Some(area) = state.img.preview_area {
@@ -3619,7 +3747,7 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
         render_sidebar(f, right, state);
     } else {
         render_left(state, f, area);
-        if state.sidebar_overlay {
+        if state.sidebar_overlay_open() {
             // Narrow terminal: the sidebar floats over the body's right
             // edge (~36 cols) once explicitly toggled on with ^b - it
             // never opens by itself.
@@ -3643,11 +3771,15 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
 /// — it used to take over the footer, and there is no footer anymore
 /// — so the question stays impossible to miss without adding chrome.
 fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
+    // A form fill takes one extra row above the composer for its
+    // prompt (`form [n/total] ... pick 1-N ... [default]`), which
+    // used to live only in the never-rendered `status_line`.
+    let input_h = if state.form_fill.is_some() { 6 } else { 5 };
     if state.rewind_offer.is_some() {
         let [transcript_area, rewind_area, input_area] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(1),
-            Constraint::Length(5),
+            Constraint::Length(input_h),
         ])
         .areas(area);
         render_transcript(f, transcript_area, state);
@@ -3660,7 +3792,7 @@ fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
         return;
     }
     let [transcript_area, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(5)]).areas(area);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(input_h)]).areas(area);
     render_transcript(f, transcript_area, state);
     if state.pending_reflect.is_some() {
         render_reflect_card(f, input_area, state);
@@ -4154,11 +4286,11 @@ fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(th.dim),
         )));
     }
-    // Show the tail when there are more turns than rows: the latest turn
-    // is what the selection opens on.
+    // Window around the selection, not the tail: the old tail window
+    // left a selection moved above it selected-but-invisible.
     let inner = w.saturating_sub(4) as usize;
     let rows = panel.height.saturating_sub(5) as usize;
-    let start = turns.len().saturating_sub(rows.max(1));
+    let start = timeline::window_start(sel, turns.len(), rows);
     for (i, turn) in turns.iter().enumerate().skip(start) {
         let row = format!(
             "  {:>3}  {}",
@@ -4517,9 +4649,14 @@ fn bordered_row(
     Line::from(spans)
 }
 
-/// Prompt row spans: the draft's first line (with cursor marker), or the
-/// dim placeholder when the draft is empty. Clipped to `max_w` display
-/// cells so the box never overflows.
+/// Prompt row spans: the draft's cursor line (with cursor marker),
+/// or the dim placeholder when the draft is empty. The old code
+/// always showed the first line clipped to the box, so multi-line
+/// drafts were blind past line 1 and a cursor past the right edge
+/// was invisible despite multi-line editing existing. Now the row
+/// follows the cursor: the cursor's line, horizontally scrolled so
+/// the cursor column stays in view, plus a dim `L{row}/{n}` marker
+/// on multi-line drafts.
 fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
     if state.input.is_empty() {
         let mut spans = vec![Span::styled(
@@ -4532,9 +4669,44 @@ fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> V
         return spans;
     }
     let text = composer_text(state);
-    let first = text.lines().next().unwrap_or("");
-    let shown: String = first.chars().take(max_w).collect();
-    vec![Span::styled(shown, Style::default().fg(th.body))]
+    let lines: Vec<&str> = text.split('\n').collect();
+    // Cursor line: non-vim cursor char index, else the vim row.
+    let (row, col) = if state.vim.enabled && state.is_inputting {
+        let (r, c) = state.vim.cursor(&state.input);
+        (r, c)
+    } else {
+        let cur = state.composer_cursor();
+        let mut seen = 0usize;
+        let mut found = (0usize, cur);
+        for (i, line) in lines.iter().enumerate() {
+            let len = line.chars().count();
+            if cur <= seen + len {
+                found = (i, cur - seen);
+                break;
+            }
+            seen += len + 1;
+            found = (i, len);
+        }
+        found
+    };
+    let line = lines.get(row).copied().unwrap_or("");
+    let line_len = line.chars().count();
+    // Horizontal window ending at the cursor when it runs past the
+    // right edge; the marker appended by callers sits at the cursor.
+    let start = if line_len + 1 <= max_w {
+        0
+    } else {
+        col.saturating_sub(max_w.saturating_sub(1)).min(line_len)
+    };
+    let shown: String = line.chars().skip(start).take(max_w).collect();
+    let mut spans = vec![Span::styled(shown, Style::default().fg(th.body))];
+    if lines.len() > 1 {
+        spans.push(Span::styled(
+            format!("  L{}/{}", row + 1, lines.len()),
+            Style::default().fg(th.dim),
+        ));
+    }
+    spans
 }
 
 /// Display-only capitalisation: first letter uppercased, the rest
@@ -4796,10 +4968,31 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     if !state.input.is_empty() && state.is_inputting {
         prompt.push(Span::styled("█", Style::default().fg(th.primary)));
     }
-    if area.height < 4 || w < 8 {
+    // Form-fill prompt row: `status_line` holds the current field's
+    // prompt (or the last validation error) while filling, and it
+    // was never rendered anywhere, so the prompt was invisible.
+    // Rendered above the box when the layout reserved the row (see
+    // `render_left`); in cramped areas the old layout wins and the
+    // row is dropped rather than shrinking the box. Other
+    // `status_line` writes (working/ready/denied) stay internal
+    // state: their user-visible surface is the transcript's Status
+    // blocks and decision cards.
+    let form_row: u16 = if state.form_fill.is_some() && area.height >= 6 {
+        let shown: String = state.status_line.chars().take(w).collect();
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(shown, Style::default().fg(th.emphasis)))),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        1
+    } else {
+        0
+    };
+    let box_y = area.y + form_row;
+    let box_h = area.height - form_row;
+    if box_h < 4 || w < 8 {
         f.render_widget(
             Paragraph::new(Line::from(prompt)),
-            Rect::new(area.x, area.y, area.width, 1),
+            Rect::new(area.x, box_y, area.width, 1),
         );
         return;
     }
@@ -4832,16 +5025,16 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     ];
     f.render_widget(
         Paragraph::new(rows),
-        Rect::new(area.x, area.y, area.width, 4),
+        Rect::new(area.x, box_y, area.width, 4),
     );
     // Token line directly below the box, when nonzero. It needs a
     // 5th row, which `render_left` reserves; in a cramped area (<5
     // rows) it is simply not shown rather than shrinking the box.
-    if area.height >= 5 {
+    if box_h >= 5 {
         if let Some(line) = composer_token_line(state, th) {
             f.render_widget(
                 Paragraph::new(line),
-                Rect::new(area.x, area.y + 4, area.width, 1),
+                Rect::new(area.x, box_y + 4, area.width, 1),
             );
         }
     }
@@ -5227,6 +5420,73 @@ fn block_at_line(starts: &[usize], line: usize) -> Option<usize> {
     }
 }
 
+/// Display width of one char for transcript wrapping: 2 for wide
+/// (CJK / emoji) ranges, else 1. Approximation of what ratatui's
+/// width measurement does, without adding a dependency.
+fn wrap_char_width(c: char) -> usize {
+    let cp = c as u32;
+    if (0x1100..=0x115f).contains(&cp)
+        || (0x2e80..=0xa4cf).contains(&cp)
+        || (0xac00..=0xd7a3).contains(&cp)
+        || (0xf900..=0xfaff).contains(&cp)
+        || (0xfe30..=0xfe4f).contains(&cp)
+        || (0xff00..=0xff60).contains(&cp)
+        || (0xffe0..=0xffe6).contains(&cp)
+        || (0x1f300..=0x1faff).contains(&cp)
+        || (0x20000..=0x3fffd).contains(&cp)
+    {
+        2
+    } else {
+        1
+    }
+}
+
+/// Wrap one transcript line at `width` display cells, splitting spans
+/// at char boundaries and preserving each span's style. Lines that
+/// already fit pass through untouched (including empty lines, so
+/// blank separators survive). Pure, so tests cover it directly.
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line];
+    }
+    let total: usize = line
+        .spans
+        .iter()
+        .flat_map(|s| s.content.chars())
+        .map(wrap_char_width)
+        .sum();
+    if total <= width {
+        return vec![line];
+    }
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+    for span in line.spans {
+        let style = span.style;
+        let mut buf = String::new();
+        let mut buf_w = 0usize;
+        for c in span.content.chars() {
+            let w = wrap_char_width(c);
+            if cur_w + buf_w + w > width && (cur_w + buf_w) > 0 {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style));
+                    buf_w = 0;
+                }
+                out.push(Line::from(std::mem::take(&mut cur)));
+                cur_w = 0;
+            }
+            buf.push(c);
+            buf_w += w;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style));
+            cur_w += buf_w;
+        }
+    }
+    out.push(Line::from(cur));
+    out
+}
+
 /// Click-to-toggle for collapsible block headers (thinking, tool output,
 /// diffs). Only the header line toggles; clicks elsewhere pass through.
 /// Returns true when a block flipped.
@@ -5340,6 +5600,7 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
         for (i, block) in state.blocks.iter().enumerate() {
             block_starts.push(lines.len());
             let is_last = i + 1 == block_count;
+            let seg_start = lines.len();
             render_block(
                 &mut lines,
                 block,
@@ -5353,6 +5614,31 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
                     agent_label,
                 },
             );
+            // Wrap the line types that used to clip at the viewport
+            // edge: ThoughtView expanded text, tool-card args/output,
+            // shell output, Status / ProviderError / Approval /
+            // Clarify / Confirm lines. Prose already wraps in the
+            // markdown renderer, and rich-text / image-bearing blocks
+            // (User, Assistant, BgResult, Ui), diffs, and todos keep
+            // their own clipping, so they are excluded. Wrapping
+            // here, per block, keeps `block_starts` (timeline jumps,
+            // click-to-toggle) exact.
+            if matches!(
+                block.kind,
+                BlockKind::Thinking { .. }
+                    | BlockKind::ToolCall { .. }
+                    | BlockKind::Status(_)
+                    | BlockKind::ProviderError { .. }
+                    | BlockKind::Approval { .. }
+                    | BlockKind::Clarify { .. }
+                    | BlockKind::Confirm { .. }
+            ) {
+                let width = area.width as usize;
+                let seg: Vec<Line> = lines.drain(seg_start..).collect();
+                for line in seg {
+                    lines.extend(wrap_line(line, width));
+                }
+            }
             // Airy: messages breathe with two blank
             // lines after them; compact cards keep one.
             lines.push(Line::from(""));
@@ -7860,6 +8146,15 @@ fn run_confirmed_action(state: &mut TuiState, action: ConfirmAction) {
         ConfirmAction::ClearTranscript => {
             state.blocks.clear();
             state.scroll_offset = 0;
+            // The meter belongs to the cleared transcript: without
+            // this the previous view's tokens kept showing after a
+            // clear. The context limit (`tokens_max`) stays: it is
+            // the model's limit, not spent tokens.
+            state.tokens_used = 0;
+            state.turn_estimate = 0;
+            state.turn_in = None;
+            state.turn_out = None;
+            state.cost_cents = 0;
             state.add_status("transcript cleared".into());
         }
     }
@@ -7982,6 +8277,10 @@ pub(crate) fn rewind_to_turn(
     state.turn_started_at = None;
     state.turns_completed = state.turns_completed.saturating_sub(turns_dropped);
     state.timeline = None;
+    // A rewound checkpoint still showed as current in the sidebar
+    // while /checkpoints correctly marked it unrestorable: the live
+    // name list is per-session view state, not ledger truth.
+    state.checkpoint_names.clear();
     state.jump_to_block = None;
     state.scroll_to_bottom();
     state.status_line = "ready".into();
@@ -8147,6 +8446,10 @@ fn handle_composer_arrow(state: &mut TuiState, code: KeyCode) -> bool {
                     .unwrap_or(0);
                 vim::move_arrow(&state.input, &mut state.vim, 0, (len - col) as isize);
             }
+            // Delete had no vim arm (fell to `_ => return false`,
+            // which the caller ignores), so Delete worked only in
+            // non-vim mode.
+            KeyCode::Delete => vim::delete_char(&mut state.input, &mut state.vim),
             _ => return false,
         }
         return true;
@@ -8439,12 +8742,55 @@ fn tui_loop(
                 continue;
             }
             if let CtEvent::Mouse(me) = &event {
+                // Fullscreen overlays own the screen: clicks must not
+                // reach the tab bar or transcript behind them (their
+                // tab geometry was cleared in `render`, so tab clicks
+                // would already miss; swallow here so block toggles
+                // behind them cannot fire either).
+                if state.history.is_some()
+                    || state.models.is_some()
+                    || state.providers.is_some()
+                    || state.editor.is_some()
+                    || state.show_shortcuts
+                    || state.img.preview.is_some()
+                {
+                    continue;
+                }
+                // Popups drawn over the transcript (timeline, mention
+                // picker, palette) own the mouse while open: a click
+                // on them used to toggle the transcript block behind
+                // them, because `img.view` still held the body
+                // geometry. They are keyboard-driven, so swallow.
+                if state.timeline.is_some() || state.mention.is_some() || state.palette.is_some() {
+                    continue;
+                }
+                // Mouse wheel: the handler used to accept only Left
+                // Down, so wheel events fell through and were ignored.
+                match me.kind {
+                    MouseEventKind::ScrollUp => {
+                        state.scroll_up(3);
+                        state.tick();
+                        terminal.draw(|f| render(state, f))?;
+                        continue;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        state.scroll_down(3);
+                        state.tick();
+                        terminal.draw(|f| render(state, f))?;
+                        continue;
+                    }
+                    _ => {}
+                }
                 // Left-click: tab bar first (switch tab / `+` for a new
                 // one), then collapsible transcript block headers,
-                // opencode-style.
+                // opencode-style. The sidebar overlay covers the
+                // body's right edge, so clicks while it is open must
+                // not toggle blocks behind it; tab-bar clicks (top
+                // row, above the body) still work.
                 if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
                     let handled = click_tab_bar(state, &session, me.column, me.row)
-                        || toggle_block_at_click(state, me.column, me.row);
+                        || (!state.sidebar_overlay_open()
+                            && toggle_block_at_click(state, me.column, me.row));
                     if handled {
                         state.tick();
                         terminal.draw(|f| render(state, f))?;
@@ -9010,9 +9356,11 @@ fn tui_loop(
                     continue;
                 }
                 // Bare BackTab cycles the permission mode (Ask -> Smart ->
-                // AllowAll). Shift+Tab never reaches here: tab_key_action
-                // above maps BackTab+SHIFT to previous-tab. Kept off
-                // plain Tab so the existing plan toggle is untouched.
+                // AllowAll). Shift+Tab arrives as BackTab+SHIFT on most
+                // terminals and now reaches here too: `tab_key_action`
+                // no longer claims it for previous-tab (that moved to
+                // Ctrl+Shift+Tab). Kept off plain Tab so the existing
+                // plan toggle is untouched.
                 if key.code == KeyCode::BackTab
                     || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
                 {
@@ -9043,7 +9391,12 @@ fn tui_loop(
                                         let _ = session.supervisor.grant(&run, &scope);
                                         state.approvals.remove(&run);
                                         state.tabs.set_approval(&run, false);
-                                        state.resolve_approval_block(Some(true));
+                                        let tool =
+                                            parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                        state.resolve_approval_block_for(
+                                            tool.as_deref(),
+                                            Some(true),
+                                        );
                                         state.status_line = "granted; resuming".into();
                                         // Resume: chat_turn with empty
                                         // message rebuilds from the ledger
@@ -9056,10 +9409,19 @@ fn tui_loop(
                                         let _ = session.supervisor.deny(&run, &scope);
                                         state.approvals.remove(&run);
                                         state.tabs.set_approval(&run, false);
-                                        state.resolve_approval_block(Some(false));
+                                        let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                        state.resolve_approval_block_for(
+                                            tool.as_deref(),
+                                            Some(false),
+                                        );
                                         state.status_line = "denied".into();
                                         state.ready = true;
                                         state.active_run = None;
+                                        // Deny cancels the parked run, like
+                                        // Esc deny: without this a d-deny
+                                        // could start a new turn while the
+                                        // parked worker was still cleaning up.
+                                        session.cancel_current_run(&run, "user denied approval");
                                         // Deny ends the parked turn without a
                                         // TurnComplete event, so drain here.
                                         drain_queued_message(state, &session, tx);
@@ -9295,12 +9657,20 @@ fn tui_loop(
                     KeyCode::Esc => {
                         // The narrow-terminal sidebar overlay owns Esc
                         // while open: one press dismisses it, nothing
-                        // else happens.
-                        let overlay_open = state.sidebar_overlay
-                            && terminal.size().map(|sz| sz.width < 100).unwrap_or(false);
+                        // else happens. The predicate is shared with
+                        // rendering (`sidebar_overlay_open`, <160):
+                        // the old <100 check left 100-159 cols
+                        // arming an interrupt instead of closing.
+                        let overlay_open = state.sidebar_overlay_open();
                         if overlay_open {
                             state.sidebar_overlay = false;
                             state.show_sidebar = false;
+                        } else if state.pending_reflect.is_some() {
+                            // The reflection card claimed Esc in a
+                            // comment but the chain had no branch for
+                            // it, so Esc armed/cancelled instead.
+                            state.pending_reflect = None;
+                            state.status_line = "dismissed".into();
                         } else if state.pending_confirm.is_some() {
                             state.pending_confirm = None;
                             state.resolve_confirm_block(false);
@@ -9310,7 +9680,8 @@ fn tui_loop(
                                 let _ = session.supervisor.deny(&run, &scope);
                                 state.approvals.remove(&run);
                                 state.tabs.set_approval(&run, false);
-                                state.resolve_approval_block(Some(false));
+                                let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                state.resolve_approval_block_for(tool.as_deref(), Some(false));
                                 session
                                     .cancel_current_run(&run, "user pressed esc during approval");
                                 state.status_line = "denied; turn cancelled".into();
@@ -9852,6 +10223,12 @@ fn export_transcript(blocks: &[TranscriptBlock], session_id: &str, format: &str)
                         crate::diffview::DiffLine::Add(a) => format!("+{a}"),
                         crate::diffview::DiffLine::Del(d) => format!("-{d}"),
                         crate::diffview::DiffLine::Truncated(n) => format!("... {n} more lines"),
+                        crate::diffview::DiffLine::TooLarge {
+                            old_lines,
+                            new_lines,
+                        } => {
+                            format!("diff skipped: too many lines ({old_lines} → {new_lines})")
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),
@@ -10383,6 +10760,15 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/clear" {
+        // No running-turn guard used to let a mid-turn confirm wipe
+        // in-flight tool cards while the turn kept streaming. Refuse
+        // while a turn runs; /reset cancels a turn, /clear does not.
+        if !state.ready {
+            state.add_status(
+                "clear refused: a turn is running - wait for it, or /reset to cancel it".into(),
+            );
+            return;
+        }
         // Destructive: reuses the approval decision-card pattern. The
         // card renders in the transcript; `a` clears, `d`/Esc dismisses.
         state.blocks.push(TranscriptBlock {
@@ -10660,78 +11046,16 @@ fn handle_slash_inner(
 
     if let Some(id) = cmd.strip_prefix("/resume ") {
         let id = id.trim();
-        // Prove the run exists before switching; reopen a terminal run.
+        // Prove the run exists before switching, then route through
+        // the shared tab-switch hygiene: the old arm rebuilt blocks
+        // directly, skipping decision hydration, checkpoint clearing,
+        // draft restore, and transient-modal clearing, so the
+        // previous run's pending approval could survive into the
+        // resumed run. `switch_to_run` does all of that (and pushes
+        // the same "resumed <id>" status line).
         match supervisor.ledger_status(id) {
             Ok(Some(_)) => {
-                let _ = supervisor.ledger_reopen_run(id);
-                state.session_id = id.to_string();
-                state.title = supervisor.ledger_title(id).ok().flatten();
-                match supervisor.replay(id) {
-                    Ok(entries) => {
-                        state.blocks.clear();
-                        for item in pantheon_runtime::session::rebuild_transcript(entries) {
-                            let kind = match item {
-                                pantheon_runtime::session::TranscriptItem::Message(m) => {
-                                    match m.role {
-                                        pantheon_api::message::Role::User => {
-                                            BlockKind::UserMessage(m.content.clone())
-                                        }
-                                        _ => BlockKind::AssistantMessage(m.content.clone()),
-                                    }
-                                }
-                                pantheon_runtime::session::TranscriptItem::ToolCall {
-                                    call_id,
-                                    name,
-                                    args,
-                                    output,
-                                    ok,
-                                } => BlockKind::ToolCall {
-                                    name,
-                                    args,
-                                    ok,
-                                    call_id,
-                                    started: None,
-                                    duration: None,
-                                    error: if ok == Some(false) {
-                                        Some(output.join("\n"))
-                                    } else {
-                                        None
-                                    },
-                                    tokens: None,
-                                    expanded: false,
-                                    output,
-                                },
-                                // Imported reasoning traces render as thinking blocks.
-                                pantheon_runtime::session::TranscriptItem::Reasoning(text) => {
-                                    BlockKind::Thinking {
-                                        text,
-                                        expanded: false,
-                                        duration: None,
-                                    }
-                                }
-                                // Structured UI: rebuilt at its latest revision.
-                                pantheon_runtime::session::TranscriptItem::Ui {
-                                    ui_id,
-                                    revision,
-                                    document,
-                                } => BlockKind::Ui {
-                                    ui_id,
-                                    revision,
-                                    document,
-                                },
-                            };
-                            state.blocks.push(TranscriptBlock { kind });
-                        }
-                        state.scroll_to_bottom();
-                    }
-                    Err(e) => state.add_status(format!("replay: {e}")),
-                }
-                state.blocks.push(TranscriptBlock {
-                    kind: BlockKind::Status(format!("resumed {id}")),
-                });
-                // Do not force ready here: a turn may still be running for
-                // the previous run, and the Enter guard must keep applying
-                // to it.
+                switch_to_run(state, session, id, "resumed");
             }
             Ok(None) => state.add_status(format!("no run {id}")),
             Err(e) => state.add_status(format!("status: {e}")),
@@ -11317,6 +11641,43 @@ fn handle_slash_inner(
     if cmd == "/send" || cmd.starts_with("/send ") {
         let arg = cmd.strip_prefix("/send").map(str::trim).unwrap_or("");
         do_send(state, arg);
+        return;
+    }
+    if cmd == "/oauth" || cmd.starts_with("/oauth ") {
+        // The registry lists /oauth and the CLI verb exists, but the
+        // TUI had no dispatch branch, so it fell through to "unknown
+        // command" (and, since it IS builtin, shadowed any custom
+        // command or skill named oauth). Status/logout run in-TUI
+        // through the non-exiting helpers; login needs a browser
+        // loopback flow outside the alternate screen, so it says so
+        // instead of hanging the loop or exiting the process (the
+        // CLI form prints and calls process::exit on error).
+        let rest = cmd.strip_prefix("/oauth").unwrap_or("").trim();
+        let mut parts = rest.split_whitespace();
+        match parts.next() {
+            Some("status") => match crate::oauth::status_lines() {
+                Ok(lines) => {
+                    for line in lines {
+                        state.add_status(line);
+                    }
+                }
+                Err(e) => state.add_status(format!("oauth: {e}")),
+            },
+            Some("logout") => match crate::oauth::logout_line(parts.next()) {
+                Ok(line) => state.add_status(line),
+                Err(e) => state.add_status(format!("oauth: {e}")),
+            },
+            Some("login") => {
+                state.add_status(
+                    "oauth login needs a browser: run `pantheon oauth login <app>` outside the TUI"
+                        .into(),
+                );
+            }
+            _ => {
+                state.add_status("usage: /oauth <status|logout|login> [app]".into());
+                state.add_status("  apps: github, google, notion, spotify".into());
+            }
+        }
         return;
     }
     if cmd == "/doctor" {
@@ -13213,6 +13574,31 @@ mod streaming_response_tests {
         assert_eq!(assistant, ["Hello there."]);
     }
 
+    // Local helpers: this module has no shared `test_state` /
+    // `render_to_string` (those live in sibling test modules and are
+    // not visible here).
+    fn test_state() -> TuiState {
+        TuiState::new("test-session".to_string(), "test-model".to_string(), 0)
+    }
+
+    fn render_to_string(
+        draw: impl FnOnce(&mut Frame, Rect, &TuiState),
+        state: &TuiState,
+    ) -> Vec<String> {
+        use ratatui::{backend::TestBackend, Terminal};
+        let backend = TestBackend::new(84, 24);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw(f, f.area(), state)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
     fn thinking_block_settles_with_measured_duration() {
         let mut state = TuiState::new("run-thinking".into(), "test-model".into(), 0);
@@ -13230,6 +13616,302 @@ mod streaming_response_tests {
             thinking.flatten().is_some(),
             "settled thinking block must carry a measured duration"
         );
+    }
+
+    #[test]
+    fn thinking_settles_across_intervening_status_line() {
+        // A Status line landing between reasoning and the next text
+        // event used to consume `thinking_started_at` while the last
+        // block was no longer Thinking, losing the duration.
+        let mut state = TuiState::new("run-thinking".into(), "test-model".into(), 0);
+        state.handle_model_event(ModelEvent::ReasoningDelta {
+            text: "hmm".into(),
+        });
+        state.blocks.push(TranscriptBlock {
+            kind: BlockKind::Status("routing: x unavailable".into()),
+        });
+        state.handle_model_event(ModelEvent::TextDelta {
+            text: "answer".into(),
+        });
+        let thinking = state.blocks.iter().find_map(|block| match &block.kind {
+            BlockKind::Thinking { duration, .. } => Some(*duration),
+            _ => None,
+        });
+        assert!(
+            thinking.flatten().is_some(),
+            "intervening Status must not lose the thinking duration"
+        );
+        assert!(state.thinking_started_at.is_none());
+    }
+
+    #[test]
+    fn begin_turn_resets_live_estimate_not_cumulative_tokens() {
+        let mut state = test_state();
+        state.ready = true;
+        state.tokens_used = 500;
+        state.turn_estimate = 42;
+        assert!(state.begin_turn("hi".into()));
+        assert_eq!(state.turn_estimate, 0, "new turn must not start at the old total");
+        assert_eq!(state.tokens_used, 500, "session spend stays cumulative");
+    }
+
+    #[test]
+    fn live_estimate_counts_chars_not_bytes() {
+        let mut state = test_state();
+        state.bump_estimate("ああああ"); // 4 chars, 12 bytes
+        assert_eq!(state.turn_estimate, 1, "byte count would give 3");
+    }
+
+    #[test]
+    fn tool_completed_flips_only_exact_call_id() {
+        let mut state = test_state();
+        let tool_block = |call_id: &str| TranscriptBlock {
+            kind: BlockKind::ToolCall {
+                name: "shell".into(),
+                args: "{}".into(),
+                ok: None,
+                call_id: call_id.into(),
+                started: Some(std::time::Instant::now()),
+                duration: None,
+                error: None,
+                tokens: None,
+                expanded: false,
+                output: vec![],
+            },
+        };
+        state.blocks.push(tool_block("call-a"));
+        state.blocks.push(tool_block("call-b"));
+        state.handle_runtime_event(&RuntimeErrorEvent::ToolCompleted {
+            run_id: "test-session".into(),
+            call_id: "call-b".into(),
+            tool: "shell".into(),
+            provenance: pantheon_api::provenance::Provenance::system("test"),
+        });
+        let oks: Vec<Option<bool>> = state
+            .blocks
+            .iter()
+            .map(|b| match &b.kind {
+                BlockKind::ToolCall { ok, .. } => *ok,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(oks, vec![None, Some(true)], "parallel call-a must stay running");
+    }
+
+    #[test]
+    fn approval_resolves_by_tool_not_recency() {
+        let mut state = test_state();
+        let card = |tool: &str| TranscriptBlock {
+            kind: BlockKind::Approval {
+                tool: tool.into(),
+                sentence: "run it".into(),
+                target: "x".into(),
+                decision: None,
+            },
+        };
+        state.blocks.push(card("shell"));
+        state.blocks.push(card("read_file"));
+        state.resolve_approval_block_for(Some("shell"), Some(false));
+        let decisions: Vec<Option<bool>> = state
+            .blocks
+            .iter()
+            .map(|b| match &b.kind {
+                BlockKind::Approval { decision, .. } => *decision,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            decisions,
+            vec![Some(false), None],
+            "the older shell card, not the newest card, must resolve"
+        );
+    }
+
+    #[test]
+    fn reset_ephemeral_clears_modal_state_and_meter() {
+        let mut state = test_state();
+        state.ready = false;
+        state.tokens_used = 99;
+        state.cost_cents = 5;
+        state.pending_approval = Some(("run".into(), "c:shell:{}".into()));
+        state.pending_confirm = Some(ConfirmAction::ClearTranscript);
+        state.pending_reflect = Some(vec![]);
+        state.checkpoint_names.push("before-refactor".into());
+        state.approvals.insert(
+            "test-session".into(),
+            ("c:shell:{}".into(), "shell".into(), "{}".into()),
+        );
+        assert!(state.reset_ephemeral());
+        assert!(state.pending_approval.is_none());
+        assert!(state.pending_confirm.is_none());
+        assert!(state.pending_reflect.is_none());
+        assert!(state.checkpoint_names.is_empty());
+        assert!(!state.approvals.contains_key("test-session"));
+        assert_eq!(state.tokens_used, 0);
+        assert_eq!(state.cost_cents, 0);
+    }
+
+    #[test]
+    fn clear_transient_modals_clears_overlays_not_parked_maps() {
+        let mut state = test_state();
+        state.rewind_offer = Some(RewindOffer {
+            turn_no: 1,
+            block_index: 0,
+            preview: "hi".into(),
+        });
+        state.pending_confirm = Some(ConfirmAction::ClearTranscript);
+        state.form_fill = Some(FormFill {
+            ui_id: "u".into(),
+            revision: 1,
+            node_id: "n".into(),
+            action_id: "a".into(),
+            title: "form".into(),
+            fields: vec![],
+            index: 0,
+            values: serde_json::Map::new(),
+        });
+        state.checkpoint_names.push("cp".into());
+        state.approvals.insert(
+            "other-run".into(),
+            ("c:shell:{}".into(), "shell".into(), "{}".into()),
+        );
+        state.clear_transient_modals();
+        assert!(state.rewind_offer.is_none());
+        assert!(state.pending_confirm.is_none());
+        assert!(state.form_fill.is_none());
+        assert!(state.checkpoint_names.is_empty());
+        assert!(
+            state.approvals.contains_key("other-run"),
+            "parked decisions for other runs survive; switch rehydrates from them"
+        );
+    }
+
+    #[test]
+    fn toggle_sidebar_arms_overlay_only_below_160() {
+        let mut state = test_state();
+        state.term_width = 200;
+        state.show_sidebar = false;
+        state.toggle_sidebar();
+        assert!(state.show_sidebar);
+        assert!(!state.sidebar_overlay, "wide toggle must not arm the overlay");
+        assert!(!state.sidebar_overlay_open());
+        state.term_width = 100;
+        state.toggle_sidebar(); // off
+        state.toggle_sidebar(); // on, narrow
+        assert!(state.sidebar_overlay);
+        assert!(state.sidebar_overlay_open());
+        state.term_width = 160;
+        assert!(
+            !state.sidebar_overlay_open(),
+            "160 is split territory, not overlay"
+        );
+        state.term_width = 159;
+        assert!(
+            state.sidebar_overlay_open(),
+            "100-159 must dismiss via Esc too"
+        );
+    }
+
+    #[test]
+    fn vertical_move_preserves_column_across_short_line() {
+        let mut state = test_state();
+        state.set_composer_text("abcdef\ngh\nijklmnop".into());
+        state.input_cursor = 6; // end of line 0, column 6
+        assert!(state.composer_move_vertical(1));
+        assert_eq!(state.input_cursor, 6 + 1 + 2, "short line clamps to 2");
+        assert!(state.composer_move_vertical(1));
+        assert_eq!(
+            state.input_cursor,
+            6 + 1 + 2 + 1 + 6,
+            "down again must return to column 6, not stay at 2"
+        );
+    }
+
+    #[test]
+    fn composer_prompt_shows_cursor_line_with_count() {
+        let mut state = test_state();
+        state.set_composer_text("first line\nsecond line\nthird".into());
+        state.input_cursor = 11; // inside line 2 ("second line")
+        state.is_inputting = true;
+        let spans = composer_prompt_spans(&state, &state.theme, 40);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("second line"), "cursor line must show: {text}");
+        assert!(text.contains("L2/3"), "multi-line marker missing: {text}");
+        assert!(!text.contains("first line"), "first line must not show: {text}");
+    }
+
+    #[test]
+    fn composer_prompt_scrolls_long_line_to_cursor() {
+        let mut state = test_state();
+        state.set_composer_text("abcdefghijklmnopqrstuvwxyz0123456789".into());
+        state.input_cursor = 36; // at the end, past a 20-wide box
+        state.is_inputting = true;
+        let spans = composer_prompt_spans(&state, &state.theme, 20);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("0123456789"), "cursor end must be visible: {text}");
+        assert!(!text.contains("abcdefghij"), "window must scroll past the start: {text}");
+    }
+
+    #[test]
+    fn wrap_line_splits_long_status_lines() {
+        let line = Line::from(Span::styled(
+            "x".repeat(100),
+            Style::default(),
+        ));
+        let wrapped = wrap_line(line, 40);
+        assert_eq!(wrapped.len(), 3, "100 cells at width 40 must wrap to 3 lines");
+        let joined: String = wrapped
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref().to_string()))
+            .collect();
+        assert_eq!(joined.len(), 100);
+        let short = wrap_line(Line::from("tiny"), 40);
+        assert_eq!(short.len(), 1);
+    }
+
+    #[test]
+    fn form_prompt_row_renders_above_composer() {
+        let mut state = test_state();
+        state.form_fill = Some(FormFill {
+            ui_id: "u".into(),
+            revision: 1,
+            node_id: "n".into(),
+            action_id: "a".into(),
+            title: "form".into(),
+            fields: vec![pantheon_api::ui::FormField {
+                name: "pick".into(),
+                label: "Choice".into(),
+                field_type: pantheon_api::ui::FieldType::Select {
+                    options: vec!["a".into(), "b".into()],
+                },
+                required: true,
+                default: None,
+                placeholder: None,
+            }],
+            index: 0,
+            values: serde_json::Map::new(),
+        });
+        state.status_line = state
+            .form_fill
+            .as_ref()
+            .map(|f| f.prompt())
+            .unwrap_or_default();
+        state.is_inputting = true;
+        let lines = render_to_string(render_input_block, &state);
+        let text = lines.join("\n");
+        assert!(
+            text.contains("form [1/1] Choice: pick 1-2"),
+            "form prompt was never rendered anywhere: {text}"
+        );
+    }
+
+    #[test]
+    fn timeline_window_follows_selection() {
+        assert_eq!(super::timeline::window_start(0, 50, 10), 0);
+        assert_eq!(super::timeline::window_start(9, 50, 10), 0);
+        assert_eq!(super::timeline::window_start(10, 50, 10), 1);
+        assert_eq!(super::timeline::window_start(49, 50, 10), 40);
+        assert_eq!(super::timeline::window_start(3, 5, 10), 0);
     }
 }
 
