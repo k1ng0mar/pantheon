@@ -3,8 +3,12 @@
 
 Protocol
 --------
-* argv[1] is the launch-config JSON (headless/os/humanize/geoip/proxy/
-  locale/timezone/block_images/block_webrtc/fingerprint_preset).
+* The first stdin line is the launch-config JSON (headless/os/humanize/
+  geoip/proxy/locale/timezone/block_images/block_webrtc/
+  fingerprint_preset). It arrives on stdin, never argv: the config
+  carries the proxy password, and argv is world-readable via
+  ps(1) / /proc/PID/cmdline while the shim runs. An empty or missing
+  first line means "defaults" ({}), as argv[1] used to.
 * After launching, the shim prints one handshake line:
       {"ready": true}
   or, when the `camoufox` package (or its fetched browser binary) is
@@ -239,9 +243,14 @@ def missing_exit(message):
 
 
 def main():
+    # Launch config is the first stdin line, not argv[1]: argv is
+    # world-readable while this process runs, and the config carries
+    # the proxy password. The command loop below reads the remaining
+    # stdin lines, so consuming exactly one line here is safe.
     try:
-        cfg = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-    except Exception as e:  # noqa: BLE001 - bad argv is fatal
+        first = sys.stdin.readline()
+        cfg = json.loads(first) if first.strip() else {}
+    except Exception as e:  # noqa: BLE001 - bad config line is fatal
         sys.stderr.write(f"camofox shim: bad launch config: {e}\n")
         sys.exit(2)
 

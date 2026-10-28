@@ -191,7 +191,11 @@ fn cmd_update(args: &[String]) {
             std::thread::sleep(Duration::from_millis(500));
         }
         if !find_running_pantheon_processes().is_empty() {
-            eprintln!("update: processes still running, aborting");
+            // Units were already stopped above: leaving without
+            // restarting them would take the user's services down
+            // with no update to show for it.
+            eprintln!("update: processes still running, aborting; restarting stopped units");
+            restart_stopped_units(&stopped_units);
             std::process::exit(1);
         }
     }
@@ -203,38 +207,64 @@ fn cmd_update(args: &[String]) {
     let backup = match swap_binary(&current_exe, &main_bin) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("update: {e}");
+            // Same rule as the still-running abort: stopped units
+            // must come back even when the swap fails.
+            eprintln!("update: {e}; restarting stopped units");
+            restart_stopped_units(&stopped_units);
             std::process::exit(1);
         }
     };
 
-    // Swap helper binary.
+    // Swap helper binary, with its own backup for rollback. The old
+    // code ignored both the copy and the rename (`let _ =`) and then
+    // printed success, so a failed helper install was invisible and
+    // unrecoverable. A helper failure is recorded, not ignored: the
+    // main binary is already swapped at this point, so the update
+    // continues through the unit restarts and then exits nonzero
+    // with the failure named, instead of printing success.
     let helper_exe = current_exe.with_file_name("pantheon-helper");
-    let mut new_helper = helper_exe.clone();
-    let mut helper_name = helper_exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("pantheon-helper")
-        .to_string();
-    helper_name.push_str(".new");
-    new_helper.set_file_name(&helper_name);
-    let _ = std::fs::copy(&helper_bin, &new_helper);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::metadata(&new_helper) {
-            let mut perm = md.permissions();
-            perm.set_mode(0o755);
-            let _ = std::fs::set_permissions(&new_helper, perm);
+    let mut helper_failed: Option<String> = None;
+    if helper_exe.is_file() {
+        if let Err(e) = std::fs::copy(&helper_exe, &helper_exe.with_extension("prev")) {
+            helper_failed = Some(format!("cannot back up helper ({e})"));
         }
     }
-    let _ = std::fs::rename(&new_helper, &helper_exe);
+    if helper_failed.is_none() {
+        let mut new_helper = helper_exe.clone();
+        let mut helper_name = helper_exe
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("pantheon-helper")
+            .to_string();
+        helper_name.push_str(".new");
+        new_helper.set_file_name(&helper_name);
+        let helper_result = std::fs::copy(&helper_bin, &new_helper)
+            .map_err(|e| format!("cannot stage new helper ({e})"))
+            .and_then(|_| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(md) = std::fs::metadata(&new_helper) {
+                        let mut perm = md.permissions();
+                        perm.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&new_helper, perm);
+                    }
+                }
+                std::fs::rename(&new_helper, &helper_exe)
+                    .map_err(|e| format!("cannot install helper ({e})"))
+            });
+        if let Err(e) = helper_result {
+            helper_failed = Some(e);
+        }
+    }
 
     // Write stopped units to state file for rollback. fs::write
     // replaces any stale file from a previous run outright; the stale
     // list is never merged into this run's list.
     if !stopped_units.is_empty() {
-        let _ = std::fs::write(&state_path, stopped_units.join("\n"));
+        if std::fs::write(&state_path, stopped_units.join("\n")).is_err() {
+            eprintln!("  ⚠ could not record stopped units; rollback will not restart them");
+        }
     } else if state_path.is_file() {
         // No units stopped this run: a stale state file must not
         // survive to misdirect a later rollback.
@@ -243,12 +273,7 @@ fn cmd_update(args: &[String]) {
 
     // Restart systemd units, each bounded: a hung unit restart is a
     // warning, not a hang of the whole update.
-    for unit in &stopped_units {
-        match restart_unit_bounded(unit, RESTART_TIMEOUT) {
-            Ok(()) => {}
-            Err(e) => eprintln!("  ⚠ could not restart {unit} ({e}); restart it manually"),
-        }
-    }
+    restart_stopped_units(&stopped_units);
     if stopped_interactive {
         println!("  ⚠ interactive processes were stopped; restart them manually");
     }
@@ -256,6 +281,12 @@ fn cmd_update(args: &[String]) {
     let _ = std::fs::remove_dir_all(&tmp);
     // The swap is done, so the stage has served its purpose either way.
     let _ = std::fs::remove_dir_all(&stage);
+
+    if let Some(e) = helper_failed {
+        eprintln!("update: helper install failed ({e}); main binary updated, helper left stale");
+        eprintln!("  Roll back with: pantheon update --rollback");
+        std::process::exit(1);
+    }
 
     // Post-activation check, bounded: the newly installed binary must
     // answer --version within the timeout. A failure here does not
@@ -301,18 +332,48 @@ fn cmd_rollback(args: &[String]) {
     }
     println!("✓ Rolled back to {}", backup.display());
 
+    // Roll the helper back too: the update backs it up to
+    // `pantheon-helper.prev` before swapping. A rollback that restores
+    // only the main binary leaves a new helper driving an old main.
+    // No helper backup (updates from before this fix, or a helper
+    // that was never installed) is a note, not a failure.
+    let helper_exe = current_exe.with_file_name("pantheon-helper");
+    let helper_backup = helper_exe.with_extension("prev");
+    let mut helper_failed = false;
+    if helper_backup.is_file() {
+        if std::fs::rename(&helper_backup, &helper_exe).is_err() {
+            eprintln!("rollback: ⚠ could not restore helper from {}", helper_backup.display());
+            helper_failed = true;
+        } else {
+            println!("✓ Rolled helper back to {}", helper_backup.display());
+        }
+    }
+
     // Restart any systemd units that were stopped. The stored list is
     // parsed tolerantly: blank lines and duplicates are dropped, and
     // a stale unit name only fails its own restart — it never fails
-    // the rollback itself.
+    // the rollback itself. The state file is removed only when every
+    // restart succeeded: deleting it after a failed restart would
+    // lose the only record of which units are still down.
     let state_path = current_exe.with_extension("update-state");
+    let mut restarts_ok = true;
     if state_path.is_file() {
         if let Ok(text) = std::fs::read_to_string(&state_path) {
             for unit in parse_state_units(&text) {
-                restart_unit(&unit);
+                if restart_unit_bounded(&unit, RESTART_TIMEOUT).is_err() {
+                    eprintln!("rollback: ⚠ could not restart {unit}; restart it manually");
+                    restarts_ok = false;
+                }
             }
         }
-        let _ = std::fs::remove_file(&state_path);
+        if restarts_ok {
+            let _ = std::fs::remove_file(&state_path);
+        } else {
+            eprintln!("rollback: ⚠ state file kept at {} for a retry", state_path.display());
+        }
+    }
+    if helper_failed {
+        std::process::exit(1);
     }
 }
 
@@ -364,13 +425,47 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
 /// Parse the first 64-hex digest out of a published `.sha256` text
 /// (plain `<hex>` lines, `<hex>  <file>` sha256sum lines, and
 /// `SHA256 (file) = <hex>` BSD lines all work). Pure, for testing.
-fn parse_sha256_digest(text: &str) -> Option<String> {
-    text.split_whitespace()
-        .map(|t| {
-            t.trim_matches(|c: char| c == '(' || c == ')' || c == '=' || c == '*')
-                .to_lowercase()
-        })
-        .find(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()))
+///
+/// The digest is bound to `asset` when the file names it: if any
+/// line names the asset, that line's digest wins, even when the file
+/// carries digests for several files. Otherwise the file must carry
+/// exactly one digest; a multi-digest file that never names the
+/// asset is ambiguous and yields None (fail closed) rather than the
+/// first token, which might belong to another file.
+///
+/// NOTE: a checksum only proves the bytes match the publisher's
+/// published digest when the digest itself is authentic. The
+/// `.sha256` file is fetched from the same origin as the binary, so
+/// a compromised release (or release process) can serve a matching
+/// pair. Real authentication needs signatures (see NEEDS DECISION
+/// in the security fix report); until then this is a corruption
+/// check, not a trust anchor, and it must never be described as one.
+fn parse_sha256_digest(text: &str, asset: &str) -> Option<String> {
+    let tokens = |line: &str| -> Vec<String> {
+        line.split_whitespace()
+            .map(|t| {
+                t.trim_matches(|c: char| c == '(' || c == ')' || c == '=' || c == '*')
+                    .to_lowercase()
+            })
+            .filter(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()))
+            .collect()
+    };
+    let mut all: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let found = tokens(line);
+        if found.is_empty() {
+            continue;
+        }
+        if !asset.is_empty() && line.contains(asset) {
+            return found.into_iter().next();
+        }
+        all.extend(found);
+    }
+    if all.len() == 1 {
+        all.into_iter().next()
+    } else {
+        None
+    }
 }
 
 /// Verify `bytes` against the published `.sha256` file and return the
@@ -391,8 +486,9 @@ fn verify_checksum(url: &str, bytes: &[u8]) -> Result<String, String> {
         .body_mut()
         .read_to_string()
         .map_err(|_| "verify failed: cannot read checksum".to_string())?;
+    let asset = url.rsplit('/').next().unwrap_or("");
     let expected =
-        parse_sha256_digest(&text).ok_or_else(|| "verify failed: no checksum".to_string())?;
+        parse_sha256_digest(&text, asset).ok_or_else(|| "verify failed: no checksum".to_string())?;
     let actual = hash_via_system(bytes)?;
     if actual != expected {
         return Err("verify failed: checksum mismatch".to_string());
@@ -602,6 +698,22 @@ fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
     Err("verify failed: no sha256 tool".to_string())
 }
 
+/// Extract exactly one binary out of a release tarball.
+///
+/// The old code ran `tar -xf` over the whole archive and then walked
+/// the tree for a SUBSTRING match (`pantheon-helper` contains
+/// `pantheon`, so a search for `pantheon` could install the helper
+/// as the main binary). It also had no traversal guard: a hostile
+/// tarball could carry `../` members, absolute paths, or a symlink
+/// that a later member writes through, escaping the temp dir.
+///
+/// Now: list first (`tar -tf`) and reject absolute paths and any
+/// `..` component before anything is extracted; take the single
+/// member whose BASENAME is exactly the wanted binary (fail on zero
+/// or on ambiguity); extract only that member; and require the
+/// result to be a regular file (never a symlink) under the dest dir.
+/// A release tarball has exactly one binary of each name, so the
+/// strictness costs nothing on legitimate archives.
 fn extract_tar(
     archive: &[u8],
     asset: &str,
@@ -610,40 +722,77 @@ fn extract_tar(
 ) -> Result<PathBuf, String> {
     let archive_path = dest.join(asset);
     std::fs::write(&archive_path, archive).map_err(|e| format!("extract failed: {e}"))?;
+    let list = Command::new("tar")
+        .arg("-tf")
+        .arg(&archive_path)
+        .output()
+        .map_err(|e| format!("extract failed: {e}"))?;
+    if !list.status.success() {
+        return Err("extract failed: tar could not list the release archive".to_string());
+    }
+    let expected: String = if std::env::consts::OS == "windows" {
+        format!("{binary_name}.exe")
+    } else {
+        binary_name.to_string()
+    };
+    let mut candidates: Vec<String> = Vec::new();
+    for line in String::from_utf8_lossy(&list.stdout).lines() {
+        let entry = line.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        // Traversal guard, checked before extraction: absolute paths
+        // and any `..` component are rejected outright.
+        if entry.starts_with('/') || entry.starts_with('\\') {
+            return Err(format!("extract failed: absolute member {entry:?}"));
+        }
+        if entry
+            .split(|c| c == '/' || c == '\\')
+            .any(|seg| seg == "..")
+        {
+            return Err(format!("extract failed: member escapes its directory: {entry:?}"));
+        }
+        let base = entry
+            .rsplit(|c| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(entry);
+        if base == expected {
+            candidates.push(entry.to_string());
+        }
+    }
+    if candidates.is_empty() {
+        return Err("extract failed: binary not found".to_string());
+    }
+    if candidates.len() > 1 {
+        return Err(format!(
+            "extract failed: ambiguous archive ({} members named {expected:?})",
+            candidates.len()
+        ));
+    }
+    let member = candidates.into_iter().next().unwrap();
+    // NOTE: `-C dest` must precede the member name: tar applies -C
+    // to the arguments that follow it, so `-C` after the member
+    // would extract into the process cwd instead of dest.
     let st = Command::new("tar")
         .arg("-xf")
         .arg(&archive_path)
         .arg("-C")
         .arg(dest)
+        .arg(&member)
         .status()
         .map_err(|e| format!("extract failed: {e}"))?;
     if !st.success() {
         return Err("extract failed: tar error".to_string());
     }
-    let names: &[&str] = if std::env::consts::OS == "windows" {
-        &["pantheon-helper.exe", "pantheon.exe"]
-    } else {
-        &["pantheon-helper", "pantheon"]
-    };
-    let mut found = None;
-    let mut stack = vec![dest.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("extract failed: {e}"))? {
-            let p = entry.map_err(|e| format!("extract failed: {e}"))?.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if names.contains(&name) && name.contains(binary_name) {
-                    found = Some(p);
-                    break;
-                }
-            }
-        }
-        if found.is_some() {
-            break;
-        }
+    // The member path is relative and traversal-checked above, so
+    // this stays under dest; the symlink check below is the second
+    // half (a symlink member must never become the installed binary).
+    let extracted = dest.join(member.strip_prefix("./").unwrap_or(member.as_str()));
+    match std::fs::symlink_metadata(&extracted) {
+        Ok(md) if md.file_type().is_file() => Ok(extracted),
+        Ok(_) => Err("extract failed: extracted binary is not a regular file".to_string()),
+        Err(e) => Err(format!("extract failed: {e}")),
     }
-    found.ok_or_else(|| "extract failed: binary not found".to_string())
 }
 
 fn find_running_pantheon_processes() -> Vec<u32> {
@@ -780,8 +929,16 @@ fn stop_pantheon_processes(pids: &[u32]) -> (Vec<String>, bool) {
     (stopped_units, stopped_interactive)
 }
 
-fn restart_unit(unit: &str) {
-    let _ = restart_unit_bounded(unit, RESTART_TIMEOUT);
+/// Restart every stopped unit, bounded per unit, warning per failure.
+/// Shared by the success path and every abort path after units were
+/// stopped: an abort must never leave services down.
+fn restart_stopped_units(units: &[String]) {
+    for unit in units {
+        match restart_unit_bounded(unit, RESTART_TIMEOUT) {
+            Ok(()) => {}
+            Err(e) => eprintln!("  ⚠ could not restart {unit} ({e}); restart it manually"),
+        }
+    }
 }
 
 /// Restart one unit, bounded: a hung `systemctl`/`sc` start returns
@@ -838,18 +995,40 @@ mod tests {
     #[test]
     fn digest_parses_all_published_forms() {
         let hex = "a".repeat(64);
-        assert_eq!(parse_sha256_digest(&hex).as_deref(), Some(hex.as_str()));
+        let asset = "pantheon-v1-linux-x86_64.tar.gz";
         assert_eq!(
-            parse_sha256_digest(&format!("{hex}  pantheon-v1-linux-x86_64.tar.gz")).as_deref(),
+            parse_sha256_digest(&hex, asset).as_deref(),
             Some(hex.as_str())
         );
         assert_eq!(
-            parse_sha256_digest(&format!("SHA256 (pantheon-v1-linux-x86_64.tar.gz) = {hex}"))
-                .as_deref(),
+            parse_sha256_digest(&format!("{hex}  {asset}"), asset).as_deref(),
             Some(hex.as_str())
         );
-        assert_eq!(parse_sha256_digest("no digest here"), None);
-        assert_eq!(parse_sha256_digest(""), None);
+        assert_eq!(
+            parse_sha256_digest(&format!("SHA256 ({asset}) = {hex}"), asset).as_deref(),
+            Some(hex.as_str())
+        );
+        assert_eq!(parse_sha256_digest("no digest here", asset), None);
+        assert_eq!(parse_sha256_digest("", asset), None);
+    }
+
+    #[test]
+    fn digest_prefers_the_line_naming_the_asset() {
+        // A multi-digest file must not resolve to the first token
+        // when a later line names our asset, and must fail closed
+        // when no line names it.
+        let ours = "b".repeat(64);
+        let other = "c".repeat(64);
+        let text = format!("{other}  something-else.tar.gz\n{ours}  pantheon-v1.tar.gz\n");
+        assert_eq!(
+            parse_sha256_digest(&text, "pantheon-v1.tar.gz").as_deref(),
+            Some(ours.as_str())
+        );
+        assert_eq!(
+            parse_sha256_digest(&text, "pantheon-v2.tar.gz"),
+            None,
+            "ambiguous multi-digest file without our asset must fail closed"
+        );
     }
 
     #[test]
@@ -958,7 +1137,7 @@ mod tests {
         let current = dir.join("pantheon");
         std::fs::write(&current, b"old-binary").unwrap();
         let published = format!("{}  pantheon.tar.gz", "d".repeat(64));
-        let expected = parse_sha256_digest(&published).unwrap();
+        let expected = parse_sha256_digest(&published, "pantheon.tar.gz").unwrap();
         let actual = hash_via_system(b"different-bytes").unwrap();
         assert_ne!(actual, expected, "test setup: digests must differ");
         // Gate fails here, exactly as verify_checksum would fail it in
@@ -994,5 +1173,66 @@ mod tests {
             Duration::from_secs(5)
         )
         .is_err());
+    }
+
+    /// Minimal tar writer for extraction tests: one 512-byte ustar
+    /// header per member, no compression, no external tools.
+    fn tar_bytes(members: &[(&str, &[u8], u8, &str)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (name, data, typeflag, linkname) in members {
+            let mut h = [0u8; 512];
+            h[..name.len()].copy_from_slice(name.as_bytes());
+            h[100..108].copy_from_slice(b"0000644\0");
+            h[108..116].copy_from_slice(b"0000000\0");
+            h[116..124].copy_from_slice(b"0000000\0");
+            let size = format!("{:011o}\0", data.len());
+            h[124..136].copy_from_slice(size.as_bytes());
+            h[136..148].copy_from_slice(b"00000000000\0");
+            h[148..156].copy_from_slice(b"        ");
+            h[156] = *typeflag;
+            if !linkname.is_empty() {
+                h[157..157 + linkname.len()].copy_from_slice(linkname.as_bytes());
+            }
+            h[257..263].copy_from_slice(b"ustar\0");
+            let sum: u32 = h.iter().map(|b| *b as u32).sum();
+            let chk = format!("{:06o}\0 ", sum);
+            h[148..156].copy_from_slice(chk.as_bytes());
+            out.extend_from_slice(&h);
+            out.extend_from_slice(data);
+            let pad = (512 - data.len() % 512) % 512;
+            out.extend(std::iter::repeat(0).take(pad));
+        }
+        out.extend(std::iter::repeat(0).take(1024));
+        out
+    }
+
+    #[test]
+    fn extract_picks_the_exact_binary_not_a_substring_match() {
+        // The old walk matched by substring, so a search for
+        // `pantheon` could install `pantheon-helper` as the main
+        // binary. The exact-basename match must pick `pantheon`.
+        let dir = tmp_dir("extract-exact");
+        let archive = tar_bytes(&[
+            ("bin/pantheon-helper", b"helper", b'0', ""),
+            ("bin/pantheon", b"main", b'0', ""),
+        ]);
+        let found = extract_tar(&archive, "x.tar", &dir, "pantheon").unwrap();
+        assert_eq!(std::fs::read(&found).unwrap(), b"main");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_rejects_traversal_absolute_and_symlink_members() {
+        let dir = tmp_dir("extract-guard");
+        let evil = tar_bytes(&[("../evil", b"x", b'0', "")]);
+        let err = extract_tar(&evil, "e.tar", &dir, "pantheon").unwrap_err();
+        assert!(err.contains("escapes"), "{err}");
+        let abs = tar_bytes(&[("/tmp/evil", b"x", b'0', "")]);
+        let err = extract_tar(&abs, "a.tar", &dir, "pantheon").unwrap_err();
+        assert!(err.contains("absolute"), "{err}");
+        let link = tar_bytes(&[("pantheon", b"", b'2', "/etc/passwd")]);
+        let err = extract_tar(&link, "l.tar", &dir, "pantheon").unwrap_err();
+        assert!(err.contains("not a regular file"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

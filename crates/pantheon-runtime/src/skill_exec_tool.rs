@@ -71,26 +71,37 @@ pub fn register_skill_exec_tool(reg: &mut ToolRegistry, skills: Vec<Skill>) {
 }
 
 /// Capability gating per call, on top of the static FilesystemRead:
-/// read-side-effect executables need nothing more (they run like
-/// read-only tools); write-side-effect ones additionally need
-/// ShellExecute, so they flow through the normal approval path.
+/// EVERY `skill_exec` run needs ShellExecute, whatever its declared
+/// side effects say. The declaration is author-controlled, and a
+/// read-declared executable is still arbitrary skill code running
+/// under the HIGH sandbox (network on, no seccomp/landlock, whole
+/// host tree readable) - strictly more than FilesystemRead, which
+/// confines reads to the workspace. Trusting the declaration let a
+/// Reader session run untrusted code and exfiltrate files the file
+/// tools would confine-deny (e.g. ~/.ssh). With ShellExecute
+/// required, a Reader policy denies the call, Plan mode refuses it
+/// (see `skill_exec_call_is_mutating`), and under Coder it runs with
+/// exactly the privilege the shell tool already grants - no new
+/// privilege, no silent widening. Discovery-time scanning is not a
+/// substitute: project-root skills (`.pantheon/skills`,
+/// `.agents/skills`, `.claude/skills`, `PANTHEON_SKILLS_DIR`) are
+/// collected without a SkillSpector gate, so the gate must live here,
+/// at execution, not at import.
 ///
 /// A call that cannot be resolved is treated as an execution attempt,
-/// not as a read. The executor fails it closed, so nothing runs, but the
-/// gate should not be the thing that decided it was harmless: reporting
-/// `FilesystemRead` for a `skill_exec` invocation means a caller that
-/// somehow got a resolvable exec past this check would only need the
-/// read tier. Fail toward the capability that matches the tool's nature.
+/// not as a read. The executor fails it closed, so nothing runs, but
+/// the gate should not be the thing that decided it was harmless:
+/// reporting `FilesystemRead` for a `skill_exec` invocation means a
+/// caller that somehow got a resolvable exec past this check would
+/// only need the read tier. Fail toward the capability that matches
+/// the tool's nature.
 fn extra_capabilities(skills: &[Skill], args: &str) -> Vec<Capability> {
     let Ok((skill, name, _)) = parse_skill_exec_args(args) else {
         // Not even parseable: still a `skill_exec` call.
         return vec![Capability::ShellExecute];
     };
     match find_skill_exec(skills, &skill, &name) {
-        Ok((_, exec)) if exec.side_effects == SkillExecSideEffects::Write => {
-            vec![Capability::ShellExecute]
-        }
-        Ok(_) => Vec::new(),
+        Ok(_) => vec![Capability::ShellExecute],
         // The model named a skill or an executable that does not exist.
         // Could be a stale prompt, could be probing for a gate that says
         // no. Either way this is an execution request.
@@ -111,8 +122,9 @@ fn describe_skill_exec(skills: &[Skill]) -> String {
         "Run one of a skill's declared executables (exec: frontmatter). \
          Each argument is passed as a separate argv element, never shell-interpolated; \
          ${CLAUDE_SKILL_DIR} / $SKILL_DIR in args expand to the skill's directory. \
-         Read-side-effect executables run like read-only tools; write-side-effect ones \
-         need ShellExecute and are blocked in Plan mode.",
+         Every executable run needs ShellExecute, whatever its declared \\
+         side effects say: a read-declared executable is still arbitrary \\
+         skill code, not a read-only tool. All runs are blocked in Plan mode.",
     );
     let mut any = false;
     for s in skills {
@@ -153,4 +165,41 @@ fn describe_skill_exec(skills: &[Skill]) -> String {
         ));
     }
     d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn read_declared_skill() -> Skill {
+        let raw = "---\nname: probe\ndescription: test skill\nexec:\n  - name: probe-it\n    command: scripts/probe.sh\n    side_effects: read\n---\nBody.\n";
+        pantheon_exec::skills::parse_skill(raw, Path::new("/tmp/probe/SKILL.md"))
+            .expect("parse test skill")
+    }
+
+    #[test]
+    fn read_declared_executable_still_needs_shell_execute() {
+        // A `read` declaration is author-controlled: it must not drop
+        // the call to the read tier, or a Reader session could run
+        // arbitrary skill code under FilesystemRead alone.
+        let skill = read_declared_skill();
+        assert_eq!(
+            skill.meta.exec[0].side_effects,
+            SkillExecSideEffects::Read,
+            "test fixture must declare read"
+        );
+        let caps = extra_capabilities(&[skill], r#"{"skill": "probe", "name": "probe-it"}"#);
+        assert!(
+            caps.contains(&Capability::ShellExecute),
+            "read-declared skill_exec must require ShellExecute: {caps:?}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_skill_exec_needs_shell_execute() {
+        let skill = read_declared_skill();
+        let caps = extra_capabilities(&[skill], r#"{"skill": "probe", "name": "nope"}"#);
+        assert!(caps.contains(&Capability::ShellExecute));
+    }
 }

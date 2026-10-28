@@ -1179,15 +1179,9 @@ pub(crate) fn run_job_now(task: &str, sched: &Job, data_dir: &Path) -> JobRunRep
         sched.provider.clone(),
         sched.model.clone(),
     );
-    let allow_memory = file_cfg
-        .as_ref()
-        .map(|c| c.policy == Some(crate::config_schema::PolicyPreset::CoderMemory))
-        .unwrap_or(false);
-    let policy = if allow_memory {
-        pantheon_api::capability::Policy::coder_with_memory()
-    } else {
-        pantheon_api::capability::Policy::coder()
-    };
+    // Policy preset honored verbatim: a Reader config must stay
+    // read-only for scheduled runs, not silently widen to coder.
+    let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = config::chat_secrets(file_cfg.as_ref());
     // Honor the scheduled job's agent pin. An empty or default agent
     // leaves the session on the configured default profile.

@@ -3565,6 +3565,21 @@ impl Session {
         is_mutating_tool(tool)
     }
 
+    /// Scrub exact-value secrets out of text bound for the durable
+    /// ledger (recorded `ToolStarted` args, UI tool results). Only
+    /// the RECORDED copy is scrubbed: the live args, the approval
+    /// scopes computed from them, and the values the tool itself
+    /// receives are untouched, so gating, grants, and execution see
+    /// the real values. This cannot break undo/rewind (they replay
+    /// turns and `ToolMessage`s, never `ToolStarted` args), crash
+    /// recovery (it keys on call ids, not args), or handoff detail
+    /// (display-only). It DOES close the audit-export hole: the
+    /// exporter re-emits `ToolStarted` args verbatim, so an
+    /// unscrubbed arg would leave the ledger through the audit file.
+    fn scrub_recorded(&self, text: &str) -> String {
+        self.secrets.redaction_registry().scrub(text)
+    }
+
     /// Plan-mode refusal for one tool call. When the session is in
     /// [`AgentMode::Plan`] and the named tool can mutate state, the call
     /// is refused BEFORE the approval gate and before execution: the
@@ -3657,7 +3672,7 @@ impl Session {
             run_id: run_id.into(),
             call_id: call_id.into(),
             tool: tool.into(),
-            args: args.into(),
+            args: self.scrub_recorded(args),
             provenance: self.tool_call_provenance(tool, args),
         })?;
         let refusal = Message::tool(call_id.to_string(), PLAN_MODE_REFUSAL)
@@ -6010,7 +6025,7 @@ impl Session {
                     run_id: run_id.into(),
                     call_id: tc.id.clone(),
                     tool: tc.name.clone(),
-                    args: tc.arguments.clone(),
+                    args: self.scrub_recorded(&tc.arguments),
                     provenance: self.tool_call_provenance(&tc.name, &tc.arguments),
                 })?;
                 let denial = Message::tool(
@@ -6166,7 +6181,7 @@ impl Session {
                         run_id: run_id.into(),
                         call_id: tc.id.clone(),
                         tool: tc.name.clone(),
-                        args: tc.arguments.clone(),
+                        args: self.scrub_recorded(&tc.arguments),
                         provenance: self.tool_call_provenance(&tc.name, &tc.arguments),
                     })?;
                 }
@@ -6475,7 +6490,7 @@ impl Session {
                         run_id: run_id.into(),
                         call_id: r.id.clone(),
                         tool: call.name.clone(),
-                        args: call.args.clone(),
+                        args: self.scrub_recorded(&call.args),
                         provenance: self.tool_call_provenance(&call.name, &call.args),
                     })?;
                 }
@@ -7207,7 +7222,11 @@ impl Session {
                 // The ledger is durable: secret form values must never
                 // land in ToolStarted args. The tool itself still gets
                 // the real values; only the recorded args are redacted.
-                let recorded_args = redact_ui_tool_args(&doc, &sub.node_id, &args);
+                // The registered-secret scrub runs on top: a secret
+                // that arrived through the broker (not a form field)
+                // must not land here either.
+                let recorded_args =
+                    self.scrub_recorded(&redact_ui_tool_args(&doc, &sub.node_id, &args));
                 // Synthetic call id, unique per attempt: the UI action
                 // was never a model tool call, but the tool lifecycle
                 // events key on call_id, so every attempt gets one.
@@ -7233,6 +7252,16 @@ impl Session {
                     _ => None,
                 };
                 let text = tool_result_text(outcome);
+                // Unlike the normal tool path (RegRunner /
+                // RegistryToolAdapter), `execute_gated` returns the
+                // tool's raw output with no redaction pass. A
+                // UI-bound tool that echoes an injected secret would
+                // land it in the client result AND the ToolMessage
+                // ledger row that re-enters the transcript on resume.
+                // Scrub before either: the client and the ledger see
+                // the scrubbed text, the tool already ran on the real
+                // values.
+                let text = self.scrub_recorded(&text);
                 self.supervisor.emit(Event::ToolOutput {
                     run_id: run_id.into(),
                     call_id: call_id.clone(),
@@ -9504,6 +9533,144 @@ mod delegate_tool_tests {
             matches!(&e.event, Event::ToolCompleted { call_id, .. } if call_id.starts_with("uia-"))
         });
         assert!(completed, "ToolCompleted closes the UI action's lifecycle");
+    }
+
+    /// A UI-bound tool's RESULT must be scrubbed too, not just its
+    /// args: `execute_gated` has no redaction pass (unlike RegRunner /
+    /// RegistryToolAdapter), so a tool echoing an injected secret
+    /// used to land it in the client result and the ToolMessage row
+    /// that re-enters the transcript on resume. Here the secret
+    /// arrives through the broker registry (not a form field) and
+    /// surfaces both in the recorded args (a fixed param) and in the
+    /// tool's error text (the confined path it failed to list).
+    #[test]
+    fn submit_ui_action_scrubs_registered_secrets_from_args_and_result() {
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-result-secret";
+        ui_run(&session, run_id);
+        let secret = "ui-result-secret-456";
+        session.secrets.redaction_registry().register(secret);
+        let doc = UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Form(Form {
+                    title: None,
+                    description: None,
+                    // Publish rejects a form with no fields, so
+                    // carry one plain field; the secret under test
+                    // arrives via fixed_params, not a form field.
+                    fields: vec![FormField {
+                        name: "note".to_string(),
+                        label: "Note".to_string(),
+                        field_type: FieldType::Text,
+                        required: false,
+                        default: None,
+                        placeholder: None,
+                    }],
+                    submit: pantheon_api::ui::ActionRef {
+                        action_id: "go".to_string(),
+                        label: "Go".to_string(),
+                        kind: UiActionKind::Tool {
+                            tool: "list_dir".to_string(),
+                            fixed_params: serde_json::json!({
+                                "path": format!("missing-dir-{secret}")
+                            })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        },
+                    },
+                }),
+            },
+        };
+        let args = serde_json::json!({ "document": doc }).to_string();
+        let (ui_id, _, _, _) = session
+            .publish_one_ui(run_id, "turn1", &args)
+            .expect("publish");
+        let sub = UiActionSubmission {
+            revision: 0,
+            ui_id: ui_id.clone(),
+            node_id: "root".to_string(),
+            action_id: "go".to_string(),
+            params: serde_json::Map::new(),
+            nonce: "n1".to_string(),
+        };
+        let result = match session.submit_ui_action(run_id, &sub).expect("submit") {
+            UiActionOutcome::Executed { result } => result,
+            UiActionOutcome::Decided { .. } => panic!("expected execution"),
+        };
+        assert!(
+            !result.contains(secret),
+            "client result must not carry the secret: {result}"
+        );
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let started = entries
+            .iter()
+            .find_map(|e| match &e.event {
+                Event::ToolStarted { call_id, args, .. } if call_id.starts_with("uia-") => {
+                    Some(args.clone())
+                }
+                _ => None,
+            })
+            .expect("ToolStarted for the UI action");
+        assert!(
+            !started.contains(secret),
+            "recorded args must not carry the secret: {started}"
+        );
+        let tool_msg = entries.iter().find_map(|e| match &e.event {
+            Event::ToolMessage { message, .. } if message.role == pantheon_api::message::Role::Tool => {
+                Some(message.content.clone())
+            }
+            _ => None,
+        });
+        // The list_dir failure text names the confined path, which
+        // contains the secret: the ledger row must be scrubbed too.
+        if let Some(content) = tool_msg {
+            assert!(
+                !content.contains(secret),
+                "ToolMessage must not carry the secret: {content}"
+            );
+        }
+    }
+
+    /// Plan-mode refusals record `ToolStarted` too, and the recorded
+    /// args must be scrubbed the same way as the main loop's: a
+    /// secret in a refused call's args would otherwise persist
+    /// verbatim and re-export through the audit file.
+    #[test]
+    fn plan_mode_refusal_scrubs_recorded_toolstarted_args() {
+        let (session, _dir) = test_session();
+        let run_id = "run-plan-scrub";
+        ui_run(&session, run_id);
+        session.set_mode(AgentMode::Plan);
+        let secret = "plan-secret-789";
+        session.secrets.redaction_registry().register(secret);
+        let args = format!(r#"{{"path": "/tmp/{secret}", "content": "x"}}"#);
+        let mut messages = Vec::new();
+        assert!(
+            session
+                .plan_refuse_tool(run_id, "c1", "write_file", &args, &mut messages)
+                .expect("refuse"),
+            "write_file must refuse in Plan mode"
+        );
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let started = entries
+            .iter()
+            .find_map(|e| match &e.event {
+                Event::ToolStarted { args, .. } => Some(args.clone()),
+                _ => None,
+            })
+            .expect("ToolStarted for the refused call");
+        assert!(
+            !started.contains(secret),
+            "recorded args must not carry the secret: {started}"
+        );
+        assert!(
+            started.contains("[redacted-secret]"),
+            "secret is marked redacted: {started}"
+        );
     }
 
     /// Redaction must fail closed: with a secret field declared, args

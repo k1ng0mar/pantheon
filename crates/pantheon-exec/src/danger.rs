@@ -401,8 +401,16 @@ const PATTERNS: &[Pattern] = &[
 /// opaque shell construction (interpreters, `eval`, `sh -c`-style re-parse,
 /// unreadable argv) classified as opaque execution under the policy, so
 /// hiding a push behind opacity is itself the gated event.
-/// Until that lands, this heuristic is the best the capability gate has:
-/// useful, advisory, and fallible by design.
+/// That gate DOES NOT EXIST YET. What this parser does close, as of the
+/// security fix pass, is the `sh`/`bash`/… opaque-execution hole itself:
+/// a script-file argument, `-s`, or a bare shell reading stdin now
+/// counts as a push and parks for approval. What still evades it, and
+/// must be read as residual risk until the final-argv gate lands:
+/// executing a script directly (`./deploy.sh`, `bash` via a launcher
+/// wrapper that forwards argv), `find -exec`, other interpreters
+/// running script files (`python deploy.py`, `perl deploy.pl`), code
+/// fetched or decoded at runtime, and git `!`-aliases. A clean scan
+/// is NOT proof there is no push; it only means no push was seen.
 ///
 /// True when a shell command performs a git push.
 ///
@@ -446,6 +454,10 @@ const PATTERNS: &[Pattern] = &[
 ///   word with a `push`/opaque argument counts too.
 /// - `eval <code>` scans `<code>` as shell; `sh`/`bash`/`dash`/`zsh`
 ///   `-c`/`--command <code>` scans `<code>` as shell (opaque code counts).
+///   A shell with a script-file argument, `-s`, or no code word at all
+///   reads code the parser cannot see, so it counts too (fail closed);
+///   `--help`/`--version` before any script word print and exit, so
+///   they do not count.
 /// - Every `$(...)`/backtick/`<(`/`>(` body is scanned recursively as its
 ///   own command string (quote-aware: single quotes suppress substitution,
 ///   double quotes do not).
@@ -2322,6 +2334,16 @@ fn analyze_eval(words: &[String], ctx: &mut PushCtx, depth: usize) -> bool {
 /// `-ce` runs the next word with `-e` as a flag; `-c<code>` attached is
 /// rejected). A non-empty cluster remainder after `c` is still scanned as
 /// code, conservatively, in case some shell accepts `-c<code>` attached.
+///
+/// FAIL CLOSED on opaque execution: a script-file argument (`sh
+/// deploy.sh`), `-s`, a bare `sh` (script on stdin), or a dangling
+/// `-c` reads code this parser cannot see. The script may have been
+/// written by an allowed `write_file` call, and stdin may carry a
+/// piped `git push` (`printf 'git push …' | sh`). All of those used
+/// to return false - "a script file, not code" - so they needed no
+/// GitPush approval. Now they count, and the operator decides: a
+/// benign script costs one approval card, a pushing script cannot
+/// slip past the gate.
 fn analyze_sh_c(words: &[String], ctx: &mut PushCtx, depth: usize) -> bool {
     let mut i = 0;
     let mut expect_code = false;
@@ -2364,12 +2386,23 @@ fn analyze_sh_c(words: &[String], ctx: &mut PushCtx, depth: usize) -> bool {
             continue;
         }
         if v.starts_with('-') {
+            // `--help` / `--version` before any script word print
+            // and exit without executing anything (same carve-out
+            // as `git push --help`): they are not opaque execution.
+            if v == "--help" || v == "--version" {
+                return false;
+            }
             i += 1; // long flags
             continue;
         }
-        return false; // non-option before -c: a script file, not code
+        // A non-option word before -c is a script file, and a shell
+        // with no code word at all reads stdin: both are opaque
+        // execution (see the fn docs), so they count.
+        return true;
     }
-    false
+    // Ran out of words without visible code: bare `sh`, `sh -s`,
+    // or a dangling `-c` - opaque execution, counts.
+    true
 }
 
 /// True when the words after `git` select the push subcommand. An opaque
@@ -2808,6 +2841,22 @@ mod tests {
     #[test]
     fn git_push_sh_dash_c_benign_not_detected() {
         assert!(!is_git_push(r#"sh -c "echo hi""#));
+    }
+
+    #[test]
+    fn git_push_opaque_shell_execution_counts() {
+        // A script file may have been written by an allowed write_file
+        // call; stdin may carry a piped push. Both used to return
+        // false, so neither needed GitPush approval.
+        assert!(is_git_push("sh deploy.sh"));
+        assert!(is_git_push("bash scripts/deploy.sh arg1"));
+        assert!(is_git_push("sh"));
+        assert!(is_git_push("sh -s"));
+        assert!(is_git_push("printf 'git push origin main' | sh"));
+        assert!(is_git_push("sh -c"));
+        // Help/version print and exit: not execution.
+        assert!(!is_git_push("sh --help"));
+        assert!(!is_git_push("bash --version"));
     }
 
     #[test]
