@@ -5,7 +5,7 @@
 //! -> terminal outcome, every step event-sourced in the ledger.
 
 use crate::agent_runtime::AgentRuntime;
-use crate::operation::{run_tool_operation, ToolOperationAdapter};
+use crate::operation::{operation_err, run_tool_operation, ToolOperationAdapter};
 use crate::tool_config::{
     BrowserToolConfig, ComputerToolConfig, McpToolConfig, ToolEnablement, WebsearchToolConfig,
 };
@@ -604,6 +604,78 @@ impl<'a> RegistryToolAdapter<'a> {
     }
 }
 
+/// Durable result cache for one tool operation, under the session data
+/// dir. A crash after `execute` but before the operation store persists
+/// `raw_result` used to leave the operation in phase `execute`, so the
+/// resume re-ran it and side-effecting tools (shell writes, messages,
+/// file edits) executed twice. The adapter writes the result here
+/// atomically (temp file + rename) before returning it, and
+/// `execute_keyed` replays the cached result when the phase is retried
+/// instead of executing again. `translate_result` removes the entry
+/// best-effort once the operation store holds `raw_result`, so only
+/// crashed-mid-operation entries linger.
+fn tool_result_cache_path(data_dir: &std::path::Path, operation_id: &str) -> std::path::PathBuf {
+    let safe: String = operation_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    data_dir.join("tool_results").join(format!("{safe}.json"))
+}
+
+fn read_cached_tool_result(
+    data_dir: &std::path::Path,
+    operation_id: &str,
+    translated: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let bytes = std::fs::read(tool_result_cache_path(data_dir, operation_id)).ok()?;
+    let cached: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if cached.get("translated") != Some(translated) {
+        return None;
+    }
+    cached.get("result").cloned()
+}
+
+fn write_cached_tool_result(
+    data_dir: &std::path::Path,
+    operation_id: &str,
+    translated: &serde_json::Value,
+    result: &serde_json::Value,
+) -> Result<(), PantheonError> {
+    let path = tool_result_cache_path(data_dir, operation_id);
+    let parent = path
+        .parent()
+        .ok_or_else(|| operation_err("TOOL_RESULT_CACHE", "cache path has no parent".into()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        operation_err(
+            "TOOL_RESULT_CACHE",
+            format!("cannot create tool result cache dir: {e}"),
+        )
+    })?;
+    let tmp = parent.join(format!(
+        ".tmp-{}-{}",
+        std::process::id(),
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("result")
+    ));
+    let payload = serde_json::json!({"translated": translated, "result": result});
+    std::fs::write(&tmp, serde_json::to_vec(&payload).map_err(|e| {
+        operation_err("TOOL_RESULT_CACHE", format!("cannot serialize tool result: {e}"))
+    })?)
+    .and_then(|_| std::fs::rename(&tmp, &path))
+    .map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        operation_err(
+            "TOOL_RESULT_CACHE",
+            format!("cannot persist tool result for crash-safe replay: {e}"),
+        )
+    })
+}
+
 impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
     fn translate(&self, request: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
         Ok(serde_json::json!({
@@ -685,10 +757,34 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
         }
         Ok(serde_json::Value::String(out))
     }
+    /// Crash-safe execution: a retry of the `execute` phase (crash after
+    /// the tool ran but before the operation store persisted
+    /// `raw_result`) replays the cached result instead of running the
+    /// tool a second time. A cache-write failure fails the operation
+    /// rather than returning an uncached success that a resume would
+    /// silently double-execute.
+    fn execute_keyed(
+        &self,
+        operation_id: &str,
+        translated: &serde_json::Value,
+    ) -> Result<serde_json::Value, PantheonError> {
+        if let Some(cached) = read_cached_tool_result(&self.data_dir, operation_id, translated) {
+            return Ok(cached);
+        }
+        let result = self.execute(translated)?;
+        write_cached_tool_result(&self.data_dir, operation_id, translated, &result)?;
+        Ok(result)
+    }
     fn translate_result(
         &self,
         result: &serde_json::Value,
     ) -> Result<serde_json::Value, PantheonError> {
+        // The operation store now holds `raw_result`, so the replay cache
+        // is no longer needed for this call. Best-effort: a leftover file
+        // is harmless (it only replays for the same operation id and
+        // translated request).
+        let operation_id = format!("{}:{}", self.run_id, self.call_id);
+        let _ = std::fs::remove_file(tool_result_cache_path(&self.data_dir, &operation_id));
         Ok(result.clone())
     }
 }
@@ -9066,6 +9162,53 @@ mod delegate_tool_tests {
         let other = serde_json::json!({"name": "echo", "args": r#"{"x":2}"#});
         assert_eq!(adapter.execute(&other).unwrap().as_str(), Some("ok"));
         assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    /// Crash-resume idempotency: `execute_keyed` runs the tool once and
+    /// replays the cached result on a second call with the same operation
+    /// id and translated request — the resume-after-crash path — instead
+    /// of executing a side effect twice.
+    #[test]
+    fn adapter_execute_keyed_replays_cached_result() {
+        use pantheon_api::message::ToolSchema;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (session, dir) = test_session();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let runs_clone = std::sync::Arc::clone(&runs);
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            ToolSchema {
+                name: "counting".into(),
+                description: "counting".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            pantheon_api::capability::Capability::Other("counting".into()),
+            move |_args| {
+                runs_clone.fetch_add(1, Ordering::SeqCst);
+                Ok("done-once".to_string())
+            },
+        );
+        let adapter = RegistryToolAdapter {
+            registry: &reg,
+            policy: &session.policy,
+            name: "counting".to_string(),
+            hooks: None,
+            run_id: "run-keyed".to_string(),
+            call_id: "call_keyed".to_string(),
+            redaction: RedactionRegistry::for_scope("test-adapter-keyed"),
+            data_dir: dir.path().to_path_buf(),
+            loop_guard: None,
+        };
+        let translated = serde_json::json!({"name": "counting", "args": "{}"});
+        let first = adapter.execute_keyed("run-keyed:call_keyed", &translated).unwrap();
+        let second = adapter.execute_keyed("run-keyed:call_keyed", &translated).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.as_str(), Some("done-once"));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "second call must replay, not run");
+        // A different translated request for the same id is not a replay.
+        let other = serde_json::json!({"name": "counting", "args": r#"{"x":1}"#});
+        adapter.execute_keyed("run-keyed:call_keyed", &other).unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
     /// End-to-end linkage: the registered `delegate` tool, executed
