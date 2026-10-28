@@ -465,6 +465,24 @@ fn retry_swarm(state: &mut TuiState, rest: &str) {
     }
 }
 
+/// The id for a `/swarm <id>` show invocation: exactly one token.
+/// Extra words used to be silently dropped (only the first token was
+/// shown), so a typo like `/swarm abc status` looked up `abc` and
+/// never said the rest was ignored.
+pub fn show_id(rest: &str) -> Result<&str, String> {
+    let mut words = rest.split_whitespace();
+    let id = words.next().unwrap_or("");
+    if id.is_empty() {
+        return Err("usage: /swarm <id>".into());
+    }
+    if words.next().is_some() {
+        return Err(format!(
+            "usage: /swarm <id> (one id; got extra words - see /swarm tree, /swarm new <task>, /swarm retry <id>)"
+        ));
+    }
+    Ok(id)
+}
+
 /// `/swarm` and its subcommands. `/swarm tree` keeps the old read-only
 /// delegation-tree render; everything else is the remote swarm backend.
 pub fn do_swarm(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
@@ -485,7 +503,10 @@ pub fn do_swarm(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         retry_swarm(state, rest.strip_prefix("retry").unwrap_or("").trim());
         return;
     }
-    show_swarm(state, rest.split_whitespace().next().unwrap_or(rest));
+    match show_id(rest) {
+        Ok(id) => show_swarm(state, id),
+        Err(msg) => state.add_status(msg),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -870,5 +891,19 @@ pub fn do_agent_new(state: &mut TuiState, rest: &str) {
             args.name, args.name
         )),
         Err(e) => state.add_status(format!("/agent new: save failed: {}", e.cause)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn show_id_accepts_one_id_and_rejects_extra_words() {
+        assert_eq!(show_id("abc-123"), Ok("abc-123"));
+        assert!(show_id("").is_err());
+        let err = show_id("abc-123 status").unwrap_err();
+        assert!(err.contains("one id"), "{err}");
+        assert!(err.contains("/swarm tree"), "{err}");
     }
 }
