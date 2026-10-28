@@ -139,3 +139,52 @@ fn search_across_runs_returns_only_matching_runs() {
     assert_eq!(runs, ["run-a", "run-c"]);
     assert!(hits.iter().all(|h| h.chunk.text.contains("quantum")));
 }
+
+#[test]
+fn hybrid_dual_hit_score_is_clamped_to_one() {
+    let (s, _dir) = file_search();
+    // Fresh timestamp so recency is ~1: lexical 0.70 + semantic 0.40
+    // would sum to 1.10 without the clamp.
+    let mut c = chunk("run-a", "c1", 1, "the quick brown fox");
+    c.ts_ms = now_ms();
+    let vec = vec![1.0_f32, 0.0, 0.0];
+    s.index_with_embedding(&c, Some(&vec)).unwrap();
+    let hits = s.search_hybrid("quick", Some(&vec), 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].score <= 1.0,
+        "hybrid score must never exceed 1.0, got {}",
+        hits[0].score
+    );
+    assert_eq!(hits[0].score, 1.0, "dual hit saturates at 1.0, not above");
+}
+
+#[test]
+fn hybrid_semantic_recall_finds_chunks_the_keywords_miss() {
+    let (s, _dir) = file_search();
+    let vec = vec![0.0_f32, 1.0, 0.0];
+    s.index_with_embedding(
+        &chunk("run-a", "c1", 1, "totally unrelated words"),
+        Some(&vec),
+    )
+    .unwrap();
+    // No lexical match for "zebra", but the embedding matches exactly.
+    let hits = s.search_hybrid("zebra", Some(&vec), 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].chunk.chunk_id, "c1");
+}
+
+#[test]
+fn reindexing_a_chunk_does_not_duplicate_fts_rows() {
+    let (s, _dir) = file_search();
+    let c = chunk("run-a", "c1", 1, "the quick brown fox");
+    s.index(&c).unwrap();
+    s.index(&c).unwrap();
+    s.index(&c).unwrap();
+    let hits = s.search("quick", 10).unwrap();
+    assert_eq!(
+        hits.len(),
+        1,
+        "re-index must stay idempotent under the transaction"
+    );
+}
