@@ -201,8 +201,66 @@ pub fn save_selection(data_dir: &Path, sel: &BackendSelection) -> Result<(), Pan
         })
 }
 
-/// Instantiate the selected backend for a data dir.
+/// Sync the persisted backend selection from user-facing config.
 ///
+/// Contract (decided): `config.toml [memory]` is authoritative and
+/// wins over `memory-backend.toml` on load, and the resolved value is
+/// written back to `memory-backend.toml` so the two never drift
+/// silently. Returns the warning to log when a conflict was resolved
+/// (or the sync itself failed); `None` when nothing changed.
+///
+/// - Empty config backend (absent section, or a blank `backend`
+///   string) means "no opinion": the selection file wins untouched.
+/// - Otherwise the config name becomes the resolved selection. Config
+///   options win when non-empty; when the config section carries no
+///   options, the selection file's options are kept (a backend switch
+///   by name alone must not wipe its endpoint options).
+/// - A corrupt selection file is left alone: it still errors at open
+///   time (`open_selected` surfaces `MEM_SELECTION_PARSE`), and
+///   overwriting it here would destroy the evidence of the corruption.
+/// - Credential options are stripped on save, as everywhere else.
+pub fn sync_selection_from_config(
+    data_dir: &Path,
+    backend: &str,
+    options: &HashMap<String, String>,
+) -> Option<String> {
+    let backend = backend.trim();
+    if backend.is_empty() {
+        return None;
+    }
+    let current = match load_selection_result(data_dir) {
+        Ok(sel) => sel,
+        Err(_) => return None,
+    };
+    let resolved = BackendSelection {
+        name: backend.to_string(),
+        options: if options.is_empty() {
+            current.options.clone()
+        } else {
+            options.clone()
+        },
+    };
+    if resolved == current {
+        return None;
+    }
+    let warning = format!(
+        "pantheon: WARNING: [memory] backend {backend:?} overrides the memory-backend.toml selection {:?}; syncing the selection file to {backend:?} (options {})",
+        current.name,
+        if options.is_empty() {
+            "kept from the selection file".to_string()
+        } else {
+            "taken from [memory]".to_string()
+        },
+    );
+    if let Err(e) = save_selection(data_dir, &resolved) {
+        return Some(format!(
+            "{warning}; sync failed ({e}), the files still disagree"
+        ));
+    }
+    Some(warning)
+}
+
+/// Instantiate the selected backend for a data dir.
 /// - `native` (default): the persistent SQLite store at
 ///   `<data_dir>/memory.db` - same file sessions have always used.
 /// - anything else: resolved through `BackendRegistry::with_defaults()`.
@@ -694,6 +752,80 @@ mod tests {
         assert!(
             open_selected(&dir).is_err(),
             "open_selected must not silently fall back to native"
+        );
+    }
+
+    #[test]
+    fn sync_from_config_wins_and_writes_back_on_conflict() {
+        let dir = tmpdir("sync-win");
+        save_selection(
+            &dir,
+            &BackendSelection {
+                name: "mem0".to_string(),
+                options: HashMap::from([("url".to_string(), "http://127.0.0.1:9000".to_string())]),
+            },
+        )
+        .unwrap();
+        // Config names another backend: it wins, a warning is
+        // returned, and the selection file is rewritten to match.
+        let warning = sync_selection_from_config(&dir, "honcho", &HashMap::new())
+            .expect("conflict must warn");
+        assert!(
+            warning.contains("honcho"),
+            "warning names the winner: {warning}"
+        );
+        assert!(
+            warning.contains("mem0"),
+            "warning names the loser: {warning}"
+        );
+        let sel = load_selection(&dir);
+        assert_eq!(sel.name, "honcho");
+        // No config options: the selection file's options are kept.
+        assert_eq!(
+            sel.options.get("url").map(String::as_str),
+            Some("http://127.0.0.1:9000")
+        );
+        // In agreement now: no warning, no rewrite.
+        assert_eq!(
+            sync_selection_from_config(&dir, "honcho", &HashMap::new()),
+            None
+        );
+        // Config options win when present.
+        let warning = sync_selection_from_config(
+            &dir,
+            "honcho",
+            &HashMap::from([("url".to_string(), "http://127.0.0.1:9001".to_string())]),
+        )
+        .expect("option conflict must warn");
+        assert!(warning.contains("honcho"), "warning: {warning}");
+        assert_eq!(
+            load_selection(&dir).options.get("url").map(String::as_str),
+            Some("http://127.0.0.1:9001")
+        );
+    }
+
+    #[test]
+    fn sync_from_config_leaves_an_empty_backend_and_a_corrupt_file_alone() {
+        let dir = tmpdir("sync-noop");
+        save_selection(&dir, &BackendSelection::default()).unwrap();
+        assert_eq!(sync_selection_from_config(&dir, "", &HashMap::new()), None);
+        assert_eq!(
+            sync_selection_from_config(&dir, "   ", &HashMap::new()),
+            None
+        );
+        assert_eq!(load_selection(&dir).name, "native");
+        // Corrupt file: sync does not overwrite it (the opener still
+        // errors, as before), and does not pretend to have resolved
+        // anything.
+        std::fs::write(selection_path(&dir), "name = [\nthis is not toml").unwrap();
+        assert_eq!(
+            sync_selection_from_config(&dir, "honcho", &HashMap::new()),
+            None
+        );
+        assert!(load_selection_result(&dir).is_err());
+        assert_eq!(
+            std::fs::read_to_string(selection_path(&dir)).unwrap(),
+            "name = [\nthis is not toml"
         );
     }
 }

@@ -308,6 +308,17 @@ pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
     let policy = policy_for_config(cfg_ref);
     let model_policy = model_policy(cfg_ref);
     let secrets = secrets_broker(cfg_ref);
+    // `[memory]` wins over memory-backend.toml on load: sync BEFORE
+    // the session reads the selection, or the sync lands a session late.
+    if let Some(section) = cfg_ref.and_then(|c| c.memory.as_ref()) {
+        if let Some(warning) = pantheon_memory::sync_selection_from_config(
+            data_dir,
+            &section.backend,
+            &section.options,
+        ) {
+            eprintln!("{warning}");
+        }
+    }
     let session = Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
         .map_err(|e| format!("open session: {e}"))?;
     let enablement = cfg_ref
