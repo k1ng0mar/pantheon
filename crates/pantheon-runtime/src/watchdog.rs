@@ -209,3 +209,93 @@ impl TurnWatchdog {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base() -> (TurnWatchdog, Instant) {
+        let now = Instant::now();
+        (
+            TurnWatchdog::new_at(Duration::from_secs(30), now)
+                .with_probe_timeout(Duration::from_secs(2)),
+            now,
+        )
+    }
+
+    #[test]
+    fn poll_at_continues_within_budget_then_probes_after_it() {
+        let (mut w, t0) = base();
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(29)), WatchdogAction::Continue);
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(30)), WatchdogAction::Probe);
+        // Still probing until the probe resolves or times out.
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(31)), WatchdogAction::Probe);
+    }
+
+    #[test]
+    fn activity_resets_the_silence_window_and_clears_a_probe() {
+        let (mut w, t0) = base();
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(30)), WatchdogAction::Probe);
+        w.activity_at(t0 + Duration::from_secs(31));
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(60)), WatchdogAction::Continue);
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(61)), WatchdogAction::Probe);
+    }
+
+    #[test]
+    fn successful_probe_is_activity_failed_probe_kills_and_sticks() {
+        let (mut w, t0) = base();
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(30)), WatchdogAction::Probe);
+        assert_eq!(
+            w.probe_result_at(true, t0 + Duration::from_secs(31)),
+            WatchdogAction::Continue
+        );
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(61)), WatchdogAction::Probe);
+        assert_eq!(
+            w.probe_result_at(false, t0 + Duration::from_secs(62)),
+            WatchdogAction::Kill
+        );
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(999)), WatchdogAction::Kill);
+        assert_eq!(
+            w.probe_timed_out_at(t0 + Duration::from_secs(999)),
+            WatchdogAction::Kill
+        );
+    }
+
+    #[test]
+    fn probe_timed_out_only_fires_after_the_probe_timeout() {
+        let (mut w, t0) = base();
+        // No probe in flight: observing silence never kills.
+        assert_eq!(
+            w.probe_timed_out_at(t0 + Duration::from_secs(3600)),
+            WatchdogAction::Continue
+        );
+        assert_eq!(w.poll_at(t0 + Duration::from_secs(30)), WatchdogAction::Probe);
+        assert_eq!(
+            w.probe_timed_out_at(t0 + Duration::from_secs(31)),
+            WatchdogAction::Probe
+        );
+        assert_eq!(
+            w.probe_timed_out_at(t0 + Duration::from_secs(32)),
+            WatchdogAction::Kill
+        );
+    }
+
+    #[test]
+    fn pause_never_kills_and_resume_starts_a_fresh_window() {
+        let (mut w, t0) = base();
+        w.pause();
+        assert_eq!(
+            w.poll_at(t0 + Duration::from_secs(3600)),
+            WatchdogAction::Continue
+        );
+        w.resume_at(t0 + Duration::from_secs(3600));
+        assert_eq!(
+            w.poll_at(t0 + Duration::from_secs(3629)),
+            WatchdogAction::Continue
+        );
+        assert_eq!(
+            w.poll_at(t0 + Duration::from_secs(3630)),
+            WatchdogAction::Probe
+        );
+    }
+}
