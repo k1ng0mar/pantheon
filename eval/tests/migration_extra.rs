@@ -408,13 +408,22 @@ fn mapped_hook_is_a_promise_it_must_be_wired() {
     );
     assert!(Hook::OnCompaction.is_wired());
 
-    // `pre_gateway_dispatch` is declared but has no fire site: mapping it
-    // would promise the operator their handler runs, and it would not.
+    // `pre_gateway_dispatch` was once declared but unwired; the sweep
+    // wired it end to end (gateway pre-dispatch observer on both poll
+    // paths), so these four now map for real and must not be refused.
     for ev in [
         "message_received",
         "pre_gateway_dispatch",
         "gateway_dispatch",
         "before_dispatch",
+    ] {
+        assert_eq!(
+            map_hook(ev),
+            HookMap::Mapped(Hook::PreGatewayDispatch),
+            "{ev} is wired and must map"
+        );
+    }
+    for ev in [
         // The retry-fallback walk never reaches the core fan-out, so there
         // is no fire site either: reasoned-about Unsupported, never mapped.
         "auto_retry_start",
