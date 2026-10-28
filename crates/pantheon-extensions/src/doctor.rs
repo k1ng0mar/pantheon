@@ -87,10 +87,14 @@ pub fn doctor(dir: &Path) -> DoctorReport {
         ));
     }
     if entry_ts && !entry_py {
+        // Error, not a warning: with no __init__.py the Python runner
+        // can never run this plugin, so a passing verdict (ok=true,
+        // exit 0) lied about a plugin that cannot execute. A TS entry
+        // alongside __init__.py stays a warning: the Python entry runs.
         findings.push(f(
-            "warn",
+            "error",
             "TS_ENTRY",
-            "TypeScript entry: needs OpenClaw-compat adapter (Soul path), not the Python runner"
+            "TypeScript-only entry: needs an OpenClaw-compat adapter (Soul path); the Python runner cannot run this plugin"
                 .into(),
         ));
     }
@@ -166,5 +170,55 @@ pub fn doctor(dir: &Path) -> DoctorReport {
         hooks: names,
         unknown_hooks: unknown,
         findings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn plugin_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-doctor-ts-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("plugin.yaml"), "name: ts-only\nversion: \"1\"\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn typescript_only_entry_is_an_error_not_a_pass() {
+        let dir = plugin_dir("only");
+        fs::write(dir.join("index.ts"), "export {}").unwrap();
+        let report = doctor(&dir);
+        assert!(
+            !report.ok,
+            "a plugin the Python runner can never run must not pass"
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|x| x.level == "error" && x.code == "TS_ENTRY"),
+            "findings: {:?}",
+            report.findings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn typescript_alongside_python_entry_draws_no_ts_finding() {
+        let dir = plugin_dir("both");
+        fs::write(dir.join("index.ts"), "export {}").unwrap();
+        fs::write(dir.join("__init__.py"), "").unwrap();
+        let report = doctor(&dir);
+        assert!(
+            !report.findings.iter().any(|x| x.code == "TS_ENTRY"),
+            "findings: {:?}",
+            report.findings
+        );
+        assert!(report.ok);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
