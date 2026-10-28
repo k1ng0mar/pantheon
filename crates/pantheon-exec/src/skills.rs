@@ -625,18 +625,18 @@ pub fn parse_skill_exec_args(args: &str) -> Result<(String, String, Vec<String>)
 }
 
 /// True when a `skill_exec` call must be treated as mutating for
-/// Plan-mode gating: the named executable declares `side_effects: write`,
-/// or the skill/executable cannot be resolved (fail closed - an
-/// unresolvable call errors at execution, but Plan mode must not wave it
-/// through as "read-only" first).
-pub fn skill_exec_call_is_mutating(skills: &[Skill], args: &str) -> bool {
-    let Ok((skill, name, _)) = parse_skill_exec_args(args) else {
-        return true;
-    };
-    match find_skill_exec(skills, &skill, &name) {
-        Ok((_, exec)) => exec.side_effects == SkillExecSideEffects::Write,
-        Err(_) => true,
-    }
+/// Plan-mode gating: every resolved executable counts, whatever its
+/// declared side effects say. The declaration is author-controlled,
+/// and executing skill code is itself the mutation surface - a
+/// read-declared script can write, spawn, and exfiltrate. An
+/// unresolvable call also counts (fail closed: it errors at
+/// execution, but Plan mode must not wave it through as "read-only"
+/// first).
+pub fn skill_exec_call_is_mutating(_skills: &[Skill], _args: &str) -> bool {
+    // Every `skill_exec` call executes code, so every call counts -
+    // resolving the declaration first would only reintroduce the
+    // trust hole this function exists to close.
+    true
 }
 
 /// The `skill` argument of a `skill_exec` call, for timeline attribution.
@@ -1809,4 +1809,27 @@ fn path_derived_name(rel: &Path) -> String {
         name.pop();
     }
     name.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn read_declared_skill_exec_is_mutating_in_plan_mode() {
+        // Plan mode must refuse every skill_exec run: executing code
+        // is the mutation surface, whatever the author declared.
+        let raw = "---\nname: probe\nexec:\n  - name: probe-it\n    command: scripts/probe.sh\n    side_effects: read\n---\nBody.\n";
+        let skill = parse_skill(raw, Path::new("/tmp/probe/SKILL.md")).expect("parse");
+        assert_eq!(
+            skill.meta.exec[0].side_effects,
+            SkillExecSideEffects::Read,
+            "test fixture must declare read"
+        );
+        assert!(skill_exec_call_is_mutating(
+            &[skill],
+            r#"{"skill": "probe", "name": "probe-it"}"#
+        ));
+    }
 }
