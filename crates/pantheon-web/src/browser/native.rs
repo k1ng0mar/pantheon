@@ -19,6 +19,10 @@ pub struct NativeConfig {
     pub chrome_binary: Option<PathBuf>,
     /// Headless mode. Defaults to `true`.
     pub headless: Option<bool>,
+    /// Explicit `--no-sandbox` opt-in for local Chrome. Defaults to
+    /// `false`: never default to unsandboxed. When `true`, launch
+    /// prints a loud warning (see [`CdpDriver::with_no_sandbox`]).
+    pub no_sandbox: bool,
     /// Command timeout, in seconds.
     pub timeout_secs: u64,
 }
@@ -39,6 +43,7 @@ impl NativeBackend {
         let timeout = config.timeout_secs.max(1);
         let headless = config.headless();
         let driver = CdpDriver::launch_lazy(config.chrome_binary, headless, "chromiumoxide")
+            .with_no_sandbox(config.no_sandbox)
             .with_op_timeout(timeout);
         Ok(Self { driver })
     }

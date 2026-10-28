@@ -47,6 +47,9 @@ pub struct BrowserToolConfig {
     pub chrome_binary: Option<PathBuf>,
     /// Headless mode for the `chromiumoxide` backend.
     pub headless: bool,
+    /// Explicit `--no-sandbox` opt-in for the `chromiumoxide` backend.
+    /// Default false: never default to unsandboxed.
+    pub no_sandbox: bool,
     /// Per-command timeout in seconds for browser backends.
     pub timeout_secs: u64,
     /// Camoufox anti-detect settings (`[browser.camofox]`), resolved
@@ -70,6 +73,7 @@ impl Default for BrowserToolConfig {
             playwright_binary: None,
             chrome_binary: None,
             headless: true,
+            no_sandbox: false,
             timeout_secs: 120,
             camofox: CamofoxToolConfig::default(),
         }
@@ -433,6 +437,9 @@ pub fn resolve_browser_section(s: &pantheon_api::config::BrowserSection) -> Brow
     if let Some(headless) = s.headless {
         cfg.headless = headless;
     }
+    if let Some(no_sandbox) = s.no_sandbox {
+        cfg.no_sandbox = no_sandbox;
+    }
     if let Some(secs) = s.timeout_secs.filter(|&s| s > 0) {
         cfg.timeout_secs = secs;
     }
@@ -535,6 +542,7 @@ pub fn browser_backend_config(
         native: b::NativeConfig {
             chrome_binary: cfg.chrome_binary.clone(),
             headless: Some(cfg.headless),
+            no_sandbox: cfg.no_sandbox,
             timeout_secs: timeout,
         },
         steel: b::SteelConfig {
