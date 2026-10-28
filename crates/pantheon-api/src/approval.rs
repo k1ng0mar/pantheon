@@ -378,6 +378,22 @@ impl ApprovalStore {
             .is_some_and(|r| r.version == version && r.dir_hash == dir_hash)
     }
 
+    /// True when a live approval exists for this exact name + content
+    /// hash, regardless of the recorded version string. The hash is
+    /// the authoritative gate: a version string is self-reported by
+    /// the server and can lie (or bump without any content change),
+    /// while the hash binds the approval to the exact content the
+    /// operator consented to. The recorded version is kept for
+    /// DISPLAY only (approval listings, dashboard responses) and must
+    /// never gate execution. MCP's post-handshake gate uses this;
+    /// plugin loading keeps the stricter name + version + hash check
+    /// in [`Self::is_approved`].
+    pub fn is_approved_for_hash(&self, name: &str, dir_hash: &str) -> bool {
+        self.records
+            .get(name)
+            .is_some_and(|r| r.dir_hash == dir_hash)
+    }
+
     /// The recorded approval for `name`, if any. Lets a caller compare
     /// against a partially-known identity (e.g. an MCP server whose
     /// self-reported version is only known after the handshake) without
