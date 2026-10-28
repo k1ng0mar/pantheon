@@ -4,7 +4,7 @@
 //!
 //! Pantheon implements a *subset* of the Hermes hook surface, not a superset.
 //! Hermes' `VALID_HOOKS` (`hermes_cli/plugins.py`) names 41 events; of those,
-//! Pantheon wires 14 (below) and declares 1 unwired. Every wired hook has a
+//! Pantheon wires all 15 declared below. Every wired hook has a
 //! real fire site: either in `session.rs` (the tool-execution gate/transform
 //! and the context-injection point) or via `event_bridge`, which maps
 //! canonical `pantheon_api::events::Event`s onto hooks on the supervisor's
@@ -153,13 +153,14 @@ impl Hook {
     }
     /// Whether this hook has a real fire site in the runtime today.
     ///
-    /// `pre_gateway_dispatch` is declared but **unwired**: inbound messages
-    /// are handled in `pantheon-gateway`, which deliberately depends only on
-    /// `pantheon-api` + `pantheon-storage` and so cannot reach the extension
-    /// manager without a new dependency edge. Until that exists the hook is
-    /// reported as unsupported rather than falsely mapped.
+    /// All declared hooks are wired. `pre_gateway_dispatch` fires in
+    /// the TUI gateway's surface sink before any inbound event reaches
+    /// the runtime; the gateway crate itself stays free of the
+    /// extension manager by exposing a dependency-free
+    /// `PreDispatchHook` observer that the daemon calls before
+    /// dispatch (`route_event_with_hook` / `ChannelDaemon::with_pre_dispatch`).
     pub fn is_wired(&self) -> bool {
-        !matches!(self, Hook::PreGatewayDispatch)
+        true
     }
     /// Fires often enough that a per-fire process spawn is a hazard.
     /// Gated behind an explicit opt-in by the event bridge.
