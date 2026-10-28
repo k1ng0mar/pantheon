@@ -77,6 +77,14 @@ fn store_hash(store: &MemoryStore, namespace: &str) -> Result<String, PantheonEr
 /// `last_known_hash` is the hash recorded from the previous sync. Pass
 /// `None` on a fresh install. Returns the new file hash so the caller
 /// can store it for the next pass.
+///
+/// Deletions: when the file is a sentinel export (see `render_agent`),
+/// a section missing from it is a deletion, and the store row is
+/// forgotten - otherwise every export would resurrect deleted sections.
+/// Non-sentinel (hand-written/legacy) files never delete: they may be
+/// partial views. Callers must still run `detect_conflict` first when
+/// both sides may have changed, since a stale sentinel file would
+/// otherwise delete newer store rows.
 pub fn sync(
     store: &MemoryStore,
     policy: &pantheon_api::capability::Policy,
@@ -98,8 +106,30 @@ pub fn sync(
         .map(|h| h != cur_hash)
         .unwrap_or(file_exists);
     if file_exists && file_changed {
-        import_agent(store, policy, namespace, path)?;
+        // Deletions propagate only for sentinel files: a sentinel
+        // file is a full Pantheon export (every Agent record, in
+        // order), so a section missing from it means the user deleted
+        // it. A hand-written or legacy file may be a partial view, and
+        // deleting every store row it does not mention would nuke
+        // records the file never claimed to cover.
+        let text =
+            std::fs::read_to_string(path).map_err(|e| merr("MEM_SYNC_READ", format!("{e}")))?;
+        let sentinel = text
+            .lines()
+            .next()
+            .is_some_and(|l| l == "<!-- pantheon:agent-memory v2 -->");
+        let parsed = parse_md_meta(&text);
+        let parsed_keys: std::collections::HashSet<String> =
+            parsed.iter().map(|(k, _, _)| k.clone()).collect();
+        import_parsed(store, policy, namespace, parsed)?;
         imported = true;
+        if sentinel {
+            for (key, _) in store.list_agent(namespace)? {
+                if !parsed_keys.contains(&key) {
+                    store.forget(LayerKind::Agent, namespace, &key)?;
+                }
+            }
+        }
     }
 
     // Step 2: store changed since last sync?
@@ -177,6 +207,12 @@ pub fn render_record(key: &str, value: &str, trust: pantheon_api::provenance::Tr
         .map(|l| {
             if l.starts_with("# ") || l == "#" {
                 format!("\\{l}")
+            } else if l.starts_with("{trust=") {
+                // A value line that looks like a provenance footer would
+                // be misparsed as the record's footer on import (the
+                // footer is `{trust=tier}` as the body's first line).
+                // Escape it so the round-trip keeps the line as value.
+                format!("\\{l}")
             } else {
                 l.to_string()
             }
@@ -247,6 +283,14 @@ pub fn parse_md_meta(
             }
             continue;
         }
+        // Escaped footer-like line inside a value (see render_record):
+        // the backslash keeps it value, not a provenance footer.
+        if let Some(rest) = line.strip_prefix("\\{trust=") {
+            if let Some((_, body, _)) = current.as_mut() {
+                body.push_str(&format!("{{trust={rest}\n"));
+            }
+            continue;
+        }
         // Provenance footer: `{trust=tier}` as the first line of a body.
         // Captured and stripped so it never shows up in the value.
         if let Some(rest) = line.strip_prefix("{trust=") {
@@ -307,6 +351,11 @@ pub fn parse_md(content: &str) -> Vec<(String, String)> {
 /// file's claimed tier, never upgrade it. The store's own anti-clobber rule
 /// still applies on top: when the capped tier is below the stored tier the
 /// row is held entirely.
+///
+/// All-or-nothing: every section is validated (empty, secret, too
+/// large) BEFORE any write happens. The old loop wrote section by
+/// section, so one empty section aborted the import midway with the
+/// earlier sections already stored.
 pub fn import_agent(
     store: &MemoryStore,
     policy: &pantheon_api::capability::Policy,
@@ -315,8 +364,19 @@ pub fn import_agent(
 ) -> Result<usize, PantheonError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| merr("MEM_IMPORT_READ", format!("read {}: {e}", path.display())))?;
-    let parsed = parse_md_meta(&text);
-    let mut written = 0;
+    import_parsed(store, policy, namespace, parse_md_meta(&text))
+}
+
+/// Import already-parsed sections. Shared by [`import_agent`] and by
+/// [`sync`], which needs the parsed keys for deletion propagation and
+/// must not re-read the file between parsing and importing.
+fn import_parsed(
+    store: &MemoryStore,
+    policy: &pantheon_api::capability::Policy,
+    namespace: &str,
+    parsed: Vec<(String, String, Option<pantheon_api::provenance::TrustTier>)>,
+) -> Result<usize, PantheonError> {
+    let mut proposals = Vec::with_capacity(parsed.len());
     for (key, value, trust) in parsed {
         // A v2 file carries each record's tier; a hand-edited or legacy
         // file is human-authored, so it imports as User. An Untrusted
@@ -337,7 +397,7 @@ pub fn import_agent(
             }
             _ => tier,
         };
-        let p = Proposal {
+        proposals.push(Proposal {
             layer: LayerKind::Agent,
             namespace: namespace.to_string(),
             key,
@@ -348,9 +408,132 @@ pub fn import_agent(
                 trust: tier,
                 recorded_at_ms: now_ms(),
             },
-        };
+        });
+    }
+    // Validate everything first: a single bad section must abort the
+    // whole import, not leave the earlier sections stored.
+    for p in &proposals {
+        if let Err(r) = crate::validate(p, 4096) {
+            return Err(merr(
+                r.code(),
+                format!("proposal failed validation: {r:?}; fix the section; nothing was imported"),
+            ));
+        }
+    }
+    let mut written = 0;
+    for p in proposals {
         crate::propose_write(store, policy, p, 4096)?;
         written += 1;
     }
     Ok(written)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pantheon_api::capability::{Capability, Policy};
+
+    fn put(store: &MemoryStore, key: &str, value: &str) {
+        store
+            .put(&Proposal {
+                layer: LayerKind::Agent,
+                namespace: "test".to_string(),
+                key: key.to_string(),
+                value: value.to_string(),
+                provenance: Provenance {
+                    source: "test".to_string(),
+                    origin: "test".to_string(),
+                    trust: pantheon_api::provenance::TrustTier::User,
+                    recorded_at_ms: 1,
+                },
+            })
+            .unwrap();
+    }
+
+    fn policy() -> Policy {
+        Policy::default().allow(Capability::MemoryWrite)
+    }
+
+    #[test]
+    fn footer_like_value_line_survives_a_round_trip() {
+        let rendered = render_record(
+            "k",
+            "{trust=user}\nsecond line",
+            pantheon_api::provenance::TrustTier::User,
+        );
+        let parsed = parse_md_meta(&rendered);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "k");
+        assert_eq!(parsed[0].1, "{trust=user}\nsecond line");
+        assert_eq!(
+            parsed[0].2,
+            Some(pantheon_api::provenance::TrustTier::User),
+            "the footer tier comes from the real footer, not the value line"
+        );
+    }
+
+    #[test]
+    fn import_is_all_or_nothing_when_a_section_is_empty() {
+        let store = MemoryStore::open_in_memory().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-md-import-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("MEMORY.md");
+        std::fs::write(&path, "# good\n\nsome value\n\n# empty\n\n").unwrap();
+        let err = import_agent(&store, &policy(), "test", &path)
+            .expect_err("an empty section must abort the import");
+        assert_eq!(err.code, "MEM_EMPTY");
+        assert!(
+            store
+                .get(LayerKind::Agent, "test", "good")
+                .unwrap()
+                .is_none(),
+            "the earlier good section must NOT be stored when a later section fails"
+        );
+    }
+
+    #[test]
+    fn sync_deletes_sections_missing_from_a_sentinel_file() {
+        let store = MemoryStore::open_in_memory().unwrap();
+        put(&store, "keep", "kept value");
+        put(&store, "drop", "dropped value");
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-md-sync-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("MEMORY.md");
+        // A full Pantheon export containing only "keep".
+        let md = render_agent(&[(
+            "keep".to_string(),
+            "kept value".to_string(),
+            pantheon_api::provenance::TrustTier::User,
+        )]);
+        std::fs::write(&path, md).unwrap();
+        sync(&store, &policy(), "test", &path, None).unwrap();
+        assert!(store
+            .get(LayerKind::Agent, "test", "keep")
+            .unwrap()
+            .is_some());
+        assert!(
+            store
+                .get(LayerKind::Agent, "test", "drop")
+                .unwrap()
+                .is_none(),
+            "a section deleted from the sentinel file must not resurrect on export"
+        );
+        let exported = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !exported.contains("dropped value"),
+            "export must not resurrect it either"
+        );
+    }
 }
