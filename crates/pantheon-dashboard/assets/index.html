@@ -20,18 +20,9 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="apple-touch-icon" href="icon-192.png">
-<!-- Third-party font fetch, deliberate tradeoff: the dashboard is
-  local-first, but Inter/JetBrains Mono come from Google Fonts, so the
-  first load makes an external request (and leaks the dashboard origin
-  to Google) and renders fallback system fonts when offline. That is
-  safe, not broken: --sans/--mono in tokens.css end in system stacks,
-  so an offline load just looks plainer. Self-hosting the woff2 files
-  would close the request entirely; it is out of scope for this pass
-  (font licensing + asset plumbing), so the tradeoff is recorded here
-  instead of silently depending on a third party. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Self-hosted fonts: see fonts.css (Inter + JetBrains Mono, latin
+  subsets, vendored). No third-party request on load, offline-safe. -->
+<link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>

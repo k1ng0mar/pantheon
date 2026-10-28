@@ -4,12 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bot Screen — Pantheon desktop watch</title>
-<!-- Same Google Fonts tradeoff as index.html: an external request on
-  first load (and system-font fallback when offline); self-hosting the
-  woff2 files would close it but is out of scope for this pass. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Self-hosted fonts: see fonts.css (Inter + JetBrains Mono, latin
+  subsets, vendored). No third-party request on load, offline-safe. -->
+<link rel="stylesheet" href="fonts.css">
 <style>
   :root {
     color-scheme: dark;
