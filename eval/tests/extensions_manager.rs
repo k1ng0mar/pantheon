@@ -154,10 +154,14 @@ fn per_plugin_gate_failure_quarantines_only_that_plugin() {
     // sibling keeps loading. Never fail-open.
     let base = std::env::temp_dir().join("pantheon-gate-quarantine-one");
     let _ = std::fs::remove_dir_all(&base);
-    plug_hook(&base.join("good"), "good", "pre_llm_call", "{'context': 'G'}");
+    plug_hook(
+        &base.join("good"),
+        "good",
+        "pre_llm_call",
+        "{'context': 'G'}",
+    );
     plug_hook(&base.join("bad"), "bad", "pre_llm_call", "{'context': 'B'}");
-    std::os::unix::fs::symlink("no-such-target", base.join("bad").join("broken.py"))
-        .unwrap();
+    std::os::unix::fs::symlink("no-such-target", base.join("bad").join("broken.py")).unwrap();
     let m = mgr_with(&base);
     assert_eq!(m.names(), vec!["good"]);
     assert!(m.pending().is_empty(), "a gate failure is not pending");
@@ -210,9 +214,7 @@ fn hook_manifest_with_key_is_rejected_fail_closed() {
     assert!(m.names().is_empty(), "a keyed plugin must never load");
     assert!(m.pending().is_empty(), "a keyed plugin is not pending");
     assert!(
-        m.load_errors()
-            .iter()
-            .any(|e| e.contains("key")),
+        m.load_errors().iter().any(|e| e.contains("key")),
         "load failure must name the `key` problem: {:?}",
         m.load_errors()
     );

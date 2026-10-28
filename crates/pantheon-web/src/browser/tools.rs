@@ -1232,8 +1232,7 @@ mod tools_tests {
     #[cfg(unix)]
     fn screenshot_symlink_planting_is_rejected() {
         use std::os::unix::fs::symlink;
-        let base = std::env::temp_dir()
-            .join(format!("pantheon-shot-conf-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("pantheon-shot-conf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let dir = base.join("screenshots");
         let outside = base.join("outside");

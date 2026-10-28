@@ -771,8 +771,7 @@ mod tests {
         // restore it afterwards (no other runtime test touches it).
         let prev = std::env::var_os("PANTHEON_GENUI_SECRET");
         std::env::remove_var("PANTHEON_GENUI_SECRET");
-        let dir = std::env::temp_dir()
-            .join(format!("pantheon-genui-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pantheon-genui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let first = genui_secret_for(&dir).expect("generation must succeed");
         assert_eq!(first.len(), 32, "a 256-bit secret");
