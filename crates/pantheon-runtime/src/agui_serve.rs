@@ -77,7 +77,8 @@ impl AguiServeConfig {
             .replace("http://[::]", "http://[::1]")
     }
     pub fn signer(&self) -> Option<GenUiSigner> {
-        genui_secret().map(|secret| GenUiSigner::new(self.effective_genui_base(), secret))
+        genui_secret_for(&self.data_dir)
+            .map(|secret| GenUiSigner::new(self.effective_genui_base(), secret))
     }
     pub fn dispatcher(&self) -> crate::rpc::Dispatcher {
         crate::agui::dispatcher_for_with_hint_and_host(
@@ -423,21 +424,85 @@ fn blob_content_type(mime: &str) -> &'static str {
     cache.insert(mime.to_string(), leaked);
     leaked
 }
-/// GenUI signing secret: `PANTHEON_GENUI_SECRET` when set and
-/// non-empty, else `None` (not configured). There used to be a
-/// hardcoded dev default (`pantheon-dev-genui-secret`) here and in
-/// `agui.rs`: anyone holding a dashboard token could forge signatures
-/// for arbitrary task ids and read other runs' artifacts, because the
-/// secret was public knowledge. Fail closed instead: no secret means
-/// no signing and no verification, with a clear error naming the
-/// variable. (Alternative Umar could choose: generate + persist a
-/// random secret on first use; that needs a storage decision, so it
-/// is left as a follow-up, not silently picked here.)
+/// GenUI signing secret from the environment: `PANTHEON_GENUI_SECRET`
+/// when set and non-empty, else `None`. There is deliberately no
+/// hardcoded default: a public default let anyone holding a dashboard
+/// token forge signatures for arbitrary task ids and read other runs'
+/// artifacts. Prefer [`genui_secret_for`], which falls back to a
+/// generated, persisted secret; this env-only form exists for callers
+/// with no data dir, where the fallback cannot live.
 pub fn genui_secret() -> Option<Vec<u8>> {
     std::env::var("PANTHEON_GENUI_SECRET")
         .ok()
         .map(|s| s.into_bytes())
         .filter(|b| !b.iter().all(|c| c.is_ascii_whitespace()) && !b.is_empty())
+}
+
+/// File holding a generated GenUI secret inside the data dir.
+const GENUI_SECRET_FILE: &str = "genui-secret";
+
+/// Whether the first-run generation warning has already been emitted
+/// in this process, so a fresh install warns once, not once per call.
+static GENUI_GENERATED_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// GenUI signing secret, resolved in order: `PANTHEON_GENUI_SECRET`
+/// when set, else the persisted secret in `<data_dir>/genui-secret`,
+/// else a freshly generated random 256-bit secret persisted there
+/// with 0600 permissions and a one-time warning. Generation failure
+/// (e.g. an unwritable data dir) returns `None` - fail closed, no
+/// signing and no verification - and callers report the env var as
+/// the remedy. The persisted secret is never a public constant: it is
+/// random per install and readable only by the owner.
+pub fn genui_secret_for(data_dir: &Path) -> Option<Vec<u8>> {
+    if let Some(secret) = genui_secret() {
+        return Some(secret);
+    }
+    let path = data_dir.join(GENUI_SECRET_FILE);
+    if let Ok(bytes) = std::fs::read(&path) {
+        if !bytes.is_empty() {
+            return Some(bytes);
+        }
+    }
+    if std::fs::create_dir_all(data_dir).is_err() {
+        return None;
+    }
+    let mut secret = [0u8; 32];
+    {
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut secret);
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let written = opts.open(&path).and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(&secret).and_then(|_| f.sync_all())
+    });
+    if written.is_err() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).is_err() {
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+    }
+    if !GENUI_GENERATED_WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let msg = format!(
+            "WARNING: generated a random GenUI signing secret and stored it at {} (0600); set PANTHEON_GENUI_SECRET to use your own",
+            path.display()
+        );
+        pantheon_api::logging::warn("genui", &msg);
+        eprintln!("{msg}");
+    }
+    Some(secret.to_vec())
 }
 
 fn handle_blob(cfg: &AguiServeConfig, path: &str, query: &HashMap<String, String>) -> Response {
@@ -692,6 +757,45 @@ impl HttpMount for AguiMount {
             json(200, br#"{"ok":true}"#)
         } else {
             json(404, br#"{"error":"unknown agui route"}"#)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn genui_secret_generated_persisted_0600_and_stable() {
+        // Env var wins over generation, so clear it for this test and
+        // restore it afterwards (no other runtime test touches it).
+        let prev = std::env::var_os("PANTHEON_GENUI_SECRET");
+        std::env::remove_var("PANTHEON_GENUI_SECRET");
+        let dir = std::env::temp_dir()
+            .join(format!("pantheon-genui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = genui_secret_for(&dir).expect("generation must succeed");
+        assert_eq!(first.len(), 32, "a 256-bit secret");
+        let path = dir.join("genui-secret");
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "persisted secret must be owner-only"
+            );
+        }
+        assert_eq!(
+            genui_secret_for(&dir).unwrap(),
+            first,
+            "second call reuses the persisted secret, never regenerates"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        match prev {
+            Some(v) => std::env::set_var("PANTHEON_GENUI_SECRET", v),
+            None => {}
         }
     }
 }
