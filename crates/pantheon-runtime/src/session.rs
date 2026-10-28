@@ -6914,18 +6914,38 @@ impl Session {
                     // parked call is NOT settled here. The operator's
                     // decision settles it later through `submit_ui_action`,
                     // so the call keeps exactly one tool result at every
-                    // ledger state.
-                    let parks = if park.is_none() {
-                        self.latest_ui_document(run_id, &ui_id)
-                            .ok()
-                            .flatten()
-                            .map(|(doc, _)| doc.has_approval_card())
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-                    if parks {
-                        park = Some((ui_id, call_id));
+                    // ledger state. Only ONE card can park: a second
+                    // approval card in the same batch gets no
+                    // `UiActionRequested` (the park outcome carries a
+                    // single call id), so settling it with "ui
+                    // published" success would complete a call whose
+                    // decision was never requested — undecidable work
+                    // reported as done. It is refused instead, with an
+                    // instruction to re-issue after the operator decides
+                    // the first card, exactly like a parked sibling.
+                    let has_card = self
+                        .latest_ui_document(run_id, &ui_id)
+                        .ok()
+                        .flatten()
+                        .map(|(doc, _)| doc.has_approval_card())
+                        .unwrap_or(false);
+                    if has_card {
+                        if park.is_none() {
+                            park = Some((ui_id, call_id));
+                            continue;
+                        }
+                        let refusal = Message::tool(
+                            call_id.clone(),
+                            "not executed: this batch already parked on an approval card; \
+                             only one approval card can park a turn. Re-issue this render_ui \
+                             call separately after the operator decides the first card",
+                        )
+                        .with_provenance(Provenance::system("pantheon"));
+                        messages.push(refusal.clone());
+                        self.supervisor.emit(Event::ToolMessage {
+                            run_id: run_id.into(),
+                            message: refusal,
+                        })?;
                         continue;
                     }
                     let mut text = if is_update {
@@ -10398,6 +10418,104 @@ mod delegate_tool_tests {
             .collect();
         assert_eq!(results.len(), 1, "exactly-once settlement");
         assert!(session.pending_ui_action(run_id).expect("p").is_none());
+    }
+
+    #[test]
+    fn second_approval_card_in_one_batch_is_refused_not_settled() {
+        // Regression: `publish_ui_batch` computed the park only while
+        // no card had parked yet, so a second approval card in the same
+        // batch got a "ui published" success and no UiActionRequested —
+        // a call completed while its decision was never requested.
+        use pantheon_agent::ToolCall;
+        use pantheon_api::message::ToolCallRef;
+        let (session, _dir) = test_session();
+        let run_id = "run-ui-two-cards";
+        ui_run(&session, run_id);
+        let card_doc = |title: &str| UiDocument {
+            version: pantheon_api::ui::UI_PROTOCOL_VERSION,
+            id: "turn1-ui_0".to_string(),
+            root: UiNode {
+                id: "root".to_string(),
+                component: UiComponent::Approval(ApprovalCard {
+                    title: title.to_string(),
+                    detail: "detail".to_string(),
+                    approve: pantheon_api::ui::ActionRef {
+                        action_id: "yes".to_string(),
+                        label: "Yes".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Grant,
+                        },
+                    },
+                    deny: pantheon_api::ui::ActionRef {
+                        action_id: "no".to_string(),
+                        label: "No".to_string(),
+                        kind: UiActionKind::Approval {
+                            decision: ApprovalDecision::Deny,
+                        },
+                    },
+                    scope_hint: "hint".to_string(),
+                }),
+            },
+        };
+        let mk = |id: &str, title: &str| {
+            let args = serde_json::json!({ "document": card_doc(title) }).to_string();
+            (
+                ToolCall {
+                    name: "render_ui".to_string(),
+                    capability: pantheon_api::capability::Capability::Other("render_ui".into()),
+                    args: args.clone(),
+                },
+                ToolCallRef {
+                    id: id.to_string(),
+                    name: "render_ui".to_string(),
+                    arguments: args,
+                },
+            )
+        };
+        let (c1, r1) = mk("call-card-1", "First?");
+        let (c2, r2) = mk("call-card-2", "Second?");
+        let mut messages = Vec::new();
+        let out = session
+            .publish_ui_batch(run_id, "turn1", &[c1, c2], &[r1, r2], &mut messages)
+            .expect("publish batch")
+            .expect("consumed");
+        let (ui_id, call_id) = match out.1.expect("first card parks") {
+            LoopOutcome::AwaitingUiAction { ui_id, call_id } => (ui_id, call_id),
+            other => panic!("expected park, got {other:?}"),
+        };
+        assert_eq!(call_id, "call-card-1");
+        let _ = ui_id;
+        // Exactly one UiActionRequested, for the first card.
+        let entries = session.supervisor.replay(run_id).expect("replay");
+        let requested: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::UiActionRequested { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requested, vec!["call-card-1".to_string()]);
+        // The second card must NOT get a success result: it gets a
+        // refusal to re-issue after the first decision.
+        let second: Vec<_> = messages
+            .iter()
+            .filter(|m| m.tool_call_id.as_deref() == Some("call-card-2"))
+            .collect();
+        assert_eq!(second.len(), 1, "second card settled exactly once: {messages:?}");
+        assert!(
+            second[0].content.contains("not executed")
+                && !second[0].content.contains("ui published"),
+            "second card must be refused, not succeeded: {}",
+            second[0].content
+        );
+        // And the parked first call is still unsettled.
+        assert!(
+            !entries.iter().any(|e| matches!(
+                &e.event,
+                Event::ToolCompleted { call_id: c, .. } if c == "call-card-1"
+            )),
+            "parked first call must stay unsettled"
+        );
     }
 
     #[test]
