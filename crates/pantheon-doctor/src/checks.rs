@@ -11,7 +11,7 @@ use crate::finding::{Finding, Severity, Subsystem};
 use crate::probe::{detect_binary, tcp_probe, DETECT_TIMEOUT};
 use crate::registry::{CheckDef, DoctorCtx};
 use pantheon_api::config::Config;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// All built-in checks, in canonical subsystem order.
 pub fn all_checks() -> Vec<CheckDef> {
@@ -1170,6 +1170,7 @@ mod tests {
     use crate::finding::CheckStatus;
     use crate::registry::DoctorCtx;
     use std::collections::HashMap;
+    use std::path::Path;
 
     fn ctx_in(dir: &Path) -> DoctorCtx {
         DoctorCtx::new(dir.to_path_buf(), dir.join("extensions"))
