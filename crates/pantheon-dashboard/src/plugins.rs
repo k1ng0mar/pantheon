@@ -94,12 +94,16 @@ pub fn list(app: &App, _req: &Request) -> Response {
     for p in plugins::discover_plugins(&app.data_dir, &project_root()) {
         let is_bundled = plugin_approval::is_bundled(&p);
         // Bundled: the config file is the single enablement state and
-        // wins over the manifest flag. Third-party: the manifest flag,
-        // gated by the approval store at load time.
+        // wins over the manifest flag. Third-party: the manifest flag
+        // AND approval - an unapproved plugin must not render as
+        // enabled merely because its manifest says enabled:true, since
+        // spawn will refuse it until approved. The separate `approved`
+        // field below still distinguishes the two reasons.
+        let approved = plugin_approval::is_approved(&p);
         let enabled = if is_bundled {
             bundled_enabled(app, &p.manifest.name, p.manifest.enabled)
         } else {
-            p.manifest.enabled
+            p.manifest.enabled && approved
         };
         seen.insert(("tool".to_string(), p.manifest.name.clone()));
         out.push(serde_json::json!({
@@ -109,7 +113,7 @@ pub fn list(app: &App, _req: &Request) -> Response {
             "description": p.manifest.description,
             "enabled": enabled,
             "bundled": is_bundled,
-            "approved": plugin_approval::is_approved(&p),
+            "approved": approved,
             "location": format!("{:?}", p.location),
         }));
     }
