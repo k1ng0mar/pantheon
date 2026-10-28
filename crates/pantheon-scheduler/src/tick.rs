@@ -667,4 +667,42 @@ mod tick_drain_queue_tests {
             );
         }
     }
+
+    /// Two tickers (gateway daemon + `schedule tick --watch`) sharing one
+    /// claim DB, straddling an interval quantum boundary, must fire a
+    /// never-fired job exactly once: the first-fire stamp no longer
+    /// depends on each ticker's own clock, so both claims collapse onto
+    /// one key and exactly one ticker wins.
+    #[test]
+    fn two_tickers_straddling_quantum_fire_first_interval_job_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("claims.db");
+        let gateway = Arc::new(TickDriver::new(
+            DurableClaimLedger::open(&db).unwrap(),
+        ));
+        let tui = Arc::new(TickDriver::new(DurableClaimLedger::open(&db).unwrap()));
+        let mut job = Job::new("first1", ScheduleKind::Interval { every_ms: 10_000 }, "agent");
+        job.overlap = OverlapPolicy::Skip;
+        let ran = Arc::new(AtomicUsize::new(0));
+
+        // Gateway ticks at 9_999 (quantum 0), TUI at 10_000 (quantum 1).
+        let first = gateway.tick_job(&job, 9_999, None, counter_execute(&ran));
+        let second = tui.tick_job(&job, 10_000, None, counter_execute(&ran));
+        let mut fired = 0;
+        for decision in [first, second] {
+            match decision {
+                TickDecision::Fired { completion } => {
+                    fired += 1;
+                    assert_eq!(
+                        completion.recv_timeout(Duration::from_secs(10)),
+                        Ok(RunOutcome::Completed)
+                    );
+                }
+                TickDecision::SkippedClaimLost => {}
+                d => panic!("expected Fired or SkippedClaimLost, got {d:?}"),
+            }
+        }
+        assert_eq!(fired, 1, "exactly one ticker may fire the first occurrence");
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
 }

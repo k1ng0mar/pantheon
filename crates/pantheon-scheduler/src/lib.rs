@@ -130,6 +130,11 @@ fn default_catch_up() -> bool {
 /// report the next scheduled run.
 pub const NIGHTLY_TASK_MARKER: &str = "__pantheon_nightly__";
 
+/// Occurrence stamp for an interval job's first fire (no `last_run` yet).
+/// Fixed, not derived from the ticking clock, so concurrent tickers agree
+/// on one claim key. See [`Job::occurrence_stamp`].
+pub const FIRST_FIRE_STAMP: i64 = 0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
@@ -356,8 +361,18 @@ impl Job {
     /// - cron: the minute bucket (a cron job fires at most once a minute);
     ///   a catch-up fire stamps the *missed* bucket, so a crash-replay
     ///   claims the same key instead of firing twice;
-    /// - interval: the scheduled fire instant (`last + every`), or the
-    ///   quantum containing now for a first fire, so racing ticks agree;
+    /// - interval: the scheduled fire instant (`last + every`), or a fixed
+    ///   sentinel for a first fire. A first fire used to stamp the quantum
+    ///   containing now (`now / every * every`), so two tickers straddling
+    ///   a quantum boundary (gateway daemon + `schedule tick --watch`)
+    ///   computed different stamps and different claim keys and both
+    ///   fired. The sentinel makes the stamp a pure function of the job,
+    ///   not of the ticker's clock, so the durable claim ledger is the
+    ///   single source of the first-fire decision: exactly one ticker
+    ///   wins the claim. At-most-once, like every other interval
+    ///   occurrence: a won claim is never released, so if the winner
+    ///   crashes before its caller persists `last_run`, the occurrence
+    ///   stays claimed until retention prunes it.
     /// - one-shot: its fixed fire time.
     pub fn occurrence_stamp(&self, now_ms: i64, last_fire_ms: Option<i64>) -> Option<i64> {
         match &self.kind {
@@ -373,7 +388,10 @@ impl Job {
                     return None;
                 }
                 Some(match last_fire_ms {
-                    None => now_ms.div_euclid(every) * every,
+                    // Fixed sentinel, never derived from now: see the
+                    // method docs. Two tickers at different instants
+                    // must agree on this stamp.
+                    None => FIRST_FIRE_STAMP,
                     Some(last) => last.saturating_add(every),
                 })
             }
