@@ -65,8 +65,8 @@ fn one_line(s: &str, max: usize) -> String {
 /// Is the bundled plugin `name` enabled? The `[plugins.<name>]` config
 /// entry wins when present; when absent the bundled manifest's own
 /// `enabled` flag (`manifest_default`) is the default. A missing config
-/// is an empty config, so manifest defaults apply; an unparsable config
-/// fails closed (disabled) - a typo must never silently flip a plugin on.
+/// fails closed (disabled); an unparsable config fails closed
+/// (disabled) - a typo must never silently flip a plugin on.
 fn config_enabled(data_dir: &Path, name: &str, manifest_default: bool) -> bool {
     pantheon_extensions::bundled::load_config(data_dir)
         .map(|c| pantheon_extensions::bundled::is_enabled_with_default(&c, name, manifest_default))

@@ -253,17 +253,17 @@ pub fn is_enabled_with_default(config: &Config, name: &str, manifest_default: bo
 /// Load the config for enablement decisions without
 /// [`Config::load_or_report`]'s process-exit behavior: a library must
 /// never `exit(2)` the host because the config has a typo. A missing
-/// config is an EMPTY config, so manifest defaults apply (a plugin that
-/// ships on, like noisegate or planning-with-files, is on; the rest are
-/// off) - the old "missing file means disabled" rule made default-on
-/// depend on whether any `config.toml` happened to exist, which is not
-/// a rule an operator can reason about. A config that exists but does
-/// not parse is reported on stderr and fails closed - a typo must never
+/// config fails closed (disabled), even for a default-on plugin: a
+/// missing file must never flip anything on, and callers map `None`
+/// to disabled. An empty config file is different - there the
+/// manifest defaults apply (a plugin that ships on, like noisegate,
+/// is on; the rest are off). A config that exists but does not parse
+/// is reported on stderr and fails closed - a typo must never
 /// silently flip a plugin on.
 pub fn load_config(data_dir: &Path) -> Option<Config> {
     match Config::load(data_dir) {
         Ok(c) => Some(c),
-        Err(e) if e.code == "CONFIG_OPEN" => Some(Config::default()),
+        Err(e) if e.code == "CONFIG_OPEN" => None,
         Err(e) => {
             eprintln!("pantheon: bundled plugins disabled: {}", e.cause);
             eprintln!("pantheon: fix: {}", e.remediation);

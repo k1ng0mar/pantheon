@@ -5100,9 +5100,9 @@ impl Session {
             // mobile app, and the agent's `enable_plugin` tool. It wins
             // over the manifest's own `enabled` flag when present; when
             // absent, the manifest flag is the default (true only for
-            // plugins that ship on, like noisegate). A missing config is
-            // an empty config, so manifest defaults apply; an unparsable
-            // config fails closed (disabled). Only canonical bundled
+            // plugins that ship on, like noisegate). A missing config
+            // fails closed (disabled); an unparsable config fails
+            // closed (disabled). Only canonical bundled
             // dirs take this branch - a hand-dropped `bundled/` dir is
             // third-party (manifest flag + approval in `spawn_verified`).
             // Third-party plugins keep their manifest flag; their gate is
