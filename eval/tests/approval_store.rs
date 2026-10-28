@@ -187,11 +187,21 @@ fn exec_adapter_bundled_needs_no_approval() {
     let d = tempdir().unwrap();
     let data = d.path().join("data");
     let bundled = data.join("plugins").join("bundled");
-    write_exec_plugin(&bundled, "bp");
-    // Bundled plugins live one level deeper than user plugins, so they are
-    // not found by the one-level `discover_plugins` scan; load directly.
-    let plugin =
-        load_plugin(&bundled.join("bp"), PluginLocation::User).expect("bundled plugin loads");
+    // A hand-written dir under `bundled/` is path-bundled but NOT
+    // canonical-bundled, so it needs third-party approval like any
+    // other unvetted code. Seed a real shipped plugin instead: its
+    // bytes match the embedded registry, so it carries bundled trust
+    // with no approval record.
+    let seeded = pantheon_exec::plugins::seed_bundled_plugins(&data)
+        .expect("seed bundled plugins");
+    // Tool plugins seed under plugins/bundled; hook plugins seed
+    // under extensions/bundled, so pick a seeded tool dir.
+    let first = seeded
+        .iter()
+        .find(|n| bundled.join(n).is_dir())
+        .expect("registry seeds at least one tool plugin");
+    let plugin = load_plugin(&bundled.join(first), PluginLocation::User)
+        .expect("seeded bundled plugin loads");
     assert!(pa::is_bundled(&plugin));
     assert!(pa::is_approved(&plugin));
     assert!(pa::pending_approvals(std::slice::from_ref(&plugin)).is_empty());

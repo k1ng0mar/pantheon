@@ -227,7 +227,10 @@ fn teams_use_unknown_profile_rejected_and_nothing_spawns() {
     let mut t = team_json("bogus");
     t["members"][0]["profile"] = serde_json::json!("nope");
     assert_eq!(post_json(&d, "/api/teams", &t).status, 201);
-    let r = d.post("/api/teams/bogus/use", r#"{"judge": false}"#);
+    // The brief template contains {{task}}, so a task is required
+    // before profile resolution runs: supply one so the failure under
+    // test is the bad profile, not the missing task.
+    let r = d.post("/api/teams/bogus/use", r#"{"task": "ship it", "judge": false}"#);
     assert_eq!(r.status, 400, "{}", r.body);
     assert!(
         r.body.contains("nope"),
@@ -245,7 +248,7 @@ fn teams_use_rejects_dangling_expert_and_nothing_spawns() {
     // Delete the expert out from under the team: the team file still
     // references it, so `use` must fail closed.
     assert_eq!(d.delete("/api/experts/data-analyst").status, 200);
-    let r = d.post("/api/teams/crew3/use", r#"{"judge": false}"#);
+    let r = d.post("/api/teams/crew3/use", r#"{"task": "ship it", "judge": false}"#);
     assert_eq!(r.status, 400, "{}", r.body);
     assert!(r.body.contains("data-analyst"), "{}", r.body);
     // Nothing spawned: the orchestrator's first id is still unknown.
@@ -289,7 +292,8 @@ fn teams_use_spawns_swarm_with_response_shape() {
     t["members"][0]["profile"] = serde_json::json!("nyx");
     t["members"][1]["profile"] = serde_json::json!("atlas");
     assert_eq!(post_json(&d, "/api/teams", &t).status, 201);
-    // Task override wins over the brief template.
+    // The task renders into the brief template ({{task}}), so the
+    // status view carries the rendered brief, not the raw task.
     let r = d.post(
         "/api/teams/crew/use",
         r#"{"task": "ship it", "judge": false}"#,
@@ -311,7 +315,7 @@ fn teams_use_spawns_swarm_with_response_shape() {
         .map(|a| a.as_str().unwrap())
         .collect();
     assert_eq!(names, ["Data Analyst", "Data Analyst"]);
-    assert_eq!(b["status_view"]["task"], "ship it");
+    assert_eq!(b["status_view"]["task"], "Do ship it well.");
     // The orchestrator really holds the swarm (fail-closed tests above
     // prove a rejected `use` leaves it untouched).
     assert!(d.swarm.status(&swarm_id).is_ok());

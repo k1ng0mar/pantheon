@@ -122,6 +122,9 @@ fn scoped_denial_keeps_other_approval_pending() {
 
 #[test]
 fn artifact_put_returns_a_signed_reference() {
+    // Signing is fail-closed without a configured secret; this test
+    // supplies a test-only one so artifact.put can mint its reference.
+    std::env::set_var("PANTHEON_GENUI_SECRET", "test-genui-secret");
     let dir = std::env::temp_dir().join(format!("pantheon-artifact-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let d = dispatcher_for_with_hint_and_base(
@@ -145,6 +148,7 @@ fn artifact_put_returns_a_signed_reference() {
         .unwrap()
         .unwrap();
     assert_eq!(artifact.bytes, b"hello");
+    std::env::remove_var("PANTHEON_GENUI_SECRET");
 }
 
 fn call(d: &Dispatcher, method: &str, params: Value) -> Value {

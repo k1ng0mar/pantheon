@@ -409,7 +409,9 @@ fn run_metrics_count_each_outcome_separately() {
     assert_eq!(led.metrics("r_give").unwrap().runs_completed, 0);
     // Counters are per-run, not global.
     assert_eq!(led.metrics("r_ok").unwrap().tool_calls, 1);
-    assert_eq!(led.metrics("nope").unwrap().runs_started, 0);
+    // An unknown run errors instead of folding into all-zero metrics:
+    // zeroes used to masquerade a typo'd id as a run that did nothing.
+    assert_eq!(led.metrics("nope").unwrap_err().code, "LEDGER_NO_RUN");
 }
 
 /// The rendered form has to name the number that matters when someone is
