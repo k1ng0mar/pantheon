@@ -9989,7 +9989,7 @@ fn build_model_rows() -> Vec<ModelRow> {
 /// A missing `[model]` section is created rather than failing, so a
 /// switch works on a config that predates the section.
 fn persist_model_choice(dd: &std::path::Path, provider: &str, model: &str) -> Result<(), String> {
-    let mut cfg = crate::config::Config::load(dd).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(dd).map_err(|e| e.cause.clone())?;
     match cfg.model.as_mut() {
         Some(m) => {
             m.provider = provider.to_string();
@@ -10317,7 +10317,7 @@ fn persist_reasoning(
     budget: Option<u32>,
 ) -> Result<(), String> {
     use pantheon_api::model::ReasoningLevel;
-    let mut cfg = crate::config::Config::load(dd).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(dd).map_err(|e| e.cause.clone())?;
     let Some(model) = cfg.model.as_mut() else {
         return Err("no [model] section yet; set a model first (/model P M)".into());
     };
@@ -11586,18 +11586,34 @@ fn handle_slash_inner(
                     "policy: {}",
                     cfg.policy.map(|p| p.as_str()).unwrap_or("coder")
                 ));
-                state.add_status(format!(
-                    "memory: {}",
-                    cfg.memory
-                        .as_ref()
-                        .map(|m| m.backend.as_str())
-                        .unwrap_or("native")
-                ));
+                // The effective backend is the memory-backend.toml
+                // selection, not `[memory]` in config.toml: that section
+                // is display-only (setup syncs both files, hand edits do
+                // not). Show the real selection, and flag drift.
+                let sel = pantheon_memory::load_selection(&dd);
+                let cfg_backend = cfg
+                    .memory
+                    .as_ref()
+                    .map(|m| m.backend.as_str())
+                    .unwrap_or("native");
+                if sel.name == cfg_backend {
+                    state.add_status(format!("memory: {} (memory-backend.toml)", sel.name));
+                } else {
+                    state.add_status(format!(
+                        "memory: {} (memory-backend.toml; [memory] in config.toml says {cfg_backend} but is display-only and ignored)",
+                        sel.name
+                    ));
+                }
                 state.add_status(format!(
                     "server: {}",
                     cfg.server
                         .as_ref()
-                        .map(|s| format!("{}:{}", s.host, s.port))
+                        .map(|s| {
+                            // Show the effective port: a configured 0
+                            // serves on 18789 (see `server_port`), and
+                            // /status must agree with serve + remotes.
+                            format!("{}:{}", s.host, crate::config::server_port(Some(s)))
+                        })
                         .unwrap_or_else(|| "unset".into())
                 ));
                 state.add_status(format!(

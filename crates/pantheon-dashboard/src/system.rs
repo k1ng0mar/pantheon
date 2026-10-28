@@ -19,10 +19,15 @@ use std::path::Path;
 /// on. Replaces the old raw `nightly.enabled` TOML bool read, which
 /// cannot express the `Option<bool>` flag or the pin-implied default.
 fn nightly_enabled_resolved(data_dir: &Path) -> bool {
-    pantheon_api::config::Config::load(data_dir)
-        .ok()
-        .and_then(|c| c.nightly)
-        .is_some_and(|s| pantheon_api::config::nightly_enabled(&s))
+    let Ok(cfg) = pantheon_api::config::Config::load(data_dir) else {
+        return false;
+    };
+    let legacy = cfg.reflect.as_ref().is_some_and(|s| s.enabled)
+        || cfg.consolidation.as_ref().is_some_and(|s| s.enabled);
+    match cfg.nightly.as_ref() {
+        Some(n) => pantheon_api::config::nightly_enabled_with_legacy(n, legacy),
+        None => legacy,
+    }
 }
 
 /// Next scheduled nightly run in epoch ms, if any: the earliest next
@@ -250,10 +255,13 @@ pub fn reflect_run(_app: &App, req: &Request) -> Response {
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if dry_run {
-        let _ = spawn_pantheon(&["nightly", "--dry-run"]);
+    let spawn = if dry_run {
+        spawn_pantheon(&["nightly", "--dry-run"])
     } else {
-        let _ = spawn_pantheon(&["nightly"]);
+        spawn_pantheon(&["nightly"])
+    };
+    if let Err(e) = spawn {
+        return err_json(500, "SPAWN", &format!("failed to start nightly: {e}"));
     }
     json_ok(serde_json::json!({"ok": true, "accepted": true, "dry_run": dry_run}))
 }
@@ -290,10 +298,13 @@ pub fn consolidate_run(_app: &App, req: &Request) -> Response {
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if dry_run {
-        let _ = spawn_pantheon(&["nightly", "--dry-run"]);
+    let spawn = if dry_run {
+        spawn_pantheon(&["nightly", "--dry-run"])
     } else {
-        let _ = spawn_pantheon(&["nightly"]);
+        spawn_pantheon(&["nightly"])
+    };
+    if let Err(e) = spawn {
+        return err_json(500, "SPAWN", &format!("failed to start nightly: {e}"));
     }
     json_ok(serde_json::json!({"ok": true, "accepted": true, "dry_run": dry_run}))
 }

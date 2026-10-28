@@ -757,7 +757,11 @@ pub fn create(app: &App, req: &Request) -> Response {
     // The turn child runs in its own process group so `POST
     // /api/runs/:id/kill` can hard-stop it; its PID is recorded for the
     // kill endpoint.
-    if let Ok(pid) = spawn_turn_child_with_stdin(
+    // A spawn failure used to be swallowed and the 201 below still
+    // returned, claiming a turn was running that never started. Fail
+    // loudly: the run stays admitted in the ledger (visible, retryable
+    // via message), but the caller learns the turn never started.
+    match spawn_turn_child_with_stdin(
         &[
             "run",
             "--taskID",
@@ -771,7 +775,10 @@ pub fn create(app: &App, req: &Request) -> Response {
         ],
         message.as_bytes(),
     ) {
-        app.register_turn_child(&run_id, pid);
+        Ok(pid) => app.register_turn_child(&run_id, pid),
+        Err(e) => {
+            return err_json(500, "SPAWN", &format!("failed to start turn: {e}"));
+        }
     }
     match detail_value(app, &run_id) {
         Ok(v) => created_json(v),
@@ -1875,7 +1882,7 @@ pub fn answer_input(app: &App, run_id: &str, req: &Request) -> Response {
         .unwrap_or_else(|_| DEFAULT_RUN_MODE.to_string());
     drop(sup);
     // Own process group so the resumed turn is hard-stoppable too.
-    if let Ok(pid) = spawn_turn_child(&[
+    match spawn_turn_child(&[
         "run",
         "--taskID",
         run_id,
@@ -1885,7 +1892,10 @@ pub fn answer_input(app: &App, run_id: &str, req: &Request) -> Response {
         "--mode",
         mode.as_str(),
     ]) {
-        app.register_turn_child(run_id, pid);
+        Ok(pid) => app.register_turn_child(run_id, pid),
+        Err(e) => {
+            return err_json(500, "SPAWN", &format!("failed to resume turn: {e}"));
+        }
     }
     json_ok(serde_json::json!({"ok": true}))
 }

@@ -236,7 +236,7 @@ pub fn nightly_enabled(data_dir: &Path) -> bool {
 /// Writes the explicit `Some(enabled)` flag - explicit always wins over
 /// the model-pin rule (see [`pantheon_api::config::nightly_enabled`]).
 pub fn persist_nightly_enabled(data_dir: &Path, enabled: bool) -> Result<(), String> {
-    let mut cfg = crate::config::Config::load_or_report(data_dir).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(data_dir).map_err(|e| e.cause.clone())?;
     let mut section = cfg.nightly.clone().unwrap_or_default();
     section.enabled = Some(enabled);
     cfg.nightly = Some(section);

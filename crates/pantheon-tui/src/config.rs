@@ -425,12 +425,17 @@ pub fn consolidation_aux_model(
 /// `[consolidation]` `enabled` flags were explicit opt-ins, honored
 /// field-by-field. Absent everything = off (nightly is off by default).
 pub fn nightly_pass_enabled(cfg: Option<&Config>) -> bool {
+    // A partial [nightly] table (cron only) no longer switches a
+    // previously enabled legacy pass off: see
+    // `nightly_enabled_with_legacy` - only an explicit flag or pin in
+    // [nightly] overrides the legacy flags.
+    let legacy = cfg.is_some_and(|c| {
+        c.reflect.as_ref().is_some_and(|s| s.enabled)
+            || c.consolidation.as_ref().is_some_and(|s| s.enabled)
+    });
     match cfg.and_then(|c| c.nightly.as_ref()) {
-        Some(n) => pantheon_api::config::nightly_enabled(n),
-        None => cfg.is_some_and(|c| {
-            c.reflect.as_ref().is_some_and(|s| s.enabled)
-                || c.consolidation.as_ref().is_some_and(|s| s.enabled)
-        }),
+        Some(n) => pantheon_api::config::nightly_enabled_with_legacy(n, legacy),
+        None => legacy,
     }
 }
 
@@ -451,14 +456,19 @@ pub fn nightly_config(
     let n = cfg.and_then(|c| c.nightly.as_ref());
     let r = cfg.and_then(|c| c.reflect.as_ref());
     let c = cfg.and_then(|c| c.consolidation.as_ref());
-    // Authoritative-when-present: legacy flags must not leak into a pass
-    // whose `[nightly]` section exists - a legacy `enabled = true` must
-    // not turn on LLM steps the user thought they turned off.
+    // Authoritative-when-present, except for enablement: an explicit
+    // `[nightly]` flag or pin overrides legacy, but a `[nightly]`
+    // table that decides nothing (cron only) defers to the legacy
+    // flags instead of silently switching a previously enabled pass off.
+    // A legacy `enabled = true` still never overrides an explicit
+    // `[nightly] enabled = false`.
+    let legacy_llm = r.map(|s| s.enabled).unwrap_or(false) || c.map(|s| s.enabled).unwrap_or(false);
     let llm_enabled = match n {
-        // The single enable rule: explicit flag wins, else the model pin
-        // implies on. See pantheon_api::config::nightly_enabled.
-        Some(s) => pantheon_api::config::nightly_enabled(s),
-        None => r.map(|s| s.enabled).unwrap_or(false) || c.map(|s| s.enabled).unwrap_or(false),
+        // The single enable rule, with the partial-table legacy fallback:
+        // explicit flag wins, else the model pin implies on, else a
+        // [nightly] table that decides nothing defers to legacy.
+        Some(s) => pantheon_api::config::nightly_enabled_with_legacy(s, legacy_llm),
+        None => legacy_llm,
     };
     pantheon_nightly::NightlyConfig {
         data_dir: data_dir.to_path_buf(),
@@ -631,7 +641,7 @@ pub fn upsert_custom_row(
     key_env: &str,
 ) -> Result<bool, String> {
     use pantheon_providers::catalog::ApiMode as Mode;
-    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    let mut cfg = Config::load_for_save(data_dir).map_err(|e| e.to_string())?;
     let shadow = pantheon_providers::catalog::providers()
         .iter()
         .any(|p| p.id == name);
@@ -676,7 +686,7 @@ pub fn remember_custom_model(
     if model.is_empty() {
         return Ok(false);
     }
-    let mut cfg = Config::load(data_dir).unwrap_or_default();
+    let mut cfg = Config::load_for_save(data_dir).map_err(|e| e.to_string())?;
     let Some(sec) = cfg.custom_providers.get_mut(provider) else {
         return Err(format!(
             "no custom provider {provider:?}; add it with `pantheon provider add --name {provider}`"
@@ -854,6 +864,19 @@ pub fn build_routed_model_policy(
     policy
 }
 
+/// Effective serve port for a `[server]` section: the configured port,
+/// except 0 (the documented "auto") and absence both resolve to the
+/// 18789 default. A literal 0 used to bind an ephemeral port nobody
+/// reported - remotes refused it (`port 0 => None`), GenUI blob URLs
+/// baked in `:0`, and nothing printed the bound port - so "auto" now
+/// means "the default port", addressable by everything downstream.
+pub fn server_port(server: Option<&ServerSection>) -> u16 {
+    match server.map(|s| s.port).unwrap_or(0) {
+        0 => 18789,
+        p => p,
+    }
+}
+
 /// Resolve the model policy for one session: explicit override > environment >
 /// `config.toml` > the hardcoded local default, plus the configured fallback
 /// chain and every auxiliary slot.
@@ -868,11 +891,15 @@ pub fn build_model_policy(
     provider: Option<String>,
     model: Option<String>,
 ) -> pantheon_api::model::ModelPolicy {
-    // Canonical precedence (explicit > env > config > default) and the
-    // configured fallback chain, resolved in `pantheon-api` so the TUI,
-    // the dashboard, and the runtime can no longer disagree. The
-    // previous hand-rolled order was config > env, and an empty env var
-    // shadowed config with "".
+    // Canonical precedence, delegated to the single resolver in
+    // pantheon-api (`config_resolve`): explicit argument > environment
+    // variable > `[model]` section > hardcoded local default, with
+    // empty/whitespace values ignored at every level. This used to do
+    // explicit > config > env with raw `.or()` chains, so an empty
+    // config value (e.g. a `[model]` table created by `fallback add`
+    // with no default) shadowed the environment and the local default.
+    // The fallback chain is resolved by the same single resolver, so
+    // the TUI, the dashboard, and the runtime can no longer disagree.
     let default = pantheon_api::config_resolve::resolve_default_model(cfg, provider, model);
     let chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
     pantheon_api::model::ModelPolicy {
