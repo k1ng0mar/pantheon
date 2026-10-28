@@ -73,7 +73,7 @@ fn edit_value(v: &Value) -> Result<toml_edit::Value, String> {
 fn set_path_like(
     table: &mut dyn toml_edit::TableLike,
     parts: &[&str],
-    value: toml_edit::Item,
+    mut value: toml_edit::Item,
 ) -> Result<(), String> {
     if parts.len() == 1 {
         // Replace in place when the key already exists: `insert`
@@ -81,8 +81,18 @@ fn set_path_like(
         // sitting directly above the line - most visibly a comment
         // above a dotted key (`# note\nnightly.enabled = false`),
         // which toml_edit re-encodes without the outer key's decor.
-        // A fresh key still goes through `insert`.
+        // A fresh key still goes through `insert`. Replacing the
+        // item wholesale still drops the old VALUE's decor, which is
+        // where a trailing comment lives (`enabled = false # note`):
+        // copy it onto the replacement for scalar-to-scalar edits,
+        // the same rule `set_in_table` uses.
         if let Some(item) = table.get_mut(parts[0]) {
+            if let (toml_edit::Item::Value(old), toml_edit::Item::Value(new)) =
+                (&*item, &mut value)
+            {
+                let decor = old.decor().clone();
+                *new.decor_mut() = decor;
+            }
             *item = value;
         } else {
             table.insert(parts[0], value);
@@ -1580,6 +1590,20 @@ mod tests {
         assert!(out.contains("# keep this limit"), "{out}");
         assert!(out.contains("enabled = true"), "{out}");
         assert!(out.contains("max_turns = 10"), "{out}");
+    }
+
+    /// The writer PUT actually uses (`apply_edits_preserving`, via
+    /// `set_path_like`) must keep a trailing comment on the changed
+    /// key, not just the comments above it: replacing the value
+    /// wholesale used to drop the value's decor, which is where the
+    /// trailing comment lives.
+    #[test]
+    fn apply_edits_preserving_keeps_trailing_comment() {
+        let raw = "[nightly]\nenabled = false # trailing comment\n";
+        let mut changes = BTreeMap::new();
+        changes.insert("nightly.enabled".to_string(), Value::Boolean(true));
+        let out = apply_edits_preserving(raw, &changes).unwrap();
+        assert!(out.contains("enabled = true # trailing comment"), "{out}");
     }
 
     /// A new key appends without disturbing existing lines.
