@@ -797,8 +797,9 @@ pub fn detect_format(root: &Path) -> Result<DetectedPlugin, ImportError> {
     if manifest_path.exists() {
         let text =
             std::fs::read_to_string(&manifest_path).map_err(|e| ImportError::Io(e.to_string()))?;
-        let m: pantheon_exec::plugins::PluginManifest = serde_yaml::from_str(&text)
-            .map_err(|e| ImportError::BadRequest(format!("manifest.yaml: {e}")))?;
+        let m: pantheon_exec::plugins::PluginManifest =
+            pantheon_exec::plugins::parse_manifest(&text)
+                .map_err(|e| ImportError::BadRequest(format!("manifest.yaml: {e}")))?;
         check_plugin_name(&m.name)?;
         let capabilities = m
             .capabilities

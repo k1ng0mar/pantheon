@@ -58,6 +58,21 @@ impl PluginManifest {
     pub fn load(path: &Path) -> Result<Self, PantheonError> {
         let text =
             std::fs::read_to_string(path).map_err(|e| xerr("EXT_MANIFEST_READ", e.to_string()))?;
+        // Fail closed on a top-level `key`: serde would otherwise
+        // silently ignore it, leaving a credential in a manifest that
+        // can be shared. Credentials go through the secrets broker,
+        // never through a manifest file (see the tool-plugin loader's
+        // `parse_manifest` for the same rule).
+        if let Ok(serde_yaml::Value::Mapping(map)) =
+            serde_yaml::from_str::<serde_yaml::Value>(&text)
+        {
+            if map.contains_key(serde_yaml::Value::String("key".to_string())) {
+                return Err(xerr(
+                    "EXT_MANIFEST_KEY",
+                    "manifest sets a `key`: API keys must never live in plugin manifests, which can be shared; provide credentials through the secrets broker instead".to_string(),
+                ));
+            }
+        }
         let mut m: Self =
             serde_yaml::from_str(&text).map_err(|e| xerr("EXT_MANIFEST_PARSE", e.to_string()))?;
         // Presence, not just value: see `enabled_set`.
