@@ -1396,6 +1396,36 @@ impl TuiState {
         self.models_close();
     }
 
+    /// Take the models-picker selection for an Enter press: the
+    /// selected row, closing the pickers. `None` when the filtered
+    /// list is empty - and the pickers stay open, so Enter on "no
+    /// matches" no longer silently closed the whole browser (the
+    /// providers arm already stayed open on empty; the models arm
+    /// closed unconditionally).
+    pub fn take_model_selection(&mut self) -> Option<ModelRow> {
+        let target = self.filtered_models().get(self.models_sel).cloned();
+        if target.is_some() {
+            self.providers_close();
+        }
+        target
+    }
+
+    /// Take the history-picker selection for an Enter press: the
+    /// selected run id, closing the picker. `None` when the filtered
+    /// list is empty - and the picker stays open, instead of closing
+    /// silently with nothing selected (the old arm closed first and
+    /// then checked).
+    pub fn take_history_selection(&mut self) -> Option<String> {
+        let target = self
+            .filtered_history()
+            .get(self.history_sel)
+            .map(|r| r.0.clone());
+        if target.is_some() {
+            self.history_close();
+        }
+        target
+    }
+
     /// Live token estimate: ~4 chars per token, updated on every streamed
     /// delta so the counter ticks smoothly. Snapped to the
     /// authoritative number when Usage arrives. Counted in chars, not
@@ -9037,10 +9067,7 @@ fn tui_loop(
                             state.models_close();
                         }
                         KeyCode::Enter => {
-                            let sel = state.models_sel;
-                            let target = state.filtered_models().get(sel).cloned();
-                            state.providers_close();
-                            if let Some(row) = target {
+                            if let Some(row) = state.take_model_selection() {
                                 if row.model_id.is_empty() {
                                     state.add_status(format!(
                                         "{} lists no curated models; switch with: /model {} <id>",
@@ -9201,10 +9228,7 @@ fn tui_loop(
                         KeyCode::Down => state.history_move(1),
                         KeyCode::Esc => state.history_close(),
                         KeyCode::Enter => {
-                            let sel = state.history_sel;
-                            let target = state.filtered_history().get(sel).map(|r| r.0.clone());
-                            state.history_close();
-                            if let Some(id) = target {
+                            if let Some(id) = state.take_history_selection() {
                                 // Switch the run: reopen a terminal run and
                                 // rebuild the transcript from the ledger.
                                 // Compare against the selected session, not
@@ -12920,6 +12944,42 @@ mod picker_tests {
         s.providers_close();
         assert!(s.providers.is_none());
         assert!(s.models.is_none());
+    }
+
+    #[test]
+    fn picker_enter_on_empty_list_keeps_picker_open() {
+        // Enter on "no matches" used to close the models browser and
+        // the history picker silently, with nothing selected.
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[model_row("a", "A", "m")]));
+        s.models = Some(vec![model_row("a", "A", "m")]);
+        s.models_input = "zzz-no-match".into();
+        assert!(s.take_model_selection().is_none());
+        assert!(s.models.is_some(), "models picker closed on empty Enter");
+        assert!(s.providers.is_some(), "providers picker closed on empty Enter");
+
+        let mut s = test_state();
+        s.history = Some(vec![run("a", "Alpha work", None, 1000)]);
+        s.history_input = "zzz-no-match".into();
+        assert!(s.take_history_selection().is_none());
+        assert!(s.history.is_some(), "history picker closed on empty Enter");
+    }
+
+    #[test]
+    fn picker_enter_with_match_takes_selection_and_closes() {
+        let mut s = test_state();
+        s.providers = Some(provider_rows(&[model_row("a", "A", "m")]));
+        s.models = Some(vec![model_row("a", "A", "m")]);
+        let row = s.take_model_selection().expect("model row");
+        assert_eq!(row.model_id, "m");
+        assert!(s.models.is_none());
+        assert!(s.providers.is_none());
+
+        let mut s = test_state();
+        s.history = Some(vec![run("a", "Alpha work", None, 1000)]);
+        let id = s.take_history_selection().expect("run id");
+        assert_eq!(id, "a");
+        assert!(s.history.is_none());
     }
 
     #[test]
