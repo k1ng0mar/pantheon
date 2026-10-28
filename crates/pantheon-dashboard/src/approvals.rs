@@ -134,7 +134,16 @@ pub fn decide(app: &App, scope: &str, granted: bool) -> Response {
                 "--mode",
                 mode.as_str(),
             ]) {
-                eprintln!("dashboard: failed to spawn resume turn for run {run_id}: {e}");
+                // The decision above is already recorded, but without
+                // a resume turn the run sits in "running" forever - so
+                // a spawn failure is a 500, not an ok:true that hides
+                // it. The message says the decision landed, so the
+                // operator knows a retry must resume, not re-decide.
+                return err_json(
+                    500,
+                    "SPAWN",
+                    &format!("approval recorded but resume turn failed to start: {e}"),
+                );
             }
         }
     }

@@ -658,13 +658,32 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
     // mode, and the UsageRecorded token totals. NOTE: `queued_message`
     // used to be a single string (or null); it is now always an array
     // (possibly empty). App clients must parse it as a list.
-    let pending_input = Supervisor::open(app.data_dir.clone())
-        .ok()
-        .and_then(|sup| sup.pending_input(run_id).ok())
-        .and_then(|v| v.into_iter().next())
-        .map(|(call_id, question, options)| {
-            serde_json::json!({"call_id": call_id, "question": question, "options": options})
-        })
+    // All pending inputs, not just the first: a run can park on
+    // several ask_user questions, and the old code surfaced only the
+    // first while swallowing `Supervisor::open` and `pending_input`
+    // errors entirely (`.ok()` twice) - a broken supervisor looked
+    // identical to "nothing pending". `pending_input` keeps its old
+    // shape (first item or null) for existing clients; `pending_inputs`
+    // carries the full list and `pending_input_error` names the failure
+    // when the list could not be read.
+    let (pending_inputs, pending_input_error): (Vec<serde_json::Value>, Option<String>) =
+        match Supervisor::open(app.data_dir.clone()) {
+            Ok(sup) => match sup.pending_input(run_id) {
+                Ok(v) => (
+                    v.into_iter()
+                        .map(|(call_id, question, options)| {
+                            serde_json::json!({"call_id": call_id, "question": question, "options": options})
+                        })
+                        .collect(),
+                    None,
+                ),
+                Err(e) => (Vec::new(), Some(format!("pending input: {e}"))),
+            },
+            Err(e) => (Vec::new(), Some(format!("open runtime: {e}"))),
+        };
+    let pending_input = pending_inputs
+        .first()
+        .cloned()
         .unwrap_or(serde_json::Value::Null);
     let queued_message = serde_json::Value::Array(
         ledger
@@ -678,6 +697,10 @@ fn detail_value(app: &App, run_id: &str) -> Result<serde_json::Value, Response> 
         .run_mode(run_id)
         .unwrap_or_else(|_| DEFAULT_RUN_MODE.to_string());
     v["pending_input"] = pending_input;
+    v["pending_inputs"] = serde_json::Value::Array(pending_inputs);
+    v["pending_input_error"] = pending_input_error
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null);
     v["queued_message"] = queued_message;
     v["mode"] = serde_json::Value::String(mode);
     v["context_tokens"] = serde_json::json!({
@@ -1619,7 +1642,22 @@ pub fn fork(app: &App, run_id: &str, req: &Request) -> Response {
             };
             for queued in ledger.queued_messages(run_id).unwrap_or_default() {
                 if let Err(e) = ledger.set_queued_message(&new_id, Some(&queued)) {
-                    return err_json(500, "LEDGER", &format!("carry queue into fork: {e}"));
+                    // Roll back the fork itself: a half-carried queue
+                    // (some follow-ups on the new run, the rest lost
+                    // from the client's view) is worse than no fork.
+                    // The source run is untouched - only the brand-new
+                    // run is deleted. Best-effort: if the delete itself
+                    // fails, say so in the error instead of pretending
+                    // the rollback happened.
+                    let rollback = ledger
+                        .delete_run(&new_id)
+                        .err()
+                        .map(|de| format!("; rollback failed: {de}"));
+                    return err_json(
+                        500,
+                        "LEDGER",
+                        &format!("carry queue into fork: {e}{}", rollback.unwrap_or_default()),
+                    );
                 }
             }
             created_json(serde_json::json!({

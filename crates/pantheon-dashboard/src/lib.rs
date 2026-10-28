@@ -1654,4 +1654,29 @@ mod route_tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The double-spawn guard: `send_message` and `retry_turn` serialize
+    /// on one mutex per run id, so two concurrent turn-starting
+    /// requests cannot both observe idle and both spawn (the loser's
+    /// turn would die with RT_LEASE_BUSY after a 200). Same run id
+    /// must yield the same lock; different ids must not share one.
+    #[test]
+    fn send_guard_is_per_run_and_stable() {
+        let (app, dir) = test_app();
+        let a = app.send_guard("run-1");
+        let b = app.send_guard("run-1");
+        let c = app.send_guard("run-2");
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "same run, same lock");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &c),
+            "different runs, different locks"
+        );
+        // And it actually serializes: a held guard blocks a second
+        // acquisition attempt on the same run.
+        let held = a.lock().unwrap();
+        assert!(b.try_lock().is_err(), "held guard must block");
+        drop(held);
+        assert!(b.try_lock().is_ok(), "released guard must acquire");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
