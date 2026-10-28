@@ -309,6 +309,7 @@ impl ToolEnablement {
         e.video_analysis = get(s.video_analysis);
         e.computer_use = get(s.computer_use);
         e.plugins = get(s.plugins);
+        e.code_intel = get(s.code_intel);
         e
     }
 
@@ -331,7 +332,7 @@ impl ToolEnablement {
             G::VideoAnalysis => self.video_analysis,
             G::ComputerUse => self.computer_use,
             G::Plugins => self.plugins,
-            G::CodeIntel => true,
+            G::CodeIntel => self.code_intel,
         }
     }
 }
@@ -575,4 +576,60 @@ pub fn build_browser_backend(
     pantheon_web::browser::build_backend(cfg.backend, &backend_config)
         .map(Some)
         .map_err(pantheon_api::error::PantheonError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_intel_false_from_section_disables_the_group() {
+        let mut section = pantheon_api::config::ToolsSection::default();
+        section.code_intel = Some(false);
+        let enablement = ToolEnablement::from_section(&section);
+        assert!(!enablement.is_enabled(pantheon_api::config::ToolGroup::CodeIntel));
+        // Absent stays on, like every other group.
+        let enablement = ToolEnablement::from_section(&pantheon_api::config::ToolsSection::default());
+        assert!(enablement.is_enabled(pantheon_api::config::ToolGroup::CodeIntel));
+        // Every flag round-trips, not just code_intel: a future dropped
+        // field must fail here instead of silently staying on.
+        let mut section = pantheon_api::config::ToolsSection::default();
+        section.web_search = Some(false);
+        section.browser = Some(false);
+        section.terminal = Some(false);
+        section.files = Some(false);
+        section.memory = Some(false);
+        section.skills = Some(false);
+        section.tasks = Some(false);
+        section.delegation = Some(false);
+        section.ask_user = Some(false);
+        section.vault = Some(false);
+        section.voice = Some(false);
+        section.vision = Some(false);
+        section.video_analysis = Some(false);
+        section.computer_use = Some(false);
+        section.plugins = Some(false);
+        section.code_intel = Some(false);
+        let enablement = ToolEnablement::from_section(&section);
+        for group in [
+            pantheon_api::config::ToolGroup::WebSearch,
+            pantheon_api::config::ToolGroup::Browser,
+            pantheon_api::config::ToolGroup::Terminal,
+            pantheon_api::config::ToolGroup::Files,
+            pantheon_api::config::ToolGroup::Memory,
+            pantheon_api::config::ToolGroup::Skills,
+            pantheon_api::config::ToolGroup::Tasks,
+            pantheon_api::config::ToolGroup::Delegation,
+            pantheon_api::config::ToolGroup::AskUser,
+            pantheon_api::config::ToolGroup::Vault,
+            pantheon_api::config::ToolGroup::Voice,
+            pantheon_api::config::ToolGroup::Vision,
+            pantheon_api::config::ToolGroup::VideoAnalysis,
+            pantheon_api::config::ToolGroup::ComputerUse,
+            pantheon_api::config::ToolGroup::Plugins,
+            pantheon_api::config::ToolGroup::CodeIntel,
+        ] {
+            assert!(!enablement.is_enabled(group), "{group:?} must be off");
+        }
+    }
 }

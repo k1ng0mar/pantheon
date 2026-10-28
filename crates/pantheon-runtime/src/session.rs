@@ -2587,8 +2587,9 @@ pub struct ToolCounts {
     /// `mcp_cua-driver_*` desktop-control tools (0 when the ComputerUse
     /// group is off, the driver is not installed, or it is unapproved).
     pub computer: usize,
-    /// LSP + git-undo code-intel tools (0 when the CodeIntel group is
-    /// off). LSP is 3 tools, git-undo is 4 tools when the group is on.
+    /// LSP + git-undo + worktree + code-graph tools (0 when the
+    /// CodeIntel group is off). LSP is 3 tools, git-undo is 4 tools
+    /// when the group is on.
     pub code_intel: usize,
 }
 
@@ -11157,4 +11158,34 @@ mod tool_registration_diagnostics_tests {
             session.tool_diagnostics()
         );
     }
+
+    #[test]
+    fn code_intel_false_registers_no_code_intel_tools() {
+        // Config -> enablement -> registry, end to end: `[tools]
+        // code_intel = false` used to leave the group on because
+        // `from_section` dropped the flag and `is_enabled` hardcoded
+        // true. The gate covers LSP, git-undo, worktrees, and the code
+        // graph, not just the LSP + git-undo the old label named.
+        let (session, _dir) = test_session();
+        let mut section = pantheon_api::config::ToolsSection::default();
+        section.code_intel = Some(false);
+        session.set_tool_enablement(crate::tool_config::ToolEnablement::from_section(&section));
+        let (reg, counts) = session.build_tool_registry();
+        assert_eq!(counts.code_intel, 0, "code_intel=false must register none");
+        assert!(
+            !reg.names().iter().any(|n| n.starts_with("lsp.")
+                || n.starts_with("gitundo.")
+                || n.starts_with("worktree.")
+                || n.starts_with("codebase.")),
+            "no code-intel tool may appear: {:?}",
+            reg.names()
+        );
+        let (session, _dir) = test_session();
+        let (_reg, counts) = session.build_tool_registry();
+        assert!(
+            counts.code_intel > 0,
+            "default enablement still registers code-intel tools"
+        );
+    }
+
 }
