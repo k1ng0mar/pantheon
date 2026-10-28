@@ -392,7 +392,7 @@ impl MethodHandler for PutArtifact {
         sup_for(&dir)?
             .put_artifact(task, mime, &bytes)
             .map_err(|e| RpcError::internal(e.to_string()))?;
-        let Some(secret) = crate::agui_serve::genui_secret() else {
+        let Some(secret) = crate::agui_serve::genui_secret_for(&dir) else {
             return Err(RpcError::internal(
                 "genui signing not configured: set PANTHEON_GENUI_SECRET",
             ));
@@ -452,14 +452,13 @@ impl MethodHandler for Sign {
             return Err(RpcError::invalid_params("ttl_ms must be positive"));
         }
         let base = self.default_base.clone();
-        let Some(secret) = crate::agui_serve::genui_secret() else {
+        let Some(secret) = crate::agui_serve::genui_secret_for(&self.data_dir) else {
             return Err(RpcError::internal(
                 "genui signing not configured: set PANTHEON_GENUI_SECRET",
             ));
         };
         let signer = pantheon_gateway::GenUiSigner::new(base, secret);
         let r = signer.sign(task, mime, ttl);
-        let _ = &self.data_dir;
         Ok(json!({"task_id": r.task_id, "url": r.url, "expires_ms": r.expires_ms, "mime": r.mime}))
     }
 }
