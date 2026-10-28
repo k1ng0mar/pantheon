@@ -1275,7 +1275,7 @@ impl ToolGroup {
             ToolGroup::VideoAnalysis => "Video Analysis",
             ToolGroup::ComputerUse => "Computer Use",
             ToolGroup::Plugins => "Plugins & MCP",
-            ToolGroup::CodeIntel => "Code Intel (LSP + git-undo)",
+            ToolGroup::CodeIntel => "Code Intel (LSP + git-undo + worktrees + code graph)",
         }
     }
 }
@@ -1330,9 +1330,10 @@ pub struct ToolsSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<bool>,
     /// Code-intel tool group: LSP diagnostics (`lsp.open` /
-    /// `lsp.diagnostics` / `lsp.shutdown`) and repo-level git undo
+    /// `lsp.diagnostics` / `lsp.shutdown`), repo-level git undo
     /// (`gitundo.snapshot` / `gitundo.list` / `gitundo.restore` /
-    /// `gitundo.delete`). Off = none of those tools are registered.
+    /// `gitundo.delete`), managed worktrees, and the native code graph.
+    /// Off = none of those tools are registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_intel: Option<bool>,
 }
