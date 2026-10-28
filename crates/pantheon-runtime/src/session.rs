@@ -2982,12 +2982,22 @@ impl Session {
 
     /// Switch the default model of a live session.
     ///
-    /// Only the default target changes; fallbacks and auxiliaries are
-    /// untouched, and the next turn resolves keys and endpoints for the new
-    /// target from scratch. Validation is deliberately shallow (non-empty):
-    /// unknown ids fail at request time with structured provider errors,
-    /// and a provider string may be a raw base URL rather than a catalog
-    /// id, so catalog membership is not a valid gate here.
+    /// Switch the chat model for the next turn. The default target moves,
+    /// and so does every auxiliary that still points at the OLD default:
+    /// those entries are the materialised `auto` slots (the TUI's
+    /// `auxiliaries()` clones the default into them at build time), and
+    /// leaving them on the old model after a `/model` switch froze the
+    /// title/compression/judge/vision helpers on the previous model.
+    /// Auxiliaries pinned to a different target stay pinned — that is the
+    /// point of pinning them. Known limit, stated plainly: an entry that
+    /// was explicitly pinned to a value that happens to equal the old
+    /// default is indistinguishable from an `auto` entry after
+    /// materialisation, so it moves too. Fallbacks are untouched, and
+    /// the next turn resolves keys and endpoints for the new target from
+    /// scratch. Validation is deliberately shallow (non-empty): unknown
+    /// ids fail at request time with structured provider errors, and a
+    /// provider string may be a raw base URL rather than a catalog id,
+    /// so catalog membership is not a valid gate here.
     pub fn switch_model(&self, provider: &str, model: &str) -> Result<(), PantheonError> {
         let provider = provider.trim();
         let model = model.trim();
@@ -3011,8 +3021,15 @@ impl Session {
                 "",
             )
         })?;
+        let old = policy.default.clone();
         policy.default.provider = provider.to_string();
         policy.default.model = model.to_string();
+        for aux in policy.auxiliaries.iter_mut() {
+            if aux.provider == old.provider && aux.model == old.model {
+                aux.provider = provider.to_string();
+                aux.model = model.to_string();
+            }
+        }
         Ok(())
     }
     /// The live default target, for display and pre-marking pickers.
@@ -11487,4 +11504,45 @@ mod tool_registration_diagnostics_tests {
         );
     }
 
+    #[test]
+    fn switch_model_moves_auto_auxiliaries_and_keeps_pins() {
+        use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel};
+        let (session, _dir) = test_session();
+        // test_session's default is local/default; seed one auto-like
+        // entry (== default) and one pinned entry (different target).
+        {
+            let mut policy = session.model_policy.lock().expect("policy lock");
+            policy.auxiliaries = vec![
+                AuxiliaryModel {
+                    kind: AuxiliaryKind::TitleGen,
+                    provider: "local".into(),
+                    model: "default".into(),
+                    timeout_secs: 10,
+                    target_percent: None,
+                },
+                AuxiliaryModel {
+                    kind: AuxiliaryKind::Judge,
+                    provider: "cheap".into(),
+                    model: "judge-mini".into(),
+                    timeout_secs: 10,
+                    target_percent: None,
+                },
+            ];
+        }
+        session.switch_model("openai", "gpt-4o-mini").expect("switch");
+        let policy = session.model_policy.lock().expect("policy lock");
+        assert_eq!(policy.default.provider, "openai");
+        let title = policy.auxiliary(&AuxiliaryKind::TitleGen).expect("title aux");
+        assert_eq!(
+            (title.provider.as_str(), title.model.as_str()),
+            ("openai", "gpt-4o-mini"),
+            "auto auxiliary must follow the switch"
+        );
+        let judge = policy.auxiliary(&AuxiliaryKind::Judge).expect("judge aux");
+        assert_eq!(
+            (judge.provider.as_str(), judge.model.as_str()),
+            ("cheap", "judge-mini"),
+            "pinned auxiliary must not follow the switch"
+        );
+    }
 }
