@@ -22,6 +22,11 @@ fn flag(args: &[String], name: &str) -> Option<String> {
         if args[i] == name && i + 1 < args.len() {
             return Some(args[i + 1].clone());
         }
+        // `--port=8080` is the same flag, not an unknown one: the old
+        // exact-match-only read silently served the default port.
+        if let Some(v) = args[i].strip_prefix(&format!("{name}=")) {
+            return Some(v.to_string());
+        }
         i += 1;
     }
     None
@@ -187,6 +192,42 @@ pub fn cmd_serve(args: &[String]) {
         return;
     }
 
+    // Unknown flags are an error, not a default serve: `serve --bogus`
+    // used to start the server anyway, ignoring whatever the operator
+    // thought they had configured.
+    // All three flags take a value (`--port 8080` or `--port=8080`,
+    // as `flag()` reads them), so the value token is consumed here,
+    // not mistaken for a stray positional. A value flag with no
+    // value is not the default: `serve --port` at the end used to
+    // bind the configured port while looking like an explicit choice.
+    let rest: &[String] = args.get(2..).unwrap_or(&[]);
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        if a.starts_with("--") {
+            let name = a.split('=').next().unwrap_or(a.as_str());
+            if !matches!(name, "--port" | "--host" | "--bind") {
+                eprintln!("serve: unknown flag '{a}' (want --port, --host, --bind)");
+                std::process::exit(2);
+            }
+            if !a.contains('=') {
+                match rest.get(i + 1) {
+                    Some(v) if !v.starts_with("--") => i += 1,
+                    _ => {
+                        eprintln!("serve: {name} needs a value");
+                        std::process::exit(2);
+                    }
+                }
+            }
+        } else if a.starts_with('-') {
+            eprintln!("serve: unknown flag '{a}' (want --port, --host, --bind)");
+            std::process::exit(2);
+        } else {
+            eprintln!("serve: unexpected argument '{a}' (this command takes flags only; `serve acp` is the stdio transport)");
+            std::process::exit(2);
+        }
+        i += 1;
+    }
     // Flags win, then `[server]`, then the built-in default. A flag that is
     // present but unparseable is an error: silently binding 18789 after
     // `--port abc` leaves the user talking to the wrong server.
