@@ -105,6 +105,7 @@ mod reset;
 pub mod richtext;
 pub mod schedule;
 mod schedule_self_heal;
+pub mod secrets_form;
 pub mod send;
 pub mod session_summary;
 mod setup_wizard;
