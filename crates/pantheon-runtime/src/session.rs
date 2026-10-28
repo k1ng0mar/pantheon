@@ -5938,11 +5938,23 @@ impl Session {
         // the mailbox is a read-only view and no peer message ever reaches a
         // running turn.
         self.deliver_agent_messages(messages, run_id)?;
-        // Watchdog: every turn entry counts as observed progress. A stalled
-        // provider turn is caught when the probe (a lightweight ledger
-        // status read) fails, not by wall-clock duration.
+        // Watchdog: poll BEFORE recording activity. The previous order
+        // called `activity()` first, which reset `last_activity` and made
+        // `poll()` always return `Continue`, so the probe closure never
+        // ran and `WATCHDOG_KILL` was unreachable from `drive`. Polling
+        // first lets a stall carried over from the previous turn escalate
+        // on its failed liveness probe; only a non-kill outcome counts
+        // turn entry as observed progress.
+        //
+        // Honest scope: this is a turn-boundary ledger-liveness check,
+        // not a mid-turn stall killer. The probe is a ledger status read,
+        // and `drive` cannot poll while blocked inside the synchronous
+        // `chain.turn_stream()` below, so a provider hang inside that
+        // call is not interrupted here; the transport's own timeout
+        // bounds it. `probe_timed_out` exists for async supervisors that
+        // run the probe out of band; the synchronous path escalates
+        // through `poll_with_probe` instead.
         if let Ok(mut w) = watchdog.lock() {
-            w.activity();
             let action = w.poll_with_probe(|| {
                 self.supervisor
                     .ledger_status(run_id)
@@ -5959,6 +5971,7 @@ impl Session {
                     "",
                 ));
             }
+            w.activity();
         }
         // Recovered pending tool calls settle first, before the next model
         // call. Tools already completed (matching ToolMessage rows in the
@@ -6290,6 +6303,12 @@ impl Session {
             };
             chain.turn_stream(messages, &msink)?
         };
+        // A provider return is observed progress, whatever the outcome:
+        // the next turn entry's poll must measure silence from here, not
+        // from the previous turn's entry.
+        if let Ok(mut w) = watchdog.lock() {
+            w.activity();
+        }
 
         match outcome {
             pantheon_agent::TurnOutcome::Text {
