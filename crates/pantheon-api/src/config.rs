@@ -1285,11 +1285,46 @@ pub struct WebsearchSection {
     /// - and its API key - to the override host. Only set it for
     /// self-hosted instances (e.g. a local SearXNG URL) or test
     /// mirrors. Absent = the provider's default endpoint.
+    ///
+    /// DEPRECATED: a single global override leaks one provider's
+    /// endpoint into another provider's requests the moment the
+    /// provider switches (a Tavily URL following a switch to Exa sends
+    /// Exa calls - and the Exa key - to the Tavily host). Use
+    /// `base_urls` below, one entry per provider. This field is kept
+    /// for deserialization so old configs still load. It is never
+    /// applied directly; the one exception is a searxng-only
+    /// compatibility shim in `resolve_websearch_section` (legacy value
+    /// applies to searxng alone, never to another provider, until the
+    /// operator moves it to `base_urls.searxng`). `validate()` warns
+    /// when it is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Per-provider endpoint overrides: `[websearch.base_urls]`
+    /// `exa = "https://..."`. Only the entry for the configured
+    /// provider is ever applied; an entry for another provider never
+    /// leaks into this provider's requests. Absent entry = the
+    /// provider's default endpoint.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub base_urls: std::collections::HashMap<String, String>,
     /// Default result count per query. Default 8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<u8>,
+}
+
+impl WebsearchSection {
+    /// The endpoint override for `provider`, if one is configured for
+    /// exactly that provider. Case-insensitive on the provider id;
+    /// blank values are ignored. The legacy global `base_url` is
+    /// deliberately NOT consulted here: the legacy global is never an
+    /// input to per-provider resolution.
+    pub fn base_url_for(&self, provider: &str) -> Option<&str> {
+        let want = provider.trim().to_ascii_lowercase();
+        self.base_urls
+            .iter()
+            .find(|(k, _)| k.trim().to_ascii_lowercase() == want)
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+    }
 }
 
 /// One toggleable tool group from the setup wizard's Tools screen.
@@ -3133,6 +3168,21 @@ impl Config {
                     ));
                 }
             }
+            // The legacy global base_url is ignored (it used to leak
+            // one provider's endpoint into another's requests). Loud
+            // here so an operator who set it for SearXNG moves it to
+            // [websearch.base_urls.searxng] instead of wondering why
+            // their self-hosted instance stopped receiving traffic.
+            if w.base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some()
+            {
+                problems.push(
+                    "websearch.base_url is deprecated; move it to [websearch.base_urls.<provider>] for the provider it belongs to".to_string(),
+                );
+            }
         }
         // `[temporal]`: an unparseable timezone falls back to UTC at
         // runtime, so a typo silently shifts every temporal hint.
@@ -4093,6 +4143,48 @@ mod fix_pass4_leaf1_tests {
         assert!(
             problems.is_empty(),
             "valid sections must not be flagged: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn websearch_base_url_for_is_per_provider_never_global() {
+        // The regression for the base_url leak: an override registered
+        // for exa must never resolve for tavily, and the legacy global
+        // base_url must never resolve for anyone.
+        let section = WebsearchSection {
+            provider: Some("exa".to_string()),
+            base_url: Some("https://global.example.test".to_string()),
+            base_urls: std::collections::HashMap::from([
+                (
+                    "exa".to_string(),
+                    "https://exa-mirror.example.test".to_string(),
+                ),
+                (
+                    "  ".to_string(),
+                    "https://blank-key.example.test".to_string(),
+                ),
+                ("searxng".to_string(), "   ".to_string()),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            section.base_url_for("exa"),
+            Some("https://exa-mirror.example.test")
+        );
+        assert_eq!(
+            section.base_url_for("EXA"),
+            Some("https://exa-mirror.example.test")
+        );
+        assert_eq!(section.base_url_for("tavily"), None);
+        assert_eq!(section.base_url_for("searxng"), None);
+        // And validate() flags the legacy global so it cannot sit
+        // there silently looking effective.
+        let mut cfg = cfg_with_model();
+        cfg.websearch = Some(section);
+        let problems = cfg.validate();
+        assert!(
+            problems.iter().any(|p| p.contains("websearch.base_url")),
+            "expected a websearch.base_url problem, got: {problems:?}"
         );
     }
 

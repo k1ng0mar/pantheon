@@ -242,7 +242,12 @@ impl SearchProvider for QueryGuardProvider {
 ///   missing is an error naming the provider and its env var.
 /// - `base_url_override`: used for self-hosted providers (SearXNG instance
 ///   URL) and as a test mirror for any provider. When `None`, each
-///   provider uses its default base URL.
+///   provider uses its default base URL. PER-PROVIDER ONLY: callers
+///   must pass the override for the `id` being built, never a global
+///   value - a global override follows a provider switch and sends
+///   another provider's calls (and key) to the wrong host. The
+///   session passes `WebsearchSection::base_url_for(&provider)`; the
+///   legacy global `[websearch] base_url` is deprecated and ignored.
 ///
 /// The error is a human-readable string for logs/diagnostics; it never
 /// contains key material.

@@ -362,7 +362,15 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             enabled: Some(true),
             provider: Some(a.id.clone()),
             api_key_secret: a.key_env.clone(),
-            base_url: a.url.clone(),
+            // Per-provider, never global: the picked provider's URL is
+            // stored under its own id, so a later provider switch
+            // cannot send another provider's calls to this host.
+            base_url: None,
+            base_urls: a
+                .url
+                .clone()
+                .map(|u| [(a.id.clone(), u)].into_iter().collect())
+                .unwrap_or_default(),
             max_results: None,
         }),
         verify: None,

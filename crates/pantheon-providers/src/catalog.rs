@@ -610,3 +610,49 @@ fn command_auth_cached(provider_id: &str, cmd: &str, refresh_ms: Option<u64>) ->
     }
     Some(token)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom_meta(id: &str, base_url: &str) -> ProviderMeta {
+        ProviderMeta {
+            id: id.to_string(),
+            label: id.to_string(),
+            base_url: base_url.to_string(),
+            api_mode: ApiMode::OpenAi,
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
+            allowed_params: vec![],
+            oauth_apps: vec![],
+            sigv4: false,
+            reasoning_map: std::collections::HashMap::new(),
+            base_env: String::new(),
+            key_env: String::new(),
+            key_header: "Authorization".to_string(),
+            models: vec![],
+            prominent: false,
+            recommended: false,
+            dev: false,
+            tag: String::new(),
+        }
+    }
+
+    #[test]
+    fn custom_provider_base_urls_are_scoped_per_provider() {
+        // The chat plane already scopes base_url per provider id; lock
+        // it in: two custom providers with distinct bases resolve
+        // independently, and neither leaks into the other.
+        register_custom_provider(custom_meta("dec-rt-custom-a", "https://a.example.test/v1"));
+        register_custom_provider(custom_meta("dec-rt-custom-b", "https://b.example.test/v1"));
+        assert_eq!(
+            resolve_base_url("dec-rt-custom-a").unwrap(),
+            "https://a.example.test/v1"
+        );
+        assert_eq!(
+            resolve_base_url("dec-rt-custom-b").unwrap(),
+            "https://b.example.test/v1"
+        );
+    }
+}
