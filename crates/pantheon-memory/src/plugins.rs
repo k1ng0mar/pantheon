@@ -282,6 +282,30 @@ pub struct StdioBackend {
     trust_ceiling: TrustTier,
 }
 
+/// Reap a plugin child, waiting briefly for a clean exit first.
+/// `Child::wait` blocks forever, so a plugin that answers and then
+/// lingers (cleanup, a stuck thread) would hang the caller; poll
+/// `try_wait` for up to a second, then kill and wait. Every return
+/// path in `StdioBackend::call` goes through this after spawn, so no
+/// path leaves a zombie behind.
+fn reap(child: &mut std::process::Child) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl StdioBackend {
     pub fn new(command: String, args: Vec<String>, timeout_ms: u64) -> Self {
         Self {
@@ -329,23 +353,35 @@ impl StdioBackend {
                 )
             })?;
         {
-            let mut stdin = child.stdin.take().ok_or_else(|| {
-                perr(
-                    "MEM_PLUGIN_IO",
-                    format!("{}: stdin unavailable", self.command),
-                )
-            })?;
+            let mut stdin = match child.stdin.take() {
+                Some(s) => s,
+                None => {
+                    reap(&mut child);
+                    return Err(perr(
+                        "MEM_PLUGIN_IO",
+                        format!("{}: stdin unavailable", self.command),
+                    ));
+                }
+            };
             let line = format!("{req}\n");
-            stdin
-                .write_all(line.as_bytes())
-                .map_err(|e| perr("MEM_PLUGIN_IO", format!("writing to {}: {e}", self.command)))?;
+            if let Err(e) = stdin.write_all(line.as_bytes()) {
+                reap(&mut child);
+                return Err(perr(
+                    "MEM_PLUGIN_IO",
+                    format!("writing to {}: {e}", self.command),
+                ));
+            }
         }
-        let stdout = child.stdout.take().ok_or_else(|| {
-            perr(
-                "MEM_PLUGIN_IO",
-                format!("{}: stdout unavailable", self.command),
-            )
-        })?;
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                reap(&mut child);
+                return Err(perr(
+                    "MEM_PLUGIN_IO",
+                    format!("{}: stdout unavailable", self.command),
+                ));
+            }
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             // `take` caps the reads at the oversize limit + 1 so an
@@ -359,14 +395,14 @@ impl StdioBackend {
         let (n, line) = match rx.recv_timeout(self.timeout) {
             Ok(Ok(pair)) => pair,
             Ok(Err(e)) => {
+                reap(&mut child);
                 return Err(perr(
                     "MEM_PLUGIN_IO",
                     format!("reading from {}: {e}", self.command),
-                ))
+                ));
             }
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                reap(&mut child);
                 return Err(perr(
                     "MEM_PLUGIN_TIMEOUT",
                     format!(
@@ -378,8 +414,7 @@ impl StdioBackend {
             }
         };
         if n > crate::MAX_RESPONSE_BYTES {
-            let _ = child.kill();
-            let _ = child.wait();
+            reap(&mut child);
             return Err(perr(
                 "MEM_PLUGIN_OVERSIZE",
                 format!(
@@ -391,17 +426,26 @@ impl StdioBackend {
         }
         let line = line.trim();
         if line.is_empty() {
+            reap(&mut child);
             return Err(perr(
                 "MEM_PLUGIN_EMPTY",
                 format!("{} produced no response", self.command),
             ));
         }
-        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| {
-            perr(
-                "MEM_PLUGIN_DECODE",
-                format!("{} returned invalid JSON: {e}", self.command),
-            )
-        })?;
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                reap(&mut child);
+                return Err(perr(
+                    "MEM_PLUGIN_DECODE",
+                    format!("{} returned invalid JSON: {e}", self.command),
+                ));
+            }
+        };
+        // Every path past the read reaps the child: the old success
+        // path returned without `wait()` (and the read-error path
+        // without even `kill()`), leaking a zombie per call.
+        reap(&mut child);
         if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
             Ok(v)
         } else {
@@ -555,5 +599,66 @@ impl crate::MemoryBackend for StdioBackend {
         )
         .map_err(|e| perr("MEM_PLUGIN_DECODE", format!("confirm record invalid: {e}")))?;
         Ok(self.clamp_record(record))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LayerKind, MemoryBackend};
+
+    /// True when `pid` is neither alive nor a zombie. A reaped child
+    /// has no `/proc` entry at all; an unreaped one lingers as
+    /// `State: Z` until its parent reaps it - and the test process is
+    /// the parent, so a zombie here proves the backend leaked it.
+    fn child_gone(pid: u32) -> bool {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => !stat.contains(") Z") && !stat.contains(") R") && !stat.contains(") S"),
+        }
+    }
+
+    fn pid_of(pidfile: &std::path::Path) -> u32 {
+        std::fs::read_to_string(pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .expect("plugin wrote its pid")
+    }
+
+    #[test]
+    fn stdio_backend_reaps_child_on_success_and_on_decode_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-stdio-reap-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Success path: the old code returned without wait() here.
+        let pidfile = dir.join("ok.pid");
+        let script = format!(
+            "echo $$ > {}; echo '{{\"ok\":true,\"removed\":true}}'",
+            pidfile.display()
+        );
+        let backend = StdioBackend::new("sh".into(), vec!["-c".into(), script], 5000);
+        assert!(backend.forget(LayerKind::Agent, "ns", "k").unwrap());
+        assert!(
+            child_gone(pid_of(&pidfile)),
+            "success-path child must be reaped, not left a zombie"
+        );
+
+        // Read/decode-error path: the old code returned without even
+        // kill() here.
+        let pidfile = dir.join("bad.pid");
+        let script = format!("echo $$ > {}; echo 'not json at all'", pidfile.display());
+        let backend = StdioBackend::new("sh".into(), vec!["-c".into(), script], 5000);
+        assert!(backend.forget(LayerKind::Agent, "ns", "k").is_err());
+        assert!(
+            child_gone(pid_of(&pidfile)),
+            "decode-error-path child must be reaped, not left a zombie"
+        );
     }
 }
