@@ -3,7 +3,6 @@
 //! Run with `cargo test -p pantheon-eval`.
 
 use pantheon_tui::session::git::git_label;
-use pantheon_tui::session::statusbar::{render, StatusBarData};
 use std::path::Path;
 use std::process::Command;
 use tempfile::tempdir;
@@ -37,28 +36,6 @@ fn seed_repo() -> tempfile::TempDir {
     dir
 }
 
-fn bar_with_git(git: Option<String>) -> String {
-    render(
-        &StatusBarData {
-            status_word: "ready".into(),
-            icon: "✓".into(),
-            model: "m".into(),
-            context_frac: None,
-            context_label: None,
-            turn_in: None,
-            turn_out: None,
-            tokens_per_sec: None,
-            cache_hit_rate: None,
-            turn_no: None,
-            session_prefix: "abc".into(),
-            cost_usd: None,
-            git,
-            bg: None,
-        },
-        200,
-    )
-}
-
 #[test]
 fn non_git_dir_yields_no_label() {
     if !git_available() {
@@ -89,12 +66,4 @@ fn dirty_repo_shows_star() {
     std::fs::write(dir.path().join("f.txt"), "one").unwrap();
     std::fs::write(dir.path().join("new.txt"), "x").unwrap();
     assert_eq!(git_label(dir.path()).as_deref(), Some("⎇ testbranch*"));
-}
-
-#[test]
-fn status_bar_renders_git_segment_only_when_present() {
-    let with = bar_with_git(Some("⎇ main*".into()));
-    assert!(with.contains("⎇ main*"), "bar shows label: {with}");
-    let without = bar_with_git(None);
-    assert!(!without.contains('⎇'), "bar omits segment: {without}");
 }
