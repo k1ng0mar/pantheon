@@ -232,18 +232,48 @@ fn find_tool_plugin(app: &App, name: &str) -> Option<DiscoveredPlugin> {
 /// enablement state. Bundled plugins are first-party, so there is no
 /// third-party approval record to write; the operator's explicit enable
 /// is the consent record.
+///
+/// Two catalogs, checked in order: the vendored catalog in
+/// `pantheon_extensions::bundled` (currently empty) and the embedded
+/// bundled-plugin registry in `pantheon_exec::plugins` (the real
+/// bundled plugins: noisegate, hookify, doc-pack, ...). Checking only
+/// the vendored catalog meant dashboard approve/disable of a real
+/// bundled plugin fell through to the third-party paths - tool approve
+/// returned ok:true from the approval store without ever writing
+/// `[plugins.<name>] enabled = true`, and hook approve/disable 404'd
+/// with APPROVAL_NOT_PENDING because bundled plugins have no pending
+/// third-party approval.
 fn enable_bundled(app: &App, kind: &str, name: &str, enabled: bool) -> Option<Response> {
-    let p = bundled::find(name)?;
-    if p.kind.as_str() != kind {
-        return Some(bad_json("kind mismatch for bundled plugin"));
+    if let Some(p) = bundled::find(name) {
+        if p.kind.as_str() != kind {
+            return Some(bad_json("kind mismatch for bundled plugin"));
+        }
+        return match bundled::set_enabled(&app.data_dir, name, enabled) {
+            Ok(()) => Some(json_ok(serde_json::json!({
+                "ok": true, "kind": kind, "name": name,
+                "enabled": enabled, "bundled": true,
+            }))),
+            Err(e) => Some(err_json(500, "PLUGIN_ENABLE", &e.to_string())),
+        };
     }
-    match bundled::set_enabled(&app.data_dir, name, enabled) {
-        Ok(()) => Some(json_ok(serde_json::json!({
-            "ok": true, "kind": kind, "name": name,
-            "enabled": enabled, "bundled": true,
-        }))),
-        Err(e) => Some(err_json(500, "PLUGIN_ENABLE", &e.to_string())),
+    // Embedded registry: kind must match, then the single
+    // `[plugins.<name>]` config write.
+    if let Some(info) = plugins::bundled_plugin_infos()
+        .into_iter()
+        .find(|p| p.name == name)
+    {
+        if info.kind.as_str() != kind {
+            return Some(bad_json("kind mismatch for bundled plugin"));
+        }
+        return match plugins::set_bundled_enabled(&app.data_dir, name, enabled) {
+            Ok(()) => Some(json_ok(serde_json::json!({
+                "ok": true, "kind": kind, "name": name,
+                "enabled": enabled, "bundled": true,
+            }))),
+            Err(e) => Some(err_json(500, "PLUGIN_ENABLE", &e.to_string())),
+        };
     }
+    None
 }
 
 /// `POST /api/plugins/:kind/:name/approve` ← optional `{"acknowledge_risk": true}`.
@@ -576,6 +606,63 @@ mod tests {
         let dir = fresh_dir("missing");
         let app = scratch_app(dir.clone());
         assert!(!bundled_enabled(&app, "noisegate", true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn post_req() -> Request {
+        Request {
+            method: "POST".to_string(),
+            path: "/api/plugins".to_string(),
+            query: std::collections::HashMap::new(),
+            headers: std::collections::HashMap::new(),
+            body: b"{}".to_vec(),
+        }
+    }
+
+    fn resp_json(resp: Response) -> (u16, serde_json::Value) {
+        match resp {
+            Response::Buffered { status, body, .. } => {
+                (status, serde_json::from_slice(&body).unwrap_or_default())
+            }
+            _ => panic!("expected a buffered response"),
+        }
+    }
+
+    fn config_plugin_enabled(dir: &std::path::Path, name: &str) -> Option<bool> {
+        let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
+        let doc: toml::Value = toml::from_str(&text).ok()?;
+        doc.get("plugins")?.get(name)?.get("enabled")?.as_bool()
+    }
+
+    /// Cluster 1 (e): dashboard approve/disable of a real (embedded
+    /// registry) bundled plugin must write the single enablement
+    /// state, `[plugins.<name>] enabled`. Before the fix
+    /// `enable_bundled` consulted only the empty vendored catalog, so
+    /// hook approve/disable fell through to the third-party paths and
+    /// 404'd with APPROVAL_NOT_PENDING, and tool approve returned
+    /// ok:true from the approval store without touching the config.
+    #[test]
+    fn dashboard_approve_disable_writes_bundled_config_flag() {
+        let dir = fresh_dir("bundled-approve");
+        write_config(&dir, "# empty pantheon config\n");
+        let app = scratch_app(dir.clone());
+        // noisegate is an embedded hook plugin; it is not in the
+        // vendored catalog, so this exercises the embedded path.
+        let (status, body) = resp_json(approve(&app, "hook", "noisegate", &post_req()));
+        assert_eq!(status, 200, "approve must succeed: {body}");
+        assert_eq!(body["enabled"], serde_json::json!(true));
+        assert_eq!(
+            config_plugin_enabled(&dir, "noisegate"),
+            Some(true),
+            "approve must write [plugins.noisegate] enabled = true"
+        );
+        let (status, body) = resp_json(disable(&app, "hook", "noisegate"));
+        assert_eq!(status, 200, "disable must succeed: {body}");
+        assert_eq!(
+            config_plugin_enabled(&dir, "noisegate"),
+            Some(false),
+            "disable must write [plugins.noisegate] enabled = false"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

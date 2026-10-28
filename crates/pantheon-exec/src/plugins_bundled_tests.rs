@@ -306,3 +306,45 @@ fn bundled_plugin_kind_tokens_round_trip() {
     );
     assert_eq!(BundledPluginKind::parse("widget"), None);
 }
+
+/// Cluster 1 (d): a default-on hook plugin must be runnable by the
+/// Python runner's SHIM, which requires `register(ctx)`. A shipped
+/// `enabled: true` hook without it errors on every fire, and the tool
+/// gate fail-closes to Deny - so the plugin denies every tool call
+/// out of the box. (planning-with-files shipped exactly that way:
+/// 287 lines of standalone handlers, no register.)
+#[test]
+fn default_on_hook_plugins_define_register() {
+    for entry in bundled_plugins() {
+        if entry.kind != "hook" {
+            continue;
+        }
+        let Some(info) = parse_bundled_info(&entry) else {
+            continue;
+        };
+        if !info.enabled {
+            continue;
+        }
+        let init = entry
+            .files
+            .iter()
+            .find(|f| f.path == "__init__.py")
+            .map(|f| f.content)
+            .unwrap_or("");
+        assert!(
+            init.contains("def register("),
+            "bundled hook plugin '{}' ships enabled:true but its __init__.py has no register(ctx); the SHIM errors on every fire",
+            info.name
+        );
+    }
+    // The regression itself, named: planning-with-files must not be
+    // default-on until it gains register(ctx).
+    let pwf = bundled_plugin_infos()
+        .into_iter()
+        .find(|p| p.name == "planning-with-files")
+        .expect("planning-with-files stays in the registry");
+    assert!(
+        !pwf.enabled,
+        "planning-with-files must ship enabled:false until it gains register(ctx)"
+    );
+}

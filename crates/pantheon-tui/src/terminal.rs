@@ -239,9 +239,17 @@ fn run_delivered_task(
     target: &str,
     verdict_tool: bool,
     agent_profile: Option<&str>,
+    resume: bool,
+    mode: Option<pantheon_api::mode::AgentMode>,
 ) {
     let text = match say {
         Some(s) => s.clone(),
+        // A dashboard resume (`run --taskID <id> --resume --deliver
+        // session`) carries no new user message: the empty turn
+        // rebuilds the transcript from the ledger and settles the
+        // granted/denied call, exactly like `resume_after_grant`.
+        // Without --resume, --deliver still needs --say.
+        None if resume => String::new(),
         None => {
             eprintln!("run --deliver {target} needs --say \"text\" (or --say - / PANTHEON_SAY_STDIN=1 for stdin)");
             std::process::exit(2);
@@ -292,6 +300,12 @@ fn run_delivered_task(
                 std::process::exit(1);
             }
         };
+    // The dashboard passes the ledger's run mode on every turn child
+    // (`--mode plan|build`); without it a resumed plan-mode run would
+    // silently run in Build. Default (no flag) keeps Build.
+    if let Some(m) = mode {
+        session.set_mode(m);
+    }
     // Attach the declared profile so this run executes under its identity.
     // This is what registers the delegation and agent-to-agent messaging
     // tools (`agent_message`/`agent_inbox`) for a swarm child: without an
@@ -678,6 +692,108 @@ fn resolve_say_stdin(say: Option<String>) -> Option<String> {
         std::process::exit(2);
     }
     Some(text)
+}
+
+/// Parsed `pantheon run` flags. Extracted from the dispatch arm so the
+/// flag surface is unit-testable: a swallowed or mistyped flag used to
+/// vanish into `_ => {}` (the dashboard's `--resume`/`--mode` resume
+/// children died with exit 2 while the dashboard still reported ok).
+struct RunArgs {
+    id: Option<String>,
+    say: Option<String>,
+    tool: Option<String>,
+    fail: Option<String>,
+    with_ext: bool,
+    platform: String,
+    verdict_tool: bool,
+    grant_scope: Option<String>,
+    deny_scope: Option<String>,
+    deliver: Option<String>,
+    agent_profile: Option<String>,
+    /// Resume a parked run with an empty turn (no --say needed).
+    resume: bool,
+    /// Ledger run mode the turn runs in (`plan`|`build`).
+    mode: Option<pantheon_api::mode::AgentMode>,
+    no_resume: bool,
+    /// `--help`/`-h`: print run usage and exit 0 at the call site.
+    help: bool,
+}
+
+/// Parse `pantheon run` argv (argv[1] is `run`). Unknown `--*` flags
+/// are an error (exit 2 at the call site), never swallowed: a typo
+/// like `--resum` must not silently become a different run.
+fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
+    let mut out = RunArgs {
+        id: None,
+        say: None,
+        tool: None,
+        fail: None,
+        with_ext: false,
+        platform: String::from("cli"),
+        verdict_tool: false,
+        grant_scope: None,
+        deny_scope: None,
+        deliver: None,
+        agent_profile: None,
+        resume: false,
+        mode: None,
+        no_resume: false,
+        help: false,
+    };
+    let mut i = 2;
+    while i < args.len() {
+        let mut take_value = |i: &mut usize| -> Option<String> {
+            *i += 1;
+            if *i < args.len() {
+                Some(args[*i].clone())
+            } else {
+                None
+            }
+        };
+        match args[i].as_str() {
+            "--help" | "-h" => out.help = true,
+            // `--taskID` is the documented name; `--id` stays as an
+            // alias because eval/run.py and muscle memory use it.
+            "--taskID" | "--id" => out.id = take_value(&mut i),
+            "--deliver" => out.deliver = take_value(&mut i),
+            "--grant" => out.grant_scope = take_value(&mut i),
+            "--deny" => out.deny_scope = take_value(&mut i),
+            "--say" => out.say = take_value(&mut i),
+            "--tool" => out.tool = take_value(&mut i),
+            "--fail" => out.fail = take_value(&mut i),
+            "--ext" => out.with_ext = true,
+            "--verdict-tool" => out.verdict_tool = true,
+            "--platform" => {
+                if let Some(v) = take_value(&mut i) {
+                    out.platform = v;
+                }
+            }
+            "--agent" => out.agent_profile = take_value(&mut i),
+            "--resume" => out.resume = true,
+            "--no-resume" => out.no_resume = true,
+            "--mode" => match take_value(&mut i) {
+                Some(v) => match pantheon_api::mode::AgentMode::parse(&v) {
+                    Some(m) => out.mode = Some(m),
+                    None => {
+                        return Err(format!(
+                            "run: unknown --mode {v:?} (want \"plan\" or \"build\")"
+                        ));
+                    }
+                },
+                None => return Err("run: --mode needs a value (\"plan\" or \"build\")".to_string()),
+            },
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "run: unknown flag {other:?} (see `pantheon run --help`)"
+                ));
+            }
+            // A stray positional used to vanish too; it is not a
+            // documented `run` argument, so it is an error as well.
+            other => return Err(format!("run: unexpected argument {other:?}")),
+        }
+        i += 1;
+    }
+    Ok(out)
 }
 
 pub fn run() {
@@ -1170,104 +1286,55 @@ timeout_ms = 5000
             crate::plugins_verb::cmd_plugins(&args);
         }
         "run" => {
-            let mut id: Option<String> = None;
-            let mut say: Option<String> = None;
-            let mut tool: Option<String> = None;
-            let mut fail: Option<String> = None;
-            let mut with_ext = false;
-            let mut platform = String::from("cli");
+            let parsed = match parse_run_args(&args) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }
+            };
+            if parsed.help {
+                println!("usage: pantheon run [--id ID] [--say TEXT|--say -] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
+                println!("       pantheon run --taskID <id> --say TEXT --deliver session|telegram|discord [--agent PROFILE] [--mode plan|build]");
+                println!("       pantheon run --taskID <id> --resume --deliver session [--mode plan|build]");
+                println!("       pantheon run --taskID <id> --grant <scope> | --deny <scope> [--no-resume]");
+                println!("       --say - reads the message from stdin (never via argv, so it");
+                println!("       never appears in process listings); PANTHEON_SAY_STDIN=1 does");
+                println!("       the same when --say is absent.");
+                return;
+            }
+            let id = parsed.id;
+            let say = parsed.say;
+            let tool = parsed.tool;
+            let fail = parsed.fail;
+            let with_ext = parsed.with_ext;
+            let platform = parsed.platform;
             // Reviewer-only tool for staged teams: the dashboard's swarm
             // worker passes this to reviewer child runs (`--deliver
             // session`), registering the `verdict` tool on the turn so the
             // orchestrator can read a structured verdict.
-            let mut verdict_tool = false;
+            let verdict_tool = parsed.verdict_tool;
             // Approvals are normally answered inside the session that raised
             // them. These two flags are the out-of-band path: a run parked
             // from a script, a gateway message, or a second terminal. They
             // live on `run` rather than as top-level verbs so the verb list
             // stays short and the approval surface stays one place.
-            let mut grant_scope: Option<String> = None;
-            let mut deny_scope: Option<String> = None;
+            let grant_scope = parsed.grant_scope;
+            let deny_scope = parsed.deny_scope;
             // Where the run's output goes. `session` is the default and means
             // an ordinary in-process turn; the channel names hand the turn to
             // the gateway so the reply lands where the user is.
-            let mut deliver: Option<String> = None;
+            let deliver = parsed.deliver;
             // Which agent profile this run belongs to. The dashboard's swarm
             // worker threads `--agent <profile>` so a swarm child executes
             // under its declared identity - and therefore attaches an
             // AgentRuntime, which is what registers the delegation and
             // agent-to-agent messaging tools. Without it the child is an
             // anonymous session with no mailbox.
-            let mut agent_profile: Option<String> = None;
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    // `--taskID` is the documented name; `--id` stays as an
-                    // alias because eval/run.py and muscle memory use it.
-                    "--taskID" | "--id" => {
-                        i += 1;
-                        if i < args.len() {
-                            id = Some(args[i].clone());
-                        }
-                    }
-                    "--deliver" => {
-                        i += 1;
-                        if i < args.len() {
-                            deliver = Some(args[i].clone());
-                        }
-                    }
-                    "--grant" => {
-                        i += 1;
-                        if i < args.len() {
-                            grant_scope = Some(args[i].clone());
-                        }
-                    }
-                    "--deny" => {
-                        i += 1;
-                        if i < args.len() {
-                            deny_scope = Some(args[i].clone());
-                        }
-                    }
-                    "--say" => {
-                        i += 1;
-                        if i < args.len() {
-                            say = Some(args[i].clone());
-                        }
-                    }
-                    "--tool" => {
-                        i += 1;
-                        if i < args.len() {
-                            tool = Some(args[i].clone());
-                        }
-                    }
-                    "--fail" => {
-                        i += 1;
-                        if i < args.len() {
-                            fail = Some(args[i].clone());
-                        }
-                    }
-                    "--ext" => {
-                        with_ext = true;
-                    }
-                    "--verdict-tool" => {
-                        verdict_tool = true;
-                    }
-                    "--platform" => {
-                        i += 1;
-                        if i < args.len() {
-                            platform = args[i].clone();
-                        }
-                    }
-                    "--agent" => {
-                        i += 1;
-                        if i < args.len() {
-                            agent_profile = Some(args[i].clone());
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
+            let agent_profile = parsed.agent_profile;
+            let resume = parsed.resume;
+            let mode = parsed.mode;
+            let no_resume = parsed.no_resume;
             // A-10: resolve the message before anything consumes it, so
             // `--say -` / PANTHEON_SAY_STDIN keep turn text out of argv.
             let say = resolve_say_stdin(say);
@@ -1300,7 +1367,7 @@ timeout_ms = 5000
                 }
                 let verb = if is_grant { "granted" } else { "denied" };
                 println!("{verb} {scope} for {run_id}");
-                if !args.iter().any(|a| a == "--no-resume") {
+                if !no_resume {
                     crate::agui::resume_after_grant(&run_id);
                 }
                 return;
@@ -1320,7 +1387,15 @@ timeout_ms = 5000
                 // turn printed to this terminal - not the synthetic ledger
                 // writer below. Gating it on `target != "session"` meant the
                 // default path produced an event trace with no model call.
-                return run_delivered_task(&id, &say, &target, verdict_tool, agent_profile.as_deref());
+                return run_delivered_task(
+                    &id,
+                    &say,
+                    &target,
+                    verdict_tool,
+                    agent_profile.as_deref(),
+                    resume,
+                    mode,
+                );
             }
             // `run` writes ledger events directly. It does not call a model
             // and does not execute the named tool, so it is a synthetic-run
@@ -1329,6 +1404,7 @@ timeout_ms = 5000
             // letting someone discover it from an empty transcript.
             if say.is_none() && tool.is_none() && fail.is_none() && !with_ext {
                 eprintln!("usage: pantheon run [--id ID] [--say TEXT|--say -] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
+                eprintln!("       pantheon run --taskID <id> --resume --deliver session [--mode plan|build]");
                 eprintln!("       --say - reads the message from stdin (never via argv, so it");
                 eprintln!("       never appears in process listings); PANTHEON_SAY_STDIN=1 does");
                 eprintln!("       the same when --say is absent.");
@@ -1868,4 +1944,117 @@ pub fn splash_lines(
             .add_modifier(Modifier::BOLD),
     )));
     lines
+}
+
+#[cfg(test)]
+mod run_args_tests {
+    use super::*;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        std::iter::once("pantheon".to_string())
+            .chain(words.iter().map(|w| w.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn dashboard_resume_argv_parses() {
+        // The exact argv the dashboard's answer_input / approval /
+        // ui_action resume paths spawn.
+        let args = argv(&[
+            "run",
+            "--taskID",
+            "run-1",
+            "--resume",
+            "--deliver",
+            "session",
+            "--mode",
+            "plan",
+        ]);
+        let p = parse_run_args(&args).expect("dashboard resume argv must parse");
+        assert_eq!(p.id.as_deref(), Some("run-1"));
+        assert!(p.resume);
+        assert_eq!(p.deliver.as_deref(), Some("session"));
+        assert_eq!(p.mode, Some(pantheon_api::mode::AgentMode::Plan));
+        assert!(p.say.is_none());
+    }
+
+    #[test]
+    fn dashboard_message_argv_parses() {
+        let args = argv(&[
+            "run",
+            "--taskID",
+            "run-1",
+            "--say",
+            "-",
+            "--deliver",
+            "session",
+            "--mode",
+            "build",
+        ]);
+        let p = parse_run_args(&args).expect("dashboard message argv must parse");
+        assert!(!p.resume);
+        assert_eq!(p.mode, Some(pantheon_api::mode::AgentMode::Build));
+    }
+
+    #[test]
+    fn unknown_flag_is_an_error_not_a_swallow() {
+        // Pre-fix this token vanished into `_ => {}` and the run
+        // silently did something else (or exited 2 downstream with no
+        // hint that the flag was the problem).
+        for bad in ["--resum", "--bogus", "--modee"] {
+            let args = argv(&["run", "--taskID", "r", bad]);
+            assert!(parse_run_args(&args).is_err(), "{bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn unknown_mode_is_an_error() {
+        let args = argv(&[
+            "run",
+            "--taskID",
+            "r",
+            "--resume",
+            "--deliver",
+            "session",
+            "--mode",
+            "fast",
+        ]);
+        assert!(parse_run_args(&args).is_err());
+        let args = argv(&["run", "--taskID", "r", "--mode"]);
+        assert!(parse_run_args(&args).is_err());
+    }
+
+    #[test]
+    fn known_flags_still_parse() {
+        let args = argv(&[
+            "run",
+            "--id",
+            "r",
+            "--say",
+            "hi",
+            "--tool",
+            "t",
+            "--fail",
+            "F",
+            "--ext",
+            "--platform",
+            "cli",
+            "--verdict-tool",
+            "--agent",
+            "lead",
+            "--grant",
+            "s",
+            "--no-resume",
+        ]);
+        let p = parse_run_args(&args).expect("known flags must parse");
+        assert_eq!(p.id.as_deref(), Some("r"));
+        assert!(p.with_ext && p.verdict_tool && p.no_resume);
+        assert_eq!(p.grant_scope.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn stray_positional_is_an_error() {
+        let args = argv(&["run", "oops"]);
+        assert!(parse_run_args(&args).is_err());
+    }
 }
