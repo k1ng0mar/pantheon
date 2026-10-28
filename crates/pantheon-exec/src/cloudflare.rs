@@ -160,12 +160,16 @@ fn product_forces_destroy(path: &[&str]) -> bool {
 
 /// Classify one `cf ...` command line.
 ///
-/// The operation verb is the LAST PATH COMPONENT, but `cf` commands carry
-/// positional arguments after the operation (`cf kv namespace create
-/// prod-cache`), so the verb hunt walks the path from the end and skips
-/// words that cannot be verbs (anything containing a slash, a dot, or an
-/// `=` looks like an id/zone/record argument). Flags and their values are
-/// skipped first. Unknown operations classify Destroy: fail closed.
+/// The operation verb is normally the last path component, but `cf`
+/// commands carry positional arguments after the operation (`cf kv
+/// namespace create prod-cache`), and an argument can itself be a verb
+/// word (`cf kv namespace delete search`). The verb hunt therefore
+/// takes the STRICTEST verb anywhere in the path, not the last one:
+/// a trailing argument named like a verb escalates instead of
+/// downgrading. Words that look like values (anything containing a
+/// slash, a dot, or an `=` looks like an id/zone/record argument)
+/// are not verbs. Flags and their values are skipped first. Unknown
+/// operations classify Destroy: fail closed.
 pub fn classify(cmd: &str) -> CfOp {
     let argv = split_argv(cmd);
     // argv[0] must be `cf` for this classification to apply at all; the
@@ -196,30 +200,50 @@ pub fn classify(cmd: &str) -> CfOp {
         return CfOp::Read;
     }
     let refs: Vec<&str> = path.iter().map(String::as_str).collect();
-    // `cf cli search "<anything>"`: the whole query is one argv word and
-    // its verbs are not operations. The command itself is a lookup.
+    // Meta-commands whose trailing words are NOT operations, so a
+    // verb word inside them must never classify the call:
+    // - `cf cli search "<anything>"`: the whole query is free text.
+    // - `cf help <topic>` / `cf complete <shell>`: the trailing word
+    //   is a help topic / shell name, not an operation.
+    // Scoped to these shapes on purpose: the old check returned Read
+    // whenever ANY path word was search/help/complete, so
+    // `cf kv namespace delete search` - delete a namespace literally
+    // named "search" - rode the read tier with no approval.
     if refs
-        .iter()
-        .any(|p| *p == "search" || *p == "help" || *p == "complete")
+        .first()
+        .map(|p| p.eq_ignore_ascii_case("help"))
+        .unwrap_or(false)
+        || refs
+            .first()
+            .map(|p| p.eq_ignore_ascii_case("complete"))
+            .unwrap_or(false)
+        || (refs.len() >= 2
+            && refs[0].eq_ignore_ascii_case("cli")
+            && refs[1].eq_ignore_ascii_case("search"))
     {
         return CfOp::Read;
     }
-    // Hunt the operation verb from the end of the path. Words that look
-    // like values (ids, domains, file paths, key=value) are not verbs.
+    // Hunt the operation verb. A trailing bare argument can itself be
+    // a verb word (`delete search`: the namespace is named "search"),
+    // so the FIRST verb from the end is not authoritative: the
+    // strictest verb anywhere in the path wins. Over-approval when
+    // an argument happens to be a verb word (e.g. a key named
+    // "delete") is the fail-closed direction.
     let looks_like_value =
         |w: &str| w.contains('/') || w.contains('.') || w.contains('=') || w.contains(':');
-    let mut op = None;
-    for w in refs.iter().rev() {
+    let mut op: Option<CfOp> = None;
+    for w in refs.iter() {
         if looks_like_value(w) {
             continue;
         }
         if let Some(c) = op_class(w) {
-            op = Some(c);
-            break;
+            op = Some(match (op, c) {
+                (None, c) => c,
+                (Some(CfOp::Destroy), _) | (_, CfOp::Destroy) => CfOp::Destroy,
+                (Some(CfOp::Write), _) | (_, CfOp::Write) => CfOp::Write,
+                (Some(CfOp::Read), CfOp::Read) => CfOp::Read,
+            });
         }
-        // A non-verb, non-value word at the END (a bare argument like
-        // `prod-cache`) is an argument: keep walking. But the FIRST word
-        // (the product) is never the operation; stop there.
     }
     let op = op.unwrap_or(CfOp::Destroy);
     // Escalations, never de-escalations: the strictest class wins.
@@ -485,6 +509,21 @@ mod tests {
             "the verb inside a search string is not the operation"
         );
         assert_eq!(classify("cf --profile work zones list"), CfOp::Read);
+    }
+
+    #[test]
+    fn verb_words_in_argument_position_do_not_downgrade() {
+        // A namespace literally named "search" (or "help") is an
+        // argument, not the operation: the delete must still classify
+        // Destroy. The old any-word search/help/complete early return
+        // let these ride the read tier.
+        assert_eq!(classify("cf kv namespace delete search"), CfOp::Destroy);
+        assert_eq!(classify("cf kv namespace delete help"), CfOp::Destroy);
+        assert_eq!(classify("cf workers script delete complete"), CfOp::Destroy);
+        // ...while the real meta-commands stay read.
+        assert_eq!(classify("cf help delete"), CfOp::Read);
+        assert_eq!(classify("cf cli search delete dns"), CfOp::Read);
+        assert_eq!(classify("cf complete bash"), CfOp::Read);
     }
 
     #[test]
