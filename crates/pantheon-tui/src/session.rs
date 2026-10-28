@@ -717,6 +717,9 @@ pub struct TuiState {
     /// (run_id, ui_id, call_id). Drives the UI decision card; cleared by
     /// the operator's submit through `Session::submit_ui_action`.
     pub pending_ui_approval: Option<(String, String, String)>,
+    /// Open secure secret entry form (`/secrets`): masked input, never
+    /// recorded in the transcript or ledger. Owns the keyboard while open.
+    pub secrets_form: Option<crate::secrets_form::SecretsForm>,
     /// The operator is filling a published form field-by-field in the
     /// composer. Captures all keys until submit (Enter on last field) or
     /// cancel (Esc).
@@ -1005,6 +1008,7 @@ impl Default for TuiState {
             is_inputting: false,
             pending_approval: None,
             pending_ui_approval: None,
+            secrets_form: None,
             form_fill: None,
             pending_provider_failure: None,
             pending_reflect: None,
@@ -1290,6 +1294,7 @@ impl TuiState {
             is_inputting: false,
             pending_approval: None,
             pending_ui_approval: None,
+            secrets_form: None,
             form_fill: None,
             pending_provider_failure: None,
             pending_reflect: None,
@@ -2909,6 +2914,7 @@ impl TuiState {
         self.pending_clarify = None;
         self.pending_ui_approval = None;
         self.form_fill = None;
+        self.secrets_form = None;
         self.editor = None;
         self.timeline = None;
         self.mention = None;
@@ -3776,6 +3782,28 @@ pub fn render(state: &mut TuiState, f: &mut Frame) {
     state.tab_bar_area = None;
     state.tab_hits.clear();
     render_main(state, f);
+    if let Some(form) = &state.secrets_form {
+        // Centered secure-form overlay, drawn last so it covers the
+        // transcript and composer. Lines come from the form itself and
+        // never contain the value.
+        let area = f.area();
+        let w = (area.width.saturating_sub(8)).max(40).min(76);
+        let h = 10u16.min(area.height);
+        let x = area.x + area.width.saturating_sub(w) / 2;
+        let y = area.y + area.height.saturating_sub(h) / 2;
+        let overlay = Rect::new(x, y, w, h);
+        f.render_widget(Clear, overlay);
+        let lines: Vec<Line> = form
+            .render_lines()
+            .into_iter()
+            .map(|l| Line::from(l))
+            .collect();
+        f.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title(" Secrets ")),
+            overlay,
+        );
+    }
     let _ = state.img.paint();
     if let Some(area) = state.img.preview_area {
         let _ = state.img.paint_preview(area);
@@ -8420,6 +8448,96 @@ fn advance_form_fill(state: &mut TuiState, session: &Arc<Session>) {
     }
 }
 
+/// Submit a completed secure form: store via the broker, verify, and
+/// report back into the form. The value travels only from the form to
+/// the store; it is never put in the status line, the transcript, or a
+/// log. The form is dropped on close, which drops the value with it.
+fn submit_secrets_form(state: &mut TuiState, session: &Arc<Session>) {
+    use pantheon_secrets::{
+        BotTokenVerifier, ProviderModelsVerifier, SecretCaller, SecureFormStore,
+    };
+    let Some(mut form) = state.secrets_form.take() else {
+        return;
+    };
+    let Some((name, scope, value)) = form.take_submission() else {
+        state.secrets_form = Some(form);
+        return;
+    };
+    let data_dir = crate::terminal::data_dir();
+    let store = SecureFormStore::new(&session.secrets, &data_dir);
+    // Provider verification needs a base URL: a custom provider whose
+    // key_env names this secret supplies one. Built-in providers have
+    // per-provider models endpoints, so they save without a live check
+    // rather than a wrong one.
+    let mut provider_verifier: Option<ProviderModelsVerifier> = None;
+    if scope == pantheon_secrets::SecretScope::Provider {
+        if let Some(cfg) = crate::config::Config::load_or_report(&data_dir) {
+            for sec in cfg.custom_providers.values() {
+                if sec.key_env.as_deref() == Some(name.as_str()) {
+                    provider_verifier = Some(ProviderModelsVerifier {
+                        base_url: sec.base_url.clone(),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    let outcome = match scope {
+        pantheon_secrets::SecretScope::BotToken => {
+            let v = BotTokenVerifier;
+            store.save(SecretCaller::UserSession, &name, scope, value, Some(&v))
+        }
+        pantheon_secrets::SecretScope::Provider => match &provider_verifier {
+            Some(v) => store.save(SecretCaller::UserSession, &name, scope, value, Some(v)),
+            None => store.save(SecretCaller::UserSession, &name, scope, value, None),
+        },
+        _ => store.save(SecretCaller::UserSession, &name, scope, value, None),
+    };
+    match outcome {
+        Ok(saved) => {
+            let outcome = match saved.verification {
+                pantheon_secrets::VerifyOutcome::Verified => {
+                    crate::secrets_form::SubmitOutcome::Verified
+                }
+                pantheon_secrets::VerifyOutcome::Failed(reason) => {
+                    crate::secrets_form::SubmitOutcome::Failed(reason)
+                }
+                pantheon_secrets::VerifyOutcome::Unavailable(reason) => {
+                    crate::secrets_form::SubmitOutcome::Unavailable(reason)
+                }
+            };
+            form.set_outcome(outcome);
+            state.status_line = format!("secret {name} saved");
+        }
+        Err(e) => {
+            form.set_outcome(crate::secrets_form::SubmitOutcome::Error(e.to_string()));
+            state.status_line = format!("secret {name} not saved");
+        }
+    }
+    state.secrets_form = Some(form);
+}
+
+/// Map a crossterm key onto a form key. Ctrl-modified characters are
+/// ignored: typing a secret must never be intercepted by a shortcut.
+fn secrets_form_key(key: crossterm::event::KeyEvent) -> Option<crate::secrets_form::FormKey> {
+    use crate::secrets_form::FormKey;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    Some(match key.code {
+        KeyCode::Char(c) => FormKey::Char(c),
+        KeyCode::Backspace => FormKey::Backspace,
+        KeyCode::Delete => FormKey::Delete,
+        KeyCode::Enter => FormKey::Enter,
+        KeyCode::Esc => FormKey::Esc,
+        KeyCode::Tab => FormKey::Tab,
+        KeyCode::Up => FormKey::Up,
+        KeyCode::Down => FormKey::Down,
+        _ => return None,
+    })
+}
+
 fn finish_or_continue_fill(state: &mut TuiState, session: &Arc<Session>, fill: FormFill) {
     if fill.index < fill.fields.len() {
         let prompt = fill.prompt();
@@ -9202,6 +9320,37 @@ fn tui_loop(
             }
             if let CtEvent::Key(key) = event {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if state.secrets_form.is_some() {
+                    // Secure form owns the keyboard: keys go to the
+                    // masked form, never to the composer or transcript.
+                    // 'r' on the outcome step retries with a cleared
+                    // value; Esc closes and drops the value.
+                    let mut close = false;
+                    if let Some(form) = state.secrets_form.as_mut() {
+                        if form.step == crate::secrets_form::FormStep::Outcome
+                            && matches!(key.code, KeyCode::Char('r'))
+                            && !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
+                            form.retry();
+                        } else if let Some(fk) = secrets_form_key(key) {
+                            close = form.on_key(fk);
+                        }
+                    }
+                    if state
+                        .secrets_form
+                        .as_ref()
+                        .map(|f| f.submit_ready)
+                        .unwrap_or(false)
+                    {
+                        submit_secrets_form(state, &session);
+                    }
+                    if close {
+                        state.secrets_form = None;
+                    }
+                    state.tick();
+                    terminal.draw(|f| render(state, f))?;
                     continue;
                 }
                 if state.models.is_some() {
@@ -12527,6 +12676,79 @@ fn handle_slash_inner(
         ));
         return;
     }
+    // --- secrets (secure forms) ---------------------------------------
+    // Masked entry: /secrets opens the form overlay, where the value is
+    // typed masked and never touches the transcript or ledger. List,
+    // delete and rotate are name-only operations.
+    if cmd == "/secrets" {
+        state.secrets_form = Some(crate::secrets_form::SecretsForm::new());
+        state.add_status("secure secret entry opened (masked; Esc cancels)".into());
+        return;
+    }
+    if cmd == "/secrets list" {
+        let data_dir = crate::terminal::data_dir();
+        let store = pantheon_secrets::SecureFormStore::new(&session.secrets, &data_dir);
+        let config_text = std::fs::read_to_string(data_dir.join("config.toml"))
+            .unwrap_or_default();
+        let refs = pantheon_secrets::SecureFormStore::references(&config_text);
+        let entries = store.list();
+        if entries.is_empty() {
+            state.add_status("no secrets stored".into());
+        } else {
+            state.add_status("secrets (names, scopes and update times only):".into());
+            for e in &entries {
+                let used = refs.get(&e.name).cloned().unwrap_or_default().join(", ");
+                let used = if used.is_empty() {
+                    "not referenced by config".to_string()
+                } else {
+                    format!("used by {used}")
+                };
+                let when = if e.updated_at == 0 {
+                    "updated unknown".to_string()
+                } else {
+                    format!("updated {}", e.updated_at)
+                };
+                state.add_status(format!(
+                    "  {} [{}] {when} ({used})",
+                    e.name,
+                    e.scope.as_str()
+                ));
+            }
+        }
+        return;
+    }
+    if let Some(name) = cmd.strip_prefix("/secrets delete ") {
+        let name = name.trim();
+        if name.is_empty() {
+            state.add_status("usage: /secrets delete <name>".into());
+            return;
+        }
+        let data_dir = crate::terminal::data_dir();
+        let store = pantheon_secrets::SecureFormStore::new(&session.secrets, &data_dir);
+        match store.delete(pantheon_secrets::SecretCaller::UserSession, name) {
+            Ok(()) => state.add_status(format!("deleted secret {name}")),
+            Err(e) => state.add_status(format!("secrets delete: {e}")),
+        }
+        return;
+    }
+    if let Some(name) = cmd.strip_prefix("/secrets rotate ") {
+        let name = name.trim();
+        if name.is_empty() {
+            state.add_status("usage: /secrets rotate <name>".into());
+            return;
+        }
+        let data_dir = crate::terminal::data_dir();
+        let store = pantheon_secrets::SecureFormStore::new(&session.secrets, &data_dir);
+        let scope = store
+            .list()
+            .into_iter()
+            .find(|e| e.name == name)
+            .map(|e| e.scope)
+            .unwrap_or(pantheon_secrets::SecretScope::Custom);
+        state.secrets_form = Some(crate::secrets_form::SecretsForm::prefilled(name, scope));
+        state.add_status(format!("rotating {name}: type the new value (masked)"));
+        return;
+    }
     // --- env --------------------------------------------------------------
     if cmd == "/env" {
         let names = session.secrets.names();
@@ -12539,7 +12761,7 @@ fn handle_slash_inner(
                 state.add_status(format!("  {n}: {present}"));
             }
         }
-        state.add_status("set with: /env set <name> <value>".into());
+        state.add_status("set with: /env set <name> <value> (prefer /secrets: masked entry, never in the transcript)".into());
         state.add_status("unset with: /env unset <name>".into());
         return;
     }

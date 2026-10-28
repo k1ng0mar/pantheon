@@ -14,6 +14,7 @@
 
 pub mod broker;
 pub mod dotenv;
+pub mod secure_forms;
 pub mod env;
 pub mod error;
 pub mod filevault;
@@ -37,5 +38,9 @@ pub use gateway_tokens::{
 pub use keychain::KeychainVault;
 pub use logins::{LoginCredential, LoginStore, LOGINS_FILE, LOGINS_META_FILE, MASKED};
 pub use redaction::RedactionRegistry;
+pub use secure_forms::{
+    BotTokenVerifier, LocalVerifier, ProviderModelsVerifier, SaveOutcome, SecretCaller,
+    SecretEntry, SecretScope, SecureFormStore, Verifier, VerifyOutcome, default_verifier,
+};
 pub use value::SecretValue;
 pub use vault::{MemoryVault, ReadOnlyVault, SecretVault};
