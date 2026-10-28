@@ -52,14 +52,23 @@ pub fn cmd_desktop(argv: &[String]) -> ! {
         std::process::exit(2);
     }
 
+    // An explicit `--register` is a registration request, not a launch:
+    // a failed registration must exit non-zero (the old code printed
+    // "registration skipped" and still exited 0, so scripts could not
+    // tell). The default path (register-then-launch) keeps the softer
+    // behaviour: registration is best-effort there and launch proceeds.
+    let mut registration_failed = false;
     if !no_register {
         match register_desktop_entry(&dir, &binary) {
             Ok(entry) => println!("registered: {}", entry.display()),
-            Err(error) => eprintln!("pantheon desktop: registration skipped ({error})"),
+            Err(error) => {
+                eprintln!("pantheon desktop: registration skipped ({error})");
+                registration_failed = true;
+            }
         }
     }
     if register {
-        std::process::exit(0);
+        std::process::exit(if registration_failed { 1 } else { 0 });
     }
 
     println!("launching Pantheon desktop…");

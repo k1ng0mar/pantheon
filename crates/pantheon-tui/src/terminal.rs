@@ -515,7 +515,9 @@ fn reject_flag_positional(
 fn audit_help() {
     eprintln!("usage: pantheon audit <run_id> [OUT.jsonl]");
     eprintln!("  sequence-validated JSONL trajectory for one run;");
-    eprintln!("  writes OUT.jsonl when given, stdout otherwise");
+    // The implementation writes `<run_id>.jsonl` when OUT is omitted
+    // (never stdout): the old text promised stdout, which was false.
+    eprintln!("  writes OUT.jsonl when given, <run_id>.jsonl otherwise");
 }
 
 /// Pure parse for `pantheon memory recall [--ns <name>] <query...>`:

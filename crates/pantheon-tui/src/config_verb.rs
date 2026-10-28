@@ -496,20 +496,34 @@ fn cmd_edit() {
     std::process::exit(1);
 }
 
-fn config_help() {
-    eprintln!("usage: pantheon config <set|get|edit|path> ...");
-    eprintln!("  set <dotted.key> <value>   set one value (creates tables as needed)");
-    eprintln!("  set <dotted.key>=<value>   single-argument form");
-    eprintln!("  get <dotted.key>           print one value");
-    eprintln!("  edit                       open config.toml in your editor");
-    eprintln!("  path                       print the config file path");
-    eprintln!();
-    eprintln!("values: true/false -> boolean, 100 -> integer, 1.5 -> float,");
-    eprintln!("anything else -> string. Quote to force a string: '\"100\"'.");
-    eprintln!("arrays and tables need `pantheon config edit`.");
-    eprintln!();
-    eprintln!("keys are checked against the real config schema: unknown");
-    eprintln!("keys are rejected instead of silently written.");
+/// Print the config usage text. `to_stdout` selects the stream:
+/// `--help` is not an error, so its text goes to stdout; the usage-error
+/// branch still goes to stderr (see [`cmd_config`]).
+fn config_help(to_stdout: bool) {
+    // One body, two streams: duplicating the lines for stdout/stderr
+    // would let them drift apart.
+    let lines = [
+        "usage: pantheon config <set|get|edit|path> ...",
+        "  set <dotted.key> <value>   set one value (creates tables as needed)",
+        "  set <dotted.key>=<value>   single-argument form",
+        "  get <dotted.key>           print one value",
+        "  edit                       open config.toml in your editor",
+        "  path                       print the config file path",
+        "",
+        "values: true/false -> boolean, 100 -> integer, 1.5 -> float,",
+        "anything else -> string. Quote to force a string: '\"100\"'.",
+        "arrays and tables need `pantheon config edit`.",
+        "",
+        "keys are checked against the real config schema: unknown",
+        "keys are rejected instead of silently written.",
+    ];
+    for line in lines {
+        if to_stdout {
+            println!("{line}");
+        } else {
+            eprintln!("{line}");
+        }
+    }
 }
 
 /// Entry point called from the verb dispatch in `terminal::run`.
@@ -520,13 +534,15 @@ pub fn cmd_config(args: &[String]) {
         Some("edit") => cmd_edit(),
         Some("path") => println!("{}", config_path().display()),
         // `--help` used to fall through to the usage-error branch (exit
-        // 2); help is not an error.
+        // 2); help is not an error. It also used to print to stderr;
+        // help text goes to stdout so `pantheon config --help | head`
+        // and friends work.
         Some("--help") | Some("-h") => {
-            config_help();
+            config_help(true);
             std::process::exit(0);
         }
         _ => {
-            config_help();
+            config_help(false);
             std::process::exit(2);
         }
     }
