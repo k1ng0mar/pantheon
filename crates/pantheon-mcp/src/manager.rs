@@ -212,7 +212,12 @@ impl McpServerSpec {
 /// A name-colliding spec with any difference is a custom server: it
 /// goes through full approval like any other third-party server, and
 /// refusal messages flag the collision.
-fn is_canonical_bundled(spec: &McpServerSpec) -> bool {
+///
+/// Public for the gateway boot probe: a bundled name alone is NOT
+/// consent. A hand-written `[mcp.servers.<bundled-name>]` with an
+/// attacker command is a custom server and needs an approval record;
+/// only the canonical recipe probes freely at boot.
+pub fn is_canonical_bundled(spec: &McpServerSpec) -> bool {
     let Some(recipe) = find_bundled(&spec.name) else {
         return false;
     };
