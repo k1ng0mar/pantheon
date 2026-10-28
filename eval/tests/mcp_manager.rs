@@ -117,7 +117,11 @@ fn approve_then_register_and_invoke() {
 }
 
 #[test]
-fn version_change_invalidates_approval() {
+fn version_change_alone_does_not_invalidate_approval() {
+    // The MCP gate is hash-only since the decisions round: the version
+    // is self-reported and display-only, so a version bump with
+    // identical content does not lapse consent. Content change still
+    // invalidates; that is covered by content_change_invalidates_approval.
     let tmp = scope();
     let m = manager(tmp.path(), vec![spec("fake", None)]);
     let rec = m.approve_server("fake").expect("approve");
@@ -134,8 +138,11 @@ fn version_change_invalidates_approval() {
 
     let mut reg = ToolRegistry::new();
     let report = m.register_tools(&mut reg);
-    assert!(reg.names().is_empty());
-    assert!(report.pending_approval.contains(&"fake".to_string()));
+    assert_eq!(report.registered.len(), 2);
+    assert!(report.pending_approval.is_empty());
+    let mut names = reg.names();
+    names.sort();
+    assert_eq!(names, vec!["mcp_fake_echo", "mcp_fake_fail"]);
 }
 
 #[test]
