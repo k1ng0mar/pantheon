@@ -1,14 +1,13 @@
 //! Event retention for the scheduler daemon.
 //!
-//! The retention pass used to live only in `pantheon schedule tick
-//! --watch` (`pantheon-tui/src/schedule.rs`): a gateway daemon that
-//! never runs the TUI tick loop would accumulate ledger events, search
-//! chunks, and idempotency claims forever. This module is the daemon's
-//! copy - same 24h gate (tracked in `retention.json`), same prune
-//! primitives, same "active runs are never pruned" rule. Kept as a
-//! separate implementation rather than shared with the TUI because the
-//! TUI copy is being retired with the TUI tick loop; until it is, a
-//! change to the prune rule belongs in both.
+//! This is the single implementation of the retention pass: the gateway
+//! daemon's tick loop calls [`maybe_run_retention`], and the TUI's
+//! `schedule tick --watch` loop and `schedule prune` route through this
+//! module too (see `pantheon-tui/src/schedule.rs`). There used to be a
+//! second copy in the TUI; it was retired in favour of this one so a
+//! change to the prune rule can no longer drift between the two tick
+//! loops. The 24h gate is tracked in `<data_dir>/retention.json`, shared
+//! by both callers, and active runs are never pruned.
 //!
 //! Wire-up: the gateway daemon should call [`maybe_run_retention`]
 //! from its tick loop (e.g. `pantheon-gateway/src/daemon.rs`).
@@ -85,7 +84,10 @@ fn retention_due(data_dir: &Path) -> bool {
     now_ms() - last >= RETENTION_INTERVAL_MS
 }
 
-fn record_retention_pass(data_dir: &Path) {
+/// Record that a retention pass just ran (the 24h gate). Public so the
+/// TUI's manual `schedule prune` can stamp the same shared gate after
+/// routing its prune through [`run_retention`].
+pub fn record_retention_pass(data_dir: &Path) {
     let state = serde_json::json!({ "last_prune_ms": now_ms() });
     let _ = std::fs::write(retention_state_path(data_dir), state.to_string());
 }

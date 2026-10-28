@@ -15,8 +15,8 @@ use pantheon_gateway::schedule_delivery::{self, Deliver};
 use pantheon_gateway::scheduler::{ExecuteFn, FireOutcome, SchedulerLoop, TaskOutcome, TickReport};
 use pantheon_scheduler::{
     after_manual_run, expand_template, job_store_path, load_jobs, load_jobs_with_warnings,
-    parse_duration, update_jobs, DurableClaimLedger, Job, OverlapPolicy, RunOutcome, ScheduleKind,
-    ScheduleTemplate, ScheduledJob, TemplateSchedule, TemplateStore, TemplateVar,
+    parse_duration, retention, update_jobs, Job, OverlapPolicy, RunOutcome,
+    ScheduleKind, ScheduleTemplate, ScheduledJob, TemplateSchedule, TemplateStore, TemplateVar,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -819,7 +819,7 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
             }
             match run_retention(data_dir, keep_days) {
                 Ok(r) => {
-                    record_retention_pass(data_dir);
+                    retention::record_retention_pass(data_dir);
                     println!(
                         "retention: pruned {} events, {} search chunks, {} claims older than {}d (active runs kept)",
                         r.events_pruned,
@@ -845,11 +845,6 @@ fn handle_subcommand(parts: &[String], data_dir: &Path) {
     }
 }
 
-/// How often the automatic retention pass may run. The tick loop calls
-/// `maybe_run_retention` every iteration (every 30s in `--watch` mode);
-/// the gate below keeps a long-running daemon to one pass per day.
-const RETENTION_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
-
 /// What one retention pass removed. Returned so the caller can log it
 /// pruning must be visible, never silent.
 #[derive(Debug, Default)]
@@ -860,85 +855,26 @@ pub struct RetentionReport {
     pub claims_pruned: usize,
 }
 
-/// Run the retention pass now: prune ledger events, the FTS search sidecar,
-/// and idempotency claims older than `keep_days`. Runs whose status is not
-/// terminal are never pruned, however old their events - the active run's
-/// transcript is what a resume rebuilds from.
+/// Run the retention pass now. Thin wrapper over the scheduler crate's
+/// pass ([`retention::run_retention`]): the TUI used to carry its own
+/// copy of this prune, and the two copies shared only a doc promise to
+/// keep them in sync. There is one implementation now; the TUI keeps
+/// its own report type so existing callers are untouched.
 pub fn run_retention(data_dir: &Path, keep_days: u32) -> Result<RetentionReport, String> {
-    let cutoff = now_ms() - keep_days as i64 * 86_400_000;
-    let mut report = RetentionReport {
-        keep_days,
-        ..Default::default()
-    };
-
-    let ledger_path = data_dir.join("ledger.db");
-    if ledger_path.exists() {
-        let ledger = pantheon_storage::ledger::Ledger::open(&ledger_path)
-            .map_err(|e| format!("retention: cannot open ledger: {e}"))?;
-        report.events_pruned = ledger
-            .prune_events_before_active_safe(cutoff)
-            .map_err(|e| format!("retention: prune events: {e}"))?;
-        // The FTS sidecar lives in the same database file.
-        match pantheon_storage::search::SessionSearch::open(&ledger_path) {
-            Ok(search) => {
-                report.search_chunks_pruned = search
-                    .prune_before(cutoff)
-                    .map_err(|e| format!("retention: prune search index: {e}"))?;
-            }
-            Err(e) => eprintln!("retention: search index unavailable, skipping: {e}"),
-        }
-    }
-    let claims_path = data_dir.join("claims.db");
-    if claims_path.exists() {
-        let claims = DurableClaimLedger::open(&claims_path)
-            .map_err(|e| format!("retention: cannot open claim ledger: {e}"))?;
-        report.claims_pruned = claims
-            .prune_before(cutoff)
-            .map_err(|e| format!("retention: prune claims: {e}"))?;
-    }
-    Ok(report)
+    let r = retention::run_retention(data_dir, keep_days)?;
+    Ok(RetentionReport {
+        keep_days: r.keep_days,
+        events_pruned: r.events_pruned,
+        search_chunks_pruned: r.search_chunks_pruned,
+        claims_pruned: r.claims_pruned,
+    })
 }
 
-fn retention_state_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("retention.json")
-}
-
-/// True when a retention pass is due: never ran, or the last pass is older
-/// than `RETENTION_INTERVAL_MS`.
-fn retention_due(data_dir: &Path) -> bool {
-    let last: i64 = std::fs::read_to_string(retention_state_path(data_dir))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.get("last_prune_ms")?.as_i64())
-        .unwrap_or(0);
-    now_ms() - last >= RETENTION_INTERVAL_MS
-}
-
-fn record_retention_pass(data_dir: &Path) {
-    let state = serde_json::json!({ "last_prune_ms": now_ms() });
-    let _ = std::fs::write(retention_state_path(data_dir), state.to_string());
-}
-
-/// The automatic pass, called from the tick loop. No-op when retention is
-/// disabled (`keep_days = 0`) or the last pass is fresh. Logs what
-/// was pruned.
+/// The automatic pass, called from the tick loop. Delegates to the
+/// scheduler crate's gated pass, so the TUI tick loop and the gateway
+/// daemon share one 24h gate (`retention.json`) and one prune rule.
 fn maybe_run_retention(data_dir: &Path) {
-    let keep_days = crate::config::Config::load_or_report(data_dir)
-        .map(|c| c.retention_days())
-        .unwrap_or(crate::config::DEFAULT_RETENTION_DAYS);
-    if keep_days == 0 || !retention_due(data_dir) {
-        return;
-    }
-    match run_retention(data_dir, keep_days) {
-        Ok(r) => {
-            record_retention_pass(data_dir);
-            println!(
-                "retention: pruned {} events, {} search chunks, {} claims older than {}d (active runs kept)",
-                r.events_pruned, r.search_chunks_pruned, r.claims_pruned, r.keep_days
-            );
-        }
-        Err(e) => eprintln!("{e}"),
-    }
+    retention::maybe_run_retention(data_dir);
 }
 
 /// What `schedule <task> ...` parsed out of the command line. Named because
