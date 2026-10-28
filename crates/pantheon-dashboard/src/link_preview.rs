@@ -47,9 +47,15 @@ fn fail(status: u16, code: &'static str, msg: impl Into<String>) -> PreviewError
 }
 
 /// True when the IP is publicly routable. Rejects loopback, private,
-/// link-local, unspecified, multicast, CGNAT (100.64.0.0/10), and IPv6
-/// unique-local (fc00::/7) - the ranges std's helpers don't cover are
-/// checked by hand.
+/// link-local, unspecified, multicast, CGNAT (100.64.0.0/10), IPv6
+/// unique-local (fc00::/7), and the reserved IPv4 ranges
+/// 192.0.0.0/24, 198.18.0.0/15, and 240.0.0.0/4 - the ranges std's
+/// helpers don't cover are checked by hand.
+///
+/// IPv4-mapped (`::ffff:a.b.c.d`) and IPv4-compatible (`::a.b.c.d`)
+/// IPv6 addresses route to the IPv4 host, so they are judged by the
+/// IPv4 rules: without the mapping, `::ffff:127.0.0.1` and
+/// `::ffff:192.168.1.1` sailed past the V6 branch untouched.
 ///
 /// Public so the behavioral suite in `eval/tests/link_preview_guard.rs` can
 /// pin the rejection set; this is the SSRF boundary, not an internal detail.
@@ -58,20 +64,11 @@ pub fn is_public_ip(ip: &IpAddr) -> bool {
         return false;
     }
     match ip {
-        IpAddr::V4(v4) => {
-            if v4.is_private() || v4.is_link_local() {
-                return false;
-            }
-            let o = v4.octets();
-            // Carrier-grade NAT: 100.64.0.0/10.
-            if o[0] == 100 && o[1] >= 64 && o[1] < 128 {
-                return false;
-            }
-            // Everything else IPv4 is public (docs ranges 192.0.2/24,
-            // 198.51.100/16, 203.0.113/24 are harmless to allow).
-            true
-        }
+        IpAddr::V4(v4) => is_public_v4(*v4),
         IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4() {
+                return is_public_v4(v4);
+            }
             if v6.is_unicast_link_local() {
                 return false;
             }
@@ -83,6 +80,45 @@ pub fn is_public_ip(ip: &IpAddr) -> bool {
             true
         }
     }
+}
+
+/// IPv4 half of [`is_public_ip`], shared with the mapped-V6 path so
+/// both spellings of an address get the same verdict.
+fn is_public_v4(v4: std::net::Ipv4Addr) -> bool {
+    // Loopback/unspecified/broadcast must be denied HERE, not just
+    // by the outer `is_public_ip` check: an IPv4-mapped IPv6 address
+    // (`::ffff:127.0.0.1`) is not loopback as V6, so it reaches this
+    // function, and without these checks it would pass as public.
+    if v4.is_private()
+        || v4.is_loopback()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_unspecified()
+    {
+        return false;
+    }
+    let o = v4.octets();
+    // Carrier-grade NAT: 100.64.0.0/10.
+    if o[0] == 100 && (64..128).contains(&o[1]) {
+        return false;
+    }
+    // IETF protocol assignments: 192.0.0.0/24 (includes NAT64
+    // well-known prefixes - not a public host).
+    if o[0] == 192 && o[1] == 0 && o[2] == 0 {
+        return false;
+    }
+    // Benchmarking: 198.18.0.0/15.
+    if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
+        return false;
+    }
+    // Reserved: 240.0.0.0/4 (includes 255.255.255.255 broadcast).
+    if o[0] >= 240 {
+        return false;
+    }
+    // Everything else IPv4 is public (documentation ranges 192.0.2/24,
+    // 198.51.100/24, 203.0.113/24 are harmless to allow: they route
+    // nowhere real).
+    true
 }
 
 /// SSRF guard: the URL's host must be http(s) with no credentials, and
