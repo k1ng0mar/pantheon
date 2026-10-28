@@ -31,12 +31,23 @@ pub fn list(app: &App) -> Response {
         Ok(s) => s,
         Err(e) => return err_json(500, "SUPERVISOR", &format!("open supervisor: {e}")),
     };
+    // Fail closed, never fail empty: a list_runs or replay failure used to
+    // degrade to an empty approval queue, which reads to the operator as
+    // "nothing needs approval" while a parked run is actually waiting.
+    // A 500 says the queue itself is unreadable, which is the truth.
+    let runs = match ledger.list_runs(10_000) {
+        Ok(r) => r,
+        Err(e) => return err_json(500, "LEDGER", &format!("list runs: {e}")),
+    };
     let mut out = Vec::new();
-    for (run_id, status, created_ms, title, ..) in ledger.list_runs(10_000).unwrap_or_default() {
+    for (run_id, status, created_ms, title, ..) in runs {
         if status != "awaiting_approval" {
             continue;
         }
-        let pending = supervisor.pending_approvals(&run_id).unwrap_or_default();
+        let pending = match supervisor.pending_approvals(&run_id) {
+            Ok(p) => p,
+            Err(e) => return err_json(500, "LEDGER", &format!("pending approvals: {e}")),
+        };
         for scope in pending {
             let (call_id, tool, args) = split_scope(&scope);
             out.push(serde_json::json!({
