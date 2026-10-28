@@ -109,11 +109,57 @@ fn env_first(keys: &[&str]) -> Result<String, String> {
 }
 
 /// The real sender: the gateway's existing REST transports.
-pub struct RestChannelSender;
+///
+/// Token resolution matches the gateway daemon's
+/// (`service::read_channel_tokens`): process environment first, then
+/// `<data_dir>/gateway.env` - the file the setup wizard writes. The
+/// old sender read only the process environment, so wizard-configured
+/// installs had working channels but failing scheduled delivery and
+/// `pantheon send`. A sender built without a data dir keeps the old
+/// env-only behavior (its callers have no dir to offer).
+pub struct RestChannelSender {
+    data_dir: Option<PathBuf>,
+}
+
+impl RestChannelSender {
+    pub fn new() -> Self {
+        Self { data_dir: None }
+    }
+
+    pub fn with_data_dir(data_dir: &Path) -> Self {
+        Self {
+            data_dir: Some(data_dir.to_path_buf()),
+        }
+    }
+
+    fn channel_token(&self, env_names: &[&str], secret_name: &str) -> Result<String, String> {
+        if let Ok(v) = env_first(env_names) {
+            return Ok(v);
+        }
+        if let Some(dir) = &self.data_dir {
+            if let Some(v) = pantheon_secrets::gateway_token(dir, secret_name) {
+                let v = v.expose().to_string();
+                if !v.trim().is_empty() {
+                    return Ok(v);
+                }
+            }
+        }
+        Err(format!("none of {} is set", env_names.join(" / ")))
+    }
+}
+
+impl Default for RestChannelSender {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ChannelSender for RestChannelSender {
     fn send_telegram(&self, text: &str) -> Result<(), String> {
-        let token = env_first(&["PANTHEON_TELEGRAM_BOT_TOKEN"])?;
+        let token = self.channel_token(
+            &["PANTHEON_TELEGRAM_BOT_TOKEN"],
+            pantheon_secrets::TELEGRAM_TOKEN_NAME,
+        )?;
         let chat = env_first(&["PANTHEON_DELIVER_TELEGRAM_TO"]).map_err(|_| {
             "PANTHEON_DELIVER_TELEGRAM_TO is not set (the chat id to deliver to)".to_string()
         })?;
@@ -126,7 +172,10 @@ impl ChannelSender for RestChannelSender {
     }
 
     fn send_discord(&self, text: &str) -> Result<(), String> {
-        let token = env_first(&["PANTHEON_DISCORD_TOKEN", "PANTHEON_DISCORD_BOT_TOKEN"])?;
+        let token = self.channel_token(
+            &["PANTHEON_DISCORD_TOKEN", "PANTHEON_DISCORD_BOT_TOKEN"],
+            pantheon_secrets::DISCORD_TOKEN_NAME,
+        )?;
         let channel = env_first(&["PANTHEON_DELIVER_DISCORD_TO"]).map_err(|_| {
             "PANTHEON_DELIVER_DISCORD_TO is not set (the channel id to deliver to)".to_string()
         })?;
@@ -253,4 +302,46 @@ pub fn deliver_to_home_session(data_dir: &Path, job_label: &str, summary: &str) 
         .append(&event)
         .err()
         .map(|e| format!("append to home session: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_token_falls_back_to_gateway_env() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-delivery-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        pantheon_secrets::set_gateway_token(
+            &dir,
+            pantheon_secrets::TELEGRAM_TOKEN_NAME,
+            pantheon_secrets::SecretValue::new("wizard-token-123"),
+        )
+        .expect("store wizard token");
+        let sender = RestChannelSender::with_data_dir(&dir);
+        // No such process env var exists; the wizard's gateway.env must win.
+        let got = sender
+            .channel_token(
+                &["PANTHEON_TEST_NO_SUCH_VAR_XYZ"],
+                pantheon_secrets::TELEGRAM_TOKEN_NAME,
+            )
+            .expect("gateway.env fallback");
+        assert_eq!(got, "wizard-token-123");
+        // And a sender with no data dir still fails closed on env only.
+        let err = RestChannelSender::new()
+            .channel_token(
+                &["PANTHEON_TEST_NO_SUCH_VAR_XYZ"],
+                pantheon_secrets::TELEGRAM_TOKEN_NAME,
+            )
+            .expect_err("no dir, no env must error");
+        assert!(err.contains("PANTHEON_TEST_NO_SUCH_VAR_XYZ"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

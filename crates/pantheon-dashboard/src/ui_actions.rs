@@ -99,7 +99,7 @@ pub fn submit_ui_action(app: &App, run_id: &str, req: &Request) -> Response {
                 .ledger_run_mode(run_id)
                 .unwrap_or_else(|_| crate::runs::DEFAULT_RUN_MODE.to_string());
             drop(session);
-            if let Ok(pid) = spawn_turn_child(&[
+            match spawn_turn_child(&[
                 "run",
                 "--taskID",
                 run_id,
@@ -109,7 +109,10 @@ pub fn submit_ui_action(app: &App, run_id: &str, req: &Request) -> Response {
                 "--mode",
                 mode.as_str(),
             ]) {
-                app.register_turn_child(run_id, pid);
+                Ok(pid) => app.register_turn_child(run_id, pid),
+                Err(e) => {
+                    return err_json(500, "SPAWN", &format!("failed to resume turn: {e}"));
+                }
             }
             json_ok(serde_json::json!({
                 "ok": true,

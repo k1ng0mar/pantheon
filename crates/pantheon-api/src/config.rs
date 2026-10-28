@@ -15,7 +15,17 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ModelSection {
+    // `serde(default)`: a half-written `[model]` table (provider set,
+    // model not yet, or vice versa) loads with the missing half empty
+    // instead of failing the whole config with "missing field". Empty
+    // halves are still flagged by `Config::validate()` and ignored by
+    // model resolution (they inherit / fall back to the local default),
+    // matching the half-set pins the aux sections already allow - and
+    // it lets `pantheon config set model.provider ...` work on a fresh
+    // config instead of dying on the sibling field it did not touch.
+    #[serde(default)]
     pub provider: String,
+    #[serde(default)]
     pub model: String,
     /// Env var name holding the API key. Never the key itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -732,6 +742,25 @@ pub fn nightly_enabled(section: &NightlySection) -> bool {
         Some(false) => false,
         Some(true) => true,
         None => nightly_model_pin_present(section) || nightly_env_pin_present(),
+    }
+}
+
+/// Like [`nightly_enabled`], but a `[nightly]` table that makes no
+/// enable decision at all - no explicit flag, no model pin, no
+/// `PANTHEON_NIGHTLY_*` env - defers to `legacy_enabled` (the legacy
+/// `[reflect]` / `[consolidation]` flags). A partial `[nightly]` table
+/// holding only `cron` used to switch a previously enabled legacy pass
+/// off: the mere presence of the table was read as "the new section
+/// decides", even though it decided nothing. An explicit flag or pin
+/// still wins over legacy, always.
+pub fn nightly_enabled_with_legacy(
+    section: &NightlySection,
+    legacy_enabled: bool,
+) -> bool {
+    match section.enabled {
+        Some(v) => v,
+        None if nightly_model_pin_present(section) || nightly_env_pin_present() => true,
+        None => legacy_enabled,
     }
 }
 
@@ -1883,6 +1912,18 @@ impl DelegationSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MemorySection {
     /// Backend name from the catalog: native | http | ...
+    ///
+    /// Display-only: the backend actually used comes from
+    /// `<data_dir>/memory-backend.toml` (see
+    /// `pantheon_memory::load_selection`), not from this field. This
+    /// section is shown by `/settings` and written by `setup`, which
+    /// syncs both files - which is why the wizard works while
+    /// hand-editing `[memory] backend` here changes nothing. To switch
+    /// backends, use the memory backend selection (`memory backend`
+    /// / setup), not a hand edit of this section. Making `cfg.memory`
+    /// effective (syncing it into `memory-backend.toml` on load) needs
+    /// a design decision about which file wins on conflict, so it is
+    /// documented + warned here, not silently implemented.
     pub backend: String,
     #[serde(default)]
     pub options: std::collections::HashMap<String, String>,
@@ -1890,7 +1931,10 @@ pub struct MemorySection {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ServerSection {
-    /// AG-UI HTTP port (0 = auto).
+    /// AG-UI HTTP port. 0 ("auto") resolves to the 18789 default in
+    /// `serve` and in remotes: a literal ephemeral bind was
+    /// undiscoverable (nothing reported the bound port, remotes
+    /// refused port 0, GenUI URLs baked in `:0`).
     #[serde(default)]
     pub port: u16,
     #[serde(default)]
@@ -2335,6 +2379,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "tts",
     "voice",
     "policy",
+    "permission_mode",
     "memory",
     "server",
     "secrets",
@@ -2358,6 +2403,79 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "admin",
     "routing",
 ];
+
+/// Unknown keys anywhere in a config document, as dotted paths, sorted.
+/// Pure so the load policy is unit-testable without touching the
+/// filesystem.
+///
+/// Serde silently drops unknown fields on deserialize, so the trick is
+/// the one `config set` already uses for one key, generalized: parse
+/// the document, round-trip it through [`Config`], and diff the input
+/// table against the re-serialized table. A key present in the input
+/// but absent from the output names no field of the document type -
+/// `model.providr`, a typo inside a section, or a typo'd section
+/// itself. This is a lint, not a load gate: loads still succeed (the
+/// unknown key is inert), but doctor surfaces these so a hand edit
+/// that "did nothing" gets explained instead of failing open.
+///
+/// Two diff quirks are deliberately tolerated, because the alternative
+/// is false positives on valid configs:
+/// - Empty tables/arrays serialize away under `skip_serializing_if`
+///   (`Vec::is_empty`, empty option maps), so an empty-valued unknown
+///   key is not flagged. A typo with a real value always is.
+/// - Map sections (`[agents.<name>]`, `[custom_providers.<name>]`,
+///   `[gateway.channels.<name>]`) recurse by name: the dynamic name
+///   itself is never "unknown", but unknown fields *inside* the entry
+///   are flagged, because the entry type re-serializes only its fields.
+pub fn unknown_inner_keys(text: &str) -> Vec<String> {
+    let input: toml::Value = match toml::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let cfg: Config = match input.clone().try_into() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let output = match toml::Value::try_from(&cfg) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    fn is_empty_value(v: &toml::Value) -> bool {
+        matches!(v, toml::Value::Table(t) if t.is_empty())
+            || matches!(v, toml::Value::Array(a) if a.is_empty())
+    }
+    fn walk(
+        prefix: &str,
+        input: &toml::Value,
+        output: &toml::Value,
+        out: &mut Vec<String>,
+    ) {
+        let (Some(in_table), Some(out_table)) =
+            (input.as_table(), output.as_table())
+        else {
+            return;
+        };
+        for (key, in_value) in in_table {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match out_table.get(key) {
+                None => {
+                    if !is_empty_value(in_value) {
+                        out.push(path);
+                    }
+                }
+                Some(out_value) => walk(&path, in_value, out_value, out),
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk("", &input, &output, &mut found);
+    found.sort();
+    found
+}
 
 /// Unknown top-level keys in a config document, sorted. Pure so the
 /// load policy is unit-testable without touching the filesystem.
@@ -2490,6 +2608,20 @@ impl Config {
                     );
                 }
             })
+    }
+    /// Load for a read-modify-write save: a missing file reads as a
+    /// default document (the save creates it), but a file that exists
+    /// and does not parse is an error, never a default. The old
+    /// `load(...).unwrap_or_default()` pattern at every save site
+    /// replaced a corrupt `config.toml` with defaults plus one field -
+    /// `/theme`, `/vim`, `/model`, `/nightly`, and CLI `model` all
+    /// silently clobbered the user's config on a typo. Fail closed.
+    pub fn load_for_save(data_dir: &Path) -> Result<Self, PantheonError> {
+        match Self::load(data_dir) {
+            Ok(c) => Ok(c),
+            Err(e) if e.code == "CONFIG_OPEN" => Ok(Self::default()),
+            Err(e) => Err(e),
+        }
     }
     /// The agent profiles declared in this config, as a resolvable registry.
     ///
@@ -2644,6 +2776,20 @@ impl Config {
         } else {
             problems.push("no [model] section: run `pantheon setup`".into());
         }
+        // `permission_mode` spelling: the runtime parses this with
+        // `PermissionMode::parse` and falls back to `Ask` on anything
+        // unparseable (fail-safe, but silent). A typo like `smrt`
+        // used to read as a deliberate `ask` with no complaint, and
+        // deleting the key on a rewrite silently lost `smart` /
+        // `allow_all`. Flag it here so doctor and `config set` see it.
+        if let Some(mode) = self.permission_mode.as_deref().filter(|s| !s.trim().is_empty())
+        {
+            if crate::permission_mode::PermissionMode::parse(mode).is_none() {
+                problems.push(format!(
+                    "permission_mode {mode:?} is not ask|smart|allow_all (unparseable values fall back to ask)"
+                ));
+            }
+        }
         // Every aux section validates identically: a resolvable
         // api_key_env when named, and a non-zero timeout. Empty
         // provider/model is valid - it inherits the `[model]` target
@@ -2777,14 +2923,20 @@ impl Config {
             }
         }
         if let Some(server) = &self.server {
-            if !server.host.is_empty()
-                && server.host != "127.0.0.1"
-                && server.host != "0.0.0.0"
-                && server.host != "localhost"
-                && server.host != "::"
+            // The old check flagged any host outside the loopback set as
+            // "not a bindable address" - but a LAN address (e.g.
+            // 192.168.1.10) binds fine; the loopback set was never a
+            // bindability rule, and the dashboard itself warns (rather
+            // than refuses) on non-loopback binds. Only reject hosts
+            // that cannot be a bind address at all: empty is already
+            // allowed (means "default"), whitespace or an unparseable
+            // value is not.
+            let host = server.host.trim();
+            if !host.is_empty()
+                && host.contains(char::is_whitespace)
             {
                 problems.push(format!(
-                    "server.host {:?} is not a bindable address",
+                    "server.host {:?} contains whitespace and cannot be a bind address",
                     server.host
                 ));
             }
@@ -3572,6 +3724,50 @@ mod fix_pass4_leaf1_tests {
         );
     }
 
+    #[test]
+    fn unknown_inner_keys_flags_section_typos() {
+        let text = "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\nprovidr = \"openai\"\n[budget]\nmax_turns = 16\n";
+        assert_eq!(
+            unknown_inner_keys(text),
+            vec!["model.providr".to_string()]
+        );
+        // A valid config flags nothing, including map sections and
+        // half-set [model] tables.
+        assert!(unknown_inner_keys("[model]\nprovider = \"openai\"\n").is_empty());
+        assert!(unknown_inner_keys(
+            "[agents.coder]\nmodel = \"openai/gpt-4o\"\n"
+        )
+        .is_empty());
+        // Unparseable documents report nothing here - the parse error
+        // path owns that case.
+        assert!(unknown_inner_keys("[model\n").is_empty());
+    }
+
+    #[test]
+    fn validate_flags_bad_permission_mode_and_accepts_lan_host() {
+        let mut cfg = Config::default();
+        cfg.permission_mode = Some("smrt".to_string());
+        cfg.server = Some(ServerSection {
+            host: "192.168.1.10".to_string(),
+            port: 18789,
+        });
+        let problems = cfg.validate();
+        assert!(
+            problems.iter().any(|p| p.contains("permission_mode")),
+            "bad permission_mode must be flagged: {problems:?}"
+        );
+        assert!(
+            !problems.iter().any(|p| p.contains("server.host")),
+            "a LAN host is bindable and must not be flagged: {problems:?}"
+        );
+        cfg.permission_mode = Some("smart".to_string());
+        let problems = cfg.validate();
+        assert!(
+            !problems.iter().any(|p| p.contains("permission_mode")),
+            "smart must validate: {problems:?}"
+        );
+    }
+
     /// Item 7: unknown top-level keys are reported (pure function).
     #[test]
     fn unknown_config_keys_flags_typos() {
@@ -3615,7 +3811,12 @@ mod fix_pass4_leaf1_tests {
             tts: Some(VoiceSection::default()),
             voice: Some(LiveVoiceSection::default()),
             policy: Some(PolicyPreset::default()),
-            permission_mode: None,
+            // Non-None on purpose: the guard test serializes this
+            // literal and compares its keys against KNOWN_CONFIG_KEYS,
+            // and a None `permission_mode` is skipped on serialization,
+            // which used to hide the key's absence from the list (every
+            // load then falsely warned it was unknown/ignored).
+            permission_mode: Some("smart".to_string()),
             memory: Some(MemorySection::default()),
             server: Some(ServerSection::default()),
             secrets: Some(SecretsSection::default()),

@@ -158,7 +158,7 @@ pub fn save_theme(
     data_dir: &std::path::Path,
     name: &str,
 ) -> Result<(), pantheon_api::error::PantheonError> {
-    let mut cfg = crate::config::Config::load(data_dir).unwrap_or_default();
+    let mut cfg = crate::config::Config::load_for_save(data_dir)?;
     let mut tui = cfg.tui.unwrap_or_default();
     tui.theme = Some(name.to_string());
     cfg.tui = Some(tui);
