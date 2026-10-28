@@ -268,7 +268,13 @@ fn import_lines(v: &serde_json::Value) -> Vec<String> {
         .unwrap_or("?")
         .to_string();
     let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
-    lines.push(format!("imported {name} v{version} ({kind})"));
+    // "Staged", not "imported": the first line used to claim the plugin
+    // was imported even for a malicious scan verdict, before any
+    // approval. Approval still blocks server-side, but the wording must
+    // not imply a quarantined plugin is live.
+    lines.push(format!(
+        "staged {name} v{version} ({kind}), pending scan/approval"
+    ));
     match v.get("detected_capabilities").and_then(|c| c.as_array()) {
         Some(caps) if !caps.is_empty() => {
             let caps: Vec<String> = caps

@@ -190,10 +190,21 @@ impl RuntimeSink {
     /// resolved preset; otherwise the config default. Anonymous channels
     /// get exactly today's behavior.
     fn policy_for(&self, channel: &str) -> Policy {
-        match std::env::var("PANTHEON_GATEWAY_POLICY").as_deref() {
-            Ok("researcher") => return Policy::researcher_readonly(),
-            Ok("coder") => return Policy::coder(),
-            _ => {}
+        // The historical spellings ("researcher") plus the preset
+        // spellings ("reader", "coder_memory"): the old match honoured
+        // only researcher/coder, so coder_memory and typos silently
+        // fell through to the channel default.
+        if let Ok(v) = std::env::var("PANTHEON_GATEWAY_POLICY") {
+            match v.as_str() {
+                "researcher" | "reader" => return Policy::researcher_readonly(),
+                "coder" => return Policy::coder(),
+                "coder_memory" => return Policy::coder_with_memory(),
+                other => {
+                    eprintln!(
+                        "[pantheon] unknown PANTHEON_GATEWAY_POLICY value '{other}' (expected researcher, reader, coder, or coder_memory); falling back to the channel default"
+                    );
+                }
+            }
         }
         if let Some(preset) = self
             .agents

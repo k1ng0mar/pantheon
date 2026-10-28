@@ -21,6 +21,12 @@ pub fn policy_for_config(
         if let Some(preset) = PolicyPreset::parse(&p) {
             return preset.to_policy();
         }
+        // Unknown values used to fall through silently to the coder
+        // default, so a typo (`PANTHEON_POLICY=coder_memroy`) looked
+        // like it worked while doing nothing. Warn loudly instead.
+        eprintln!(
+            "[pantheon] unknown PANTHEON_POLICY value '{p}' (expected reader, coder, or coder_memory); falling back to the coder default"
+        );
     }
     let allow_memory = std::env::var("PANTHEON_ALLOW_MEMORY")
         .map(|v| v == "1" || v == "true")
