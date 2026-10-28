@@ -1,5 +1,9 @@
-//! Extension manager: owns loaded plugins, fires hooks in manifest order,
-//! concatenates injected contexts. Fail-open per plugin.
+//! Extension manager: owns loaded plugins, fires hooks in alphabetical
+//! (name-sorted) order - `load_dir`/`load_one` sort by manifest name, so
+//! alphabetical order, not manifest-file order, decides gate-deny and
+//! transform winners. Concatenates injected contexts. Gate hooks fail
+//! closed (see `fire_gate`); other hook failures are per-plugin
+//! fail-open, not a blanket fail-open policy.
 //!
 //! Session-scoped dedup: plugins marked `once_per_session: true` in
 //! plugin.yaml (or Hermes `__init__.py` plugins that keep in-process
@@ -209,6 +213,10 @@ impl ExtensionManager {
                 ),
             ));
         }
+        // Dedup: loading the same plugin twice used to push a second
+        // copy, firing its hooks twice. Replace the old entry in place.
+        self.plugins.retain(|p| p.manifest.name != name);
+        self.pending.retain(|p| p.name != name);
         self.plugins.push({
             // Bind the approval scope: every hook fire re-hashes the
             // plugin dir against this scope immediately before spawn
