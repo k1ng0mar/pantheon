@@ -7254,6 +7254,36 @@ fn show_todos(state: &mut TuiState, session: &Arc<Session>) {
     }
 }
 
+/// Status line for a live output cap that exceeds a model's known
+/// maximum, or `None` when the cap fits. The chain clamps either way,
+/// so every site that can leave a too-large cap in place (`/tokens`
+/// at set time, `/model` at switch time) must surface this instead of
+/// silently sending the lower value on the next turn.
+fn clamp_status(requested: u32, cap: u32) -> Option<String> {
+    if requested > cap {
+        Some(format!(
+            "max tokens: {requested} (clamped to the model's {cap} maximum)"
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod clamp_status_tests {
+    use super::clamp_status;
+
+    #[test]
+    fn clamp_status_reports_only_an_over_cap_value() {
+        assert_eq!(
+            clamp_status(20_000, 8_192),
+            Some("max tokens: 20000 (clamped to the model's 8192 maximum)".to_string())
+        );
+        assert_eq!(clamp_status(8_192, 8_192), None);
+        assert_eq!(clamp_status(1_000, 8_192), None);
+    }
+}
+
 /// `/tokens [n|off]` - show or set the per-request output cap: the most
 /// tokens the model may emit in one response. Strictly optional: the
 /// default is uncapped (`None`), Pantheon never requires it, and
@@ -7284,10 +7314,12 @@ fn do_tokens(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
             // on an 8192-cap model silently send 8192.
             let (p, m) = session.default_model();
             match pantheon_providers::catalog::model_meta(&p, &m).max_output_tokens {
-                Some(cap) if n > cap => {
-                    state.add_status(format!("max tokens: {n} (clamped to the model's {cap} maximum)"));
+                Some(cap) => {
+                    state.add_status(
+                        clamp_status(n, cap).unwrap_or_else(|| format!("max tokens: {n}")),
+                    );
                 }
-                _ => state.add_status(format!("max tokens: {n}")),
+                None => state.add_status(format!("max tokens: {n}")),
             }
         }
         _ => state.add_status("usage: /tokens [n | off]".into()),
@@ -10201,7 +10233,8 @@ fn apply_model_switch(state: &mut TuiState, session: &Arc<Session>, provider: &s
         return;
     }
     state.model = format!("{provider}/{model}");
-    match pantheon_providers::catalog::model_meta(provider, model).context_limit {
+    let meta = pantheon_providers::catalog::model_meta(provider, model);
+    match meta.context_limit {
         Some(limit) => state.tokens_max = limit,
         None => {
             // tokens_max stays 0 ("unknown") and, unlike before, the
@@ -10211,6 +10244,17 @@ fn apply_model_switch(state: &mut TuiState, session: &Arc<Session>, provider: &s
             state.add_status(format!(
                 "warning: no known context window for {provider}/{model}; transcript fitting is disabled until the provider reports one"
             ));
+        }
+    }
+    // A live /tokens cap set for the previous model survives the
+    // switch, and the chain clamps it to the new model's maximum on
+    // the next turn. Say so here, the same way /tokens says so at
+    // set time, instead of silently sending the lower value.
+    if let Some(cap) = meta.max_output_tokens {
+        if let Some(n) = session.budget_snapshot().max_tokens {
+            if let Some(msg) = clamp_status(n, cap) {
+                state.add_status(msg);
+            }
         }
     }
     match persist_model_choice(&crate::terminal::data_dir(), provider, model) {
