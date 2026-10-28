@@ -701,11 +701,16 @@ pub fn fetch_models(
             }
         }
     }
-    // Send If-None-Match if we have an ETag.
+    // Send If-None-Match only for this key's ETag: the cache is
+    // global, and honouring a previous key's ETag let a 304 serve
+    // another key's model list (the 304 path below returns the cached
+    // ids without re-checking whose they are).
     if let Ok(cache) = DISCOVERY.lock() {
         if let Some(ref c) = *cache {
-            if let Some(ref etag) = c.etag {
-                req = req.header("If-None-Match", etag.as_str());
+            if c.key == ck {
+                if let Some(ref etag) = c.etag {
+                    req = req.header("If-None-Match", etag.as_str());
+                }
             }
         }
     }
@@ -716,16 +721,27 @@ pub fn fetch_models(
         let snippet: String = body.chars().take(160).collect();
         return Err(format!("HTTP {status} from {url}: {snippet}"));
     }
-    // 304 Not Modified: keep cached list.
+    // 304 Not Modified: keep cached list, but only when the cached
+    // entry belongs to this key (defensive twin of the If-None-Match
+    // guard above; a mismatched 304 must never serve another key's
+    // list, so it falls through to an empty-body parse error instead
+    // of returning foreign ids).
     if resp.status() == 304 {
-        if let Ok(mut cache) = DISCOVERY.lock() {
-            if let Some(ref mut c) = *cache {
-                c.fetched_at = std::time::Instant::now();
-            }
-        }
         if let Ok(cache) = DISCOVERY.lock() {
             if let Some(ref c) = *cache {
-                return Ok(c.ids.clone());
+                if c.key == ck {
+                    drop(cache);
+                    if let Ok(mut cache) = DISCOVERY.lock() {
+                        if let Some(ref mut c) = *cache {
+                            c.fetched_at = std::time::Instant::now();
+                        }
+                    }
+                    if let Ok(cache) = DISCOVERY.lock() {
+                        if let Some(ref c) = *cache {
+                            return Ok(c.ids.clone());
+                        }
+                    }
+                }
             }
         }
     }
@@ -1383,6 +1399,8 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
                     context_limit: m.context_limit.map(u64::from),
                     input_per_mtok_usd: m.cost.input_per_mtok_usd,
                     output_per_mtok_usd: m.cost.output_per_mtok_usd,
+                    vision: Some(m.vision),
+                    reasoning: Some(m.reasoning),
                 })
                 .collect()
         })
@@ -1411,6 +1429,8 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
                     input_per_mtok_usd: c.input_per_mtok_usd,
                     output_per_mtok_usd: c.output_per_mtok_usd,
                     curated: true,
+                    vision: c.vision,
+                    reasoning: c.reasoning,
                 })
                 .collect()
         }
@@ -1427,6 +1447,8 @@ fn interactive(target: Target, prompt: &dyn Fn(&str, &str) -> String) -> Option<
         input_per_mtok_usd: None,
         output_per_mtok_usd: None,
         curated: false,
+        vision: None,
+        reasoning: None,
     });
     let browse = crate::model_browser::browse(
         &format!("pick a model on {provider_id}"),

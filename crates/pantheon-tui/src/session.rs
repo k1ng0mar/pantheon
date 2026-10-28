@@ -6820,7 +6820,16 @@ fn do_tokens(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         Ok(n) if n > 0 => {
             budget.max_tokens = Some(n);
             session.set_budget(budget);
-            state.add_status(format!("max tokens: {n}"));
+            // The chain clamps the override to the model's known
+            // maximum; say so here instead of letting `/tokens 20000`
+            // on an 8192-cap model silently send 8192.
+            let (p, m) = session.default_model();
+            match pantheon_providers::catalog::model_meta(&p, &m).max_output_tokens {
+                Some(cap) if n > cap => {
+                    state.add_status(format!("max tokens: {n} (clamped to the model's {cap} maximum)"));
+                }
+                _ => state.add_status(format!("max tokens: {n}")),
+            }
         }
         _ => state.add_status("usage: /tokens [n | off]".into()),
     }
@@ -9639,34 +9648,70 @@ fn apply_model_switch(state: &mut TuiState, session: &Arc<Session>, provider: &s
         return;
     }
     state.model = format!("{provider}/{model}");
-    state.tokens_max = pantheon_providers::catalog::model_meta(provider, model)
-        .context_limit
-        .unwrap_or(0);
+    match pantheon_providers::catalog::model_meta(provider, model).context_limit {
+        Some(limit) => state.tokens_max = limit,
+        None => {
+            // tokens_max stays 0 ("unknown") and, unlike before, the
+            // user is told what that means: no transcript fitting
+            // happens for a model with no known window.
+            state.tokens_max = 0;
+            state.add_status(format!(
+                "warning: no known context window for {provider}/{model}; transcript fitting is disabled until the provider reports one"
+            ));
+        }
+    }
     match persist_model_choice(&crate::terminal::data_dir(), provider, model) {
         Ok(()) => state.add_status(format!("model → {provider}/{model} (saved)")),
         Err(e) => state.add_status(format!(
             "model → {provider}/{model} for this session; save failed: {e}"
         )),
     }
-    match pantheon_providers::catalog::provider(provider) {
-        Some(p) if !p.key_env.trim().is_empty() => {
-            let missing = std::env::var(&p.key_env)
-                .ok()
-                .filter(|v| !v.is_empty())
-                .is_none();
-            if missing {
-                state.add_status(format!(
-                    "{} is not set; export it before chatting on {provider}/{model}",
-                    p.key_env
-                ));
+    // Key warning against the *resolved* key env var, not only a
+    // catalog row's explicit `key_env`: the default
+    // `PANTHEON_KEY_<ID>` and custom-provider keys previously got no
+    // warning before the first 401. `<data_dir>/.env` counts as set:
+    // the runtime loads it at startup, so a key that lives only
+    // there is not missing just because the process env lacks it.
+    let key_env = pantheon_providers::catalog::provider(provider)
+        .map(|p| {
+            if p.key_env.trim().is_empty() {
+                crate::config::provider_key_env(provider, None)
+            } else {
+                p.key_env.clone()
             }
-        }
-        None if !provider.starts_with("http") => {
-            state.add_status(format!(
-                "warning: '{provider}' is not a catalog provider; requests may fail"
-            ));
-        }
-        _ => {}
+        })
+        .unwrap_or_else(|| crate::config::provider_key_env(provider, None));
+    let in_env = std::env::var(&key_env)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some();
+    let in_dotenv = crate::terminal::data_dir()
+        .join(".env")
+        .exists()
+        .then(|| {
+            std::fs::read_to_string(crate::terminal::data_dir().join(".env")).unwrap_or_default()
+        })
+        .map(|text| {
+            text.lines().any(|line| {
+                let line = line.trim().trim_start_matches("export ");
+                match line.split_once('=') {
+                    Some((name, value)) => {
+                        name.trim() == key_env && !value.trim().trim_matches('"').is_empty()
+                    }
+                    None => false,
+                }
+            })
+        })
+        .unwrap_or(false);
+    if !in_env && !in_dotenv {
+        state.add_status(format!(
+            "{key_env} is not set; export it before chatting on {provider}/{model}"
+        ));
+    }
+    if pantheon_providers::catalog::provider(provider).is_none() && !provider.starts_with("http") {
+        state.add_status(format!(
+            "warning: '{provider}' is not a catalog provider; requests may fail"
+        ));
     }
 }
 
@@ -10852,12 +10897,24 @@ fn handle_slash_inner(
         return;
     }
     if let Some(rest) = cmd.strip_prefix("/model ") {
-        let parts: Vec<&str> = rest.split_whitespace().collect();
-        if parts.len() != 2 {
+        // Provider is the first token; the model id is the remainder,
+        // slashes included: OpenRouter-style ids like
+        // `anthropic/claude-...` were rejected by the old exactly-2-
+        // parts check. This matches ACP `set_model`, which splits on
+        // the first `/` only.
+        let rest = rest.trim();
+        let (provider, model) = match rest.split_once(char::is_whitespace) {
+            Some((p, m)) => (p, m.trim()),
+            None => {
+                state.add_status("usage: /model <provider> <id>  (or /models to browse)".into());
+                return;
+            }
+        };
+        if provider.is_empty() || model.is_empty() {
             state.add_status("usage: /model <provider> <id>  (or /models to browse)".into());
             return;
         }
-        apply_model_switch(state, session, parts[0], parts[1]);
+        apply_model_switch(state, session, provider, model);
         return;
     }
     if cmd == "/reasoning" {

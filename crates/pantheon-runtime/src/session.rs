@@ -119,6 +119,14 @@ impl LedgerPoison {
         }
     }
 
+    /// Whether a ledger write has already failed. The tee uses this to
+    /// suppress the UI callback after a poisoned write: firing the
+    /// callback after the ledger write failed showed the user output
+    /// the ledger never recorded.
+    fn is_poisoned(&self) -> bool {
+        self.inner.lock().map(|slot| slot.is_some()).unwrap_or(false)
+    }
+
     /// Take the latched failure, if any.
     fn take(&self) -> Option<PantheonError> {
         self.inner.lock().ok()?.take()
@@ -348,6 +356,14 @@ impl pantheon_providers::model_event::AuxiliaryUsageSink for RunAuxiliaryUsageSi
 impl<'a> ModelEventSink for TeeModelSink<'a> {
     fn emit(&self, event: ModelEvent) {
         self.inner.emit(event.clone());
+        // Ledger failure latches the poison; the UI callback fires
+        // only on a clean ledger write, never after a poisoned one.
+        // (Once poisoned the turn is doomed anyway, so suppressing all
+        // later callbacks for the turn is the correct behaviour, not a
+        // loss: the turn fails at its next boundary regardless.)
+        if self.inner.poison.is_poisoned() {
+            return;
+        }
         if let Some(cb) = self.callback {
             cb(event);
         }
@@ -5650,28 +5666,41 @@ impl Session {
     /// limit must mean "do not touch the transcript" - not "assume 4k" and
     /// silently truncate a conversation on a 1M-window model, and not
     /// "assume infinite" and eat a provider 400. So an uncataloged model gets
-    /// no fit at all, exactly as it did before this was wired.
+    /// no fit at all, exactly as it did before this was wired - and the
+    /// fit site now logs that fact, because "no fitting happens" used to
+    /// be invisible until the provider 400'd.
+    ///
+    /// The budget is the MINIMUM known window across the default and
+    /// every fallback, not the default's alone: fitting to the default
+    /// and then falling back mid-turn to a smaller-window model sent a
+    /// default-fitted transcript at the fallback and 400'd. The
+    /// last-resolved model is deliberately not used: the chain is
+    /// rebuilt per run, so it is stale (or absent) at fit time, and
+    /// the turn's serving model is not known until the chain walks.
     fn window_budget<T: pantheon_providers::ChatTransport>(
         &self,
         chain: &ProviderChain<T>,
     ) -> Option<pantheon_exec::context::WindowBudget> {
-        // The model that will actually serve this turn: the last one resolved
-        // (a fallback may have taken over), else the configured default.
-        let (provider, model) = chain
-            .last_resolved
-            .borrow()
-            .as_ref()
-            .map(|r| (r.provider.clone(), r.model.clone()))
-            .unwrap_or_else(|| {
-                let d = self.policy_snapshot().default;
-                (d.provider.clone(), d.model.clone())
-            });
-        let meta = pantheon_providers::catalog::model_meta(&provider, &model);
-        let limit = meta.context_limit?;
+        let _ = chain;
+        let policy = self.policy_snapshot();
+        let mut candidates: Vec<(String, String)> =
+            vec![(policy.default.provider.clone(), policy.default.model.clone())];
+        for f in &policy.fallbacks.fallbacks {
+            candidates.push((f.provider.clone(), f.model.clone()));
+        }
+        let mut limit: Option<u32> = None;
+        let mut reserve: u32 = 0;
+        for (provider, model) in &candidates {
+            let meta = pantheon_providers::catalog::model_meta(provider, model);
+            if let Some(w) = meta.context_limit {
+                limit = Some(limit.map_or(w, |l: u32| l.min(w)));
+                reserve = reserve.max(meta.max_output_tokens.unwrap_or(0));
+            }
+        }
+        let limit = limit?;
         // Reserve output room only when the catalog states it. Reserving zero
         // would let the input consume the entire window, and the provider
         // would reject the request for a different reason entirely.
-        let reserve = meta.max_output_tokens.unwrap_or(0);
         Some(pantheon_exec::context::WindowBudget::new(limit, reserve))
     }
 
@@ -6266,6 +6295,18 @@ impl Session {
         // leave compression nothing to summarize.
         if let Some(budget) = self.window_budget(chain) {
             self.fit_context(messages, &budget, run_id)?;
+        } else {
+            // Unknown window = no fitting at all (fail-open by design),
+            // but that must be visible: previously a long transcript on
+            // an uncatalogued model grew until the provider 400'd with
+            // no hint that nothing had ever fitted it.
+            let (p, m) = self.default_model();
+            pantheon_api::logging::warn(
+                "provider",
+                format!(
+                    "no known context window for {p}/{m}: transcript fitting is disabled for this turn"
+                ),
+            );
         }
         // Chain events (Attempt/Usage/Completed/Fallback/...) project into the
         // ledger through one sink - no manual model lifecycle emissions here.
@@ -6310,7 +6351,7 @@ impl Session {
                     total_cost_cents: cost_cents,
                 })
             }
-            pantheon_agent::TurnOutcome::Tools { calls, .. } => {
+            pantheon_agent::TurnOutcome::Tools { calls, text, .. } => {
                 // Call ids are stable across the batch: the assistant
                 // message, the park events, and the resume path all
                 // address calls by `tool_call_id(turn_id, turn, i)`.
@@ -6393,10 +6434,19 @@ impl Session {
                 // (When UI was published, the assistant row for the whole
                 // batch is already in `messages` and the ledger.)
                 if !ui_published {
-                    messages.push(Message::assistant_tool_calls(refs.clone()));
+                    // Carry the model's accompanying text into the
+                    // tool-calls row: with empty content the next turn's
+                    // model never saw its own text, even though the
+                    // live TUI/ledger deltas showed it.
+                    let row = if text.is_empty() {
+                        Message::assistant_tool_calls(refs.clone())
+                    } else {
+                        Message::assistant_tool_calls_text(refs.clone(), text.clone())
+                    };
+                    messages.push(row.clone());
                     self.supervisor.emit(Event::AssistantMessage {
                         run_id: run_id.into(),
-                        message: Message::assistant_tool_calls(refs.clone()),
+                        message: row,
                     })?;
                 }
                 // Refuse the mutating calls as tool results BEFORE the
