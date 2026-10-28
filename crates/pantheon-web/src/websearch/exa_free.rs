@@ -91,6 +91,7 @@ pub fn parse_exa_text_blocks(text: &str, limit: u8) -> Vec<SearchResult> {
         let mut title = String::new();
         let mut url = String::new();
         let mut highlights: Vec<String> = Vec::new();
+        let mut published: Option<String> = None;
         let mut in_highlights = false;
         for stripped in block.split('\n').map(str::trim) {
             if stripped.is_empty() {
@@ -101,6 +102,12 @@ pub fn parse_exa_text_blocks(text: &str, limit: u8) -> Vec<SearchResult> {
                 in_highlights = false;
             } else if stripped.starts_with("URL:") {
                 url = after(stripped, "URL:");
+                in_highlights = false;
+            } else if stripped.starts_with("Published:") {
+                let v = after(stripped, "Published:");
+                if !v.is_empty() {
+                    published = Some(v);
+                }
                 in_highlights = false;
             } else if stripped.starts_with("Highlights:") {
                 in_highlights = true;
@@ -117,7 +124,7 @@ pub fn parse_exa_text_blocks(text: &str, limit: u8) -> Vec<SearchResult> {
             title,
             url,
             snippet: highlights.join(" "),
-            published: None,
+            published,
             score: None,
         });
     }
@@ -137,6 +144,8 @@ mod tests {
         assert_eq!(hits[0].title, "First hit");
         assert_eq!(hits[0].url, "https://a.example/x");
         assert_eq!(hits[0].snippet, "first line second line");
+        assert_eq!(hits[0].published.as_deref(), Some("2024-01-01"));
+        assert_eq!(hits[1].published, None);
         assert_eq!(hits[1].snippet, "");
     }
 

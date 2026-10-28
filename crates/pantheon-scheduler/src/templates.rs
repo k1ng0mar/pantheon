@@ -543,10 +543,45 @@ fn validate_template(t: &ScheduleTemplate) -> Result<(), String> {
             t.name
         ));
     }
-    if let TemplateSchedule::Cron(expr) = &t.schedule {
-        crate::CronSchedule::parse(expr)
-            .map(|_| ())
-            .map_err(|e| format!("template '{}' has an invalid cron schedule: {e}", t.name))?;
+    match &t.schedule {
+        TemplateSchedule::Cron(expr) => {
+            crate::CronSchedule::parse(expr)
+                .map(|_| ())
+                .map_err(|e| format!("template '{}' has an invalid cron schedule: {e}", t.name))?;
+        }
+        // Every used to be saved unvalidated and failed only at job
+        // creation, leaving a template that could never run.
+        TemplateSchedule::Every(dur) => {
+            crate::parse_duration(dur).map(|_| ()).map_err(|e| {
+                format!(
+                    "template '{}' has an invalid interval schedule: {e}",
+                    t.name
+                )
+            })?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn template(schedule: TemplateSchedule) -> ScheduleTemplate {
+        ScheduleTemplate {
+            name: "t".to_string(),
+            description: String::new(),
+            schedule,
+            prompt: "do it".to_string(),
+            vars: vec![],
+        }
+    }
+
+    #[test]
+    fn every_schedule_is_validated_at_save_time() {
+        assert!(validate_template(&template(TemplateSchedule::Every("30m".to_string()))).is_ok());
+        let err = validate_template(&template(TemplateSchedule::Every("banana".to_string())))
+            .expect_err("invalid interval must fail validation, not persist");
+        assert!(err.contains("invalid interval schedule"), "got: {err}");
+    }
 }

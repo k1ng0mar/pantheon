@@ -57,7 +57,16 @@ pub fn todo_card_lines(items: &[TodoCardItem]) -> Vec<Line<'_>> {
             "⬢ ",
             Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("Working on {remaining} to-dos"), header_style),
+        Span::styled(
+            if items.is_empty() {
+                "No to-dos".to_string()
+            } else if remaining == 0 {
+                "All to-dos done".to_string()
+            } else {
+                format!("Working on {remaining} to-dos")
+            },
+            header_style,
+        ),
     ]));
     for item in items {
         let (glyph, glyph_style, text_style) = match item.status {
@@ -97,4 +106,38 @@ pub fn render_todo_card(frame: &mut Frame, area: Rect, items: &[TodoCardItem]) {
     let lines = todo_card_lines(items);
     let card = Paragraph::new(lines).style(Style::default().bg(NEAR_BLACK));
     frame.render_widget(card, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header(items: &[TodoCardItem]) -> String {
+        todo_card_lines(items)
+            .first()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn item(status: TodoStatus) -> TodoCardItem {
+        TodoCardItem {
+            content: "x".to_string(),
+            status,
+        }
+    }
+
+    #[test]
+    fn todo_header_states() {
+        assert_eq!(header(&[]), "⬢ No to-dos");
+        assert_eq!(header(&[item(TodoStatus::Completed)]), "⬢ All to-dos done");
+        assert_eq!(
+            header(&[item(TodoStatus::Completed), item(TodoStatus::Pending)]),
+            "⬢ Working on 1 to-dos"
+        );
+    }
 }

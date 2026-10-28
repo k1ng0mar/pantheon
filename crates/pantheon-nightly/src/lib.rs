@@ -348,17 +348,18 @@ pub fn run_pass(
                     match queue_for_approval(&config.data_dir, &p) {
                         Ok(_) => {
                             pending += 1;
-                            // The queued copy is stored as ReplayPassed;
-                            // the pass result must report the same
-                            // status, not the pre-queue `Proposed`.
-                            p.status = ProposalStatus::ReplayPassed;
+                            // MemoryLessons are queued as Proposed (they
+                            // never pass a replay gate); queue_for_approval
+                            // preserves that, so the pass result reports
+                            // Proposed, not ReplayPassed.
+                            p.status = ProposalStatus::Proposed;
                             events.push(NightlyEvent::QueuedForApproval {
                                 id: p.id.clone(),
                                 kind: p.kind_name().into(),
                                 at_ms: at,
                             });
                         }
-                        Err(e) => events.push(NightlyEvent::EvalRejected {
+                        Err(e) => events.push(NightlyEvent::QueueFailed {
                             id: p.id.clone(),
                             reason: format!("queue failed: {e}"),
                             at_ms: at,
@@ -408,7 +409,7 @@ pub fn run_pass(
                             at_ms: at,
                         });
                     }
-                    Err(e) => events.push(NightlyEvent::EvalRejected {
+                    Err(e) => events.push(NightlyEvent::QueueFailed {
                         id: p.id.clone(),
                         reason: format!("queue failed: {e}"),
                         at_ms: at,

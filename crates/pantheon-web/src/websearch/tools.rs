@@ -118,7 +118,9 @@ pub fn register_search_tools(
             let max = v
                 .get("max_results")
                 .and_then(serde_json::Value::as_u64)
-                .map(|n| (n as u8).clamp(1, MAX_RESULTS_CEILING))
+                // Clamp in u64 first: casting to u8 first wrapped
+                // (256 -> 0 -> clamped to 1, 300 -> 44 -> clamped to 10).
+                .map(|n| n.clamp(1, u64::from(MAX_RESULTS_CEILING)) as u8)
                 .unwrap_or(default_max);
             let domains = |key: &str| -> Vec<String> {
                 v.get(key)
@@ -131,14 +133,22 @@ pub fn register_search_tools(
                     })
                     .unwrap_or_default()
             };
+            let include = domains("include_domains");
+            let exclude = domains("exclude_domains");
             let results = provider.search(
                 query,
                 &SearchOptions {
                     max_results: max,
-                    include_domains: domains("include_domains"),
-                    exclude_domains: domains("exclude_domains"),
+                    include_domains: include.clone(),
+                    exclude_domains: exclude.clone(),
                 },
             )?;
+            // Client-side domain filtering: only a few providers honour
+            // include/exclude natively, but the tool schema promises
+            // them for every provider. Filtering here makes the promise
+            // true uniformly (native filtering + this pass is harmless:
+            // both keep the same set).
+            let results = filter_domains(results, &include, &exclude);
             let compact: Vec<serde_json::Value> = results
                 .into_iter()
                 .map(|r| {
@@ -159,6 +169,58 @@ pub fn register_search_tools(
     Ok(1)
 }
 
+/// Host of a result URL, lowercased, without port or userinfo.
+/// Returns `None` for URLs with no usable host, which then match no
+/// include list and are dropped when one is given.
+fn url_host(url: &str) -> Option<String> {
+    let after = url.split("://").nth(1).unwrap_or(url);
+    let host_port = after.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host_port.rsplit('@').next().unwrap_or("");
+    let host = host
+        .strip_prefix('[')
+        .map_or(host, |h| h.split(']').next().unwrap_or(h));
+    let host = host.split(':').next().unwrap_or("");
+    let host = host.trim().to_ascii_lowercase();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+/// True when `host` is `domain` or a subdomain of it.
+fn host_matches_domain(host: &str, domain: &str) -> bool {
+    let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
+    !domain.is_empty() && (host == domain || host.ends_with(&format!(".{domain}")))
+}
+
+/// Apply include/exclude domain filters to a provider's results.
+/// Empty lists mean "no constraint" on that side.
+pub fn filter_domains(
+    results: Vec<super::provider::SearchResult>,
+    include: &[String],
+    exclude: &[String],
+) -> Vec<super::provider::SearchResult> {
+    if include.is_empty() && exclude.is_empty() {
+        return results;
+    }
+    results
+        .into_iter()
+        .filter(|r| {
+            let Some(host) = url_host(&r.url) else {
+                return include.is_empty();
+            };
+            if !include.is_empty() && !include.iter().any(|d| host_matches_domain(&host, d)) {
+                return false;
+            }
+            if exclude.iter().any(|d| host_matches_domain(&host, d)) {
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
 /// Char-boundary-safe truncation.
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
@@ -170,4 +232,46 @@ fn truncate(s: &str, max_chars: usize) -> String {
         .nth(max_chars)
         .unwrap_or(s.len());
     format!("{}...", &s[..end])
+}
+
+#[cfg(test)]
+mod domain_filter_tests {
+    use super::filter_domains;
+    use crate::websearch::provider::SearchResult;
+
+    fn hit(url: &str) -> SearchResult {
+        SearchResult {
+            title: String::new(),
+            url: url.to_string(),
+            snippet: String::new(),
+            published: None,
+            score: None,
+        }
+    }
+
+    #[test]
+    fn include_keeps_domain_and_subdomains_only() {
+        let results = vec![
+            hit("https://example.com/a"),
+            hit("https://docs.example.com/b"),
+            hit("https://notexample.com/c"),
+            hit("https://other.org/d"),
+        ];
+        let kept = filter_domains(results, &["example.com".to_string()], &[]);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn exclude_drops_domain_and_subdomains() {
+        let results = vec![hit("https://a.example.com/x"), hit("https://ok.org/y")];
+        let kept = filter_domains(results, &[], &["example.com".to_string()]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].url, "https://ok.org/y");
+    }
+
+    #[test]
+    fn empty_lists_pass_through() {
+        let results = vec![hit("https://a.org/")];
+        assert_eq!(filter_domains(results, &[], &[]).len(), 1);
+    }
 }

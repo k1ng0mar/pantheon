@@ -1,5 +1,9 @@
-//! Extension manager: owns loaded plugins, fires hooks in manifest order,
-//! concatenates injected contexts. Fail-open per plugin.
+//! Extension manager: owns loaded plugins, fires hooks in alphabetical
+//! (name-sorted) order - `load_dir`/`load_one` sort by manifest name, so
+//! alphabetical order, not manifest-file order, decides gate-deny and
+//! transform winners. Concatenates injected contexts. Gate hooks fail
+//! closed (see `fire_gate`); other hook failures are per-plugin
+//! fail-open, not a blanket fail-open policy.
 //!
 //! Session-scoped dedup: plugins marked `once_per_session: true` in
 //! plugin.yaml (or Hermes `__init__.py` plugins that keep in-process
@@ -328,14 +332,23 @@ impl ExtensionManager {
                 ),
             ));
         }
-        if self.plugins.iter().any(|q| q.manifest.name == name) {
-            return Err(merr(
-                "EXT_NAME_CONFLICT",
-                format!(
-                    "extension '{name}' at {} is ignored; an extension named '{name}' is already loaded (rename one of them)",
-                    dir.display()
-                ),
-            ));
+        // Same-name handling, both ways: a reload of the SAME dir
+        // replaces the old entry in place (loading twice used to push
+        // a second copy, firing its hooks twice), but a DIFFERENT dir
+        // with an already-loaded name is a conflict, not a silent
+        // takeover - the second dir is ignored.
+        if let Some(existing) = self.plugins.iter().find(|q| q.manifest.name == name) {
+            if existing.dir.as_path() != dir {
+                return Err(merr(
+                    "EXT_NAME_CONFLICT",
+                    format!(
+                        "extension '{name}' at {} is ignored; an extension named '{name}' is already loaded (rename one of them)",
+                        dir.display()
+                    ),
+                ));
+            }
+            self.plugins.retain(|p| p.manifest.name != name);
+            self.pending.retain(|p| p.name != name);
         }
         self.plugins.push({
             // Bind the approval scope: every hook fire re-hashes the

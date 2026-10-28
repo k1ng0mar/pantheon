@@ -121,6 +121,12 @@ fn err(code: &str, cause: String) -> PantheonError {
 /// is a read-time projection, so raw history survives for forensics while
 /// resume and transcript rebuilds see the rewound run as if those turns
 /// never happened.
+/// Apply `TurnRewound` markers as a read-time projection: truncating at
+/// the rewound turn's `TurnStarted` also drops any earlier `TurnRewound`
+/// markers inside the truncated range from the replayed stream. That is
+/// inherent to truncation (those markers described rewinds of turns that
+/// no longer exist in the projection); the raw table is intact, and a
+/// consumer needing full rewind history must read raw rows, not replay.
 fn apply_rewinds(entries: Vec<LedgerEntry>) -> Vec<LedgerEntry> {
     let mut out: Vec<LedgerEntry> = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -937,6 +943,77 @@ impl Ledger {
         include_archived: bool,
     ) -> Result<Vec<RunListing>, PantheonError> {
         self.list_runs_filtered(limit, !include_archived)
+    }
+
+    /// Like [`Self::list_runs_visible`], but `status` and `query`
+    /// (substring over run id or title, case-insensitive) filter in SQL
+    /// before LIMIT. Filtering in Rust after LIMIT starved filtered
+    /// pages: a page of the newest `limit` rows could contain zero
+    /// matches even when older rows matched.
+    pub fn list_runs_visible_filtered(
+        &self,
+        limit: usize,
+        include_archived: bool,
+        status: Option<&str>,
+        query: Option<&str>,
+    ) -> Result<Vec<RunListing>, PantheonError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+        let mut sql = "SELECT run_id, status, created_ms, title, project, pinned, archived FROM runs WHERE (?2 = 0 OR archived = 0)".to_string();
+        let mut params: Vec<rusqlite::types::Value> =
+            vec![(limit as i64).into(), i64::from(!include_archived).into()];
+        // Numbered placeholders must match the positional params slice
+        // (rusqlite binds ?N by position), so number them dynamically:
+        // a missing status filter must not shift the query's numbers.
+        let mut next_param = 3;
+        if let Some(s) = status.filter(|s| !s.is_empty()) {
+            sql.push_str(&format!(" AND status = ?{next_param}"));
+            next_param += 1;
+            params.push(s.to_string().into());
+        }
+        if let Some(q) = query.filter(|q| !q.is_empty()) {
+            // Escape LIKE wildcards so the query is a literal substring.
+            let escaped = q
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let a = next_param;
+            let b = next_param + 1;
+            sql.push_str(&format!(
+                " AND (LOWER(run_id) LIKE LOWER(?{a}) ESCAPE '\\' OR LOWER(COALESCE(title, '')) LIKE LOWER(?{b}) ESCAPE '\\')"
+            ));
+            let pat = format!("%{escaped}%");
+            params.push(pat.clone().into());
+            params.push(pat.into());
+        }
+        sql.push_str(" ORDER BY created_ms DESC, rowid DESC LIMIT ?1");
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
+            .map(|v| v as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt
+            .query_map(&param_refs[..], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)? != 0,
+                    r.get::<_, i64>(6)? != 0,
+                ))
+            })
+            .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
+        }
+        Ok(out)
     }
 
     fn list_runs_filtered(
@@ -2284,6 +2361,46 @@ mod project_tests {
         let l = mem();
         assert!(!l.run_pinned("nope").unwrap());
         assert!(!l.run_archived("nope").unwrap());
+    }
+
+    #[test]
+    fn list_runs_visible_filtered_filters_before_limit() {
+        let l = mem();
+        // Newest first: the three newest do not match, the two older do.
+        // A post-LIMIT Rust filter over a window of 2 would return
+        // nothing; SQL-side filtering must return both matches.
+        start(&l, "alpha-1");
+        start(&l, "alpha-2");
+        start(&l, "beta-3");
+        start(&l, "beta-4");
+        start(&l, "beta-5");
+        let matched = l
+            .list_runs_visible_filtered(2, false, None, Some("alpha"))
+            .unwrap();
+        let ids: Vec<&str> = matched.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(ids, vec!["alpha-2", "alpha-1"]);
+        // Case-insensitive substring over run id.
+        let matched = l
+            .list_runs_visible_filtered(10, false, None, Some("ALPHA"))
+            .unwrap();
+        assert_eq!(matched.len(), 2);
+        // Status filter: started runs are 'running'.
+        let running = l
+            .list_runs_visible_filtered(10, false, Some("running"), None)
+            .unwrap();
+        assert_eq!(running.len(), 5);
+        let done = l
+            .list_runs_visible_filtered(10, false, Some("completed"), None)
+            .unwrap();
+        assert!(done.is_empty());
+        // LIKE wildcards in the query are literal, not patterns.
+        start(&l, "a%b");
+        start(&l, "axb");
+        let literal = l
+            .list_runs_visible_filtered(10, false, None, Some("a%b"))
+            .unwrap();
+        let ids: Vec<&str> = literal.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(ids, vec!["a%b"]);
     }
 }
 

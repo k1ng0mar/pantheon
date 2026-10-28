@@ -243,23 +243,20 @@ pub fn list(app: &App, req: &Request) -> Response {
     // Archived exclusion happens in the SQL (`list_runs_visible`), so the
     // LIMIT window only ever holds listable rows - no post-limit filtering
     // that starved the page when the newest runs were mostly archived.
+    // Status/query filter in SQL before LIMIT (see
+    // `list_runs_visible_filtered`): the old Rust-side filter ran after
+    // the LIMIT window and starved filtered pages.
     let rows = Ledger::pin_home_first(
         ledger
-            .list_runs_visible(limit, include_archived)
+            .list_runs_visible_filtered(
+                limit,
+                include_archived,
+                status_filter.as_deref(),
+                q.as_deref(),
+            )
             .unwrap_or_default(),
     );
     for (id, status, created_ms, title, project, pinned, archived) in rows {
-        if let Some(sf) = &status_filter {
-            if &status != sf {
-                continue;
-            }
-        }
-        if let Some(qq) = &q {
-            let hay = format!("{id} {}", title.as_deref().unwrap_or("")).to_lowercase();
-            if !hay.contains(qq) {
-                continue;
-            }
-        }
         let entries = ledger.replay(&id).unwrap_or_default();
         let r = rollup(&entries);
         out.push(run_json(
@@ -1253,7 +1250,7 @@ pub fn export(app: &App, req: &Request, run_id: &str) -> Response {
                 md.into_bytes(),
             )
         }
-        _ => {
+        "json" => {
             let arr: Vec<serde_json::Value> = items
                 .into_iter()
                 .map(|item| match item {
@@ -1305,6 +1302,12 @@ pub fn export(app: &App, req: &Request, run_id: &str) -> Response {
                 body.into_bytes(),
             )
         }
+        // An unknown format used to fall through to JSON silently; a
+        // client asking for e.g. "yaml" got JSON labelled as a download
+        // and never knew. 400 instead.
+        _ => bad_json(&format!(
+            "unknown export format '{format}' (expected 'json' or 'markdown')"
+        )),
     }
 }
 
@@ -1587,10 +1590,16 @@ pub fn fork(app: &App, run_id: &str, req: &Request) -> Response {
         Ok(b) => b,
         Err(r) => return r,
     };
-    let turn = body
-        .get("turn")
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize);
+    // A present-but-non-integer `turn` (string, float, negative) used
+    // to fall through to `None` and silently fork the whole run. That
+    // is a wrong request, not a whole-run fork: 400 it.
+    let turn = match body.get("turn") {
+        None => None,
+        Some(v) => match v.as_u64() {
+            Some(n) => Some(n as usize),
+            None => return bad_json("field \"turn\" must be a non-negative integer"),
+        },
+    };
     if let Err(r) = known_run(app, run_id) {
         return r;
     }
@@ -1650,14 +1659,18 @@ pub fn set_title(app: &App, run_id: &str, req: &Request) -> Response {
         Ok(s) => s,
         Err(e) => return err_json(500, "RUNTIME", &format!("open runtime: {e}")),
     };
+    // Return the stored (bound) title, not the raw request title: the
+    // old response echoed the untruncated title while the ledger stored
+    // the bound one, so clients displayed a title that was never saved.
+    let stored_title = bound_title(title, TITLE_MAX_CHARS);
     let titled = Event::SessionTitled {
         run_id: run_id.to_string(),
-        title: bound_title(title, TITLE_MAX_CHARS),
+        title: stored_title.clone(),
         model: String::new(),
         source: "api".into(),
     };
     match sup.emit(titled) {
-        Ok(()) => json_ok(serde_json::json!({"ok": true, "title": title})),
+        Ok(()) => json_ok(serde_json::json!({"ok": true, "title": stored_title})),
         Err(e) => err_json(500, "RUNTIME", &format!("title run: {e}")),
     }
 }

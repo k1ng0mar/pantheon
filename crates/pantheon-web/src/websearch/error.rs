@@ -22,6 +22,19 @@ pub enum SearchError {
     Timeout,
 }
 
+/// Parse the `{provider} HTTP {code}: ...` shape `status_error` puts
+/// on failures (the provider name precedes the code).
+fn parse_http_status(detail: &str) -> Option<u16> {
+    let idx = detail.find(" HTTP ")?;
+    let rest = &detail[idx + 6..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.len() == 3 {
+        digits.parse().ok()
+    } else {
+        None
+    }
+}
+
 impl SearchError {
     /// The structured error code carried into the ledger.
     pub fn code(&self) -> &'static str {
@@ -34,13 +47,27 @@ impl SearchError {
     }
 
     fn retryable(&self) -> bool {
-        matches!(self, SearchError::RequestFailed(_) | SearchError::Timeout)
+        match self {
+            SearchError::Timeout => true,
+            SearchError::RequestFailed(detail) => {
+                // 4xx (bad key, bad request shape) is not fixed by a
+                // retry; 429 (rate limit) and 5xx/transport errors are.
+                // Status errors are formatted as "HTTP {code}: ...".
+                match parse_http_status(detail) {
+                    Some(code) if (400..500).contains(&code) && code != 429 => false,
+                    _ => true,
+                }
+            }
+            _ => false,
+        }
     }
 
     fn remediation(&self) -> &'static str {
         match self {
+            // Generic: the variant carries no provider, so naming
+            // Tavily here misled every other provider's users.
             SearchError::NotConfigured => {
-                "resolve the Tavily API key (TAVILY_API_KEY) and enable web search before calling"
+                "resolve the provider's API key and enable web search before calling"
             }
             SearchError::RequestFailed(_) => {
                 "check network connectivity and retry; a 4xx means the key or request shape was rejected"
@@ -80,5 +107,22 @@ impl From<SearchError> for PantheonError {
             e.remediation(),
             "",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryability_follows_http_status() {
+        assert!(!SearchError::RequestFailed("tinyfish HTTP 403: bad key".into()).retryable());
+        assert!(!SearchError::RequestFailed("exa HTTP 400: bad request".into()).retryable());
+        assert!(SearchError::RequestFailed("tinyfish HTTP 429: slow down".into()).retryable());
+        assert!(SearchError::RequestFailed("tinyfish HTTP 500: boom".into()).retryable());
+        assert!(SearchError::RequestFailed("tinyfish transport error: dns".into()).retryable());
+        assert!(SearchError::Timeout.retryable());
+        assert!(!SearchError::NotConfigured.retryable());
+        assert!(!SearchError::BadResponse("x".into()).retryable());
     }
 }

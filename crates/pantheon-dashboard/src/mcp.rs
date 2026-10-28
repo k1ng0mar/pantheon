@@ -1169,13 +1169,36 @@ fn probe_url(url: &str) -> (bool, String) {
     if host_port.is_empty() {
         return (false, "unparseable url".to_string());
     }
-    let (host, port) = match host_port.rsplit_once(':') {
-        Some((h, p)) => match p.parse::<u16>() {
-            Ok(port) => (h, port),
-            Err(_) => (host_port, 80),
-        },
-        None => (host_port, 80),
+    // Bracketed IPv6 first: rsplit_once(':') on "[::1]" splits inside
+    // the address, and a malformed port used to fall through to the
+    // default port 80, probing the wrong service instead of erroring.
+    let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, tail)) => {
+                let port = match tail.strip_prefix(':') {
+                    Some(p) => match p.parse::<u16>() {
+                        Ok(port) => port,
+                        Err(_) => {
+                            return (false, format!("invalid port in url: {p}"));
+                        }
+                    },
+                    None if tail.is_empty() => 80,
+                    None => return (false, "unparseable url".to_string()),
+                };
+                (h.to_string(), port)
+            }
+            None => return (false, "unparseable url".to_string()),
+        }
+    } else {
+        match host_port.rsplit_once(':') {
+            Some((h, p)) => match p.parse::<u16>() {
+                Ok(port) => (h.to_string(), port),
+                Err(_) => return (false, format!("invalid port in url: {p}")),
+            },
+            None => (host_port.to_string(), 80),
+        }
     };
+    let host = host.as_str();
     let addrs: Vec<SocketAddr> = match (host, port).to_socket_addrs() {
         Ok(a) => a.collect(),
         Err(e) => return (false, format!("DNS failed: {e}")),
