@@ -4818,10 +4818,33 @@ impl Session {
                 if keyed && key_missing {
                     0
                 } else {
+                    // Per-provider scoping: only the override for THIS
+                    // provider id is passed. The legacy global
+                    // `[websearch] base_url` is deprecated: it is never
+                    // passed to build_provider directly (it used to
+                    // follow a provider switch and send another
+                    // provider's calls - and key - to the wrong host).
+                    // Operators are told to move it to
+                    // [websearch.base_urls.<provider>]; the one
+                    // exception is the searxng-only compatibility shim
+                    // in resolve_websearch_section, which cannot leak
+                    // to any other provider.
+                    if wcfg
+                        .base_url
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .is_some()
+                    {
+                        tool_diags.push(
+                            "websearch.base_url is deprecated; move it to [websearch.base_urls.<provider>] for the provider it belongs to"
+                                .to_string(),
+                        );
+                    }
                     match pantheon_web::websearch::build_provider(
                         &wcfg.provider,
                         api_key,
-                        wcfg.base_url.as_deref(),
+                        wcfg.base_url_for(&wcfg.provider),
                     ) {
                         Ok(provider) => {
                             match pantheon_web::websearch::register_search_tools(

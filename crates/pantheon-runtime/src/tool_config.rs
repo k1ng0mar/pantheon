@@ -169,9 +169,42 @@ pub struct WebsearchToolConfig {
     pub api_key_secret: Option<String>,
     /// Endpoint override for self-hosted providers. `None` = the
     /// provider's default endpoint.
+    ///
+    /// DEPRECATED legacy global: retained only so the session can warn
+    /// the operator to move it to `base_urls`. It is NEVER passed to
+    /// `build_provider` (a global URL used to follow a provider switch
+    /// and send another provider's calls, and key, to the wrong host);
+    /// the use site resolves `base_url_for(provider)` instead.
     pub base_url: Option<String>,
+    /// Per-provider endpoint overrides, keyed by registry provider id
+    /// (`[websearch.base_urls.<provider>]`). Only the entry for the
+    /// provider actually being built is ever used.
+    pub base_urls: std::collections::HashMap<String, String>,
     /// Default result count per query.
     pub max_results: u8,
+}
+
+impl WebsearchToolConfig {
+    /// Endpoint override for exactly one provider id, or `None`.
+    /// Mirrors `WebSearchSection::base_url_for`: case-insensitive on
+    /// the provider id, blank values ignored, and the legacy global
+    /// `base_url` deliberately NOT consulted, so one provider's URL
+    /// can never follow a provider switch into another's requests.
+    pub fn base_url_for(&self, provider: &str) -> Option<&str> {
+        let want = provider.trim().to_ascii_lowercase();
+        self.base_urls.iter().find_map(|(k, v)| {
+            if k.trim().to_ascii_lowercase() == want {
+                let v = v.trim();
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v)
+                }
+            } else {
+                None
+            }
+        })
+    }
 }
 
 /// Runtime config for desktop computer use (the CUA driver).
@@ -203,6 +236,7 @@ impl Default for WebsearchToolConfig {
             provider: "tinyfish".to_string(),
             api_key_secret: None,
             base_url: None,
+            base_urls: std::collections::HashMap::new(),
             max_results: 8,
         }
     }

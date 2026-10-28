@@ -183,21 +183,38 @@ pub fn resolve_websearch_section(s: &WebsearchSection) -> pantheon_runtime::Webs
     if let Some(n) = s.max_results.filter(|&n| n > 0) {
         cfg.max_results = n;
     }
-    // Endpoint override for self-hosted providers. For SearXNG the
-    // `SEARXNG_URL` env var wins over the config file (env-wins is the
-    // project convention for overrides), falling back to the section's
-    // base_url. The provider comparison is case-insensitive: the
-    // registry lowercases ids, so "SearXNG" must not lose the env
-    // fallback. The env var is never applied to other providers, so a
-    // stray SEARXNG_URL cannot redirect a hosted provider's keyed calls.
-    cfg.base_url = if cfg.provider.eq_ignore_ascii_case("searxng") {
-        std::env::var(pantheon_web::websearch::searxng_url_env())
-            .ok()
-            .filter(|u| !u.trim().is_empty())
-            .or_else(|| s.base_url.clone().filter(|u| !u.trim().is_empty()))
-    } else {
-        s.base_url.clone().filter(|u| !u.trim().is_empty())
-    };
+    // Per-provider endpoint overrides travel as a map and are resolved
+    // by provider id at the use site, so one provider's URL can never
+    // follow a provider switch into another provider's requests.
+    cfg.base_urls = s.base_urls.clone();
+    // SearXNG chain (env-wins is the project convention for overrides):
+    // `SEARXNG_URL` > `[websearch.base_urls.searxng]` > legacy global
+    // `base_url` as a searxng-only compatibility shim. The env var is
+    // never applied to other providers, so a stray SEARXNG_URL cannot
+    // redirect a hosted provider's keyed calls; and the legacy shim is
+    // scoped to searxng alone, so it cannot leak anywhere else either.
+    // The session warns on any legacy value so operators move it to
+    // `[websearch.base_urls.searxng]`; the shim only keeps self-hosted
+    // instances working until they do.
+    if cfg.provider.eq_ignore_ascii_case("searxng") {
+        if let Ok(u) = std::env::var(pantheon_web::websearch::searxng_url_env()) {
+            if !u.trim().is_empty() {
+                cfg.base_urls.insert("searxng".to_string(), u);
+            }
+        } else if cfg
+            .base_urls
+            .get("searxng")
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
+            if let Some(u) = s.base_url.clone().filter(|u| !u.trim().is_empty()) {
+                cfg.base_urls.insert("searxng".to_string(), u);
+            }
+        }
+    }
+    // Legacy global retained ONLY so the session can warn about it; it
+    // is never passed to build_provider (see base_url_for).
+    cfg.base_url = s.base_url.clone().filter(|u| !u.trim().is_empty());
     cfg
 }
 
