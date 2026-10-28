@@ -21,6 +21,36 @@ const DESKTOP_ENTRY_NAME: &str = "pantheon-desktop";
 
 /// `argv` is the full command line, `pantheon desktop …` at the front.
 pub fn cmd_desktop(argv: &[String]) -> ! {
+    // Help is a question, not a build: without this, `pantheon
+    // desktop --help` fell through to ensure_built and tried to
+    // build/launch the app. Unknown flags were swallowed the same
+    // way (a typo like --rebuid "worked" by doing the default).
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!("pantheon desktop [--rebuild] [--skip-build] [--register] [--no-register]");
+        println!();
+        println!("Build (when needed) and launch the desktop app, and register");
+        println!("it with the desktop environment so app pickers can open it.");
+        println!("  --rebuild     force the full build");
+        println!("  --skip-build  launch only, never build");
+        println!("  --register    (re)write the desktop entry and stop (no launch)");
+        println!("  --no-register skip the desktop-entry registration");
+        std::process::exit(0);
+    }
+    for a in argv.iter().skip(2) {
+        if a.starts_with('-')
+            && !matches!(
+                a.as_str(),
+                "--rebuild" | "--skip-build" | "--register" | "--no-register"
+            )
+        {
+            eprintln!("desktop: unknown flag '{a}'");
+            std::process::exit(2);
+        }
+        if !a.starts_with('-') {
+            eprintln!("desktop: unexpected argument '{a}' (this command takes flags only)");
+            std::process::exit(2);
+        }
+    }
     let args = Args::parse(argv);
     let rebuild = args.has("rebuild");
     let skip_build = args.has("skip-build");
