@@ -1797,7 +1797,12 @@ timeout_ms = 5000
                     };
                     match pantheon_api::approval::revoke_approval_for(&ext_dir, &name) {
                         Ok(true) => println!("revoked {name}"),
-                        Ok(false) => eprintln!("extensions revoke: no approval for '{name}'"),
+                        Ok(false) => {
+                            // An error printed with exit 0 reads as
+                            // success to every script wrapping this.
+                            eprintln!("extensions revoke: no approval for '{name}'");
+                            std::process::exit(1);
+                        }
                         Err(e) => {
                             eprintln!("extensions revoke: {e}");
                             std::process::exit(1);
@@ -1854,17 +1859,32 @@ timeout_ms = 5000
                 match args[i].as_str() {
                     "--session" => {
                         i += 1;
-                        if i < args.len() {
-                            session = args[i].clone();
+                        match args.get(i) {
+                            Some(v) => session = v.clone(),
+                            None => {
+                                eprintln!("hook: --session needs a value");
+                                std::process::exit(2);
+                            }
                         }
                     }
                     "--platform" => {
                         i += 1;
-                        if i < args.len() {
-                            platform = args[i].clone();
+                        match args.get(i) {
+                            Some(v) => platform = v.clone(),
+                            None => {
+                                eprintln!("hook: --platform needs a value");
+                                std::process::exit(2);
+                            }
                         }
                     }
-                    _ => {}
+                    other if other.starts_with('-') => {
+                        eprintln!("hook: unknown flag '{other}' (see `pantheon hook <name> [--session S] [--platform P]`)");
+                        std::process::exit(2);
+                    }
+                    other => {
+                        eprintln!("hook: unexpected argument '{other}'");
+                        std::process::exit(2);
+                    }
                 }
                 i += 1;
             }
