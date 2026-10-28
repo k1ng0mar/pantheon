@@ -104,6 +104,7 @@ pub fn pinned_vision_target(policy: &ModelPolicy) -> Option<DefaultModel> {
     let target = DefaultModel {
         provider: aux.provider.clone(),
         model: aux.model.clone(),
+        key_env: None,
     };
     if target.provider == policy.default.provider && target.model == policy.default.model {
         None

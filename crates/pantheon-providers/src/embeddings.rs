@@ -72,6 +72,7 @@ impl EmbedClient {
             .map(|a| DefaultModel {
                 provider: a.provider.clone(),
                 model: a.model.clone(),
+                key_env: None,
             });
         Self {
             target,

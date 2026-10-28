@@ -90,6 +90,7 @@ pub fn resolve_default_model(
             section.map(|s| s.model.as_str()),
             DEFAULT_MODEL,
         ),
+        key_env: None,
     }
 }
 
@@ -104,6 +105,7 @@ pub fn resolve_fallback_chain(cfg: Option<&Config>) -> FallbackChain {
                 .map(|f| DefaultModel {
                     provider: f.provider.clone(),
                     model: f.model.clone(),
+                    key_env: f.key_env.clone(),
                 })
                 .collect()
         })
@@ -208,16 +210,20 @@ mod tests {
             crate::config::FallbackEntry {
                 provider: "fb1p".into(),
                 model: "fb1m".into(),
+                key_env: Some("FB1_KEY".into()),
             },
             crate::config::FallbackEntry {
                 provider: "fb2p".into(),
                 model: "fb2m".into(),
+                key_env: None,
             },
         ];
         let chain = resolve_fallback_chain(Some(&cfg));
         assert_eq!(chain.fallbacks.len(), 2);
         assert_eq!(chain.fallbacks[0].provider, "fb1p");
+        assert_eq!(chain.fallbacks[0].key_env.as_deref(), Some("FB1_KEY"));
         assert_eq!(chain.fallbacks[1].model, "fb2m");
+        assert_eq!(chain.fallbacks[1].key_env, None);
 
         let empty = resolve_fallback_chain(None);
         assert!(empty.fallbacks.is_empty());

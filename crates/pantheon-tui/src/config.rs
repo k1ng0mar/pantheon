@@ -865,6 +865,7 @@ pub fn build_routed_model_policy(
             policy.default = pantheon_api::model::DefaultModel {
                 provider: pin.provider.clone(),
                 model: pin.model.clone(),
+                key_env: None,
             };
         }
     }
@@ -950,6 +951,7 @@ pub fn build_scheduled_model_policy(
             policy.default = pantheon_api::model::DefaultModel {
                 provider: aux.provider.clone(),
                 model: aux.model.clone(),
+                key_env: None,
             };
         }
     }

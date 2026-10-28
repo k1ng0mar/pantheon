@@ -92,7 +92,11 @@ pub fn cmd_fallback(args: &[String]) {
                 std::process::exit(2);
             };
             warn_about(&dd, section, &provider, &model);
-            section.fallbacks.push(FallbackEntry { provider, model });
+            section.fallbacks.push(FallbackEntry {
+                provider,
+                model,
+                key_env: None,
+            });
             let n = section.fallbacks.len();
             save(&dd, &cfg);
             println!("fallback {n} added");
@@ -126,9 +130,14 @@ pub fn cmd_fallback(args: &[String]) {
                 std::process::exit(2);
             }
             warn_about(&dd, section, &provider, &model);
-            section
-                .fallbacks
-                .insert(at, FallbackEntry { provider, model });
+            section.fallbacks.insert(
+                at,
+                FallbackEntry {
+                    provider,
+                    model,
+                    key_env: None,
+                },
+            );
             let len = section.fallbacks.len();
             save(&dd, &cfg);
             let _ = len;

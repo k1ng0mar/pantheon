@@ -163,6 +163,7 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
             .map(|a| DefaultModel {
                 provider: a.provider.clone(),
                 model: a.model.clone(),
+                key_env: None,
             })
             .unwrap_or_else(|| policy.default.clone());
         pantheon_providers::DistillClient::new(target, api_key)

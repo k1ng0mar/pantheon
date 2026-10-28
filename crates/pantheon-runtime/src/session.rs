@@ -4286,6 +4286,7 @@ impl Session {
         let target = pantheon_api::model::DefaultModel {
             provider: aux.provider.clone(),
             model: aux.model.clone(),
+            key_env: None,
         };
         let key = self
             .secrets
@@ -5934,6 +5935,7 @@ impl Session {
             .map(|a| pantheon_api::model::DefaultModel {
                 provider: a.provider.clone(),
                 model: a.model.clone(),
+                key_env: None,
             })
             .unwrap_or_else(|| policy.default.clone());
         let model_label = target.model.clone();
@@ -6068,6 +6070,7 @@ impl Session {
                 pantheon_api::model::DefaultModel {
                     provider: aux.provider.clone(),
                     model: aux.model.clone(),
+                    key_env: None,
                 },
                 key,
             )
@@ -8554,6 +8557,7 @@ mod ask_user_pregate_tests {
                 default: DefaultModel {
                     provider: "local".into(),
                     model: "default".into(),
+                    key_env: None,
                 },
                 fallbacks: FallbackChain { fallbacks: vec![] },
                 auxiliaries: vec![],
@@ -8734,6 +8738,7 @@ mod delegate_tool_tests {
                 default: DefaultModel {
                     provider: "local".into(),
                     model: "default".into(),
+                    key_env: None,
                 },
                 fallbacks: FallbackChain { fallbacks: vec![] },
                 auxiliaries: vec![],
@@ -8869,12 +8874,9 @@ mod delegate_tool_tests {
     fn unverified_delegation_result_is_marked_not_run() {
         let (session, dir) = test_session();
         attach_parent_agent(&session, &dir);
-        let driver = stubbed_driver(&session, "run-unverified", |c, r, t| {
-            success_stub(c, r, t)
-        });
+        let driver = stubbed_driver(&session, "run-unverified", |c, r, t| success_stub(c, r, t));
         let result =
-            run_delegate_child(&driver, "child", "task one", None, None, None)
-                .expect("delegate");
+            run_delegate_child(&driver, "child", "task one", None, None, None).expect("delegate");
         assert!(
             result.contains("[verification: not run - verify slot unconfigured]"),
             "unverified completion must be marked: {result}"
@@ -8884,7 +8886,6 @@ mod delegate_tool_tests {
             "nothing verified here: {result}"
         );
     }
-
 
     fn routes_section() -> pantheon_api::config::DelegationSection {
         pantheon_api::config::DelegationSection {
@@ -9589,6 +9590,7 @@ mod delegate_tool_tests {
             default: DefaultModel {
                 provider: "openai".into(),
                 model: "gpt-4o-mini".into(),
+                key_env: None,
             },
             fallbacks: FallbackChain { fallbacks: vec![] },
             auxiliaries: vec![AuxiliaryModel {
@@ -10096,6 +10098,7 @@ mod delegate_tool_tests {
                 default: DefaultModel {
                     provider: "local".into(),
                     model: "default".into(),
+                    key_env: None,
                 },
                 fallbacks: FallbackChain { fallbacks: vec![] },
                 auxiliaries: vec![],
@@ -11595,6 +11598,7 @@ mod consecutive_failure_warning_tests {
                     default: DefaultModel {
                         provider: "local".into(),
                         model: "default".into(),
+                        key_env: None,
                     },
                     fallbacks: FallbackChain { fallbacks: vec![] },
                     auxiliaries: vec![],
@@ -11866,6 +11870,7 @@ mod tool_registration_diagnostics_tests {
                 default: DefaultModel {
                     provider: "local".into(),
                     model: "default".into(),
+                    key_env: None,
                 },
                 fallbacks: FallbackChain { fallbacks: vec![] },
                 auxiliaries: vec![],

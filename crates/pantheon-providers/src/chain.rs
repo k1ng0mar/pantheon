@@ -205,6 +205,22 @@ pub(crate) fn backoff_delay(
     }
 }
 
+/// Resolve a fallback entry's `key_env` name to a key value: the
+/// secrets broker first (durable vaults, then its env vault), then
+/// the raw process env when no broker is attached. A name that
+/// resolves nowhere yields "" and the caller falls through to the
+/// provider's catalog/env credential. Broker errors are swallowed the
+/// same way: a fallback key lookup must not fail a turn that the
+/// catalog credential could still serve.
+fn resolve_named_key(name: &str, broker: Option<&pantheon_secrets::SecretsBroker>) -> String {
+    if let Some(b) = broker {
+        if let Ok(Some(v)) = b.resolve(name) {
+            return v.expose().to_string();
+        }
+    }
+    std::env::var(name).unwrap_or_default()
+}
+
 impl<T: ChatTransport> ProviderChain<T> {
     pub fn new(
         policy: ModelPolicy,
@@ -257,6 +273,7 @@ impl<T: ChatTransport> ProviderChain<T> {
         let wire = DefaultModel {
             provider: model.provider.clone(),
             model: catalog::canonical_model(&model.provider, &model.model),
+            key_env: model.key_env.clone(),
         };
         let model = &wire;
         let meta = catalog::model_meta(&model.provider, &model.model);
@@ -309,12 +326,23 @@ impl<T: ChatTransport> ProviderChain<T> {
         let base = crate::http::resolve_base(&model.provider)?;
         // The configured key belongs to the default provider. Fallbacks may
         // use their own catalog/env credential, but must never receive the
-        // primary provider's secret by accident.
+        // primary provider's secret by accident - so a fallback with no
+        // key_env resolves per-provider (catalog/env), NOT from the
+        // default's key. A fallback WITH key_env resolves that named
+        // variable (broker first, then process env) and passes it as
+        // the configured key, so different fallbacks can be different
+        // providers with different keys.
         let configured = if idx == 0 {
-            self.api_key.as_ref().map(|kv| kv.expose()).unwrap_or("")
+            self.api_key
+                .as_ref()
+                .map(|kv| kv.expose().to_string())
+                .unwrap_or_default()
+        } else if let Some(name) = model.key_env.as_deref().filter(|s| !s.is_empty()) {
+            resolve_named_key(name, self.oauth_broker.as_ref())
         } else {
-            ""
+            String::new()
         };
+        let configured = configured.as_str();
         let effective_key =
             catalog::credential_for(&model.provider, configured, self.oauth_broker.as_ref());
         // No key anywhere for this provider: fail here naming the env
@@ -1007,6 +1035,7 @@ mod output_limit_tests {
             default: DefaultModel {
                 provider: "openai".to_string(),
                 model: "gpt-test".to_string(),
+                key_env: None,
             },
             fallbacks: FallbackChain { fallbacks: vec![] },
             auxiliaries: vec![],
@@ -1098,6 +1127,7 @@ mod fix_model_chain_tests {
             default: DefaultModel {
                 provider: default.0.to_string(),
                 model: default.1.to_string(),
+                key_env: None,
             },
             fallbacks: FallbackChain {
                 fallbacks: fallbacks
@@ -1105,6 +1135,7 @@ mod fix_model_chain_tests {
                     .map(|(p, m)| DefaultModel {
                         provider: p.to_string(),
                         model: m.to_string(),
+                        key_env: None,
                     })
                     .collect(),
             },
@@ -1153,6 +1184,92 @@ mod fix_model_chain_tests {
         assert_eq!(body["model"], serde_json::json!("claude-opus-4-8"));
     }
 
+    #[test]
+    fn fallback_key_env_resolves_its_own_key_not_the_default_key() {
+        // Process-env mutation: serialize with a module-local guard so
+        // a parallel test cannot observe the fallback key var mid-turn.
+        static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV_GUARD.lock().expect("env guard");
+        std::env::set_var("PANTHEON_DEC_RT_FALLBACK_KEY", "fallback-key-123");
+        struct FailOnce {
+            calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            headers: std::sync::Arc<Mutex<Vec<Vec<(String, String)>>>>,
+        }
+        impl ChatTransport for FailOnce {
+            fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
+                self.headers.lock().unwrap().push(req.headers.clone());
+                if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    return Err(PantheonError::new(
+                        "PROVIDER_HTTP",
+                        Layer::Provider,
+                        true,
+                        "https://example.test: HTTP 500 boom".to_string(),
+                        "",
+                        "",
+                    ));
+                }
+                Ok(r#"{"choices":[{"message":{"content":"from fallback"},"finish_reason":"stop"}]}"#.to_string())
+            }
+            fn post_stream(
+                &self,
+                _req: &WireRequest,
+                _o: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+            ) -> Result<StreamEnd, PantheonError> {
+                Ok(StreamEnd::Eof)
+            }
+        }
+        let headers = std::sync::Arc::new(Mutex::new(vec![]));
+        let policy = ModelPolicy {
+            default: DefaultModel {
+                provider: "openai".to_string(),
+                model: "gpt-test".to_string(),
+                key_env: None,
+            },
+            fallbacks: FallbackChain {
+                fallbacks: vec![DefaultModel {
+                    provider: "openai".to_string(),
+                    model: "gpt-fallback".to_string(),
+                    key_env: Some("PANTHEON_DEC_RT_FALLBACK_KEY".to_string()),
+                }],
+            },
+            auxiliaries: vec![],
+            reasoning: ReasoningLevel::Off,
+            reasoning_budget: None,
+        };
+        let mut chain = ProviderChain::new(
+            policy,
+            FailOnce {
+                calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                headers: headers.clone(),
+            },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        );
+        chain.retry.max_retries = 0;
+        let outcome = chain
+            .turn_messages(&[Message::user("hi")])
+            .expect("fallback turn succeeds");
+        assert!(matches!(outcome, TurnOutcome::Text { .. }));
+        let sent = headers.lock().unwrap();
+        assert_eq!(sent.len(), 2, "default attempt, then one fallback attempt");
+        let auth = |h: &[(String, String)]| {
+            h.iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case("authorization"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        let first = auth(&sent[0]);
+        let second = auth(&sent[1]);
+        std::env::remove_var("PANTHEON_DEC_RT_FALLBACK_KEY");
+        assert!(
+            first.contains("test-key") && !first.contains("fallback-key-123"),
+            "default attempt uses the default key: {first}"
+        );
+        assert!(
+            second.contains("fallback-key-123") && !second.contains("test-key"),
+            "fallback attempt uses its own key_env key, never the default key: {second}"
+        );
+    }
     #[test]
     fn text_beside_tool_calls_survives_the_chain() {
         let body = r#"{"choices":[{"message":{"content":"hello first","tool_calls":[{"id":"c","type":"function","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;

@@ -19,6 +19,19 @@ use serde::{Deserialize, Serialize};
 pub struct DefaultModel {
     pub provider: String,
     pub model: String,
+    /// Env var name holding this entry's API key. Only meaningful on
+    /// fallback entries: a fallback may be a different provider with
+    /// a different key, and this names that key. `None` = resolve via
+    /// the provider's own catalog/env credential (the existing
+    /// behaviour). The default entry's key travels separately via the
+    /// chain's configured key (`[model].api_key_env`), never through
+    /// this field, so a fallback can never accidentally inherit the
+    /// primary provider's secret - and an absent fallback key_env
+    /// resolves per-provider, it does NOT fall back to the default
+    /// entry's key value (sending the primary secret to another
+    /// provider's endpoint would leak it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
 }
 
 /// Ordered fallback chain. Used ONLY on retryable default-model failure

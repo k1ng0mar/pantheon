@@ -190,6 +190,7 @@ pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) 
             fallbacks.push(FallbackEntry {
                 provider: fp,
                 model: fm,
+                key_env: None,
             });
         }
     }

@@ -230,6 +230,7 @@ fn open_session(
     let default = pantheon_api::model::DefaultModel {
         provider: std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into()),
         model: std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
+        key_env: None,
     };
     let model_policy = pantheon_api::model::ModelPolicy {
         reasoning_budget: Default::default(),

@@ -206,6 +206,7 @@ impl VerifyClient {
             target: DefaultModel {
                 provider: aux.provider.clone(),
                 model: aux.model.clone(),
+                key_env: None,
             },
             transport: aux_transport(aux.timeout_secs.max(1)),
             api_key,
