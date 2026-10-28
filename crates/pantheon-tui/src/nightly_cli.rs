@@ -219,7 +219,25 @@ pub fn run_one_pass(data_dir: &Path, dry_run: bool) -> Result<PassResult, String
             tools: Some(&mut tool_adapter),
         }),
     };
-    run_pass(&cfg, &mut deps).map_err(|e| format!("nightly pass failed: {}: {}", e.code, e.cause))
+    match run_pass(&cfg, &mut deps) {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            let msg = format!("nightly pass failed: {}: {}", e.code, e.cause);
+            // Best-effort: a failed pass must not leave the previous
+            // pass's outcome standing as the last one. The original
+            // error is returned unchanged; a state-write failure here
+            // must not mask it.
+            let mut state = NightlyState::load(data_dir).unwrap_or_default();
+            state.last_run_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            state.last_outcome = "failed".to_string();
+            state.last_outcome_reason = msg.clone();
+            let _ = state.save(data_dir);
+            Err(msg)
+        }
+    }
 }
 
 /// Whether the nightly pass is enabled in config - the master switch.
