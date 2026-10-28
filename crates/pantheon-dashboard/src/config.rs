@@ -384,12 +384,255 @@ fn restart_required_for<'a>(changed: impl Iterator<Item = &'a String>) -> Vec<St
     out
 }
 
+/// Format-preserving edits (toml_edit, already in the tree via the
+/// TUI's `config set`): the dashboard's PUT used to re-serialize the
+/// parsed document, silently destroying every user comment and all
+/// hand formatting. These helpers apply a change to the raw document
+/// instead, so a save touches only the changed keys:
+/// - scalar leaves are replaced in place, keeping the line's decor
+///   (leading whitespace, trailing comment) intact;
+/// - table leaves merge key-by-key instead of replacing the section,
+///   so comments on untouched keys survive;
+/// - new keys/tables append at the end; nothing else moves.
+fn toml_edit_value(v: &Value) -> Result<toml_edit::Value, String> {
+    use toml_edit::Formatted;
+    Ok(match v {
+        Value::String(s) => toml_edit::Value::String(Formatted::new(s.clone())),
+        Value::Integer(i) => toml_edit::Value::Integer(Formatted::new(*i)),
+        Value::Float(f) => toml_edit::Value::Float(Formatted::new(*f)),
+        Value::Boolean(b) => toml_edit::Value::Boolean(Formatted::new(*b)),
+        Value::Datetime(dt) => {
+            let parsed: toml_edit::Datetime = dt
+                .to_string()
+                .parse()
+                .map_err(|e| format!("datetime does not round-trip: {e}"))?;
+            toml_edit::Value::Datetime(Formatted::new(parsed))
+        }
+        Value::Array(items) => {
+            let mut a = toml_edit::Array::new();
+            for item in items {
+                a.push(toml_edit_value(item)?);
+            }
+            toml_edit::Value::Array(a)
+        }
+        Value::Table(t) => {
+            let mut inline = toml_edit::InlineTable::new();
+            for (k, val) in t {
+                inline.insert(k.as_str(), toml_edit_value(val)?);
+            }
+            toml_edit::Value::InlineTable(inline)
+        }
+    })
+}
+
+fn toml_edit_item(v: &Value) -> Result<toml_edit::Item, String> {
+    match v {
+        Value::Table(t) => {
+            let mut table = toml_edit::Table::new();
+            for (k, val) in t {
+                table.insert(k.as_str(), toml_edit_item(val)?);
+            }
+            Ok(toml_edit::Item::Table(table))
+        }
+        _ => Ok(toml_edit::Item::Value(toml_edit_value(v)?)),
+    }
+}
+
+/// Comment trivia attached to the `key` entry of `table`: leading
+/// comments (key leaf decor for values, table decor for tables) plus
+/// a trailing same-line comment rewritten as its own line. A prefix
+/// of pure whitespace carries no comment and is left behind.
+fn entry_comment_trivia(table: &toml_edit::Table, key: &str) -> Option<String> {
+    let (k, item) = table.get_key_value(key)?;
+    let mut out = String::new();
+    let leading = match item {
+        toml_edit::Item::Table(t) => t.decor().prefix().and_then(|r| r.as_str()),
+        toml_edit::Item::Value(_) => k.leaf_decor().prefix().and_then(|r| r.as_str()),
+        _ => None,
+    };
+    if let Some(prefix) = leading {
+        if prefix.contains('#') {
+            out.push_str(prefix);
+        }
+    }
+    let suffix = match item {
+        toml_edit::Item::Table(t) => t.decor().suffix().and_then(|r| r.as_str()),
+        toml_edit::Item::Value(v) => v.decor().suffix().and_then(|r| r.as_str()),
+        _ => None,
+    };
+    if let Some(suffix) = suffix {
+        if let Some(idx) = suffix.find('#') {
+            out.push_str(&suffix[idx..]);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// Prepend trivia to the `key` entry's leading decor.
+fn prepend_entry_trivia(table: &mut toml_edit::Table, key: &str, trivia: &str) {
+    let Some((mut k, item)) = table.get_key_value_mut(key) else {
+        return;
+    };
+    let decor = match item {
+        toml_edit::Item::Table(t) => t.decor_mut(),
+        toml_edit::Item::Value(_) => k.leaf_decor_mut(),
+        _ => return,
+    };
+    let old = decor
+        .prefix()
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+    decor.set_prefix(format!("{trivia}{old}"));
+}
+
+/// Remove `keys` from `table`, moving each removed item's comments to
+/// the next surviving key in document order instead of deleting them
+/// with it. A comment above the last key has no next sibling and is
+/// lost; that is a lone comment on a deleted last line.
+fn remove_keys_preserving_comments(table: &mut toml_edit::Table, keys: &[String]) {
+    let order: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+    let mut trivia: Vec<(String, String)> = Vec::new();
+    for key in keys {
+        if let Some(t) = entry_comment_trivia(table, key) {
+            trivia.push((key.clone(), t));
+        }
+        table.remove(key);
+    }
+    for (removed, t) in trivia {
+        let next = order
+            .iter()
+            .position(|k| k == &removed)
+            .and_then(|pos| order.iter().skip(pos + 1).find(|k| table.get(*k).is_some()));
+        if let Some(next) = next {
+            prepend_entry_trivia(table, next, &t);
+        }
+    }
+}
+
+/// Set one leaf inside an existing table, preserving decor on scalar
+/// replacement and merging table leaves key-by-key.
+fn set_in_table(table: &mut toml_edit::Table, key: &str, new: &Value) -> Result<(), String> {
+    match (table.get_mut(key), new) {
+        (Some(toml_edit::Item::Value(old)), Value::Table(_)) => {
+            // A scalar becomes a table: no decor to preserve.
+            *old = toml_edit_value(new)?;
+            Ok(())
+        }
+        (Some(toml_edit::Item::Value(old)), _) => {
+            let decor = old.decor().clone();
+            let mut replacement = toml_edit_value(new)?;
+            *replacement.decor_mut() = decor;
+            *old = replacement;
+            Ok(())
+        }
+        (Some(toml_edit::Item::Table(old)), Value::Table(new_table)) => {
+            let stale: Vec<String> = old
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .filter(|k| !new_table.contains_key(k))
+                .collect();
+            remove_keys_preserving_comments(old, &stale);
+            for (k, val) in new_table {
+                set_in_table(old, k, val)?;
+            }
+            Ok(())
+        }
+        _ => {
+            table.insert(key, toml_edit_item(new)?);
+            Ok(())
+        }
+    }
+}
+
+/// Apply one dotted-path change to a format-preserving document.
+fn set_dotted_edit(
+    doc: &mut toml_edit::DocumentMut,
+    path: &str,
+    new: &Value,
+) -> Result<(), String> {
+    let mut parts: Vec<&str> = path.split('.').collect();
+    let leaf = parts.pop().ok_or_else(|| "empty path".to_string())?;
+    if leaf.is_empty() {
+        return Err("empty path segment".to_string());
+    }
+    let mut table = doc.as_table_mut();
+    for part in parts {
+        if part.is_empty() {
+            return Err("empty path segment".to_string());
+        }
+        let entry = table
+            .entry(part)
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+        match entry {
+            toml_edit::Item::Table(t) => table = t,
+            _ => return Err(format!("'{path}' walks through a non-table value")),
+        }
+    }
+    set_in_table(table, leaf, new)
+}
+
+/// Remove one dotted path from a format-preserving document, pruning
+/// parent tables left empty (mirrors [`remove_paths`]). Returns false
+/// when the path does not exist.
+fn remove_dotted_edit(doc: &mut toml_edit::DocumentMut, path: &str) -> Result<bool, String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        return Err("empty path segment".to_string());
+    }
+    fn parent_table<'a>(
+        doc: &'a mut toml_edit::DocumentMut,
+        prefix: &[&str],
+    ) -> Result<Option<&'a mut toml_edit::Table>, String> {
+        let mut table = doc.as_table_mut();
+        for part in prefix {
+            match table.get_mut(*part) {
+                Some(toml_edit::Item::Table(t)) => table = t,
+                Some(_) => return Err(format!("'{part}' is not a table")),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(table))
+    }
+    let (leaf, parents) = parts.split_last().ok_or_else(|| "empty path".to_string())?;
+    let Some(parent) = parent_table(doc, parents)? else {
+        return Ok(false);
+    };
+    if parent.get(leaf).is_none() {
+        return Ok(false);
+    }
+    remove_keys_preserving_comments(parent, &[(*leaf).to_string()]);
+    // Prune empty parents, deepest first.
+    for depth in (1..=parents.len()).rev() {
+        let prefix = &parents[..depth - 1];
+        let name = parents[depth - 1];
+        let Some(grand) = parent_table(doc, prefix)? else {
+            break;
+        };
+        let empty = grand
+            .get(name)
+            .and_then(|i| i.as_table())
+            .map(|t| t.iter().count() == 0)
+            .unwrap_or(false);
+        if !empty {
+            break;
+        }
+        remove_keys_preserving_comments(grand, &[(*name).to_string()]);
+    }
+    Ok(true)
+}
+
 pub(crate) fn apply_changes(
     app: &App,
     changes: &BTreeMap<String, Value>,
     confirm: bool,
 ) -> Response {
-    let (mut doc, _) = match read_doc(&app.data_dir) {
+    let (mut doc, raw) = match read_doc(&app.data_dir) {
         Ok(d) => d,
         Err(r) => return r,
     };
@@ -417,7 +660,7 @@ pub(crate) fn apply_changes(
             "note": "names only. Resubmit with confirm=true to apply",
         }));
     }
-    for (path, new) in changes {
+    for (path, new) in &changes {
         match parent_of(&mut doc, &path) {
             Ok((table, leaf)) => {
                 table.insert(leaf, new.clone());
@@ -446,17 +689,31 @@ pub(crate) fn apply_changes(
         }
         Err(e) => return bad_json(&format!("config change does not form a valid document: {e}")),
     }
-    let text = toml::to_string_pretty(&doc).unwrap_or_default();
+    // The write goes through the format-preserving document, not the
+    // re-serialized Value: user comments and hand formatting survive a
+    // PUT (validation above already ran against the parsed Value doc).
+    let mut edit_doc: toml_edit::DocumentMut = match raw.parse() {
+        Ok(d) => d,
+        Err(e) => {
+            return err_json(
+                500,
+                "CONFIG",
+                &format!("config.toml does not parse for editing: {e}"),
+            )
+        }
+    };
+    for (path, new) in &changes {
+        if let Err(e) = set_dotted_edit(&mut edit_doc, path, new) {
+            return bad_json(&e);
+        }
+    }
+    let text = edit_doc.to_string();
     if let Err(e) = atomic_write(&config_path(&app.data_dir), &text) {
         return err_json(500, "CONFIG", &format!("write: {e}"));
     }
-    // Comment preservation: PUT rewrites the document from its parsed
-    // form, so comments in config.toml are lost (unlike the CLI's
-    // format-preserving `config set`). A full format-preserving PUT is
-    // a bigger rework of read_doc/apply_changes onto toml_edit; until
-    // then the loss is disclosed on every successful write instead of
-    // discovered later.
-    json_ok(serde_json::json!({"ok": true, "changed": names, "restart_required": restart_required, "note": "config.toml was rewritten from its parsed form: comments are not preserved (use `pantheon config set` for format-preserving edits)"}))
+    json_ok(
+        serde_json::json!({"ok": true, "changed": names, "restart_required": restart_required, "note": "comments and formatting preserved"}),
+    )
 }
 
 /// Remove whole tables (or leaves) at dotted `paths` through the same
@@ -467,7 +724,7 @@ pub(crate) fn apply_changes(
 /// A path that does not exist is a 404; nothing is written unless every
 /// path was removed.
 pub(crate) fn remove_paths(app: &App, paths: &[&str]) -> Result<Vec<String>, Response> {
-    let (mut doc, _) = read_doc(&app.data_dir)?;
+    let (mut doc, raw) = read_doc(&app.data_dir)?;
     let mut removed = Vec::with_capacity(paths.len());
     for path in paths {
         let (table, leaf) = match parent_of(&mut doc, path) {
@@ -484,7 +741,33 @@ pub(crate) fn remove_paths(app: &App, paths: &[&str]) -> Result<Vec<String>, Res
         prune_empty_parents(&mut doc, path);
         removed.push(path.to_string());
     }
-    let text = toml::to_string_pretty(&doc).unwrap_or_default();
+    // Existence checks ran against the parsed Value doc above; the
+    // write itself goes through the format-preserving document so a
+    // DELETE does not destroy comments either.
+    let mut edit_doc: toml_edit::DocumentMut = match raw.parse() {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(err_json(
+                500,
+                "CONFIG",
+                &format!("config.toml does not parse for editing: {e}"),
+            ))
+        }
+    };
+    for path in paths {
+        match remove_dotted_edit(&mut edit_doc, path) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(err_json(
+                    404,
+                    "CONFIG",
+                    &format!("no such config path '{path}'"),
+                ))
+            }
+            Err(e) => return Err(bad_json(&e)),
+        }
+    }
+    let text = edit_doc.to_string();
     if let Err(e) = atomic_write(&config_path(&app.data_dir), &text) {
         return Err(err_json(500, "CONFIG", &format!("write: {e}")));
     }
@@ -647,8 +930,8 @@ pub fn import(app: &App, req: &Request) -> Response {
     }
     // Write the submitted text verbatim, not a re-serialized document:
     // it parsed and validated above, and re-serializing would strip the
-    // author's comments. (PUT cannot do this - it merges changes into
-    // the existing document - so PUT still discloses its comment loss.)
+    // author's comments. (PUT merges changes into the existing document
+    // through the same format-preserving edit, so it keeps comments too.)
     let out = text.to_string();
     if let Err(e) = atomic_write(&config_path(&app.data_dir), &out) {
         return err_json(500, "CONFIG", &format!("write: {e}"));
@@ -795,5 +1078,101 @@ mod tests {
         assert_eq!(v["model"]["provider"], "openai");
         assert_eq!(v["gateway"]["channels"]["bot"]["token_secret"], "[redacted]");
         assert_eq!(v["mcp"]["servers"]["srv"]["env"]["KEY"], "[redacted]");
+    }
+
+    /// PUT's format-preserving edit: comments, blank lines, and trailing
+    /// comments survive; only the changed value moves.
+    #[test]
+    fn set_dotted_edit_preserves_comments() {
+        let raw = "# Top comment: operator notes live here\n[nightly]\n# Friday rule: do not flip without asking\nenabled = false # trailing comment\n\n[budget]\nmax_turns = 10 # keep this limit\n";
+        let mut doc: toml_edit::DocumentMut = raw.parse().unwrap();
+        set_dotted_edit(&mut doc, "nightly.enabled", &Value::Boolean(true)).unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("# Top comment"), "{out}");
+        assert!(out.contains("# Friday rule"), "{out}");
+        assert!(out.contains("# trailing comment"), "{out}");
+        assert!(out.contains("# keep this limit"), "{out}");
+        assert!(out.contains("enabled = true"), "{out}");
+        assert!(out.contains("max_turns = 10"), "{out}");
+    }
+
+    /// A new key appends without disturbing existing lines.
+    #[test]
+    fn set_dotted_edit_appends_new_key() {
+        let raw = "[nightly]\nenabled = false\n";
+        let mut doc: toml_edit::DocumentMut = raw.parse().unwrap();
+        set_dotted_edit(&mut doc, "nightly.dry_run", &Value::Boolean(true)).unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("enabled = false"), "{out}");
+        assert!(out.contains("dry_run = true"), "{out}");
+    }
+
+    /// A whole-table change merges key-by-key: untouched keys (and
+    /// their comments) survive, stale keys go.
+    #[test]
+    fn set_dotted_edit_merges_table_leaf() {
+        let raw = "[server]\n# keep me\nhost = \"a\"\nport = 1 # old port\nstale = true\n";
+        let mut doc: toml_edit::DocumentMut = raw.parse().unwrap();
+        let mut t = toml::map::Map::new();
+        t.insert("port".to_string(), Value::Integer(2));
+        set_dotted_edit(&mut doc, "server", &Value::Table(t)).unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("# keep me"), "{out}");
+        assert!(out.contains("port = 2"), "{out}");
+        assert!(!out.contains("stale"), "{out}");
+    }
+
+    /// Removal prunes tables left empty and keeps surrounding comments.
+    #[test]
+    fn remove_dotted_edit_prunes_and_preserves() {
+        let raw = "# header\n[only]\nkey = 1\n\n[other]\nkey = 2 # stays\n";
+        let mut doc: toml_edit::DocumentMut = raw.parse().unwrap();
+        assert!(remove_dotted_edit(&mut doc, "only.key").unwrap());
+        assert!(!remove_dotted_edit(&mut doc, "only.key").unwrap());
+        let out = doc.to_string();
+        assert!(out.contains("# header"), "{out}");
+        assert!(out.contains("# stays"), "{out}");
+        assert!(!out.contains("[only]"), "{out}");
+    }
+
+    /// End to end: a confirmed PUT through [`apply_changes`] rewrites
+    /// only the changed value; comments and formatting survive.
+    #[test]
+    fn put_preserves_comments_end_to_end() {
+        let dir = std::env::temp_dir().join(format!("pantheon-dec-web-put-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = "# Top comment: operator notes live here\n[nightly]\n# Friday rule: do not flip without asking\nenabled = false # trailing comment\n\n[budget]\nmax_turns = 10 # keep this limit\n";
+        std::fs::write(dir.join("config.toml"), raw).unwrap();
+        let app = crate::App {
+            data_dir: dir.clone(),
+            token: "test-token".to_string(),
+            bind: "127.0.0.1".to_string(),
+            bind_all: false,
+            on_approval: None,
+            send_locks: Default::default(),
+            ui_action_locks: Default::default(),
+            turn_children: Default::default(),
+            swarm: crate::swarm::orchestrator_for(&dir),
+            desktop: Default::default(),
+        };
+        let mut changes = BTreeMap::new();
+        changes.insert("nightly.enabled".to_string(), Value::Boolean(true));
+        let resp = apply_changes(&app, &changes, true);
+        let (status, body) = match &resp {
+            pantheon_gateway::http::Response::Buffered { status, body, .. } => {
+                (*status, String::from_utf8_lossy(body).to_string())
+            }
+            _ => panic!("expected a buffered response"),
+        };
+        assert_eq!(status, 200, "{body}");
+        let out = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(out.contains("# Top comment"), "{out}");
+        assert!(out.contains("# Friday rule"), "{out}");
+        assert!(out.contains("# trailing comment"), "{out}");
+        assert!(out.contains("# keep this limit"), "{out}");
+        assert!(out.contains("enabled = true"), "{out}");
+        assert!(out.contains("max_turns = 10"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
