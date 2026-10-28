@@ -30,8 +30,10 @@ fn broker_for(app: &App) -> SecretsBroker {
 pub fn list(app: &App) -> Response {
     let broker = broker_for(app);
     let used_by = super::config::secret_ref_names(&app.data_dir);
-    let keys: Vec<serde_json::Value> = broker
-        .names()
+    // The name list may be partial (a vault that cannot enumerate, e.g.
+    // the OS keychain, is reported here rather than silently omitted).
+    let (names, warnings) = broker.names_with_warnings();
+    let keys: Vec<serde_json::Value> = names
         .iter()
         .map(|k| {
             let used: Vec<&String> = used_by
@@ -47,7 +49,7 @@ pub fn list(app: &App) -> Response {
             })
         })
         .collect();
-    json_ok(serde_json::json!({"keys": keys}))
+    json_ok(serde_json::json!({"keys": keys, "warnings": warnings}))
 }
 
 /// `PUT /api/env`: `{upserts: {KEY: value}, deletes: [KEY], confirm?}`.
