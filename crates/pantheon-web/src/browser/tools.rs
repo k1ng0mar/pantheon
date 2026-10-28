@@ -359,36 +359,56 @@ fn lexically_normalize(path: &std::path::Path) -> std::path::PathBuf {
     norm
 }
 
-/// Canonicalize the longest existing prefix of `path`, re-appending
-/// the remainder verbatim. A screenshot path usually names a file that
-/// does not exist yet, so a plain `canonicalize` would fail; this
-/// still resolves symlinks in every component that does exist -
-/// including the file itself when it was planted as a symlink - so a
-/// symlink inside the confinement dir cannot smuggle the write out.
-fn canonicalize_best_effort(path: &std::path::Path) -> std::path::PathBuf {
+/// Resolve symlinks in `path` component by component, without
+/// requiring the path to exist. A plain `canonicalize` cannot do this
+/// job: it fails on a not-yet-existing file, and it fails on a
+/// *dangling* symlink - exactly what an attacker plants (a link whose
+/// target does not exist yet, so the screenshot write would create
+/// it outside confinement). Here a symlink component is replaced by
+/// its target (absolute targets reset the path, relative ones resolve
+/// against the link's parent) and resolution continues through the
+/// remaining components, so planted file links and planted directory
+/// links both surface. Loops are bounded: after 40 resolutions the
+/// walk stops, and the operating system itself refuses to follow a
+/// loop at write time, so a loop can deny the write but never escape
+/// the check. The result is NOT lexically normalized (a target may
+/// contain `..`); callers normalize after.
+fn resolve_symlinks(path: &std::path::Path) -> std::path::PathBuf {
+    use std::collections::VecDeque;
     use std::ffi::OsString;
-    let mut cur = path;
-    let mut tail: Vec<OsString> = Vec::new();
-    loop {
-        match std::fs::canonicalize(cur) {
-            Ok(canon) => {
-                let mut out = canon;
-                for part in tail.iter().rev() {
-                    out.push(part);
-                }
-                return out;
-            }
-            Err(_) => match cur.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => {
-                    if let Some(name) = cur.file_name() {
-                        tail.push(name.to_os_string());
-                    }
-                    cur = parent;
-                }
-                _ => return path.to_path_buf(),
-            },
+    let mut out = std::path::PathBuf::new();
+    let mut pending: VecDeque<OsString> = path
+        .components()
+        .map(|c| c.as_os_str().to_os_string())
+        .collect();
+    let mut resolutions = 0;
+    while let Some(comp) = pending.pop_front() {
+        out.push(&comp);
+        let is_link = std::fs::symlink_metadata(&out)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if !is_link {
+            continue;
         }
+        resolutions += 1;
+        if resolutions > 40 {
+            break;
+        }
+        let Ok(target) = std::fs::read_link(&out) else {
+            break;
+        };
+        out.pop();
+        if target.is_absolute() {
+            out = std::path::PathBuf::new();
+        }
+        let mut target_comps: VecDeque<OsString> = target
+            .components()
+            .map(|c| c.as_os_str().to_os_string())
+            .collect();
+        target_comps.append(&mut pending);
+        pending = target_comps;
     }
+    out
 }
 
 /// Confine a model-supplied `browser_screenshot` path to the screenshots
@@ -439,8 +459,10 @@ fn confine_screenshot_path(
             }
             // Symlink stage: resolve both sides (absolutizing first,
             // so a relative dir still compares against the same root)
-            // and re-check containment on canonical paths. A planted
-            // symlink inside the dir that points outside fails here.
+            // and re-check containment on resolved paths. A planted
+            // symlink inside the dir that points outside fails here -
+            // including a dangling one, which `canonicalize` would
+            // miss entirely (see `resolve_symlinks`).
             let cwd = std::env::current_dir().unwrap_or_default();
             let absolutize = |p: &std::path::Path| {
                 if p.is_absolute() {
@@ -449,9 +471,8 @@ fn confine_screenshot_path(
                     cwd.join(p)
                 }
             };
-            let canon_dir = std::fs::canonicalize(absolutize(&d))
-                .unwrap_or_else(|_| lexically_normalize(&absolutize(&d)));
-            let canon_candidate = canonicalize_best_effort(&absolutize(&candidate));
+            let canon_dir = lexically_normalize(&resolve_symlinks(&absolutize(&d)));
+            let canon_candidate = lexically_normalize(&resolve_symlinks(&absolutize(&candidate)));
             if canon_candidate.starts_with(&canon_dir) {
                 Ok(canon_candidate)
             } else {
