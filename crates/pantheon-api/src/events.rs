@@ -781,7 +781,7 @@ impl Event {
                 scope,
             },
             Event::ApprovalDenied { run_id: _, scope } => Event::ApprovalDenied {
-                run_id: "<redacted>".to_string(),
+                run_id: run_id.to_string(),
                 scope,
             },
             Event::PreStateRecorded {
@@ -790,7 +790,7 @@ impl Event {
                 path,
                 sha256,
             } => Event::PreStateRecorded {
-                run_id: "<redacted>".to_string(),
+                run_id: run_id.to_string(),
                 scope,
                 path,
                 sha256,
@@ -972,6 +972,30 @@ mod agent_link_tests {
     /// Re-homing an event onto another run (fork) keeps the link: the
     /// forked history is identical, so it still points at the child
     /// whose work it records.
+    #[test]
+    fn with_run_id_preserves_run_id_on_denied_and_prestate() {
+        let denied = Event::ApprovalDenied {
+            run_id: "src".into(),
+            scope: "s".into(),
+        }
+        .with_run_id("fork");
+        assert!(matches!(
+            denied,
+            Event::ApprovalDenied { run_id, .. } if run_id == "fork"
+        ));
+        let pre = Event::PreStateRecorded {
+            run_id: "src".into(),
+            scope: "s".into(),
+            path: "/tmp/x".into(),
+            sha256: "abc".into(),
+        }
+        .with_run_id("fork");
+        assert!(matches!(
+            pre,
+            Event::PreStateRecorded { run_id, .. } if run_id == "fork"
+        ));
+    }
+
     #[test]
     fn with_run_id_preserves_link_fields() {
         let e = Event::AgentCompleted {
