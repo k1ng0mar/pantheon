@@ -393,10 +393,10 @@ impl ExtensionManager {
             // mobile app, and the agent - and it wins when present. When
             // absent, the bundled manifest's own `enabled` flag is the
             // default (true only for plugins that ship on, like
-            // noisegate and planning-with-files). An unparsable config
-            // fails closed (disabled); a missing config is an empty
-            // config, so manifest defaults apply (see
-            // [`crate::bundled::load_config`]).
+            // noisegate). An unparsable config fails closed (disabled),
+            // and so does a missing config (see
+            // [`crate::bundled::load_config`]) - only a config file
+            // that exists lets manifest defaults apply.
             let data_dir = self
                 .data_dir
                 .clone()
