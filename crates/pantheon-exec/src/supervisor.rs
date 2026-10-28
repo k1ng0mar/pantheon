@@ -151,57 +151,14 @@ pub struct PluginSupervisor {
 }
 
 impl PluginSupervisor {
-    /// Spawn the plugin runner. `runner` must already be verified by
-    /// `verify_plugin` - pass its RETURNED (canonicalized) path, not a
-    /// re-joined raw path.
+    /// Verify-then-spawn with the check-then-use gap closed.
     ///
-    /// Defense in depth: the runner is canonicalized again here, then its
-    /// bytes are read through the pinned fd and written to a private
-    /// sealed copy ([`Self::seal_runner_bytes`]) that the child execs - so
-    /// a symlink swap or in-place rewrite between verification and execve
-    /// cannot redirect execution or smuggle in new bytes. The canonical
-    /// path is used for argv[0] and diagnostics only, never re-opened.
-    ///
-    /// Env is filtered twice: `env_clear()` wipes inheritance, then only
-    /// manifest-declared vars that ALSO match `env_allowlist` (exact names
-    /// or `PREFIX_*`, see [`pantheon_secrets::env::env_var_allowed`]) are
-    /// copied from the host. A project-controlled manifest can declare any
-    /// name it likes, so a declared name alone never crosses the boundary
-    /// the operator's allowlist is the second, mandatory gate. Empty
-    /// allowlist (default) = no host vars reach the plugin. Pantheon
-    /// secrets never cross the boundary; they travel through the secrets
-    /// broker, not ambient env.
-    pub fn spawn(
-        runner: &Path,
-        manifest: &PluginManifest,
-        data_dir: &Path,
-        timeout: Duration,
-        env_allowlist: &[String],
-    ) -> Result<Self, PantheonError> {
-        // Resolve symlinks at spawn time. The containment proof in
-        // verify_plugin was about the canonical target; resolving again
-        // here keeps exec glued to the target resolved at spawn time.
-        let runner = runner.canonicalize().map_err(|e| {
-            merr(
-                "PLUGIN_UNSAFE_RUNNER",
-                format!("canonicalize {}: {e}", runner.display()),
-            )
-        })?;
-        // Read through the pinned fd: from here on the exact bytes in
-        // hand are what get sealed and exec'd - no path component is
-        // re-resolved.
-        let (runner_bytes, _) = Self::read_runner_bytes(&runner)?;
-        Self::spawn_inner(
-            &runner,
-            &runner_bytes,
-            manifest,
-            data_dir,
-            timeout,
-            env_allowlist,
-        )
-    }
-
-    /// Verify-then-spawn with the check-then-use gap closed:
+    /// This is the ONLY spawn entry point: the old approval-free
+    /// `spawn` was deleted (it had no callers - session startup and
+    /// the race harness both go through here) so no caller can exec
+    /// a plugin the operator never approved. Do not re-add an
+    /// approval-free spawn; any new spawn path must check approval
+    /// against the same pinned bytes it seals and execs:
     ///  1. Full `verify_plugin` boundary (manifest checks, approval bound
     ///     to the current content hash, containment of the canonical
     ///     runner).
@@ -222,8 +179,6 @@ impl PluginSupervisor {
     ///
     /// Any tampering fails closed with `PLUGIN_TAMPERED` instead of
     /// executing unapproved bytes.
-    ///
-    /// This is the spawn entry point session startup should use.
     pub fn spawn_verified(
         plugin: &DiscoveredPlugin,
         data_dir: &Path,
