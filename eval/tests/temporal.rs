@@ -289,6 +289,7 @@ fn session_seam_computes_the_hint_from_replayed_entries() {
             default: DefaultModel {
                 provider: "local".into(),
                 model: "default".into(),
+                key_env: None,
             },
             fallbacks: FallbackChain {
                 fallbacks: Vec::new(),
