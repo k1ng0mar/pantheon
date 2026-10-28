@@ -6740,6 +6740,10 @@ pub fn run_tui_session_with(
     let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = config::chat_secrets(file_cfg.as_ref());
 
+    // `[memory]` in config.toml is authoritative: sync it into
+    // memory-backend.toml BEFORE the session reads the selection,
+    // or the sync takes effect one session late.
+    config::sync_memory_selection(&data_dir, file_cfg.as_ref());
     let mut session = match Session::new(data_dir.clone(), policy, model_policy, secrets) {
         Ok(s) => s,
         Err(e) => {
@@ -11855,21 +11859,32 @@ fn handle_slash_inner(
                     "policy: {}",
                     cfg.policy.map(|p| p.as_str()).unwrap_or("coder")
                 ));
-                // The effective backend is the memory-backend.toml
-                // selection, not `[memory]` in config.toml: that section
-                // is display-only (setup syncs both files, hand edits do
-                // not). Show the real selection, and flag drift.
+                // `[memory]` in config.toml is authoritative: on load
+                // it wins over memory-backend.toml and is synced back
+                // to that file, so the display below always shows the
+                // resolved backend. Sync here too, so a hand edit
+                // since session start shows up immediately instead of
+                // lingering as drift until the next session.
+                if let Some(section) = cfg.memory.as_ref() {
+                    if let Some(warning) = pantheon_memory::sync_selection_from_config(
+                        &dd,
+                        &section.backend,
+                        &section.options,
+                    ) {
+                        state.add_status(warning);
+                    }
+                }
                 let sel = pantheon_memory::load_selection(&dd);
                 let cfg_backend = cfg
                     .memory
                     .as_ref()
                     .map(|m| m.backend.as_str())
-                    .unwrap_or("native");
-                if sel.name == cfg_backend {
+                    .unwrap_or("");
+                if sel.name == cfg_backend || cfg_backend.trim().is_empty() {
                     state.add_status(format!("memory: {} (memory-backend.toml)", sel.name));
                 } else {
                     state.add_status(format!(
-                        "memory: {} (memory-backend.toml; [memory] in config.toml says {cfg_backend} but is display-only and ignored)",
+                        "memory: {} (memory-backend.toml; [memory] in config.toml says {cfg_backend})",
                         sel.name
                     ));
                 }

@@ -2024,17 +2024,15 @@ impl DelegationSection {
 pub struct MemorySection {
     /// Backend name from the catalog: native | http | ...
     ///
-    /// Display-only: the backend actually used comes from
-    /// `<data_dir>/memory-backend.toml` (see
-    /// `pantheon_memory::load_selection`), not from this field. This
-    /// section is shown by `/settings` and written by `setup`, which
-    /// syncs both files - which is why the wizard works while
-    /// hand-editing `[memory] backend` here changes nothing. To switch
-    /// backends, use the memory backend selection (`memory backend`
-    /// / setup), not a hand edit of this section. Making `cfg.memory`
-    /// effective (syncing it into `memory-backend.toml` on load) needs
-    /// a design decision about which file wins on conflict, so it is
-    /// documented + warned here, not silently implemented.
+    /// Authoritative: on session load, this backend wins over
+    /// `<data_dir>/memory-backend.toml`, and the resolved selection is
+    /// synced back to that file (see
+    /// `pantheon_memory::sync_selection_from_config`), so the two
+    /// never drift silently. A conflict logs a warning naming both
+    /// backends. An absent section, or a blank `backend`, means no
+    /// opinion: the selection file wins untouched. To switch backends,
+    /// edit this section (or use the memory backend selection /
+    /// setup, which writes both files).
     pub backend: String,
     #[serde(default)]
     pub options: std::collections::HashMap<String, String>,

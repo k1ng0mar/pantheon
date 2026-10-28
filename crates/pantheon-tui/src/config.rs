@@ -104,7 +104,27 @@ pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Opt
     session.set_budget_section(cfg.and_then(|c| c.budget.clone()).unwrap_or_default());
 }
 
-/// Thread the `[delegation]` section into a freshly built session,
+/// Thread the `[memory]` section into a freshly built session, so the
+/// user-facing config is authoritative: on load, `[memory] backend`
+/// wins over `memory-backend.toml`, and the resolved selection is
+/// synced back to that file so the two never drift silently. A
+/// conflict logs a warning (the message names both backends). Call
+/// BEFORE `Session::new`: the session reads the selection file at
+/// construction, so syncing after it would take effect one session
+/// late. Absent/blank backend = no opinion, the file wins untouched.
+/// Call alongside `apply_budget_tiers` on every `Session::new` that
+/// serves turns.
+pub fn sync_memory_selection(data_dir: &std::path::Path, cfg: Option<&Config>) {
+    if let Some(section) = cfg.and_then(|c| c.memory.as_ref()) {
+        if let Some(warning) = pantheon_memory::sync_selection_from_config(
+            data_dir,
+            &section.backend,
+            &section.options,
+        ) {
+            eprintln!("{warning}");
+        }
+    }
+}
 /// so the `delegate` tool resolves its optional `route` argument.
 /// Absent section = no routes: routed calls are refused, direct
 /// calls work as before. Call alongside `apply_budget_tiers` on

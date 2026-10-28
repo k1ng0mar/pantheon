@@ -101,6 +101,7 @@ fn open_session(
         default: pantheon_api::model::DefaultModel {
             provider: provider.clone(),
             model: model.clone(),
+            key_env: None,
         },
         fallbacks: pantheon_api::model::FallbackChain::default(),
         auxiliaries: crate::config::auxiliaries(
@@ -113,6 +114,9 @@ fn open_session(
         ),
     };
     let secrets = crate::config::chat_secrets(cfg.as_ref());
+    // `[memory]` wins over memory-backend.toml on load: sync BEFORE
+    // the session reads the selection, or the sync lands a session late.
+    crate::config::sync_memory_selection(data_dir, cfg.as_ref());
     pantheon_runtime::session::Session::new(data_dir.to_path_buf(), policy, model_policy, secrets)
         .inspect(|s| crate::config::apply_tool_enablement(s, cfg.as_ref()))
 }

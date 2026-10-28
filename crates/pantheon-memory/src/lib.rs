@@ -19,7 +19,7 @@ mod secret_scan;
 pub mod store;
 pub use backend::{
     load_selection, load_selection_result, open_selected, save_selection, selection_path,
-    BackendInfo, BackendRegistry, BackendSelection,
+    sync_selection_from_config, BackendInfo, BackendRegistry, BackendSelection,
 };
 pub use plugins::{load_dir as load_memory_plugins, MemoryPluginManifest, StdioBackend};
 pub use store::{
