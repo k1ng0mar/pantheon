@@ -48,6 +48,7 @@ mod plugins;
 mod profiles;
 pub(crate) mod runs;
 mod schedule;
+mod secrets;
 mod session_factory;
 mod skills;
 mod stats;
@@ -550,6 +551,11 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         // Env / keys
         ("GET", "env", "", "", "") => env::list(app),
         ("PUT", "env", "", "", "") => env::put(app, req),
+        ("GET", "secrets", "", "", "") => secrets::list(app),
+        ("POST", "secrets", "", "", "") => secrets::save(app, req),
+        ("POST", "secrets", name, "rotate", "") => secrets::rotate(app, req, name),
+        ("POST", "secrets", name, "verify", "") => secrets::verify(app, req, name),
+        ("DELETE", "secrets", name, "", "") => secrets::delete(app, name),
         ("DELETE", "env", key, "", "") => env::delete(app, key),
         // Website-login credentials (browser take-control logins)
         ("GET", "logins", "", "", "") => logins::list(app),
