@@ -123,8 +123,44 @@ pub trait Verifier {
     fn verify(&self, value: &SecretValue) -> VerifyOutcome;
 }
 
+/// Credential diagnosis for a verification failure, mirroring
+/// `pantheon_providers::credential_error::classify` (this crate
+/// cannot depend on pantheon-providers: providers depends on
+/// secrets, so the mappings live here too; keep them in sync).
+/// The diagnosis is static text only, never the body, so no
+/// credential can pass through it.
+fn credential_diagnosis(code: u16, body: &str) -> Option<&'static str> {
+    if body.contains("error code: 1010") {
+        return Some("Blocked at Cloudflare's edge by Browser Integrity Check: the request never reached the provider's auth layer. Do NOT replace the key. Fix: send a real User-Agent header.");
+    }
+    match code {
+        401 => Some("Key missing, invalid, or revoked. Check the key in the provider account; replace it if it was revoked or rotated."),
+        403 => Some("Key accepted but not permitted for this endpoint or model. Check permissions, scope, and plan; do not assume the key is wrong."),
+        _ => None,
+    }
+}
+
+/// Telegram credential diagnosis, mirroring
+/// `pantheon_providers::credential_error::classify_telegram`.
+fn telegram_diagnosis(code: u16) -> Option<&'static str> {
+    match code {
+        401 => Some("Bot token wrong or revoked. Check the token in BotFather; replace it if it was revoked or rotated."),
+        403 => Some("Bot is blocked by the user, or is not allowed in that chat, or lacks permission there."),
+        404 => Some("Token shape is wrong: Telegram tokens are <digits>:<letters>. Check the token format, not just its value."),
+        _ => None,
+    }
+}
+
+/// Branded User-Agent for verification requests, matching the
+/// provider transport: edge checks rejecting default agents must
+/// not block a save-time check.
+fn user_agent() -> String {
+    format!("Pantheon/{}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Verifier for OpenAI-compatible provider keys: `GET {base_url}/models`
-/// with a bearer token. Only the HTTP status is reported on failure.
+/// with a bearer token. On failure the HTTP status plus the
+/// credential diagnosis (never the body, never the value) is reported.
 pub struct ProviderModelsVerifier {
     pub base_url: String,
 }
@@ -140,11 +176,24 @@ impl Verifier for ProviderModelsVerifier {
         match agent
             .get(&url)
             .header("Authorization", format!("Bearer {}", value.expose()))
+            .header("User-Agent", user_agent().as_str())
             .call()
         {
             Ok(resp) if (200..300).contains(&resp.status().as_u16()) => VerifyOutcome::Verified,
-            Ok(resp) => {
-                VerifyOutcome::Failed(format!("provider returned HTTP {}", resp.status().as_u16()))
+            Ok(mut resp) => {
+                let code = resp.status().as_u16();
+                let body: String = resp
+                    .body_mut()
+                    .read_to_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(300)
+                    .collect();
+                let mut message = format!("provider returned HTTP {code}");
+                if let Some(d) = credential_diagnosis(code, &body) {
+                    message.push_str(&format!(" [credential: {d}]"));
+                }
+                VerifyOutcome::Failed(message)
             }
             Err(_) => VerifyOutcome::Failed("provider could not be reached".to_string()),
         }
@@ -164,10 +213,19 @@ impl Verifier for BotTokenVerifier {
             .http_status_as_error(false)
             .build()
             .new_agent();
-        match agent.get(&url).call() {
+        match agent
+            .get(&url)
+            .header("User-Agent", user_agent().as_str())
+            .call()
+        {
             Ok(resp) if (200..300).contains(&resp.status().as_u16()) => VerifyOutcome::Verified,
             Ok(resp) => {
-                VerifyOutcome::Failed(format!("bot API returned HTTP {}", resp.status().as_u16()))
+                let code = resp.status().as_u16();
+                let mut message = format!("bot API returned HTTP {code}");
+                if let Some(d) = telegram_diagnosis(code) {
+                    message.push_str(&format!(" [credential: {d}]"));
+                }
+                VerifyOutcome::Failed(message)
             }
             Err(_) => VerifyOutcome::Failed("bot API could not be reached".to_string()),
         }
@@ -659,6 +717,29 @@ mod tests {
         assert!(!dbg.contains("do-not-echo-this-value"));
         assert!(b.resolve("BAD").unwrap().is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credential_diagnosis_maps_1010_401_403_and_telegram_codes() {
+        assert!(credential_diagnosis(403, "error code: 1010")
+            .expect("1010 must diagnose")
+            .contains("Do NOT replace the key"));
+        assert!(credential_diagnosis(401, "unauthorized")
+            .expect("401 must diagnose")
+            .contains("revoked"));
+        assert!(credential_diagnosis(403, "forbidden")
+            .expect("403 must diagnose")
+            .contains("not permitted"));
+        assert!(credential_diagnosis(429, "rate limited").is_none());
+        assert!(telegram_diagnosis(404)
+            .expect("telegram 404 must diagnose")
+            .contains("<digits>:<letters>"));
+        assert!(telegram_diagnosis(401)
+            .expect("telegram 401 must diagnose")
+            .contains("revoked"));
+        assert!(telegram_diagnosis(403)
+            .expect("telegram 403 must diagnose")
+            .contains("blocked"));
     }
 
     #[test]
