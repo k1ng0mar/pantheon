@@ -861,7 +861,7 @@ pub fn run() {
                     //
                     // `--ns <name>` (or `--ns '*'`) is the explicit way to
                     // read another agent's memory. Nothing defaults to it.
-                    let (namespaces, query) = parse_memory_recall(args, &namespace);
+                    let (namespaces, query) = parse_memory_recall(&args, &namespace);
                     let namespaces: Vec<&str> =
                         namespaces.iter().map(String::as_str).collect();
                     let hits = pantheon_memory::recall_via(
@@ -1492,7 +1492,7 @@ timeout_ms = 5000
             // the trace above. Without it, spotting a run that has been
             // quietly dropping context means scrolling a hundred events.
             if args.iter().any(|a| a == "--metrics" || a == "-m") {
-                let Some(id) = parse_runs_metrics_id(args) else {
+                let Some(id) = parse_runs_metrics_id(&args) else {
                     eprintln!("runs: --metrics needs a run id");
                     runs_help();
                     std::process::exit(2);
