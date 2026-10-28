@@ -139,11 +139,72 @@ fn extract_with_tar(
     archive: &std::path::Path,
     dest_dir: &std::path::Path,
 ) -> Result<PathBuf, String> {
+    // List first and reject traversal before extracting anything: a
+    // hostile archive must not carry absolute paths or `..` members
+    // out of the temp dir. Then extract ONLY the single member whose
+    // basename is exactly the wanted binary (fail on zero or on
+    // ambiguity) and require it to be a regular file, never a symlink.
+    // The old code extracted the whole archive and walked the tree,
+    // which let a symlink member become the installed binary.
+    let list = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(archive)
+        .output()
+        .map_err(|e| {
+            format!("install failed: could not run `tar` ({e}); install tar and re-run")
+        })?;
+    if !list.status.success() {
+        return Err("install failed: `tar` could not list the release archive".into());
+    }
+    let names: &[&str] = if cfg!(windows) {
+        &["pantheon.exe"]
+    } else {
+        &["pantheon"]
+    };
+    let mut candidates: Vec<String> = Vec::new();
+    for line in String::from_utf8_lossy(&list.stdout).lines() {
+        let entry = line.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if entry.starts_with('/') || entry.starts_with('\\') {
+            return Err(format!("install failed: absolute archive member {entry:?}"));
+        }
+        if entry
+            .split(|c| c == '/' || c == '\\')
+            .any(|seg| seg == "..")
+        {
+            return Err(format!(
+                "install failed: archive member escapes its directory: {entry:?}"
+            ));
+        }
+        let base = entry
+            .rsplit(|c| c == '/' || c == '\\')
+            .next()
+            .unwrap_or(entry);
+        if names.contains(&base) {
+            candidates.push(entry.to_string());
+        }
+    }
+    if candidates.is_empty() {
+        return Err("install failed: archive did not contain a pantheon binary".into());
+    }
+    if candidates.len() > 1 {
+        return Err(format!(
+            "install failed: ambiguous archive ({} members named like the binary)",
+            candidates.len()
+        ));
+    }
+    let member = candidates.into_iter().next().unwrap();
+    // NOTE: `-C dest` must precede the member name: tar applies -C
+    // to the arguments that follow it, so `-C` after the member
+    // would extract into the process cwd instead of dest.
     let st = std::process::Command::new("tar")
         .arg("-xf")
         .arg(archive)
         .arg("-C")
         .arg(dest_dir)
+        .arg(&member)
         .status()
         .map_err(|e| {
             format!("install failed: could not run `tar` ({e}); install tar and re-run")
@@ -151,53 +212,67 @@ fn extract_with_tar(
     if !st.success() {
         return Err("install failed: `tar` could not extract the release archive".into());
     }
-    let names: &[&str] = if cfg!(windows) {
-        &["pantheon.exe"]
-    } else {
-        &["pantheon"]
-    };
-    let mut found = None;
-    let mut stack = vec![dest_dir.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("install failed: cannot read {} ({e})", dir.display()))?;
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if names.contains(&name) {
-                    found = Some(p);
-                    break;
-                }
-            }
-        }
-        if found.is_some() {
-            break;
-        }
+    let extracted = dest_dir.join(member.strip_prefix("./").unwrap_or(member.as_str()));
+    match std::fs::symlink_metadata(&extracted) {
+        Ok(md) if md.file_type().is_file() => Ok(extracted),
+        Ok(_) => Err("install failed: extracted binary is not a regular file".into()),
+        Err(e) => Err(format!(
+            "install failed: cannot read {} ({e})",
+            extracted.display()
+        )),
     }
-    found.ok_or_else(|| "install failed: archive did not contain a pantheon binary".into())
 }
 
-/// Pure checksum comparison, extracted for testing: find the first
-/// 64-hex token in the published `.sha256` text (plain `<hex>` lines,
+/// Pure checksum comparison, extracted for testing: find the digest
+/// for `asset` in the published `.sha256` text (plain `<hex>` lines,
 /// `<hex>  <file>` sha256sum lines, and `SHA256 (file) = <hex>` BSD
 /// lines all work) and compare it against `actual_hex`.
 ///
+/// The digest is bound to the asset when the file names it: if any
+/// line names the asset, that line's digest wins. Otherwise the file
+/// must carry exactly one digest; a multi-digest file that never
+/// names the asset is ambiguous and counts as "no usable digest"
+/// (fail closed) rather than the first token, which might belong to
+/// another file.
+///
+/// NOTE: a checksum only proves the bytes match the publisher's
+/// published digest when the digest itself is authentic. The
+/// `.sha256` file is fetched from the same origin as the binary, so
+/// a compromised release can serve a matching pair. Real
+/// authentication needs signatures (see NEEDS DECISION in the
+/// security fix report); until then this is a corruption check, not
+/// a trust anchor.
+///
 /// Returns Ok(true) on match, Ok(false) when the text carries no usable
 /// digest, Err on mismatch.
-fn checksum_line_matches(text: &str, actual_hex: &str) -> Result<bool, String> {
-    let expected = text
-        .split_whitespace()
-        .map(|t| {
-            t.trim_matches(|c: char| c == '(' || c == ')' || c == '=' || c == '*')
-                .to_lowercase()
-        })
-        .find(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()))
-        .unwrap_or_default();
-    if expected.is_empty() {
-        return Ok(false);
+fn checksum_line_matches(text: &str, actual_hex: &str, asset: &str) -> Result<bool, String> {
+    let tokens = |line: &str| -> Vec<String> {
+        line.split_whitespace()
+            .map(|t| {
+                t.trim_matches(|c: char| c == '(' || c == ')' || c == '=' || c == '*')
+                    .to_lowercase()
+            })
+            .filter(|t| t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()))
+            .collect()
+    };
+    let mut all: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let found = tokens(line);
+        if found.is_empty() {
+            continue;
+        }
+        if !asset.is_empty() && line.contains(asset) {
+            return check_digest(&found[0], actual_hex);
+        }
+        all.extend(found);
     }
+    if all.len() == 1 {
+        return check_digest(&all[0], actual_hex);
+    }
+    Ok(false)
+}
+
+fn check_digest(expected: &str, actual_hex: &str) -> Result<bool, String> {
     if actual_hex.to_lowercase() != expected {
         return Err("verify failed: checksum mismatch (download may be corrupt)".into());
     }
@@ -241,7 +316,8 @@ fn verify_checksum(asset_url: &str, asset_bytes: &[u8]) -> Result<bool, String> 
         .map_err(|_| "verify failed: could not read the checksum file".to_string())?;
     // Hash via the system: sha256sum, shasum, or certutil on Windows.
     let actual = hash_via_system(asset_bytes)?;
-    checksum_line_matches(&text, &actual)
+    let asset = asset_url.rsplit('/').next().unwrap_or("");
+    checksum_line_matches(&text, &actual, asset)
 }
 
 fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
@@ -331,18 +407,51 @@ fn cmd_rollback() {
     }
     println!("✓ Rolled back to {}", backup.display());
     println!("  Binary: {}", current_exe.display());
+    // Roll the helper back too: the update backs it up to
+    // `pantheon-helper.prev` before swapping. A rollback that restores
+    // only the main binary leaves a new helper driving an old main.
+    // No helper backup (updates from before this fix) is a note, not
+    // a failure; a failed helper restore is a warning, since the main
+    // binary - the thing that runs - is restored and the helper
+    // self-heals on the next update.
+    let helper_exe = current_exe.with_file_name("pantheon-helper");
+    let helper_backup = helper_exe.with_extension("prev");
+    if helper_backup.is_file() {
+        match std::fs::copy(&helper_backup, &helper_exe) {
+            Ok(_) => println!("✓ Rolled helper back to {}", helper_backup.display()),
+            Err(e) => eprintln!("rollback: ⚠ could not restore helper ({e})"),
+        }
+    }
     // Restart any systemd units that were stopped during the update.
+    // The state file is removed only when every restart succeeded:
+    // deleting it after a failed restart would lose the only record
+    // of which units are still down.
     let state_path = current_exe.with_extension("update-state");
     if state_path.is_file() {
+        let mut restarts_ok = true;
         if let Ok(text) = std::fs::read_to_string(&state_path) {
             for unit in text.lines() {
                 if !unit.trim().is_empty() {
-                    restart_systemd_unit(unit.trim());
-                    println!("  Restarted {}", unit.trim());
+                    if restart_systemd_unit_ok(unit.trim()) {
+                        println!("  Restarted {}", unit.trim());
+                    } else {
+                        eprintln!(
+                            "rollback: ⚠ could not restart {}; restart it manually",
+                            unit.trim()
+                        );
+                        restarts_ok = false;
+                    }
                 }
             }
         }
-        let _ = std::fs::remove_file(&state_path);
+        if restarts_ok {
+            let _ = std::fs::remove_file(&state_path);
+        } else {
+            eprintln!(
+                "rollback: ⚠ state file kept at {} for a retry",
+                state_path.display()
+            );
+        }
     }
 }
 
@@ -494,19 +603,25 @@ pub fn cmd_update(args: &[String]) {
     }
 }
 
-/// Restart a systemd unit (Unix) or Windows service.
-fn restart_systemd_unit(unit: &str) {
+/// Restart a systemd unit (Unix) or Windows service, reporting
+/// success so rollback can keep the state file when a restart fails
+/// instead of deleting the only record of which units are still down.
+fn restart_systemd_unit_ok(unit: &str) -> bool {
     #[cfg(unix)]
     {
-        let _ = std::process::Command::new("systemctl")
+        std::process::Command::new("systemctl")
             .args(["--user", "start", unit])
-            .status();
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("sc")
+        std::process::Command::new("sc")
             .args(["start", unit])
-            .status();
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
