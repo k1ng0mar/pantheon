@@ -249,6 +249,17 @@ impl CdpDriver {
                     headless,
                     request_timeout,
                 } => {
+                    // Deliberate: `--no-sandbox` is Chrome's own sandbox
+                    // flag, not Pantheon's. Headless CI containers run
+                    // as root, and Chrome refuses to launch as root
+                    // without it, so dropping the flag breaks exactly
+                    // the environments that drive this backend
+                    // unattended. The browser backends are documented
+                    // as unsandboxed by design (see browser/mod.rs) -
+                    // the control is the capability gate, not the
+                    // Chrome sandbox. Remote CDP (`Connect`) never
+                    // launches a browser, so this flag touches only the
+                    // local-launch path.
                     let mut builder = BrowserConfig::builder()
                         .request_timeout(*request_timeout)
                         .no_sandbox();

@@ -120,9 +120,40 @@ fn sdk_err(e: steel::Error) -> BrowserError {
     }
 }
 
+/// Percent-encode one query value: unreserved ASCII passes through,
+/// everything else (including `&`, `=`, `+`, and non-ASCII bytes)
+/// becomes `%XX`. A raw key interpolated into a URL would break the
+/// query string at the first `&` or `=` in the key - and hand the
+/// remainder to the server as separate parameters.
+fn percent_encode_query_value(s: &str) -> String {
+    const UNRESERVED: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if UNRESERVED.contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(
+                char::from_digit(u32::from(b >> 4), 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit(u32::from(b & 0xF), 16)
+                    .unwrap_or('0')
+                    .to_ascii_uppercase(),
+            );
+        }
+    }
+    out
+}
+
 /// Append the `apiKey` query parameter Steel's cloud requires on the
 /// CDP URL - only when the key is non-empty. Self-hosted sessions
-/// carry no key and must not get a dangling `?apiKey=`.
+/// carry no key and must not get a dangling `?apiKey=`. The key is
+/// percent-encoded: keys are opaque strings and may contain `&`, `=`,
+/// or `+`, which would otherwise corrupt the query string.
 fn authed_cdp_url(websocket_url: &str, api_key: &str) -> String {
     if api_key.is_empty() {
         return websocket_url.to_string();
@@ -132,7 +163,34 @@ fn authed_cdp_url(websocket_url: &str, api_key: &str) -> String {
     } else {
         "?"
     };
-    format!("{websocket_url}{sep}apiKey={api_key}")
+    format!(
+        "{websocket_url}{sep}apiKey={}",
+        percent_encode_query_value(api_key)
+    )
+}
+
+#[cfg(test)]
+mod authed_cdp_url_tests {
+    use super::*;
+
+    #[test]
+    fn plain_key_unchanged_and_empty_key_adds_nothing() {
+        assert_eq!(
+            authed_cdp_url("wss://example.com/cdp", "abc123"),
+            "wss://example.com/cdp?apiKey=abc123"
+        );
+        assert_eq!(
+            authed_cdp_url("wss://example.com/cdp", ""),
+            "wss://example.com/cdp"
+        );
+    }
+
+    #[test]
+    fn key_metacharacters_are_encoded_not_split() {
+        let url = authed_cdp_url("wss://example.com/cdp?x=1", "a&b=c+d");
+        assert_eq!(url, "wss://example.com/cdp?x=1&apiKey=a%26b%3Dc%2Bd");
+        assert_eq!(url.matches("apiKey=").count(), 1);
+    }
 }
 
 struct SteelProvisioner {

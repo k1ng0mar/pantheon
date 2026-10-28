@@ -243,14 +243,45 @@ pub fn find_login_fields(snapshot: &Value) -> Result<LoginFields, FillError> {
 }
 
 /// True when `site` (a vault login's stored site: bare host or full
-/// URL) matches `host` (the current page's host): exact match or a
-/// subdomain in either direction. Deliberately *not* a substring
-/// match - `evilgithub.com` must never match a `github.com` login.
+/// URL) matches `host` (the current page's host): exact match, or the
+/// page host is a subdomain of the stored site. One direction only.
+/// The old bidirectional rule also matched when the *stored* site was
+/// a subdomain of the page host, so a login saved for
+/// `evil.github.com` would have filled on `github.com` itself - the
+/// vault entry's scope must never widen to a parent domain the user
+/// never saved it for. Deliberately *not* a substring match either -
+/// `evilgithub.com` must never match a `github.com` login.
 pub fn host_matches_site(site: &str, host: &str) -> bool {
     let s = super::tools::host_of(site).to_ascii_lowercase();
     let h = host.trim().to_ascii_lowercase();
     if s.is_empty() || h.is_empty() {
         return false;
     }
-    s == h || h.ends_with(&format!(".{s}")) || s.ends_with(&format!(".{h}"))
+    s == h || h.ends_with(&format!(".{s}"))
+}
+
+#[cfg(test)]
+mod host_match_tests {
+    use super::host_matches_site;
+
+    #[test]
+    fn exact_and_page_subdomain_match() {
+        assert!(host_matches_site("github.com", "github.com"));
+        assert!(host_matches_site("https://github.com/login", "gist.github.com"));
+        assert!(host_matches_site("GITHUB.COM", "github.com"));
+    }
+
+    #[test]
+    fn stored_subdomain_does_not_match_parent() {
+        // One direction only: a login saved for a subdomain must not
+        // fill on the parent domain.
+        assert!(!host_matches_site("evil.github.com", "github.com"));
+        assert!(!host_matches_site("evil.github.com", "other.github.com"));
+    }
+
+    #[test]
+    fn suffix_lookalikes_never_match() {
+        assert!(!host_matches_site("github.com", "evilgithub.com"));
+        assert!(!host_matches_site("github.com", "github.com.evil.com"));
+    }
 }

@@ -33,6 +33,15 @@
 //! trusted software, not arbitrary model-supplied commands. Gating the
 //! *decision to browse* is the honest control.
 //!
+//! That choice extends to the local CDP backend's `--no-sandbox` flag
+//! ([`cdp::CdpDriver`]): it is Chrome's own sandbox switch, and Chrome
+//! refuses to launch as root without it, so headless CI containers
+//! (which run as root) cannot use the backend at all if the flag is
+//! dropped. Keeping it is the same tradeoff as above, stated plainly:
+//! the local browser runs unsandboxed, the gate is the capability, and
+//! the flag never applies to remote CDP connections, which launch
+//! nothing locally.
+//!
 //! ## Verified CLI behavior (gsd-browser 0.1.24, live 2026-09-29)
 //!
 //! Verified against the real binary (`--help` plus a live daemon attached

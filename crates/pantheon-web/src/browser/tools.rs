@@ -69,6 +69,13 @@ pub struct BrowserOptions {
     /// (`logins.json` + `logins.env`); passwords only ever leave through
     /// the fill path - never into model context or error text.
     pub login_store: Option<Arc<LoginStore>>,
+    /// Directory `browser_screenshot` paths are confined to. The runtime
+    /// wires `<data_dir>/screenshots`. When `None` (direct API use),
+    /// absolute paths and `..` escapes are still rejected, so a
+    /// model-supplied path can only name a file relative to the
+    /// backend process's working directory - never an arbitrary
+    /// location like `/etc` or a sibling's home directory.
+    pub screenshot_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for BrowserOptions {
@@ -82,6 +89,7 @@ impl Default for BrowserOptions {
             run_id: Arc::new(|| "default".to_string()),
             on_activity: None,
             login_store: None,
+            screenshot_dir: None,
         }
     }
 }
@@ -126,6 +134,9 @@ struct Ctx {
     run_id: Arc<dyn Fn() -> String + Send + Sync>,
     on_activity: Option<ActivitySink>,
     login_store: Option<Arc<LoginStore>>,
+    /// Directory `browser_screenshot` paths are confined to (see
+    /// [`BrowserOptions::screenshot_dir`]).
+    screenshot_dir: Option<std::path::PathBuf>,
     /// Last navigated URL per session name. The canonical command
     /// vocabulary has no "current URL" query, so `browser_fill_login`
     /// defaults its credential match to the current page's host via this
@@ -158,14 +169,15 @@ impl Ctx {
         // can default its credential match to the current page's host.
         // The navigate response carries the final (post-redirect) URL on
         // most backends; fall back to the requested URL when it doesn't.
+        // Only on success: a failed navigation must not poison the
+        // record, or fill_login would match credentials against a page
+        // the session never actually reached.
         if argv.first().map(String::as_str) == Some("navigate") {
-            let url = result
-                .as_ref()
-                .ok()
-                .and_then(extract_url)
-                .or_else(|| argv.get(1).cloned());
-            if let (Some(url), Ok(mut map)) = (url, self.last_url.lock()) {
-                map.insert(session.clone(), url);
+            if let Ok(value) = &result {
+                let url = extract_url(value).or_else(|| argv.get(1).cloned());
+                if let (Some(url), Ok(mut map)) = (url, self.last_url.lock()) {
+                    map.insert(session.clone(), url);
+                }
             }
         }
         result
@@ -218,7 +230,7 @@ impl Ctx {
                 &session,
             )
             .map(|_| ())
-            .map_err(|e| PantheonError::from(redact_secret_error(e)))
+            .map_err(|e| PantheonError::from(redact_secret_error(e, secret)))
     }
 }
 
@@ -236,22 +248,33 @@ fn extract_url(v: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Redact a secret payload from a backend error's echoed argv:
-/// `fill-ref <ref> <secret>` becomes `fill-ref <ref> •••`. Without
-/// this a failed fill would print the password into the tool error the
-/// model reads.
-fn redact_secret_error(e: BrowserError) -> BrowserError {
+/// Redact a secret payload from a backend error: `fill-ref <ref>
+/// <secret>` becomes `fill-ref <ref> •••` in argv, and every occurrence
+/// of the secret value is scrubbed from the free-text fields too
+/// (`stderr`, `detail`, `StaleRef` message). Argv-only redaction used
+/// to leave the value in place whenever a backend echoed it back in
+/// its own stderr or message text - the exact path a failed fill takes
+/// into the tool error the model reads. Empty secrets scrub nothing
+/// (replacing on an empty needle would corrupt every string).
+fn redact_secret_error(e: BrowserError, secret: &str) -> BrowserError {
     fn redact_argv(mut argv: Vec<String>) -> Vec<String> {
         if argv.len() > 2 && (argv[0] == "fill-ref" || argv[0] == "type") {
             argv[2] = "•••".to_string();
         }
         argv
     }
+    let scrub = |s: String| {
+        if secret.is_empty() {
+            s
+        } else {
+            s.replace(secret, "•••")
+        }
+    };
     match e {
         BrowserError::Failed { argv, exit, stderr } => BrowserError::Failed {
             argv: redact_argv(argv),
             exit,
-            stderr,
+            stderr: scrub(stderr),
         },
         BrowserError::Timeout { argv, secs } => BrowserError::Timeout {
             argv: redact_argv(argv),
@@ -259,7 +282,10 @@ fn redact_secret_error(e: BrowserError) -> BrowserError {
         },
         BrowserError::BadOutput { argv, detail } => BrowserError::BadOutput {
             argv: redact_argv(argv),
-            detail,
+            detail: scrub(detail),
+        },
+        BrowserError::StaleRef { message } => BrowserError::StaleRef {
+            message: scrub(message),
         },
         other => other,
     }
@@ -310,6 +336,86 @@ pub fn host_of(url: &str) -> String {
     // Strip userinfo and port; keep it to the bare host.
     let host = host_port.split('@').next_back().unwrap_or(host_port);
     host.split(':').next().unwrap_or(host).to_string()
+}
+
+/// Lexically normalize a path: drop `.`, resolve `..` against what
+/// precedes it, keep a leading `..` for relative paths (it escapes)
+/// and the root for absolute ones. No filesystem access, so it works
+/// for not-yet-existing screenshot files.
+fn lexically_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut norm = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !norm.pop() {
+                    norm.push("..");
+                }
+            }
+            other => norm.push(other.as_os_str()),
+        }
+    }
+    norm
+}
+
+/// Confine a model-supplied `browser_screenshot` path to the screenshots
+/// directory. With a dir configured, a relative path joins under it and
+/// an absolute path must already be inside it; without one, absolute
+/// paths and `..` escapes are rejected outright. The check runs on the
+/// lexically normalized *candidate*, not the raw string: a naive
+/// `starts_with` on the joined path is component-based, so
+/// `screenshots/../escape.png` still "starts with" the screenshots
+/// dir while escaping it. Returns the path to hand the backend.
+fn confine_screenshot_path(
+    dir: Option<&std::path::Path>,
+    requested: &str,
+) -> Result<std::path::PathBuf, PantheonError> {
+    use std::path::{Component, Path};
+    let requested = requested.trim();
+    if requested.is_empty() {
+        return Err(berr(
+            "BROWSER_BAD_ARGS",
+            "screenshot path must not be empty".to_string(),
+        ));
+    }
+    let norm = lexically_normalize(Path::new(requested));
+    if norm.as_os_str().is_empty() {
+        return Err(berr(
+            "BROWSER_BAD_ARGS",
+            "screenshot path must name a file".to_string(),
+        ));
+    }
+    match dir {
+        Some(d) => {
+            let d = lexically_normalize(d);
+            let candidate = lexically_normalize(&if norm.is_absolute() {
+                norm
+            } else {
+                d.join(&norm)
+            });
+            if candidate.starts_with(&d) {
+                Ok(candidate)
+            } else {
+                Err(berr(
+                    "BROWSER_BAD_ARGS",
+                    format!("screenshot path escapes the screenshots directory: {requested}"),
+                ))
+            }
+        }
+        None => {
+            if norm.is_absolute()
+                || norm.components().any(|c| c == Component::ParentDir)
+            {
+                Err(berr(
+                    "BROWSER_BAD_ARGS",
+                    format!("screenshot path must be a plain relative file name: {requested}"),
+                ))
+            } else {
+                Ok(norm)
+            }
+        }
+    }
 }
 
 /// Short search-vs-browse blurb appended to interactive tool descriptions.
@@ -531,10 +637,11 @@ fn fill_login(ctx: &Ctx, store: &LoginStore, args: &str) -> Result<String, Panth
     let mut filled = Vec::new();
     if let Some(u) = &fields.username {
         ctx.fill_secret(&u.r, &cred.username)?;
-        filled.push(format!(
-            "username '{}' → \"{}\" ({})",
-            cred.username, u.label, u.r
-        ));
+        // The result names the field label and ref, never the username
+        // value itself: the docstring promises the result carries only
+        // the login id and filled field labels, and a username is
+        // credential material the model does not need echoed back.
+        filled.push(format!("username → \"{}\" ({})", u.label, u.r));
     }
     if let Some(p) = &fields.password {
         ctx.fill_secret(&p.r, password.expose())?;
@@ -560,10 +667,15 @@ pub fn register_browser_tools(
     if !opts.enabled {
         return Ok(());
     }
-    // Fail fast on misconfiguration (missing API key, unreachable
-    // endpoint, ...) instead of registering dead tools. Construction is
-    // lazy: no network, no subprocess, no browser launch happens here
-    // backends connect on first `invoke`.
+    // Fail fast on *config* misconfiguration (missing API key, bad
+    // endpoint shape) instead of registering dead tools: that is what
+    // `build_backend` validates. It deliberately does NOT prove the
+    // backend works - the GSD/Playwright binary's presence on PATH and
+    // endpoint reachability are only observable on first `invoke`
+    // (construction is lazy: no network, no subprocess, no browser
+    // launch happens here), so a missing binary still surfaces on the
+    // first tool call, not at registration. The old comment claimed
+    // fail-fast on "unreachable endpoint" too; that was an overclaim.
     let backend = build_backend(opts.backend, &opts.backend_config)?;
     let kind = opts.backend;
     let ctx = Ctx {
@@ -572,6 +684,7 @@ pub fn register_browser_tools(
         run_id: opts.run_id,
         on_activity: opts.on_activity,
         login_store: opts.login_store,
+        screenshot_dir: opts.screenshot_dir,
         last_url: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -797,6 +910,36 @@ pub fn register_browser_tools(
     // act_require_approval is on, the call picks up Capability::BrowserAct
     // so the run loop parks for human approval. The description steers
     // the model to the safer pattern first.
+    //
+    // On every other backend the tool is still registered, but as an
+    // erroring stub: silently omitting it used to surface as a bare
+    // TOOL_UNKNOWN, which reads like a registry bug and invites
+    // retries. The stub names the backend, the GSD-only reason, and
+    // the safer pattern, so the model self-corrects in one step.
+    if kind != BackendKind::Gsd {
+        let backend_name = kind.id().to_string();
+        reg.register_with(
+            schema(
+                "browser_act",
+                "AUTONOMOUS ACTION - GSD backend only; this backend does not offer it. Use browser_snapshot, verify the target yourself, then browser_click_ref / browser_fill_ref on the exact ref.",
+                serde_json::json!({
+                    "intent": str_prop("Semantic intent (accepted, then refused: this backend has no intent engine)"),
+                    "scope": str_prop("Optional CSS selector to narrow the search area"),
+                }),
+                &["intent"],
+            ),
+            Capability::Browser,
+            move |_args| {
+                Err(berr(
+                    "BROWSER_UNSUPPORTED_COMMAND",
+                    format!(
+                        "browser_act is only available on the gsd backend (active backend: {backend_name}): snapshot the page and use browser_click_ref / browser_fill_ref on the exact ref instead"
+                    ),
+                ))
+            },
+            None,
+        );
+    }
     if kind == BackendKind::Gsd {
         let act_extra: Option<ArgCapabilities> = if opts.act_require_approval {
             Some(Box::new(|_args: &str| vec![Capability::BrowserAct]))
@@ -834,19 +977,24 @@ pub fn register_browser_tools(
         reg,
         &ctx,
         "browser_screenshot",
-        "Capture a screenshot of the current page to a file path.",
+        "Capture a screenshot of the current page to a file path. The path is confined to the screenshots directory: a bare file name lands there, and an absolute path must already be inside it.",
         serde_json::json!({
-            "path": str_prop("File path to write the screenshot to"),
+            "path": str_prop("File path to write the screenshot to (confined to the screenshots directory)"),
             "format": str_prop("Image format, e.g. png (default)"),
         }),
         &["path"],
         false,
         None,
-        |_, v| {
+        |c, v| {
+            let confined =
+                confine_screenshot_path(c.screenshot_dir.as_deref(), &arg_str(&v, "path")?)?;
+            if let Some(d) = &c.screenshot_dir {
+                let _ = std::fs::create_dir_all(d);
+            }
             Ok(vec![
                 "screenshot".into(),
                 "--output".into(),
-                arg_str(&v, "path")?,
+                confined.display().to_string(),
                 "--format".into(),
                 arg_opt_str(&v, "format").unwrap_or_else(|| "png".to_string()),
             ])
@@ -868,4 +1016,168 @@ pub fn register_browser_tools(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tools_tests {
+    use super::*;
+    use crate::browser::backend::BrowserBackend;
+
+    struct StubBackend;
+
+    impl BrowserBackend for StubBackend {
+        fn invoke(
+            &self,
+            argv: &[String],
+            _session: &str,
+        ) -> Result<serde_json::Value, BrowserError> {
+            match argv.first().map(String::as_str) {
+                Some("navigate") => {
+                    let url = argv.get(1).cloned().unwrap_or_default();
+                    if url.contains("fail") {
+                        Err(BrowserError::Failed {
+                            argv: argv.to_vec(),
+                            exit: Some(1),
+                            stderr: "navigation failed".to_string(),
+                        })
+                    } else {
+                        Ok(serde_json::json!({"url": url}))
+                    }
+                }
+                _ => Ok(serde_json::json!({})),
+            }
+        }
+
+        fn stop_daemon(&self, _session: &str) -> Result<(), BrowserError> {
+            Ok(())
+        }
+    }
+
+    fn stub_ctx() -> Ctx {
+        Ctx {
+            backend: Arc::new(StubBackend),
+            sessions: Arc::new(SessionManager::new(60)),
+            run_id: Arc::new(|| "default".to_string()),
+            on_activity: None,
+            login_store: None,
+            screenshot_dir: None,
+            last_url: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn failed_navigation_does_not_poison_last_url() {
+        let ctx = stub_ctx();
+        ctx.call(vec!["navigate".into(), "https://ok.example/".into()])
+            .expect("ok navigate");
+        assert_eq!(ctx.current_host().as_deref(), Some("ok.example"));
+        assert!(ctx
+            .call(vec!["navigate".into(), "https://fail.example/".into()])
+            .is_err());
+        // Still the old page: the failed navigation recorded nothing.
+        assert_eq!(ctx.current_host().as_deref(), Some("ok.example"));
+    }
+
+    #[test]
+    fn secret_scrubbed_from_argv_stderr_detail_and_stale_ref() {
+        let secret = "hunter2-secret";
+        let failed = redact_secret_error(
+            BrowserError::Failed {
+                argv: vec![
+                    "fill-ref".into(),
+                    "@v1:e2".into(),
+                    secret.to_string(),
+                ],
+                exit: Some(1),
+                stderr: format!("backend echoed {secret} back"),
+            },
+            secret,
+        );
+        let text = format!("{failed}");
+        assert!(!text.contains(secret), "stderr leak: {text}");
+        assert!(text.contains("•••"));
+
+        let bad = redact_secret_error(
+            BrowserError::BadOutput {
+                argv: vec!["fill-ref".into(), "@v1:e2".into(), secret.into()],
+                detail: format!("weird output mentioning {secret}"),
+            },
+            secret,
+        );
+        assert!(!format!("{bad}").contains(secret));
+
+        let stale = redact_secret_error(
+            BrowserError::StaleRef {
+                message: format!("ref expired after {secret}"),
+            },
+            secret,
+        );
+        assert!(!format!("{stale}").contains(secret));
+    }
+
+    #[test]
+    fn screenshot_paths_are_confined() {
+        use std::path::Path;
+        let dir = Path::new("/data/screenshots");
+        assert_eq!(
+            confine_screenshot_path(Some(dir), "shot.png").unwrap(),
+            Path::new("/data/screenshots/shot.png")
+        );
+        assert_eq!(
+            confine_screenshot_path(Some(dir), "sub/shot.png").unwrap(),
+            Path::new("/data/screenshots/sub/shot.png")
+        );
+        assert_eq!(
+            confine_screenshot_path(Some(dir), "/data/screenshots/a.png").unwrap(),
+            Path::new("/data/screenshots/a.png")
+        );
+        assert!(confine_screenshot_path(Some(dir), "/etc/passwd").is_err());
+        assert!(confine_screenshot_path(Some(dir), "../escape.png").is_err());
+        assert!(confine_screenshot_path(Some(dir), "sub/../../escape.png").is_err());
+        // Interior `..` that escapes after joining: a component-wise
+        // starts_with check would wrongly pass these.
+        assert!(confine_screenshot_path(Some(dir), "/data/screenshots/../escape.png").is_err());
+        assert!(
+            confine_screenshot_path(Some(dir), "/data/screenshots/sub/../../escape.png")
+                .is_err()
+        );
+        // Interior `..` that stays inside normalizes to the file.
+        assert_eq!(
+            confine_screenshot_path(Some(dir), "a/../shot.png").unwrap(),
+            Path::new("/data/screenshots/shot.png")
+        );
+        // No dir configured: bare names pass, absolute and escapes fail.
+        assert_eq!(
+            confine_screenshot_path(None, "shot.png").unwrap(),
+            Path::new("shot.png")
+        );
+        assert!(confine_screenshot_path(None, "/tmp/shot.png").is_err());
+        assert!(confine_screenshot_path(None, "../shot.png").is_err());
+        assert!(confine_screenshot_path(None, "").is_err());
+    }
+
+    #[test]
+    fn browser_act_on_non_gsd_is_an_erroring_stub_not_unknown() {
+        let mut reg = ToolRegistry::new();
+        let mut opts = BrowserOptions::default();
+        opts.enabled = true;
+        opts.backend = BackendKind::Playwright;
+        register_browser_tools(&mut reg, opts).expect("register");
+        assert!(reg.names().contains(&"browser_act".to_string()));
+        let err = reg
+            .execute("browser_act", r#"{"intent":"dismiss"}"#)
+            .expect_err("stub must refuse");
+        assert_eq!(err.code, "BROWSER_UNSUPPORTED_COMMAND");
+        assert!(err.cause.contains("gsd"), "cause: {}", err.cause);
+    }
+
+    #[test]
+    fn browser_act_on_gsd_is_registered() {
+        let mut reg = ToolRegistry::new();
+        let mut opts = BrowserOptions::default();
+        opts.enabled = true;
+        opts.backend = BackendKind::Gsd;
+        register_browser_tools(&mut reg, opts).expect("register");
+        assert!(reg.names().contains(&"browser_act".to_string()));
+    }
 }
