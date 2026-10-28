@@ -147,6 +147,79 @@ fn unapproved_plugin_stays_pending_and_never_fires() {
 }
 
 #[test]
+fn per_plugin_gate_failure_quarantines_only_that_plugin() {
+    // A plugin whose content hash cannot be computed (here: a dangling
+    // symlink inside its dir, which the hash walk cannot open) is
+    // quarantined alone - not loaded, not pending - while an approved
+    // sibling keeps loading. Never fail-open.
+    let base = std::env::temp_dir().join("pantheon-gate-quarantine-one");
+    let _ = std::fs::remove_dir_all(&base);
+    plug_hook(&base.join("good"), "good", "pre_llm_call", "{'context': 'G'}");
+    plug_hook(&base.join("bad"), "bad", "pre_llm_call", "{'context': 'B'}");
+    std::os::unix::fs::symlink("no-such-target", base.join("bad").join("broken.py"))
+        .unwrap();
+    let m = mgr_with(&base);
+    assert_eq!(m.names(), vec!["good"]);
+    assert!(m.pending().is_empty(), "a gate failure is not pending");
+    assert_eq!(m.quarantined().len(), 1);
+    assert!(
+        m.quarantined()[0].contains("'bad'"),
+        "warning must name the plugin: {:?}",
+        m.quarantined()
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn systemic_gate_failure_quarantines_everything_fail_closed() {
+    // A corrupt approval store is a systemic gate failure: every plugin
+    // it gates is quarantined (fail-closed in effect), none loads, and
+    // none is left pending as if an approval could fix it.
+    let base = std::env::temp_dir().join("pantheon-gate-quarantine-all");
+    let _ = std::fs::remove_dir_all(&base);
+    plug_hook(&base.join("one"), "one", "pre_llm_call", "{'context': '1'}");
+    plug_hook(&base.join("two"), "two", "pre_llm_call", "{'context': '2'}");
+    std::fs::write(base.join(".approvals.json"), "{not json").unwrap();
+    let mut m = ExtensionManager::new(RunnerConfig::default());
+    m.load_dir(&base).unwrap();
+    assert!(m.names().is_empty(), "nothing may load on a broken store");
+    assert!(m.pending().is_empty(), "nothing is merely pending");
+    assert_eq!(m.quarantined().len(), 2);
+    assert!(m.quarantined().iter().any(|q| q.contains("'one'")));
+    assert!(m.quarantined().iter().any(|q| q.contains("'two'")));
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn hook_manifest_with_key_is_rejected_fail_closed() {
+    // Same rule on the hook side: a `key` in plugin.yaml is rejected
+    // at load, so the plugin never loads (it lands in load_errors,
+    // not pending, not loaded).
+    let base = std::env::temp_dir().join("pantheon-manifest-key");
+    let _ = std::fs::remove_dir_all(&base);
+    let dir = base.join("keyed");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.yaml"),
+        "name: keyed\nprovides_hooks:\n  - pre_llm_call\nkey: sk-live-secret\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("__init__.py"), "def register(ctx):\n    pass\n").unwrap();
+    let mut m = ExtensionManager::new(RunnerConfig::default());
+    m.load_dir(&base).unwrap();
+    assert!(m.names().is_empty(), "a keyed plugin must never load");
+    assert!(m.pending().is_empty(), "a keyed plugin is not pending");
+    assert!(
+        m.load_errors()
+            .iter()
+            .any(|e| e.contains("key")),
+        "load failure must name the `key` problem: {:?}",
+        m.load_errors()
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
 fn gate_allows_when_no_plugin_binds_it() {
     let base = std::env::temp_dir().join("pantheon-gate-empty");
     let _ = std::fs::remove_dir_all(&base);
