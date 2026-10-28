@@ -160,6 +160,12 @@ impl LoginStore {
 
     /// Create a login. The id is derived from the site; collisions get a
     /// numeric suffix. Fails on empty site/username/password.
+    ///
+    /// Metadata-first: the `logins.json` row is written before the vault
+    /// password, and a vault failure rolls the row back out. The old
+    /// order (vault first) orphaned a password with no row whenever the
+    /// metadata write failed - a secret the store could never name or
+    /// delete again.
     pub fn create(
         &self,
         site: &str,
@@ -203,7 +209,6 @@ impl LoginStore {
             n += 1;
         }
         let secret_name = Self::secret_name_for(&id);
-        self.broker.set(&secret_name, SecretValue::new(password))?;
         let cred = LoginCredential {
             id,
             site: site.to_string(),
@@ -212,11 +217,30 @@ impl LoginStore {
         };
         creds.push(cred.clone());
         self.write_meta(&creds)?;
+        // Vault second: on failure the row is rolled back, so a failed
+        // create never leaves either half behind.
+        if let Err(e) = self
+            .broker
+            .set(&cred.secret_name, SecretValue::new(password))
+        {
+            creds.pop();
+            let _ = self.write_meta(&creds);
+            return Err(e);
+        }
         Ok(cred)
     }
 
     /// Update username and/or password. At least one must be given.
     /// Password updates are write-only (the old value is never readable).
+    ///
+    /// Metadata-first, like [`create`](Self::create): the metadata row
+    /// is written before the vault password, and a vault failure
+    /// restores the previous metadata and reports the error - never a
+    /// success for a half-applied pair. One asymmetry remains by
+    /// construction: the old password value is unreadable, so a vault
+    /// write that *succeeds* cannot be undone if a later step fails;
+    /// nothing after the vault write can fail except the rollback
+    /// itself, which is best-effort.
     pub fn update(
         &self,
         id: &str,
@@ -237,6 +261,7 @@ impl LoginStore {
             .iter()
             .position(|c| c.id == id)
             .ok_or_else(|| SecretsError::Invalid(format!("unknown login '{id}'")))?;
+        let original = creds[pos].clone();
         if let Some(s) = site {
             let s = s.trim();
             if s.is_empty() {
@@ -251,33 +276,172 @@ impl LoginStore {
             }
             creds[pos].username = u.to_string();
         }
-        if let Some(p) = password {
-            if p.is_empty() {
-                return Err(SecretsError::Invalid("password must not be empty".into()));
+        let new_password = match password {
+            Some(p) => {
+                if p.is_empty() {
+                    return Err(SecretsError::Invalid("password must not be empty".into()));
+                }
+                if p.contains('\n') || p.contains('\r') {
+                    return Err(SecretsError::Invalid("password must be single-line".into()));
+                }
+                Some(p)
             }
-            if p.contains('\n') || p.contains('\r') {
-                return Err(SecretsError::Invalid("password must be single-line".into()));
-            }
-            self.broker
-                .set(&creds[pos].secret_name, SecretValue::new(p))?;
-        }
+            None => None,
+        };
+        // Metadata first: if this write fails, the vault is untouched
+        // and the call fails with nothing changed. The old order set
+        // the vault password first, so a metadata failure left the
+        // password changed while the update reported failure.
         self.write_meta(&creds)?;
+        if let Some(p) = new_password {
+            if let Err(e) = self
+                .broker
+                .set(&creds[pos].secret_name, SecretValue::new(p))
+            {
+                // Roll the metadata back: the caller was told the update
+                // failed, so the row must not claim the new values.
+                // (The vault password itself cannot be restored - the
+                // old value is write-only - but a retry with the same
+                // password converges, and the row no longer lies.)
+                let mut rollback = self.read_meta().unwrap_or_default();
+                if let Some(rpos) = rollback.iter().position(|c| c.id == id) {
+                    rollback[rpos] = original;
+                    let _ = self.write_meta(&rollback);
+                }
+                return Err(e);
+            }
+        }
         Ok(creds[pos].clone())
     }
 
     /// Delete a login: metadata row and its vault password both go.
     /// Unknown id is a no-op returning `false`; deleted returns `true`.
-    /// A vault-delete failure is propagated (not swallowed): the metadata
-    /// row is only removed once the password is actually gone, so a
-    /// half-deleted login can never be reported as deleted.
+    ///
+    /// Metadata-first: the row is removed from `logins.json` before the
+    /// vault password is deleted, and a vault-delete failure restores
+    /// the row and propagates the error. The old order deleted the
+    /// password first, so a metadata failure left a row whose password
+    /// was already gone. (A crash between the metadata write and the
+    /// vault delete orphans the password instead - an unnamed secret
+    /// the store can no longer reach, but never a dangling row.)
     pub fn delete(&self, id: &str) -> Result<bool, SecretsError> {
         let mut creds = self.read_meta()?;
         let Some(pos) = creds.iter().position(|c| c.id == id) else {
             return Ok(false);
         };
         let cred = creds.remove(pos);
-        self.broker.delete(&cred.secret_name)?;
         self.write_meta(&creds)?;
+        if let Err(e) = self.broker.delete(&cred.secret_name) {
+            // Restore the row: the delete was reported failed, so the
+            // login must still be whole.
+            let mut rollback = self.read_meta().unwrap_or_default();
+            rollback.push(cred);
+            let _ = self.write_meta(&rollback);
+            return Err(e);
+        }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-logins-test-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Block metadata writes by parking a directory on the tmp path the
+    /// atomic writer needs (`logins.json.tmp`).
+    fn block_meta(dir: &Path) {
+        std::fs::create_dir_all(dir.join("logins.json.tmp")).unwrap();
+    }
+
+    fn unblock_meta(dir: &Path) {
+        let _ = std::fs::remove_dir_all(dir.join("logins.json.tmp"));
+    }
+
+    /// Happy path still works end to end after the reorder.
+    #[test]
+    fn create_update_delete_round_trip() {
+        let dir = scratch("roundtrip");
+        let store = LoginStore::open(&dir);
+        let cred = store.create("example.com", "user", "pw-one").unwrap();
+        assert_eq!(
+            store.password_for(&cred.id).unwrap().unwrap().expose(),
+            "pw-one"
+        );
+        store
+            .update(&cred.id, None, Some("user2"), Some("pw-two"))
+            .unwrap();
+        assert_eq!(
+            store.password_for(&cred.id).unwrap().unwrap().expose(),
+            "pw-two"
+        );
+        assert!(store.delete(&cred.id).unwrap());
+        assert!(store.get(&cred.id).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed create leaves no orphaned vault password: metadata
+    /// goes first, so when it fails the vault write never runs.
+    #[test]
+    fn failed_create_leaves_no_orphan_password() {
+        let dir = scratch("create-fail");
+        let store = LoginStore::open(&dir);
+        block_meta(&dir);
+        assert!(store.create("example.com", "user", "pw-one").is_err());
+        unblock_meta(&dir);
+        let vault_text = std::fs::read_to_string(dir.join("logins.env")).unwrap_or_default();
+        assert!(
+            !vault_text.contains("PANTHEON_LOGIN_EXAMPLE_COM"),
+            "no orphan password may be stored: {vault_text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed update leaves the old password in place: metadata goes
+    /// first, so when it fails the vault password is never touched.
+    #[test]
+    fn failed_update_keeps_old_password() {
+        let dir = scratch("update-fail");
+        let store = LoginStore::open(&dir);
+        let cred = store.create("example.com", "user", "pw-old").unwrap();
+        block_meta(&dir);
+        assert!(store
+            .update(&cred.id, None, None, Some("pw-new"))
+            .is_err());
+        unblock_meta(&dir);
+        assert_eq!(
+            store.password_for(&cred.id).unwrap().unwrap().expose(),
+            "pw-old",
+            "a failed update must not change the password"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed delete leaves the login whole: row and password both
+    /// still present, not a row whose password is gone.
+    #[test]
+    fn failed_delete_keeps_login_whole() {
+        let dir = scratch("delete-fail");
+        let store = LoginStore::open(&dir);
+        let cred = store.create("example.com", "user", "pw-one").unwrap();
+        block_meta(&dir);
+        assert!(store.delete(&cred.id).is_err());
+        unblock_meta(&dir);
+        assert!(store.get(&cred.id).unwrap().is_some(), "row must survive");
+        assert_eq!(
+            store.password_for(&cred.id).unwrap().unwrap().expose(),
+            "pw-one",
+            "password must survive a failed delete"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

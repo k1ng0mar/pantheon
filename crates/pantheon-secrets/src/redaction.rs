@@ -11,13 +11,30 @@
 //! stay in sync without plumbing handles between them. Scopes never share
 //! entries - scrubbing scope B's output with scope A's values would confirm
 //! to B that those bytes exist.
+//!
+//! Fail-open on a poisoned lock is a deliberate tradeoff, documented
+//! here rather than changed: `register` skips and `scrub` returns text
+//! unchanged when the per-scope lock is poisoned (a thread panicked
+//! while holding it). Failing the caller instead would break unrelated
+//! model-facing flows over a best-effort defence-in-depth layer -
+//! pattern-based redaction in `pantheon-api` logging still applies -
+//! and there is no safe state to recover: the guarded deque may be
+//! half-mutated. Poisoning is rare (it needs a panic mid-register /
+//! mid-scrub) and loud in logs via the panic itself.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Upper bound on registered values per scope. A fill-heavy session evicts
-/// its oldest entries instead of growing without limit.
+/// its oldest entries instead of growing without limit. Eviction is
+/// loud (stderr): silently losing scrubbing for an early secret would
+/// leave that secret unscrubbed with no trace.
 const MAX_VALUES_PER_SCOPE: usize = 64;
+
+/// Minimum length of a registered secret. A 1-char "secret" would scrub
+/// benign text everywhere it appears; below this length the value is
+/// not distinctive enough to scrub safely.
+const MIN_SECRET_LEN: usize = 4;
 
 /// Placeholder substituted for a registered secret value.
 const REDACTED: &str = "[redacted-secret]";
@@ -57,13 +74,16 @@ impl RedactionRegistry {
         &self.scope
     }
 
-    /// Record an exact secret value for later scrubbing. Empty values are
-    /// ignored: matching the empty string would hit everywhere.
-    /// Re-registering a value refreshes its recency so live secrets are
-    /// evicted last. Fails open: a poisoned lock skips registration
-    /// instead of failing the caller.
+    /// Record an exact secret value for later scrubbing. Empty values
+    /// are ignored: matching the empty string would hit everywhere.
+    /// Values shorter than [`MIN_SECRET_LEN`] are ignored for the same
+    /// reason at a smaller scale: a 1-char secret would scrub benign
+    /// text wherever that character appears. Re-registering a value
+    /// refreshes its recency so live secrets are evicted last. Fails
+    /// open: a poisoned lock skips registration instead of failing the
+    /// caller (see the module docs for the tradeoff).
     pub fn register(&self, value: &str) {
-        if value.is_empty() {
+        if value.len() < MIN_SECRET_LEN {
             return;
         }
         let Ok(mut values) = self.values.lock() else {
@@ -75,6 +95,12 @@ impl RedactionRegistry {
         values.push_back(value.to_string());
         while values.len() > MAX_VALUES_PER_SCOPE {
             values.pop_front();
+            // Loud, but never with the value: eviction means an early
+            // secret is no longer scrubbed, and the operator should know.
+            eprintln!(
+                "redaction: scope {} evicted its oldest registered secret (cap {MAX_VALUES_PER_SCOPE})",
+                self.scope
+            );
         }
     }
 
@@ -128,12 +154,27 @@ mod tests {
     #[test]
     fn longest_value_wins_over_substring() {
         let reg = RedactionRegistry::for_scope("test-redact-longest");
-        reg.register("abc");
+        reg.register("abcd");
         reg.register("abcdef");
         // One placeholder for the whole superstring, not a nested mess.
         assert_eq!(reg.scrub("x abcdef y"), "x [redacted-secret] y");
         // The short value still scrubs on its own.
-        assert_eq!(reg.scrub("x abc y"), "x [redacted-secret] y");
+        assert_eq!(reg.scrub("x abcd y"), "x [redacted-secret] y");
+    }
+
+    /// Values below the minimum length are not registered at all: a
+    /// 1-char secret would otherwise scrub benign text everywhere.
+    #[test]
+    fn short_values_are_not_registered() {
+        let reg = RedactionRegistry::for_scope("test-redact-minlen");
+        reg.register("x");
+        reg.register("ab");
+        reg.register("abc");
+        assert_eq!(reg.len(), 0);
+        assert_eq!(reg.scrub("x ab abc"), "x ab abc");
+        reg.register("abcd");
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.scrub("x abcd y"), "x [redacted-secret] y");
     }
 
     #[test]
