@@ -483,13 +483,11 @@ pub struct ChannelDaemon {
     pub poll_interval: Duration,
     pub long_poll_timeout: u64,
     state_path: PathBuf,
-<<<<<<< HEAD
     /// Heartbeat the loop touches each iteration, watched by the
     /// hung-gateway watchdog ([`crate::watchdog`]). `None` = unwatched
     /// (unit tests, embedding callers that supervise differently).
     heartbeat: Option<std::sync::Arc<crate::watchdog::GatewayHeartbeat>>,
     pre_dispatch: Option<PreDispatchHook>,
->>>>>>> chloe/sweep-runtime
 }
 
 impl ChannelDaemon {
@@ -498,7 +496,6 @@ impl ChannelDaemon {
             poll_interval: Duration::from_secs(1),
             long_poll_timeout: 25,
             state_path,
-<<<<<<< HEAD
             heartbeat: None,
             pre_dispatch: None,
         }
@@ -520,7 +517,6 @@ impl ChannelDaemon {
     /// Absent = today's behavior: events go straight to the sink.
     pub fn with_pre_dispatch(mut self, hook: PreDispatchHook) -> Self {
         self.pre_dispatch = Some(hook);
->>>>>>> chloe/sweep-runtime
         self
     }
 
