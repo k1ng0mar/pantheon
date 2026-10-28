@@ -376,8 +376,7 @@ impl ExtensionManager {
         let canonical_bundled = Self::is_canonical_bundled(ext_dir, dir);
         // Systemic gate failure on a single-plugin load: fail closed
         // with the systemic reason, never merely "not approved".
-        if let Some(reason) = approval::store_gate_failure(ext_dir).filter(|_| !canonical_bundled)
-        {
+        if let Some(reason) = approval::store_gate_failure(ext_dir).filter(|_| !canonical_bundled) {
             self.quarantine(&name, &format!("systemic gate failure: {reason}"));
             return Err(merr(
                 "EXT_GATE_FAILED",

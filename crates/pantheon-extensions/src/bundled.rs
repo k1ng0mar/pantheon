@@ -491,10 +491,8 @@ mod tests {
 
     #[test]
     fn load_config_missing_counts_as_empty_not_fail_closed() {
-        let dir = std::env::temp_dir().join(format!(
-            "pantheon-dec-sec-missing-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-dec-sec-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // No config.toml at all: missing counts as empty, so manifest

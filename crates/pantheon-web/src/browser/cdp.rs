@@ -284,8 +284,7 @@ impl CdpDriver {
                     // launch that opts in. Remote CDP (`Connect`) never
                     // launches a browser, so this flag touches only the
                     // local-launch path.
-                    let mut builder =
-                        BrowserConfig::builder().request_timeout(*request_timeout);
+                    let mut builder = BrowserConfig::builder().request_timeout(*request_timeout);
                     if *no_sandbox {
                         eprintln!(
                             "WARNING: launching local Chrome with --no-sandbox (explicit [browser] no_sandbox opt-in): the browser runs without Chrome's sandbox; the capability gate is the only control"

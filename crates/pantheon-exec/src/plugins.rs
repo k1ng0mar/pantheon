@@ -94,9 +94,7 @@ fn default_runner() -> String {
 /// startup; credentials Pantheon itself must inject go through the
 /// secrets broker, never through a manifest file.
 pub fn parse_manifest(text: &str) -> Result<PluginManifest, PantheonError> {
-    if let Ok(serde_yaml::Value::Mapping(map)) =
-        serde_yaml::from_str::<serde_yaml::Value>(text)
-    {
+    if let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(text) {
         if map.contains_key(serde_yaml::Value::String("key".to_string())) {
             return Err(merr(
                 "PLUGIN_MANIFEST_KEY",
