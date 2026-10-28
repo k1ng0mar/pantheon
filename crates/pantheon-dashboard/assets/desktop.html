@@ -356,6 +356,17 @@
 
 <div id="lease"></div>
 
+<div id="gate" hidden>
+  <div><strong>Desktop token needed.</strong> Paste the per-instance token printed by
+  <span class="mono">pantheon dashboard</span> at startup (it is never put in the URL).</div>
+  <form id="gate-form">
+    <input type="password" id="gate-token" autocomplete="off" spellcheck="false"
+           placeholder="token" aria-label="dashboard token">
+    <button type="submit">Watch</button>
+  </form>
+  <div class="gate-note">Stored in this tab only (sessionStorage), sent as X-Pantheon-Token.</div>
+</div>
+
 <main>
   <div class="viewport-frame">
     <img id="screen" alt="live desktop">
@@ -370,15 +381,27 @@
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const params = new URLSearchParams(location.search);
-const token = params.get("token") || "";
+/* Auth: the token is NEVER in the URL. It is pasted once below (or
+   reused from the dashboard tab's sessionStorage on this origin) and
+   sent as X-Pantheon-Token; pasting also mints the session cookie
+   that the header-less WebSocket stream authenticates with. */
+let token = sessionStorage.getItem("pantheon_token") || "";
+async function mintSession() {
+  if (!token) return;
+  try {
+    await fetch("/api/session", {
+      method: "POST",
+      headers: { "X-Pantheon-Token": token },
+    });
+  } catch (e) { /* header auth still covers fetch calls */ }
+}
 const img = $("screen"), statusEl = $("status"), leaseEl = $("lease"), statusDot = $("statusDot");
 let leaseId = null, heartbeatTimer = null, ws = null, objectUrl = null;
 
 function api(path, body) {
-  return fetch(path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token), {
+  return fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Pantheon-Token": token },
     body: JSON.stringify(body || {}),
   }).then(r => r.json().then(j => ({ status: r.status, body: j })));
 }
@@ -391,8 +414,10 @@ function setStatus(text, live) {
 function connect() {
   if (ws) ws.close();
   const fps = Math.min(10, Math.max(1, parseInt($("fps").value, 10) || 2));
+  // WebSocket cannot set headers: it authenticates with the session
+  // cookie minted at login, never a token in the URL.
   const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
-    "/api/desktop/stream?fps=" + fps + "&token=" + encodeURIComponent(token);
+    "/api/desktop/stream?fps=" + fps;
   ws = new WebSocket(url);
   ws.binaryType = "blob";
   ws.onopen = () => setStatus("connected — streaming", true);
@@ -499,7 +524,22 @@ $("btnFullscreen").addEventListener("click", () => {
   }
 });
 
-connect();
+if (!token) {
+  $("gate").hidden = false;
+  $("gate-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const t = $("gate-token").value.trim();
+    if (!t) return;
+    token = t;
+    sessionStorage.setItem("pantheon_token", token);
+    await mintSession();
+    $("gate").hidden = true;
+    connect();
+  });
+  $("gate-token").focus();
+} else {
+  mintSession().then(connect);
+}
 </script>
 </body>
 </html>

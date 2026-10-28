@@ -271,18 +271,37 @@ pub enum AuthGroup {
     /// Static assets, unknown paths (which 404 in the handler): no auth.
     /// (The dashboard served these without a token before the move.)
     Public,
-    /// Dashboard `/api/*`: token via `X-Pantheon-Token` header or
-    /// `?token=` query. `POST`/`PUT`/`PATCH`/`DELETE` additionally require the
-    /// Host header to match the bind address (DNS-rebinding guard) and
-    /// reject a mismatched `Origin`/`Referer`.
+    /// Dashboard `/api/*`: token via `X-Pantheon-Token` header, or a
+    /// session cookie minted by `POST /api/session` (see below). The
+    /// token never appears in a URL: URLs leak into browser history,
+    /// server logs, and `Referer` headers. `POST`/`PUT`/`PATCH`/`DELETE`
+    /// additionally require the Host header to match the bind address
+    /// (DNS-rebinding guard) and reject a mismatched `Origin`/`Referer`.
     DashboardApi,
     /// AG-UI `/agui/*`: token via `Authorization: Bearer`, or
-    /// `X-Pantheon-Token`, or `?token=` on `/agui/stream` only
-    /// (EventSource cannot set headers). A present `Origin` must be
-    /// loopback. `/agui/health` needs no token (but keeps the origin
-    /// check, as before).
+    /// `X-Pantheon-Token`, or the session cookie (EventSource and
+    /// WebSocket clients cannot set headers, but the browser sends the
+    /// cookie automatically). A present `Origin` must be loopback.
+    /// `/agui/health` needs no token (but keeps the origin check, as
+    /// before).
     Agui,
 }
+
+/// Short-lived browser sessions minted from the per-instance token.
+/// `POST /api/session` with `X-Pantheon-Token` returns an `HttpOnly`
+/// cookie holding a random session id (not the token itself); the id
+/// lives here for [`SESSION_TTL_SECS`] and is accepted by [`check_auth`]
+/// wherever the token is. This is what lets header-less browser
+/// clients (EventSource streams, downloads, WebSockets) authenticate
+/// without putting the token in the URL. No `Secure` flag: the
+/// dashboard is plain HTTP on loopback, and `Secure` would stop the
+/// cookie being sent at all there.
+pub type SessionStore =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>>;
+
+/// Session cookie name and lifetime (1 hour, fixed from minting).
+pub const SESSION_COOKIE: &str = "pantheon_session";
+pub const SESSION_TTL_SECS: u64 = 3600;
 
 /// The single auth context for the listener: one token, one bind.
 #[derive(Debug, Clone)]
@@ -290,6 +309,117 @@ pub struct AuthCtx {
     pub token: String,
     pub bind: String,
     pub bind_all: bool,
+    pub sessions: SessionStore,
+}
+
+impl AuthCtx {
+    pub fn new(token: String, bind: String, bind_all: bool) -> Self {
+        Self {
+            token,
+            bind,
+            bind_all,
+            sessions: SessionStore::default(),
+        }
+    }
+
+    /// Mint a session id valid for [`SESSION_TTL_SECS`].
+    pub fn mint_session(&self) -> String {
+        let id = generate_token();
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(
+                id.clone(),
+                std::time::Instant::now() + std::time::Duration::from_secs(SESSION_TTL_SECS),
+            );
+        }
+        id
+    }
+
+    /// Is the request's session cookie a live minted session? Expired
+    /// ids are pruned on sight so the map cannot grow without bound.
+    pub fn valid_session(&self, req: &Request) -> bool {
+        let Some(cookie) = req.headers.get("cookie") else {
+            return false;
+        };
+        let Some(id) = cookie.split(';').find_map(|part| {
+            part.trim()
+                .strip_prefix(&format!("{SESSION_COOKIE}="))
+                .map(str::to_string)
+        }) else {
+            return false;
+        };
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return false;
+        };
+        sessions.retain(|_, exp| *exp > std::time::Instant::now());
+        sessions.contains_key(&id)
+    }
+
+    /// Drop one session id (logout); a no-op for unknown ids.
+    pub fn revoke_session(&self, id: &str) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.remove(id);
+        }
+    }
+
+    /// Parse this request's session cookie value, if any.
+    pub fn session_cookie(&self, req: &Request) -> Option<String> {
+        req.headers.get("cookie").and_then(|cookie| {
+            cookie.split(';').find_map(|part| {
+                part.trim()
+                    .strip_prefix(&format!("{SESSION_COOKIE}="))
+                    .map(str::to_string)
+            })
+        })
+    }
+}
+
+/// `POST /api/session` mints a session cookie from the token header;
+/// `DELETE /api/session` revokes it. Handled in `serve_on` before mount
+/// dispatch (the mounts never see this path): it is the one endpoint
+/// that turns a token into a cookie, so it cannot itself be gated by
+/// the cookie. Minting still requires the token header plus the same
+/// mutation guard (`Host` match, same-authority `Origin`/`Referer`) as
+/// every other dashboard mutation.
+pub fn handle_session(ctx: &AuthCtx, req: &Request) -> Response {
+    match req.method.as_str() {
+        "POST" => {
+            let ok =
+                req.headers.get("x-pantheon-token").map(String::as_str) == Some(ctx.token.as_str());
+            if !ok {
+                return Response::unauthorized();
+            }
+            if let Err(r) = guard_mutation(req, ctx) {
+                return r;
+            }
+            let id = ctx.mint_session();
+            Response::Buffered {
+                status: 200,
+                content_type: "application/json",
+                body: br#"{"ok":true}"#.to_vec(),
+                extra_headers: vec![(
+                    "Set-Cookie",
+                    format!(
+                        "{SESSION_COOKIE}={id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL_SECS}"
+                    ),
+                )],
+            }
+        }
+        "DELETE" => {
+            if let Some(id) = ctx.session_cookie(req) {
+                ctx.revoke_session(&id);
+            }
+            Response::Buffered {
+                status: 200,
+                content_type: "application/json",
+                body: br#"{"ok":true}"#.to_vec(),
+                extra_headers: vec![(
+                    "Set-Cookie",
+                    format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
+                )],
+            }
+        }
+        _ => Response::method_not_allowed(),
+    }
 }
 
 /// A route group mounted on the gateway's listener.
@@ -308,18 +438,19 @@ pub trait HttpMount: Send + Sync {
 ///
 /// - [`AuthGroup::Public`]: no auth.
 /// - [`AuthGroup::DashboardApi`]: token via `X-Pantheon-Token` (non-empty)
-///   or `?token=`; on `POST`/`PUT`/`PATCH`/`DELETE` the dashboard's mutation
-///   guard (Host match, same-authority `Origin`/`Referer`) applies too.
+///   or a live session cookie. On `POST`/`PUT`/`PATCH`/`DELETE` the
+///   dashboard's mutation guard (Host match, same-authority
+///   `Origin`/`Referer`) applies too.
 /// - [`AuthGroup::Agui`]: loopback-only `Origin` on every request; token
-///   via `Authorization: Bearer`, `X-Pantheon-Token`, or `?token=` on
-///   `/agui/stream` only; `/agui/health` needs no token.
+///   via `Authorization: Bearer`, `X-Pantheon-Token`, or a live session
+///   cookie; `/agui/health` needs no token.
 pub fn check_auth(req: &Request, group: AuthGroup, ctx: &AuthCtx) -> Result<(), Response> {
     match group {
         AuthGroup::Public => Ok(()),
         AuthGroup::DashboardApi => {
-            match token_of(req) {
-                Some(t) if t == ctx.token => {}
-                _ => return Err(Response::unauthorized()),
+            let header_ok = token_of(req) == Some(ctx.token.as_str());
+            if !header_ok && !ctx.valid_session(req) {
+                return Err(Response::unauthorized());
             }
             if matches!(req.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
                 guard_mutation(req, ctx)?;
@@ -334,19 +465,14 @@ pub fn check_auth(req: &Request, group: AuthGroup, ctx: &AuthCtx) -> Result<(), 
             if path == "/agui/health" {
                 return Ok(());
             }
+            // EventSource and WebSocket clients cannot set headers;
+            // they authenticate with the session cookie instead.
             let provided = req
                 .headers
                 .get("authorization")
                 .and_then(|v| v.strip_prefix("Bearer ").map(str::trim))
-                .or_else(|| req.headers.get("x-pantheon-token").map(String::as_str))
-                .or_else(|| {
-                    // EventSource cannot set headers; allow ?token= on the
-                    // event stream only, exactly as before the move.
-                    (path == "/agui/stream")
-                        .then(|| req.query.get("token").map(String::as_str))
-                        .flatten()
-                });
-            if provided != Some(ctx.token.as_str()) {
+                .or_else(|| req.headers.get("x-pantheon-token").map(String::as_str));
+            if provided != Some(ctx.token.as_str()) && !ctx.valid_session(req) {
                 return Err(agui_unauthorized());
             }
             Ok(())
@@ -354,15 +480,20 @@ pub fn check_auth(req: &Request, group: AuthGroup, ctx: &AuthCtx) -> Result<(), 
     }
 }
 
-/// Dashboard token source: `X-Pantheon-Token` when non-empty, else
-/// `?token=`. (Ported from `pantheon-dashboard`'s `token_of`.)
+/// Dashboard token source: the `X-Pantheon-Token` header when
+/// non-empty. The query string is deliberately NOT a source: a token
+/// in a URL leaks into logs, history, and referers. (Ported from
+/// `pantheon-dashboard`'s `token_of`, minus its query fallback.)
 fn token_of(req: &Request) -> Option<&str> {
-    if let Some(h) = req.headers.get("x-pantheon-token") {
-        if !h.is_empty() {
-            return Some(h.as_str());
-        }
-    }
-    req.query.get("token").map(String::as_str)
+    req.headers.get("x-pantheon-token").and_then(
+        |h| {
+            if h.is_empty() {
+                None
+            } else {
+                Some(h.as_str())
+            }
+        },
+    )
 }
 
 /// The dashboard's `guard_mutation`, verbatim: DNS-rebinding / CSRF guards
@@ -699,6 +830,9 @@ pub fn serve_on(listener: TcpListener, cfg: ServerConfig) -> ! {
                     Err(r) => r, // 431 / 413 guards
                     Ok(None) => Response::bad_request("bad request"),
                     Ok(Some(req)) => {
+                        if req.path == "/api/session" {
+                            return handle_session(&cfg.auth, &req);
+                        }
                         let claimed = cfg
                             .mounts
                             .iter()
@@ -811,11 +945,7 @@ mod mutation_guard_tests {
     use super::*;
 
     fn ctx() -> AuthCtx {
-        AuthCtx {
-            token: "test-token".to_string(),
-            bind: "127.0.0.1".to_string(),
-            bind_all: false,
-        }
+        AuthCtx::new("test-token".to_string(), "127.0.0.1".to_string(), false)
     }
 
     fn patch_req(host: &str, origin: Option<&str>) -> Request {
@@ -885,8 +1015,7 @@ mod mutation_guard_tests {
 
     fn read_request_from(written: &[u8]) -> Result<Option<Request>, Response> {
         use std::io::Write;
-        let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener addr");
         let handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
@@ -915,6 +1044,122 @@ mod mutation_guard_tests {
         match read_request_from(req) {
             Err(Response::Buffered { status, .. }) => assert_eq!(status, 413),
             _ => panic!("expected 413 guard"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session-cookie tests (token-in-URL removal)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn ctx() -> AuthCtx {
+        AuthCtx::new("test-token".to_string(), "127.0.0.1".to_string(), false)
+    }
+
+    fn req(method: &str, headers: &[(&str, &str)], query: &[(&str, &str)]) -> Request {
+        Request {
+            method: method.to_string(),
+            path: "/api/runs".to_string(),
+            query: query
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: Vec::new(),
+        }
+    }
+
+    fn set_cookie(res: &Response) -> Option<String> {
+        match res {
+            Response::Buffered { extra_headers, .. } => extra_headers
+                .iter()
+                .find(|(k, _)| *k == "Set-Cookie")
+                .map(|(_, v)| v.clone()),
+            _ => None,
+        }
+    }
+
+    /// A token in the query string no longer authenticates: URLs leak
+    /// into logs, history, and referers.
+    #[test]
+    fn query_token_is_rejected() {
+        let r = req("GET", &[], &[("token", "test-token")]);
+        assert!(check_auth(&r, AuthGroup::DashboardApi, &ctx()).is_err());
+    }
+
+    /// A minted session cookie authenticates dashboard API requests.
+    #[test]
+    fn session_cookie_is_accepted() {
+        let ctx = ctx();
+        let id = ctx.mint_session();
+        let r = req("GET", &[("cookie", &format!("{SESSION_COOKIE}={id}"))], &[]);
+        assert!(check_auth(&r, AuthGroup::DashboardApi, &ctx).is_ok());
+    }
+
+    /// An unminted cookie value authenticates nothing.
+    #[test]
+    fn unknown_session_cookie_is_rejected() {
+        let r = req("GET", &[("cookie", "pantheon_session=nope")], &[]);
+        assert!(check_auth(&r, AuthGroup::DashboardApi, &ctx()).is_err());
+    }
+
+    /// Minting requires the token header and returns a session cookie;
+    /// deleting revokes it.
+    #[test]
+    fn session_mint_and_revoke_round_trip() {
+        let ctx = ctx();
+        let mint = req(
+            "POST",
+            &[
+                ("host", "127.0.0.1:7171"),
+                ("x-pantheon-token", "test-token"),
+            ],
+            &[],
+        );
+        let res = handle_session(&ctx, &mint);
+        let cookie = set_cookie(&res).expect("mint must set a cookie");
+        assert!(cookie.starts_with("pantheon_session="), "{cookie}");
+        assert!(cookie.contains("HttpOnly"), "{cookie}");
+        let value = cookie
+            .split(';')
+            .next()
+            .unwrap()
+            .trim_start_matches("pantheon_session=")
+            .to_string();
+        assert_ne!(
+            value, "test-token",
+            "cookie must not carry the token itself"
+        );
+        let authed = req(
+            "GET",
+            &[("cookie", &format!("{SESSION_COOKIE}={value}"))],
+            &[],
+        );
+        assert!(check_auth(&authed, AuthGroup::DashboardApi, &ctx).is_ok());
+        let del = req(
+            "DELETE",
+            &[("cookie", &format!("{SESSION_COOKIE}={value}"))],
+            &[],
+        );
+        let _ = handle_session(&ctx, &del);
+        assert!(check_auth(&authed, AuthGroup::DashboardApi, &ctx).is_err());
+    }
+
+    /// Minting without the token header is a 401, not a cookie.
+    #[test]
+    fn session_mint_without_token_is_unauthorized() {
+        let res = handle_session(&ctx(), &req("POST", &[("host", "127.0.0.1:7171")], &[]));
+        assert!(set_cookie(&res).is_none());
+        match res {
+            Response::Buffered { status, .. } => assert_eq!(status, 401),
+            _ => panic!("expected a buffered 401"),
         }
     }
 }
