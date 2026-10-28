@@ -121,6 +121,37 @@ fn driver_for(app: &App) -> Result<Arc<DesktopDriver>, Response> {
 }
 
 fn init_driver(app: &App) -> Result<DesktopDriver, Response> {
+    // Thread the [mcp] master switch: the driver is an MCP server
+    // under the hood, so a switched-off [mcp] must not launch it
+    // from the dashboard behind the session's back.
+    //
+    // Policy note (operator-direct exception, like the CLI manager):
+    // this driver manager installs no capability policy and no
+    // secrets/env resolver beyond the default process env - the
+    // dashboard operator is the consenting party, the driver is the
+    // first-party bundled recipe, and its approval still gates the
+    // connect. A session policy (agent preset) has no meaning here.
+    if std::env::var("PANTHEON_MCP_ENABLED").map(|v| v == "0").unwrap_or(false) {
+        return Err(err_json(
+            503,
+            "MCP_DISABLED",
+            "desktop control is disabled ([mcp] master switch off)",
+        ));
+    }
+    if let Ok(cfg) = crate::session_factory::load_config(&app.data_dir) {
+        if cfg
+            .as_ref()
+            .and_then(|c| c.mcp.as_ref())
+            .and_then(|m| m.enabled)
+            == Some(false)
+        {
+            return Err(err_json(
+                503,
+                "MCP_DISABLED",
+                "desktop control is disabled ([mcp] master switch off)",
+            ));
+        }
+    }
     let section = computer_section(app)?;
     let spec = pantheon_runtime::computer::cua_driver_spec(
         section.driver.as_deref(),

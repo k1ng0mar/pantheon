@@ -28,22 +28,34 @@ fn nz(value: Option<u32>, default: u32) -> u32 {
     value.filter(|&v| v > 0).unwrap_or(default)
 }
 
-/// Resolve `[mcp.servers.<name>] headers` values. A value starting with
-/// `env:` reads the variable from the operator's environment at load
-/// time (missing variable = the header is dropped: the server's own
-/// 401 names the problem, not a Pantheon panic). Literal values pass
-/// through. Header NAMES may appear in logs; values never do.
+/// Resolve config `[mcp.servers.<name>]` headers. Literal values pass
+/// through; `env:NAME` refs are kept as refs, NOT resolved here, so
+/// the manager can resolve them at connect time through its
+/// broker-first env resolver (a vault-only token never reaches the
+/// server if it is resolved from process env only at load time, and
+/// a header whose variable is unset must not be silently dropped -
+/// that surfaces only as a later 401/backoff). An unset process-env
+/// variable still earns a warning: the broker may supply it at
+/// connect, but if it does not, connect fails loudly there.
 fn resolve_headers(
     headers: &std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     for (k, v) in headers {
-        let resolved = match v.strip_prefix("env:") {
-            Some(name) => std::env::var(name).unwrap_or_default(),
-            None => v.clone(),
-        };
-        if !resolved.is_empty() {
-            out.insert(k.clone(), resolved);
+        match v.strip_prefix("env:") {
+            Some(name) => {
+                if std::env::var(name).is_err() {
+                    eprintln!(
+                        "mcp: header '{k}' references env '{name}' (not set in process env; resolved at connect time via the secrets broker if available)"
+                    );
+                }
+                out.insert(k.clone(), v.clone());
+            }
+            None => {
+                if !v.is_empty() {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
         }
     }
     out
@@ -1063,6 +1075,20 @@ pub fn resolve_mcp_section(
                 }
                 _ => {}
             }
+            let auth = match pantheon_mcp::McpAuth::parse(e.auth.as_deref()) {
+                Some(a) => a,
+                None => {
+                    // Unknown auth must not silently downgrade to None:
+                    // a typo like auth="oauth2" would otherwise run
+                    // headerless instead of erroring. Skip like an
+                    // unknown transport; `collect` surfaces the skip.
+                    eprintln!(
+                        "mcp: server '{name}': unknown auth {:?}, skipped",
+                        e.auth.as_deref().unwrap_or("")
+                    );
+                    continue;
+                }
+            };
             specs.push(McpServerSpec {
                 name: name.clone(),
                 transport,
@@ -1073,7 +1099,7 @@ pub fn resolve_mcp_section(
                 enabled: e.enabled,
                 timeout: Duration::from_secs(e.timeout_secs.filter(|&s| s > 0).unwrap_or(30)),
                 headers: resolve_headers(&e.headers),
-                auth: pantheon_mcp::McpAuth::parse(e.auth.as_deref()).unwrap_or_default(),
+                auth,
                 scopes: e.scopes.clone(),
                 client_id: e.client_id.clone(),
             });
@@ -1109,6 +1135,20 @@ pub fn resolve_mcp_section(
             if !ready {
                 eprintln!(
                     "mcp: declared server '{}': incomplete (no command/url), skipped",
+                    d.name
+                );
+                continue;
+            }
+            // Honour readiness blockers that cannot be satisfied: a
+            // declaration whose credential was dropped at import with
+            // no env indirection to supply it (e.g. a literal header)
+            // must not be configured headerless - it would fail 401
+            // with no warning. When requires_env names exist, the
+            // env resolver may still supply them, so those configure
+            // as before and `collect` shows their blocker.
+            if d.needs_credentials && d.requires_env.is_empty() {
+                eprintln!(
+                    "mcp: declared server '{}': needs a credential (value not in the source), skipped",
                     d.name
                 );
                 continue;

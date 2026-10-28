@@ -1023,6 +1023,10 @@ struct DelegateContext<'a> {
     parent_tools: &'a ToolEnablement,
     parent_mode: AgentMode,
     parent_permission_mode: PermissionMode,
+    /// The parent's resolved MCP config (master switch + specs).
+    /// Without this the child gets a fresh empty manager even when
+    /// the parent has approved servers and the Plugins group on.
+    parent_mcp: &'a McpToolConfig,
 }
 
 fn build_delegate_session(
@@ -1087,6 +1091,12 @@ fn build_delegate_session(
     // reader child of a coder parent must not inherit coder privileges;
     // enablement is which tools exist, policy is what they may do.)
     child_session.set_tool_enablement(ctx.parent_tools.clone());
+    // The parent's resolved MCP config travels too: without it the
+    // child gets a fresh empty manager and 0 MCP tools even when the
+    // parent has approved servers and the Plugins group on. Approval
+    // still gates every connect (same store, same data dir) and the
+    // child's own policy preset is untouched.
+    child_session.set_mcp_config(ctx.parent_mcp.clone());
     // The agent mode travels with the delegation: a child spawned while
     // the parent is in Plan mode plans too - otherwise the Tab toggle
     // would be trivially bypassable by delegating the writes away.
@@ -1171,6 +1181,9 @@ struct DelegateDriver {
     /// Default child max tokens from `[budget].delegate_child_max_tokens`
     /// (`None` = model default). A per-call `budget` overrides this.
     child_max_tokens: Option<u32>,
+    /// The parent's resolved MCP config, threaded into the child
+    /// via [`DelegateContext`].
+    mcp: McpToolConfig,
     /// The parent's `[budget]` section, so the child's own delegations
     /// resolve the same `max_delegations` number and child token default.
     /// Travels into the child session via [`DelegatePolicy`]; see
@@ -1234,6 +1247,11 @@ impl DelegateDriver {
                 .delegation_section
                 .lock()
                 .map(|s| s.clone())
+                .unwrap_or_default(),
+            mcp: session
+                .mcp_config
+                .lock()
+                .map(|m| m.clone())
                 .unwrap_or_default(),
             supervisor: session.supervisor.clone(),
             run_id: run_id.to_string(),
@@ -1584,6 +1602,9 @@ struct SessionSpawner {
     max_delegate_depth: u32,
     allow_child_spawn: bool,
     budget_section: Option<pantheon_api::config::BudgetSection>,
+    /// The parent's resolved MCP config, threaded into the child
+    /// via [`DelegateContext`].
+    mcp: McpToolConfig,
     /// The `[delegation]` section, threaded like `budget_section` so
     /// a threaded child's own delegations resolve routes from the
     /// same config.
@@ -1662,6 +1683,11 @@ impl SessionSpawner {
             allow_child_spawn: budget.allow_child_spawn,
             budget_section,
             delegation_section,
+            mcp: session
+                .mcp_config
+                .lock()
+                .map(|m| m.clone())
+                .unwrap_or_default(),
             run_id: run_id.to_string(),
             registry: pantheon_agent::SubagentRegistry::new(caps),
             supervisor: session.supervisor.clone(),
@@ -1703,6 +1729,7 @@ impl pantheon_agent::SubagentSpawner for SessionSpawner {
                 parent_tools: &self.tools,
                 parent_mode,
                 parent_permission_mode,
+                parent_mcp: &self.mcp,
             },
             DelegatePolicy {
                 max_delegate_depth: self.max_delegate_depth,
@@ -2070,6 +2097,7 @@ fn run_delegate_child_routed(
             parent_tools: &driver.tools,
             parent_mode,
             parent_permission_mode,
+            parent_mcp: &driver.mcp,
         },
         DelegatePolicy {
             max_delegate_depth: driver.max_delegate_depth,
@@ -3608,7 +3636,14 @@ impl Session {
         if let Ok(mut m) = self.mcp_config.lock() {
             *m = cfg.clone();
         }
-        self.mcp_manager.configure(cfg.servers);
+        // Thread the master switch: when [mcp] is off the manager holds
+        // no specs, so no direct manager call can launch a server
+        // behind the registry gate's back.
+        if cfg.enabled {
+            self.mcp_manager.configure(cfg.servers);
+        } else {
+            self.mcp_manager.configure(Vec::new());
+        }
     }
 
     /// The memory namespace this turn runs in: the agent's, or the legacy

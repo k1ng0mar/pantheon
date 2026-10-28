@@ -663,17 +663,28 @@ const REA_TOOLS: &[ReaTool] = &[
 
 /// Per-tool capability map, keyed by `(server_name, tool_name)` like the
 /// old hand-maintained allowlist in [`crate::rea`]. Read-tier tools are
-/// [`Capability::FilesystemRead`] (read-only, no new privilege). Write and
-/// Exec-tier tools are [`Capability::BinaryTrace`] so default policies park
-/// them for approval. Tools absent from this map fall back to
+/// [`Capability::FilesystemRead`] ONLY when they neither launch a process
+/// nor access the network (the rule [`crate::rea`] documents): 26
+/// Read-tier tools in this inventory launch processes and/or touch the
+/// network (e.g. `start_gdb_session`, `inspect_adb_device`,
+/// `list_cutter_sessions`), and those map to [`Capability::BinaryTrace`]
+/// so default policies park them for approval instead of letting a
+/// process-launching "read" tool ride the permissive FilesystemRead
+/// capability. Write and Exec-tier tools are [`Capability::BinaryTrace`]
+/// as well. Tools absent from this map fall back to
 /// [`crate::rea::rea_server_capability`].
 pub fn rea_tool_capabilities() -> HashMap<(String, String), Capability> {
     REA_TOOLS
         .iter()
         .map(|t| {
+            // The audit tier alone does not decide the capability:
+            // a Read-tier tool that spawns a process or touches the
+            // network is an external effect, not a static read.
+            let external = t.mask & FLAG_LAUNCHES_PROCESS != 0
+                || t.mask & FLAG_ACCESSES_NETWORK != 0;
             let cap = match t.tier {
-                ReaTier::Read => Capability::FilesystemRead,
-                ReaTier::Write | ReaTier::Exec => Capability::BinaryTrace,
+                ReaTier::Read if !external => Capability::FilesystemRead,
+                _ => Capability::BinaryTrace,
             };
             ((REA_SERVER_NAME.to_string(), t.name.to_string()), cap)
         })
@@ -730,18 +741,36 @@ mod tests {
 
     #[test]
     fn read_tools_are_filesystem_read() {
+        // Only non-external Read tools are FilesystemRead: a Read
+        // tool that launches a process or touches the network parks
+        // as BinaryTrace (26 tools in this inventory).
         let m = rea_tool_capabilities();
+        let mut external_read = 0;
         for t in REA_TOOLS {
             if t.tier == ReaTier::Read {
                 let key = (REA_SERVER_NAME.to_string(), t.name.to_string());
+                let external = t.mask & FLAG_LAUNCHES_PROCESS != 0
+                    || t.mask & FLAG_ACCESSES_NETWORK != 0;
+                if external {
+                    external_read += 1;
+                }
                 assert_eq!(
                     m.get(&key),
-                    Some(&Capability::FilesystemRead),
+                    Some(if external {
+                        &Capability::BinaryTrace
+                    } else {
+                        &Capability::FilesystemRead
+                    }),
                     "tool {} {:#06x}",
                     t.name,
                     t.mask
                 );
             }
+        }
+        assert_eq!(external_read, 26);
+        for tool in ["start_gdb_session", "inspect_adb_device", "list_cutter_sessions"] {
+            let key = (REA_SERVER_NAME.to_string(), tool.to_string());
+            assert_eq!(m.get(&key), Some(&Capability::BinaryTrace), "tool {tool}");
         }
         for tool in ["goto_address", "list_unknowns", "trace_call_path"] {
             let key = (REA_SERVER_NAME.to_string(), tool.to_string());

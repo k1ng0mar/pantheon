@@ -33,6 +33,13 @@ pub use pantheon_migration::server_readiness;
 ///
 /// `pub(crate)` so the nightly repair adapter can drive the same manager
 /// the sessions use. Configured, not connected: no servers are launched.
+///
+/// Policy note (operator-direct exception): this manager installs no
+/// capability policy (`policy = None`), unlike a session manager.
+/// A session's policy is its agent preset's, and there is no preset
+/// for a bare CLI verb; a CLI operator invoking `pantheon mcp ...`
+/// directly is the consenting party, and approval still gates every
+/// connect. Do not "fix" this by inventing a CLI policy.
 pub(crate) fn manager_for(dd: &Path) -> McpManager {
     let cfg = config::Config::load_or_report(dd);
     let secrets = config::chat_secrets(cfg.as_ref());
@@ -49,7 +56,14 @@ pub(crate) fn manager_for(dd: &Path) -> McpManager {
             .map(|v| v.expose().to_owned())
             .or_else(|| std::env::var(var).ok())
     }));
-    m.configure(mcfg.servers);
+    // Thread the [mcp] master switch: when it is off the manager holds
+    // no specs, so no CLI verb (resources, approve, login, ...) can
+    // launch a server. Re-enable [mcp] to approve or log in again.
+    if mcfg.enabled {
+        m.configure(mcfg.servers);
+    } else {
+        m.configure(Vec::new());
+    }
     m
 }
 
@@ -89,6 +103,48 @@ fn collect(dd: &Path) -> Vec<Row> {
             }
         })
         .collect();
+    // Config entries the resolver skipped (disabled, unknown transport /
+    // auth, missing command/url) still show in `list`, marked with their
+    // blocker - previously they vanished with only an eprintln.
+    if let Some(sec) = cfg.as_ref().and_then(|c| c.mcp.as_ref()) {
+        for (name, e) in &sec.servers {
+            if rows.iter().any(|r| r.name == *name) {
+                continue;
+            }
+            let blocker = if !e.enabled {
+                "disabled in config".to_string()
+            } else {
+                e.problems(name)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| "skipped by resolver".to_string())
+            };
+            rows.push(Row {
+                name: name.clone(),
+                origin: "config",
+                spec: McpServerSpec {
+                    name: name.clone(),
+                    transport: match e.transport.as_str() {
+                        "sse" => McpTransport::Sse,
+                        "http" => McpTransport::Http,
+                        _ => McpTransport::Stdio,
+                    },
+                    command: e.command.clone(),
+                    args: e.args.clone(),
+                    env: e.env.clone(),
+                    url: e.url.clone(),
+                    enabled: e.enabled,
+                    timeout: std::time::Duration::from_secs(30),
+                    headers: Default::default(),
+                    auth: pantheon_mcp::McpAuth::parse(e.auth.as_deref())
+                        .unwrap_or(pantheon_mcp::McpAuth::None),
+                    scopes: e.scopes.clone(),
+                    client_id: e.client_id.clone(),
+                },
+                decl_blocker: Some(blocker),
+            });
+        }
+    }
     // Declarations that resolve_mcp_section skipped (disabled or
     // malformed) still show in `list`, marked with their blocker.
     for d in &declarations {

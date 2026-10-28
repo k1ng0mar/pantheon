@@ -2524,6 +2524,7 @@ dependencies = [
  "fs2",
  "pantheon-api",
  "pantheon-mcp",
+ "pantheon-migration",
  "pantheon-providers",
  "pantheon-scheduler",
  "pantheon-secrets",
