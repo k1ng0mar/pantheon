@@ -1032,10 +1032,35 @@ fn build_delegate_session(
     // stores, and the child should not inherit a snapshot
     // of the parent's resolution state.
     let child_secrets = SecretsBroker::from_system_env();
+    // The profile's model/provider pin applies to the child session's
+    // default: a profile pinned to a cheap model must actually run on
+    // it, not silently inherit the parent's (possibly switched) model.
+    // Each field overrides independently — a model-only pin keeps the
+    // parent's provider, a provider-only pin keeps the parent's model —
+    // and an absent pin leaves the parent's default untouched. Auto
+    // auxiliaries (entries still pointing at the parent's default) move
+    // with the child default, exactly as `switch_model` moves them;
+    // pinned auxiliaries stay pinned.
+    let mut child_model_policy = model_policy.clone();
+    let old_default = child_model_policy.default.clone();
+    if let Some(provider) = child.profile().provider.value.clone() {
+        child_model_policy.default.provider = provider;
+    }
+    if let Some(model) = child.profile().model.value.clone() {
+        child_model_policy.default.model = model;
+    }
+    if child_model_policy.default != old_default {
+        for aux in child_model_policy.auxiliaries.iter_mut() {
+            if aux.provider == old_default.provider && aux.model == old_default.model {
+                aux.provider = child_model_policy.default.provider.clone();
+                aux.model = child_model_policy.default.model.clone();
+            }
+        }
+    }
     let mut child_session = Session::new(
         data_dir.to_path_buf(),
         child_policy,
-        model_policy.clone(),
+        child_model_policy,
         child_secrets,
     )?;
     child_session.with_agent(child)?;
@@ -9307,6 +9332,113 @@ mod delegate_tool_tests {
         let other = serde_json::json!({"name": "counting", "args": r#"{"x":1}"#});
         adapter.execute_keyed("run-keyed:call_keyed", &other).unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+
+    /// Profile pin applies to the child: a child profile pinned to a
+    /// cheap model must run on that pin, not on the parent's (possibly
+    /// `/model`-switched) default. An unpinned child keeps the parent's
+    /// default, and the child's auto auxiliaries follow its own default.
+    #[test]
+    fn delegate_child_applies_profile_model_pin() {
+        use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, FallbackChain};
+        let (session, dir) = test_session();
+        let mut registry = ProfileRegistry::new();
+        registry
+            .insert("parent", AgentProfile::default())
+            .expect("insert parent");
+        let mut pinned = AgentProfile::default();
+        pinned.model = Some("cheap-model".to_string());
+        pinned.provider = Some("cheap-provider".to_string());
+        registry.insert("child", pinned).expect("insert child");
+        registry
+            .insert("plain", AgentProfile::default())
+            .expect("insert plain");
+        let effective = registry.resolve("parent", "coder").expect("resolve parent");
+        let agent = AgentRuntime::new(
+            session.supervisor.clone(),
+            registry,
+            effective,
+            dir.path().to_path_buf(),
+        )
+        .expect("agent runtime");
+        let parent_policy = ModelPolicy {
+            reasoning_budget: None,
+            reasoning: pantheon_api::model::ReasoningLevel::default(),
+            default: DefaultModel {
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+            },
+            fallbacks: FallbackChain { fallbacks: vec![] },
+            auxiliaries: vec![AuxiliaryModel {
+                kind: AuxiliaryKind::TitleGen,
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+                timeout_secs: 10,
+                target_percent: None,
+            }],
+        };
+        let tools = crate::tool_config::ToolEnablement::default();
+        // Inline (not a closure): a closure returning DelegateContext
+        // ties the borrowed `tools` lifetime to the `profile` argument
+        // lifetime and will not compile.
+        let mk_policy = || DelegatePolicy {
+            max_delegate_depth: 2,
+            allow_child_spawn: true,
+            budget_section: None,
+            delegation_section: None,
+        };
+        let child = build_delegate_session(
+            &agent,
+            &parent_policy,
+            dir.path(),
+            DelegateContext {
+                parent_depth: 0,
+                profile: "child",
+                parent_goal: None,
+                parent_tools: &tools,
+                parent_mode: AgentMode::default(),
+                parent_permission_mode: PermissionMode::default(),
+            },
+            mk_policy(),
+        )
+        .expect("build pinned child");
+        let (provider, model) = child.default_model();
+        assert_eq!(
+            (provider.as_str(), model.as_str()),
+            ("cheap-provider", "cheap-model"),
+            "pinned child must run on its pin, not the parent default"
+        );
+        let title = child
+            .policy_snapshot()
+            .auxiliary(&AuxiliaryKind::TitleGen)
+            .expect("title aux")
+            .clone();
+        assert_eq!(
+            (title.provider.as_str(), title.model.as_str()),
+            ("cheap-provider", "cheap-model"),
+            "child auto auxiliaries follow the child's default"
+        );
+        let plain = build_delegate_session(
+            &agent,
+            &parent_policy,
+            dir.path(),
+            DelegateContext {
+                parent_depth: 0,
+                profile: "plain",
+                parent_goal: None,
+                parent_tools: &tools,
+                parent_mode: AgentMode::default(),
+                parent_permission_mode: PermissionMode::default(),
+            },
+            mk_policy(),
+        )
+        .expect("build unpinned child");
+        let (provider, model) = plain.default_model();
+        assert_eq!(
+            (provider.as_str(), model.as_str()),
+            ("openai", "gpt-4o-mini"),
+            "unpinned child keeps the parent default"
+        );
     }
 
     /// End-to-end linkage: the registered `delegate` tool, executed
