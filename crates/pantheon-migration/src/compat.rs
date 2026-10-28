@@ -108,9 +108,9 @@ pub enum HookMap {
 /// [`HookMap::Mapped`] when it is both semantically equivalent **and**
 /// actually wired (see [`Hook::is_wired`]) - `Mapped` promises the operator
 /// that the handler will run, so it must never be handed out for a hook with
-/// no fire site. `before_tool_call` now maps for real (to the
-/// `pre_tool_call` gate); `pre_gateway_dispatch` is still refused because
-/// inbound messages are handled in a crate that cannot reach the manager yet.
+/// no fire site. `before_tool_call` maps for real (to the
+/// `pre_tool_call` gate), and `pre_gateway_dispatch` maps for real too:
+/// the TUI gateway's surface sink fires it before dispatch.
 pub fn map_hook(event: &str) -> HookMap {
     let norm = event.trim().to_ascii_lowercase().replace(['-', ':'], "_");
     // `Mapped` is a promise; honor it only for wired hooks.
@@ -128,10 +128,11 @@ pub fn map_hook(event: &str) -> HookMap {
         | "pre_llm_call"
         | "prompt_build"
         | "before_prompt" => mapped(Hook::PreLlmCall),
-        // Inbound message before the gateway dispatches it. Declared, but
-        // unwired: reported unsupported rather than falsely mapped.
+        // Inbound message before the gateway dispatches it. Fired by
+        // the TUI gateway's surface sink (observer-class: notified,
+        // return value ignored, never blocks dispatch).
         "message_received" | "pre_gateway_dispatch" | "gateway_dispatch" | "before_dispatch" => {
-            HookMap::Unsupported { nearest: None }
+            mapped(Hook::PreGatewayDispatch)
         }
         "before_api_request" | "pre_api_request" | "api_request" => mapped(Hook::PreApiRequest),
         "after_api_request" | "post_api_request" | "api_response" => mapped(Hook::PostApiRequest),

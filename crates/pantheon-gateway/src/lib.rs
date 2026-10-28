@@ -40,8 +40,8 @@ pub use channel_voice::{
     STT_EMPTY, STT_FAILED, STT_NOT_CONFIGURED, STT_UNAVAILABLE, VOICE_TRANSCRIPT_PREFIX,
 };
 pub use daemon::{
-    poll_telegram_once, route_event, route_outbound, ChannelDaemon, EventSink, UpdateCursor,
-    MAX_SEND_ATTEMPTS,
+    poll_telegram_once, route_event, route_event_with_hook, route_outbound, ChannelDaemon,
+    EventSink, PreDispatchHook, UpdateCursor, MAX_SEND_ATTEMPTS,
 };
 pub use dedup::{dedup_key, DedupWindow};
 pub use delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
