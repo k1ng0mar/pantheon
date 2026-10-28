@@ -1270,6 +1270,109 @@ mod fix_model_chain_tests {
             "fallback attempt uses its own key_env key, never the default key: {second}"
         );
     }
+
+    #[test]
+    fn stream_options_survive_a_retryable_stream_failure() {
+        // Item 6 at the chain level: a streaming turn whose first
+        // post_stream fails retryably (500) then succeeds must carry
+        // stream_options on BOTH attempts, so usage is not lost on
+        // retry. The provider carries a non-empty allowed_params list,
+        // which is what used to strip stream_options from the body.
+        crate::catalog::register_custom_provider(crate::catalog::ProviderMeta {
+            id: "dec-rt-stream-retry".to_string(),
+            label: "dec-rt-stream-retry".to_string(),
+            base_url: "https://fixmodel.example.test/v1".to_string(),
+            api_mode: ApiMode::OpenAi,
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
+            allowed_params: vec!["temperature".to_string()],
+            oauth_apps: vec![],
+            sigv4: false,
+            reasoning_map: Default::default(),
+            base_env: String::new(),
+            key_env: "PANTHEON_DEC_RT_STREAM_RETRY_KEY".to_string(),
+            key_header: "Authorization".into(),
+            models: vec![catalog::ModelMeta {
+                provider: "dec-rt-stream-retry".to_string(),
+                model: "stream-model".to_string(),
+                context_limit: Some(100_000),
+                max_output_tokens: Some(8_192),
+                tools: true,
+                vision: false,
+                video: false,
+                reasoning: false,
+                streaming: true,
+                cost: catalog::ModelCost::default(),
+                cache_cost: None,
+                aliases: vec![],
+            }],
+            prominent: false,
+            recommended: false,
+            dev: false,
+            tag: String::new(),
+        });
+        struct FailOnceStream {
+            calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            bodies: std::sync::Arc<Mutex<Vec<String>>>,
+        }
+        impl ChatTransport for FailOnceStream {
+            fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+                unreachable!("streaming turn must use post_stream");
+            }
+            fn post_stream(
+                &self,
+                req: &WireRequest,
+                on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+            ) -> Result<StreamEnd, PantheonError> {
+                self.bodies.lock().unwrap().push(req.body.clone());
+                if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    return Err(PantheonError::new(
+                        "PROVIDER_HTTP",
+                        Layer::Provider,
+                        true,
+                        "https://fixmodel.example.test: HTTP 500 boom".to_string(),
+                        "",
+                        "",
+                    ));
+                }
+                on_payload(
+                    r#"{"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}"#,
+                )?;
+                on_payload("[DONE]")?;
+                Ok(StreamEnd::Done)
+            }
+        }
+        let bodies = std::sync::Arc::new(Mutex::new(vec![]));
+        let mut chain = ProviderChain::new(
+            test_policy(("dec-rt-stream-retry", "stream-model"), vec![]),
+            FailOnceStream {
+                calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                bodies: bodies.clone(),
+            },
+            vec![],
+            pantheon_secrets::SecretValue::new("test-key"),
+        );
+        chain.retry.max_retries = 3;
+        chain.retry.base_delay = std::time::Duration::ZERO;
+        chain.retry.max_delay = std::time::Duration::ZERO;
+        let outcome = chain
+            .turn_stream(&[Message::user("hi")], &crate::model_event::NoopModelSink)
+            .expect("retried stream turn succeeds");
+        assert!(matches!(outcome, TurnOutcome::Text { .. }));
+        let sent = bodies.lock().unwrap();
+        assert_eq!(sent.len(), 2, "failed attempt, then retried attempt");
+        for (i, body) in sent.iter().enumerate() {
+            let v: serde_json::Value = serde_json::from_str(body).expect("body is JSON");
+            assert_eq!(v["stream"], serde_json::json!(true), "attempt {i}");
+            assert_eq!(
+                v["stream_options"]["include_usage"],
+                serde_json::json!(true),
+                "attempt {i}"
+            );
+        }
+    }
+
     #[test]
     fn text_beside_tool_calls_survives_the_chain() {
         let body = r#"{"choices":[{"message":{"content":"hello first","tool_calls":[{"id":"c","type":"function","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
