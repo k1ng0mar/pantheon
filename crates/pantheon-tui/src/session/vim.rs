@@ -585,6 +585,30 @@ pub fn insert_char(text: &mut String, vim: &mut VimState, c: char) {
     *text = lines.join("\n");
 }
 
+/// Delete key in either vim mode: delete the char under the cursor;
+/// at end of line, join the next line (standard Delete semantics);
+/// at end of text, a no-op. The composer's vim branch previously had
+/// no Delete arm at all.
+pub fn delete_char(text: &mut String, vim: &mut VimState) {
+    let mut lines = split_lines(text);
+    let row = vim.row.min(lines.len().saturating_sub(1));
+    let len = line_len(&lines, row);
+    let col = vim.col.min(len);
+    if col < len {
+        let mut chars: Vec<char> = lines[row].chars().collect();
+        chars.remove(col);
+        lines[row] = chars.into_iter().collect();
+        let (r, c) = clamp_normal(&lines, row, col);
+        vim.set_cursor(r, c);
+        *text = lines.join("\n");
+    } else if row + 1 < lines.len() {
+        let tail = lines.remove(row + 1);
+        lines[row].push_str(&tail);
+        vim.set_cursor(row, col);
+        *text = lines.join("\n");
+    }
+}
+
 /// Backspace in Insert mode: delete the char before the cursor; at
 /// column 0, join with the previous line.
 pub fn backspace(text: &mut String, vim: &mut VimState) {
@@ -693,5 +717,21 @@ mod move_arrow_tests {
         assert_eq!(v.cursor(text), (1, 1));
         move_arrow(text, &mut v, 1, 0);
         assert_eq!(v.cursor(text), (2, 2));
+    }
+
+    #[test]
+    fn delete_char_removes_under_cursor_and_joins_lines() {
+        let mut text = "abc\ndef".to_string();
+        let mut v = vim_at(0, 1, VimMode::Normal);
+        delete_char(&mut text, &mut v);
+        assert_eq!(text, "ac\ndef");
+        let mut text = "ab\ncd".to_string();
+        let mut v = vim_at(0, 2, VimMode::Normal);
+        delete_char(&mut text, &mut v);
+        assert_eq!(text, "abcd", "Delete at end of line joins the next line");
+        let mut text = "ab".to_string();
+        let mut v = vim_at(0, 2, VimMode::Normal);
+        delete_char(&mut text, &mut v);
+        assert_eq!(text, "ab", "Delete at end of text is a no-op");
     }
 }

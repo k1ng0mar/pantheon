@@ -17,6 +17,16 @@ pub const MAX_DIFF_FILES: usize = 5;
 pub const MAX_DIFF_LINES: usize = 60;
 /// A single file is never snapshotted past this.
 pub const MAX_SNAP_BYTES: usize = 1024 * 1024;
+/// LCS table budget in cells: (n+1)x(m+1) u32. The byte cap does not
+/// bound lines, so a 1MB file of short lines used to demand
+/// gigabytes for the table. 4M cells is ~16MB and fast; beyond it
+/// the diff degrades to an honest "too large" marker instead of
+/// allocating. Diffing stays synchronous on the UI thread (it runs
+/// at ToolCompleted), but bounded this way it cannot stall the UI
+/// on a pathological file; moving it off-thread would need the
+/// snapshot/diff pipeline to become async, which is out of scope
+/// for this fix.
+pub const MAX_LCS_CELLS: usize = 4_000_000;
 
 /// Content of one file captured at `ToolStarted`.
 #[derive(Debug, Clone)]
@@ -83,16 +93,31 @@ pub enum DiffLine {
     Add(String),
     Del(String),
     Truncated(usize),
+    /// LCS table would exceed [`MAX_LCS_CELLS`]: line counts, no
+    /// content, so the card stays honest about the skip.
+    TooLarge {
+        old_lines: usize,
+        new_lines: usize,
+    },
 }
 
 /// Line-based diff via LCS on lines. Simple and predictable; inputs are
 /// capped by [`MAX_SNAP_BYTES`] so the O(n·m) table stays small in
-/// practice (typical edits are tens of lines).
+/// practice (typical edits are tens of lines). The byte cap does NOT
+/// bound line counts, so the table is additionally capped by
+/// [`MAX_LCS_CELLS`]: beyond it, a [`DiffLine::TooLarge`] marker
+/// replaces the body instead of allocating gigabytes.
 pub fn unified_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let a: Vec<&str> = old.lines().collect();
     let b: Vec<&str> = new.lines().collect();
     // LCS table.
     let (n, m) = (a.len(), b.len());
+    if (n.saturating_add(1)).saturating_mul(m.saturating_add(1)) > MAX_LCS_CELLS {
+        return vec![DiffLine::TooLarge {
+            old_lines: n,
+            new_lines: m,
+        }];
+    }
     let mut dp = vec![vec![0u32; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
@@ -309,6 +334,20 @@ pub fn render_diff_lines(
                     ),
                 ]));
             }
+            DiffLine::TooLarge {
+                old_lines,
+                new_lines,
+            } => {
+                out.push(Line::from(vec![
+                    Span::styled("│   ", Style::default().fg(th.dim)),
+                    Span::styled(
+                        format!(
+                            "diff skipped: too many lines ({old_lines} → {new_lines}); open the file to review"
+                        ),
+                        Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+            }
         }
     }
     if in_card {
@@ -318,4 +357,41 @@ pub fn render_diff_lines(
         )));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_line_count_diffs_degrade_to_marker_not_gigabytes() {
+        // 3000 x 3000 lines would need a ~36MB table at minimum and
+        // grows quadratically; the old code allocated it unconditionally
+        // (a 1MB file of 1-char lines is ~500k lines: trillions of cells).
+        let old: String = (0..3000).map(|i| format!("old line {i}\n")).collect();
+        let new: String = (0..3000).map(|i| format!("new line {i}\n")).collect();
+        let out = unified_diff(&old, &new);
+        assert_eq!(
+            out,
+            vec![DiffLine::TooLarge {
+                old_lines: 3000,
+                new_lines: 3000,
+            }]
+        );
+    }
+
+    #[test]
+    fn small_diffs_still_produce_hunks() {
+        let out = unified_diff("a\nb\nc\n", "a\nB\nc\n");
+        assert!(
+            out.iter()
+                .any(|l| matches!(l, DiffLine::Del(d) if d == "b")),
+            "deletion missing: {out:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|l| matches!(l, DiffLine::Add(a) if a == "B")),
+            "addition missing: {out:?}"
+        );
+    }
 }
