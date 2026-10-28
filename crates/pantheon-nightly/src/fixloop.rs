@@ -67,9 +67,23 @@ pub struct Escalation {
 }
 
 /// Load escalations (empty when the file is absent).
+///
+/// A torn file also loads as empty, with a loud warning: escalations
+/// are written atomically (see [`record_escalation`]), so a torn file
+/// can only predate atomic writes, and an escalation file that errors
+/// forever would block every later escalation.
 pub fn load_escalated(data_dir: &Path) -> Result<Vec<Escalation>, String> {
     match std::fs::read_to_string(escalated_path(data_dir)) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("parse escalations: {e}")),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(all) => Ok(all),
+            Err(e) => {
+                eprintln!(
+                    "nightly: escalations {} are torn ({e}); treating as empty",
+                    escalated_path(data_dir).display()
+                );
+                Ok(Vec::new())
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!("read escalations: {e}")),
     }
@@ -89,7 +103,8 @@ pub(crate) fn record_escalation(data_dir: &Path, esc: &Escalation) -> Result<(),
     }
     let text =
         serde_json::to_string_pretty(&all).map_err(|e| format!("encode escalations: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))
+    crate::apply::atomic_write(&path, &text)
+        .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Proposal kinds explicitly allowed to reach `Validated` with zero

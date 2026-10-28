@@ -29,16 +29,31 @@ pub struct NightlyState {
 }
 
 impl NightlyState {
+    /// Load the last-pass state. A torn file loads as the default, with
+    /// a loud warning: state is written atomically (see [`Self::save`]),
+    /// so a torn file can only predate atomic writes, and a state file
+    /// that errors forever would hide every later pass from status
+    /// surfaces. The summary is recomputed next pass; nothing durable
+    /// besides the summary lives here.
     pub fn load(data_dir: &Path) -> Result<Self, String> {
         match std::fs::read_to_string(state_path(data_dir)) {
-            Ok(text) => {
-                serde_json::from_str(&text).map_err(|e| format!("parse nightly state: {e}"))
-            }
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(state) => Ok(state),
+                Err(e) => {
+                    eprintln!(
+                        "nightly: state {} is torn ({e}); treating as never-run",
+                        state_path(data_dir).display()
+                    );
+                    Ok(Self::default())
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("read nightly state: {e}")),
         }
     }
 
+    /// Save atomically (temp file + rename), so a crash mid-write never
+    /// leaves a torn state file for [`Self::load`] to trip over.
     pub fn save(&self, data_dir: &Path) -> Result<(), String> {
         let path = state_path(data_dir);
         if let Some(parent) = path.parent() {
@@ -47,7 +62,8 @@ impl NightlyState {
         }
         let text =
             serde_json::to_string_pretty(self).map_err(|e| format!("encode nightly state: {e}"))?;
-        std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))
+        crate::apply::atomic_write(&path, &text)
+            .map_err(|e| format!("write {}: {e}", path.display()))
     }
 }
 
