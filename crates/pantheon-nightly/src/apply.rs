@@ -5,7 +5,8 @@
 //! - **Memory lessons** are surfaced with their evidence (provenance
 //!   runs + observed-count), then parked in
 //!   `<data_dir>/nightly/nightly-pending.json` for a human to approve or
-//!   deny. A grant writes the record at trust tier `Memory`; a denial
+//!   deny. A grant writes the record at the configured trust tier
+//!   (`NightlyConfig::memory_trust`, `Memory` by default); a denial
 //!   ends the proposal. Idempotent keys keep re-approval stable.
 //! - **Skill and Persona proposals** pass eval-gating and replay-gating,
 //!   then sit in the same pending queue until a human approves or denies
@@ -41,11 +42,24 @@ pub enum ApplyOutcome {
 }
 
 /// Load the pending queue (empty when the file is absent).
+///
+/// A torn file (unparseable JSON) also loads as empty, with a loud
+/// warning: the queue is written atomically (see [`save_pending`]), so a
+/// torn file can only predate atomic writes or come from a crash
+/// mid-rename - and a queue that errors forever blocks every later
+/// decision. The loss is reported, not silent.
 pub fn load_pending(data_dir: &Path) -> Result<Vec<Proposal>, String> {
     match std::fs::read_to_string(pending_path(data_dir)) {
-        Ok(text) => {
-            serde_json::from_str(&text).map_err(|e| format!("parse pending proposals: {e}"))
-        }
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(pending) => Ok(pending),
+            Err(e) => {
+                eprintln!(
+                    "nightly: pending queue {} is torn ({e}); treating as empty",
+                    pending_path(data_dir).display()
+                );
+                Ok(Vec::new())
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!("read pending proposals: {e}")),
     }
@@ -57,7 +71,7 @@ fn save_pending(data_dir: &Path, pending: &[Proposal]) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let text = serde_json::to_string_pretty(pending).map_err(|e| format!("encode pending: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))
+    atomic_write(&path, &text).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Queue a proposal for human approval. No-op (returns
@@ -101,7 +115,7 @@ pub fn decide(
         // Apply BEFORE dequeuing: if application fails the proposal stays
         // in the queue for retry and the failure is audited.
         let proposal = pending[pos].clone();
-        if let Err(e) = apply_approved(data_dir, &proposal) {
+        if let Err(e) = apply_approved(data_dir, &proposal, config.memory_trust) {
             crate::audit::audit(
                 data_dir,
                 &crate::audit::NightlyEvent::ApplyFailed {
@@ -144,7 +158,6 @@ pub fn decide(
             },
         )?;
     }
-    let _ = config;
     Ok(true)
 }
 
@@ -163,8 +176,14 @@ fn memory_store(data_dir: &Path) -> Result<MemoryStore, String> {
 
 /// Apply a validated, human-approved skill/persona proposal.
 /// Memory lessons are NOT applied here - they go through
-/// [`apply_memory_lesson`].
-pub fn apply_skill_or_persona(data_dir: &Path, proposal: &Proposal) -> Result<(), String> {
+/// [`apply_memory_lesson`]. `trust` is the configured tier
+/// ([`NightlyConfig::memory_trust`]): persona notes are memory-store
+/// writes, so they land at the same tier as lessons.
+pub fn apply_skill_or_persona(
+    data_dir: &Path,
+    proposal: &Proposal,
+    trust: TrustTier,
+) -> Result<(), String> {
     match &proposal.kind {
         ProposalKind::Skill { name, update } => {
             // Defense in depth: the name is slug-shaped by construction
@@ -210,37 +229,46 @@ pub fn apply_skill_or_persona(data_dir: &Path, proposal: &Proposal) -> Result<()
                     namespace: crate::persona::PERSONA_NAMESPACE.to_string(),
                     key: key.clone(),
                     value: proposal.body.clone(),
-                    provenance: mem_provenance("nightly", TrustTier::Memory),
+                    provenance: mem_provenance("nightly", trust),
                 })
                 .map_err(|e| format!("store persona note: {e}"))?;
             Ok(())
         }
         ProposalKind::MemoryLesson { .. } => {
-            // Operator-approved a memory lesson: write it at trust tier
-            // Memory now. This is the explicit user-vouch path - the
-            // unattended `route` never reaches here.
-            apply_memory_lesson(data_dir, proposal)
+            // Operator-approved a memory lesson: write it at the
+            // configured trust tier now. This is the explicit user-vouch
+            // path - the unattended `route` never reaches here.
+            apply_memory_lesson(data_dir, proposal, trust)
         }
     }
 }
 
 /// Apply a human-approved proposal by kind. The dispatcher [`decide`]
 /// calls this after a grant: skill/persona proposals apply their payload,
-/// memory lessons write the durable record at trust tier Memory. This is
-/// the only path that turns a queued proposal into a durable effect -
-/// `route` always queues, never applies.
-pub fn apply_approved(data_dir: &Path, proposal: &Proposal) -> Result<(), String> {
+/// memory lessons write the durable record at the configured trust tier
+/// ([`NightlyConfig::memory_trust`]). This is the only path that turns
+/// a queued proposal into a durable effect - `route` always queues,
+/// never applies.
+pub fn apply_approved(
+    data_dir: &Path,
+    proposal: &Proposal,
+    trust: TrustTier,
+) -> Result<(), String> {
     match &proposal.kind {
-        ProposalKind::MemoryLesson { .. } => apply_memory_lesson(data_dir, proposal),
+        ProposalKind::MemoryLesson { .. } => apply_memory_lesson(data_dir, proposal, trust),
         ProposalKind::Skill { .. } | ProposalKind::Persona { .. } => {
-            apply_skill_or_persona(data_dir, proposal)
+            apply_skill_or_persona(data_dir, proposal, trust)
         }
     }
 }
 
-/// Auto-apply a memory lesson at trust tier Memory. Idempotent: the key
-/// is derived from the lesson text, so re-applying is a no-op write.
-pub fn apply_memory_lesson(data_dir: &Path, proposal: &Proposal) -> Result<(), String> {
+/// Apply a memory lesson at the configured trust tier. Idempotent: the
+/// key is derived from the lesson text, so re-applying is a no-op write.
+pub fn apply_memory_lesson(
+    data_dir: &Path,
+    proposal: &Proposal,
+    trust: TrustTier,
+) -> Result<(), String> {
     let ProposalKind::MemoryLesson { key } = &proposal.kind else {
         return Err("apply_memory_lesson takes only MemoryLesson proposals".into());
     };
@@ -251,7 +279,7 @@ pub fn apply_memory_lesson(data_dir: &Path, proposal: &Proposal) -> Result<(), S
             namespace: "nightly".to_string(),
             key: key.clone(),
             value: proposal.body.clone(),
-            provenance: mem_provenance("nightly", TrustTier::Memory),
+            provenance: mem_provenance("nightly", trust),
         })
         .map_err(|e| format!("store lesson: {e}"))?;
     Ok(())
@@ -285,11 +313,87 @@ fn skill_name_ok(name: &str) -> bool {
 }
 
 /// Write a file atomically: temp file + rename, so a crash never leaves
-/// a half-written SKILL.md.
-fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
+/// a half-written SKILL.md. Shared by the other nightly writers (state,
+/// escalations, report) so every nightly file follows the same pattern.
+pub(crate) fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)
 }
 
 // Small deterministic invariant tests only.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::propose::{ProposalKind, ProposalStatus};
+    use crate::NightlyConfig;
+    use pantheon_api::provenance::TrustTier;
+    use pantheon_memory::{LayerKind, MemoryStore};
+
+    fn lesson(id: &str, key: &str) -> Proposal {
+        Proposal {
+            id: id.to_string(),
+            kind: ProposalKind::MemoryLesson {
+                key: key.to_string(),
+            },
+            title: "lesson".to_string(),
+            body: "prefer short replies".to_string(),
+            provenance_runs: Vec::new(),
+            provenance_turns: Vec::new(),
+            eval_tags: Vec::new(),
+            status: ProposalStatus::Proposed,
+        }
+    }
+
+    fn record_trust(data_dir: &Path, key: &str) -> TrustTier {
+        let store = MemoryStore::open(&data_dir.join("memory.db")).expect("memory store");
+        let rec = store
+            .get(LayerKind::Agent, "nightly", key)
+            .expect("memory read")
+            .expect("lesson stored");
+        rec.provenance.trust
+    }
+
+    /// `config.memory_trust` is honoured, not discarded: before the fix,
+    /// `decide` dropped the config (`let _ = config`) and every grant
+    /// landed at `Memory` regardless of configuration.
+    #[test]
+    fn decide_honours_configured_memory_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let proposal = lesson("nly_test", "trust-key");
+        assert!(queue_for_approval(data_dir, &proposal).unwrap());
+        let mut config = NightlyConfig::default();
+        config.data_dir = data_dir.to_path_buf();
+        config.memory_trust = TrustTier::User;
+        assert!(decide(data_dir, &config, "nly_test", true).unwrap());
+        assert_eq!(record_trust(data_dir, "trust-key"), TrustTier::User);
+    }
+
+    /// The direct apply path takes the tier as a parameter: a `Memory`
+    /// grant still lands at `Memory` (the default), so existing
+    /// behaviour is unchanged when the config is default.
+    #[test]
+    fn apply_memory_lesson_at_memory_tier_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        apply_memory_lesson(dir.path(), &lesson("nly_test2", "mem-key"), TrustTier::Memory)
+            .unwrap();
+        assert_eq!(record_trust(dir.path(), "mem-key"), TrustTier::Memory);
+    }
+
+    /// A torn pending queue loads as empty (loudly) instead of erroring
+    /// every later decision out of existence.
+    #[test]
+    fn torn_pending_queue_loads_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        std::fs::create_dir_all(data_dir.join("nightly")).unwrap();
+        std::fs::write(
+            data_dir.join("nightly").join("nightly-pending.json"),
+            "{not json",
+        )
+        .unwrap();
+        assert!(load_pending(data_dir).unwrap().is_empty());
+    }
+}

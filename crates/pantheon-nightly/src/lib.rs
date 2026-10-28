@@ -226,6 +226,11 @@ pub fn run_pass(
     let at = now_ms();
     let mut events = Vec::new();
 
+    // Sweep staging dirs left by crashed passes before this pass stages
+    // its own: only dirs older than a day go, so a live pass is never
+    // swept (see `cleanup_stale_replay_staging`).
+    crate::replay::cleanup_stale_replay_staging(Duration::from_secs(24 * 3600));
+
     // 1. Single ledger scan → behavior signals + memory candidates.
     let policy = collect_policy(config);
     let scan = collect_signals(
@@ -503,7 +508,7 @@ pub fn run_pass(
     if let Some(parent) = report_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| nerr(e.to_string()))?;
     }
-    std::fs::write(&report_path, report)
+    crate::apply::atomic_write(&report_path, &report)
         .map_err(|e| nerr(format!("write {}: {e}", report_path.display())))?;
 
     Ok(PassResult {

@@ -438,63 +438,68 @@ impl ReplayRunner for SubprocessReplayRunner {
         with_proposal: Option<&Proposal>,
     ) -> Result<String, String> {
         use std::process::{Command, Stdio};
-        use std::time::Instant;
 
         let mut cmd = Command::new(&self.command);
         cmd.arg(&task.prompt)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        let mut staged: Option<std::path::PathBuf> = None;
         if let Some(p) = with_proposal {
             // Stage the proposal where the headless runner will pick it
             // up. The runner contract: $PANTHEON_REPLAY_SKILL_DIR holds
             // the candidate overlay.
             let dir = stage_proposal_overlay(p)?;
             cmd.env("PANTHEON_REPLAY_SKILL_DIR", &dir);
-            // Note: the temp dir is intentionally left for the child to
-            // read; it is cleaned on next pass start.
+            staged = Some(dir);
         }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("spawn replay command '{}': {e}", self.command))?;
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let out = child
-                        .wait_with_output()
-                        .map_err(|e| format!("read replay output: {e}"))?;
-                    if !status.success() {
-                        return Err(format!(
-                            "replay command exited {}",
-                            status.code().unwrap_or(-1)
-                        ));
-                    }
-                    return String::from_utf8(out.stdout)
-                        .map_err(|e| format!("replay output not UTF-8: {e}"));
-                }
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(format!("replay timed out after {:?}", self.timeout));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => return Err(format!("wait on replay child: {e}")),
+        let result = wait_with_drain(&mut child, self.timeout).and_then(|(out, status)| {
+            if !status.success() {
+                return Err(format!(
+                    "replay command exited {}",
+                    status.code().unwrap_or(-1)
+                ));
             }
+            String::from_utf8(out).map_err(|e| format!("replay output not UTF-8: {e}"))
+        });
+        // The staging dir is the runner's, not the child's: remove it
+        // once the run ends, whatever the outcome. Leftovers from
+        // crashed passes are swept at the next pass start (see
+        // [`cleanup_stale_replay_staging`]).
+        if let Some(dir) = staged {
+            let _ = std::fs::remove_dir_all(&dir);
         }
+        result
     }
 }
+
+/// Sequence making each staging dir unique within this process, so two
+/// concurrent passes staging the same proposal id never share (and
+/// overwrite) one directory.
+static STAGING_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Stage a proposal as a skill/persona overlay for the replay runner.
 /// Returns the staging dir path. Memory lessons need no overlay - they
 /// are data, not behavior - so this is a no-op dir for them.
-fn stage_proposal_overlay(p: &Proposal) -> Result<String, String> {
-    let dir = std::env::temp_dir().join(format!("pantheon-replay-{}", p.id));
+///
+/// The path is built only from sanitized parts: the raw proposal id used
+/// to name the dir, so a skill name containing `/` escaped the staging
+/// dir entirely. The pid + sequence suffix keeps concurrent passes with
+/// the same proposal id on separate dirs.
+fn stage_proposal_overlay(p: &Proposal) -> Result<std::path::PathBuf, String> {
+    let seq = STAGING_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "pantheon-replay-{}-{}-{}",
+        sanitize_id(&p.id),
+        std::process::id(),
+        seq
+    ));
     std::fs::create_dir_all(&dir).map_err(|e| format!("create replay staging dir: {e}"))?;
     match &p.kind {
         crate::propose::ProposalKind::Skill { name, .. } => {
-            std::fs::write(dir.join(format!("{name}.md")), &p.body)
+            std::fs::write(dir.join(format!("{}.md", sanitize_id(name))), &p.body)
                 .map_err(|e| format!("stage skill overlay: {e}"))?;
         }
         crate::propose::ProposalKind::Persona { .. } => {
@@ -503,7 +508,88 @@ fn stage_proposal_overlay(p: &Proposal) -> Result<String, String> {
         }
         crate::propose::ProposalKind::MemoryLesson { .. } => {}
     }
-    Ok(dir.to_string_lossy().into_owned())
+    Ok(dir)
+}
+
+/// Best-effort sweep of staging dirs left behind by crashed passes.
+/// Only dirs older than `max_age` are removed: a live pass holds its
+/// staging dir for at most one task run (bounded by the replay
+/// timeout) and removes it afterwards, so an old dir cannot belong to
+/// a live pass. Called at pass start (see `run_pass`).
+pub fn cleanup_stale_replay_staging(max_age: Duration) {
+    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(max_age)
+        .unwrap_or(std::time::UNIX_EPOCH);
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("pantheon-replay-") {
+            continue;
+        }
+        let path = entry.path();
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t < cutoff)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
+/// Wait for a spawned child up to `timeout`, draining its stdout on a
+/// reader thread the whole time. Without the concurrent drain, a child
+/// that writes more than the pipe buffer blocks forever on write while
+/// the parent polls `try_wait` - the deadline then kills it and the
+/// failure is misreported as a timeout instead of a verbose success.
+/// Returns the drained stdout plus the exit status.
+///
+/// On timeout the child is killed and the drain thread is detached
+/// (dropped, not joined): a grandchild inheriting stdout could hold
+/// the pipe open past the child's death, and joining would hang the
+/// caller that already decided the run timed out.
+fn wait_with_drain(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<(Vec<u8>, std::process::ExitStatus), String> {
+    use std::io::Read;
+    use std::time::Instant;
+
+    let stdout = child.stdout.take();
+    let drain = stdout.map(|mut out| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            buf
+        })
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Reap, then collect the drained output: the reader
+                // thread sees EOF once the child (and any stdout
+                // inheritor it waited on) is gone.
+                let _ = child.wait();
+                let buf = drain.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+                return Ok((buf, status));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // Detach the drain thread (see the fn docs).
+                    drop(drain);
+                    return Err(format!("replay timed out after {timeout:?}"));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("wait on replay child: {e}")),
+        }
+    }
 }
 
 /// A [`ReplayRunner`] that executes the task's own [`TaskExec`] spec
@@ -536,7 +622,6 @@ impl ReplayRunner for TaskSpecReplayRunner {
         with_proposal: Option<&Proposal>,
     ) -> Result<String, String> {
         use std::process::{Command, Stdio};
-        use std::time::Instant;
 
         let spec = task.exec.as_ref().ok_or_else(|| {
             format!(
@@ -568,45 +653,30 @@ impl ReplayRunner for TaskSpecReplayRunner {
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
+        let mut staged: Option<std::path::PathBuf> = None;
         if let Some(p) = with_proposal {
             let dir = stage_proposal_overlay(p)?;
             cmd.env("PANTHEON_REPLAY_SKILL_DIR", &dir);
+            staged = Some(dir);
         }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("spawn replay task '{}': {e}", task.id))?;
-        let deadline = Instant::now() + self.timeout;
-        let result = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let out = child
-                        .wait_with_output()
-                        .map_err(|e| format!("read replay output: {e}"))?;
-                    if !status.success() {
-                        break Err(format!(
-                            "replay task '{}' exited {}",
-                            task.id,
-                            status.code().unwrap_or(-1)
-                        ));
-                    }
-                    break String::from_utf8(out.stdout)
-                        .map_err(|e| format!("replay task '{}' output not UTF-8: {e}", task.id));
-                }
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        break Err(format!(
-                            "replay task '{}' timed out after {:?}",
-                            task.id, self.timeout
-                        ));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => break Err(format!("wait on replay child: {e}")),
+        let result = wait_with_drain(&mut child, self.timeout).and_then(|(out, status)| {
+            if !status.success() {
+                return Err(format!(
+                    "replay task '{}' exited {}",
+                    task.id,
+                    status.code().unwrap_or(-1)
+                ));
             }
-        };
+            String::from_utf8(out)
+                .map_err(|e| format!("replay task '{}' output not UTF-8: {e}", task.id))
+        });
         let _ = std::fs::remove_dir_all(&workdir);
+        if let Some(dir) = staged {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         result
     }
 }
@@ -671,3 +741,117 @@ impl ReplayRunner for CompositeReplayRunner {
 }
 
 // Small deterministic invariant tests only.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::propose::{ProposalKind, ProposalStatus};
+
+    fn skill_proposal(id: &str, name: &str) -> Proposal {
+        Proposal {
+            id: id.to_string(),
+            kind: ProposalKind::Skill {
+                name: name.to_string(),
+                update: false,
+            },
+            title: "probe".to_string(),
+            body: "# probe skill".to_string(),
+            provenance_runs: Vec::new(),
+            provenance_turns: Vec::new(),
+            eval_tags: Vec::new(),
+            status: ProposalStatus::Proposed,
+        }
+    }
+
+    /// A hostile proposal id / skill name must not escape the staging
+    /// dir: both are sanitized before they touch a path.
+    #[test]
+    fn staging_sanitizes_proposal_id_and_skill_name() {
+        let dir = stage_proposal_overlay(&skill_proposal("../../evil", "../escape")).unwrap();
+        assert!(
+            dir.starts_with(std::env::temp_dir()),
+            "staging dir must stay under temp: {}",
+            dir.display()
+        );
+        let staged = dir.join("escape.md");
+        assert!(staged.is_file(), "sanitized skill file lands inside the dir");
+        assert_eq!(staged.parent().unwrap(), dir);
+        assert!(
+            !std::env::temp_dir().join("escape.md").exists()
+                || std::env::temp_dir().join("escape.md") == staged,
+            "no file escaped to the temp root"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two passes staging the same proposal id get different dirs.
+    #[test]
+    fn staging_is_unique_per_pass() {
+        let p = skill_proposal("same-id", "same-skill");
+        let a = stage_proposal_overlay(&p).unwrap();
+        let b = stage_proposal_overlay(&p).unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && b.is_dir());
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// A verbose child (> pipe buffer) must be drained, not misreported
+    /// as timed out: without the concurrent drain the child blocks on
+    /// the full pipe while the parent polls `try_wait`.
+    #[test]
+    fn verbose_child_output_is_drained_not_timed_out() {
+        let task = ReplayTask {
+            id: "verbose".to_string(),
+            name: "verbose".to_string(),
+            prompt: "x".to_string(),
+            check: ReplayCheck::Contains {
+                text: "30000".to_string(),
+                negate: false,
+            },
+            exec: Some(TaskExec {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "seq 1 30000".to_string()],
+                env: std::collections::HashMap::new(),
+            }),
+        };
+        let out = TaskSpecReplayRunner::new(Duration::from_secs(30))
+            .run_transcript(&task, None)
+            .expect("verbose child must complete, not time out");
+        assert!(out.len() > 65_536, "output must exceed the pipe buffer");
+        assert!(out.contains("30000"));
+    }
+
+    /// The staging dir is removed when the run ends, so a pass leaves
+    /// nothing behind for the next pass to sweep.
+    #[test]
+    fn staging_dir_removed_after_run() {
+        let task = ReplayTask {
+            id: "cleanup".to_string(),
+            name: "cleanup".to_string(),
+            prompt: "x".to_string(),
+            check: ReplayCheck::Contains {
+                text: "hi".to_string(),
+                negate: false,
+            },
+            exec: Some(TaskExec {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "echo hi".to_string()],
+                env: std::collections::HashMap::new(),
+            }),
+        };
+        TaskSpecReplayRunner::new(Duration::from_secs(30))
+            .run_transcript(&task, Some(&skill_proposal("cleanup-probe-replay", "probe")))
+            .expect("run succeeds");
+        let leftovers: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("cleanup-probe-replay")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "staging leftovers: {leftovers:?}");
+    }
+}
