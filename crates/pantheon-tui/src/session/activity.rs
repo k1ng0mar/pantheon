@@ -319,11 +319,14 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     // Context meter: `Context [████░░░░] 153.0k / 76% used`. The fill
     // blends with the #121212/#1E1E1E theme; the track is a dark solid.
     let live = state.tokens_used + state.turn_estimate;
-    let pct = if state.tokens_max > 0 {
-        (100.0 * live as f64 / state.tokens_max as f64).clamp(0.0, 100.0)
+    let raw_pct = if state.tokens_max > 0 {
+        100.0 * live as f64 / state.tokens_max as f64
     } else {
         0.0
     };
+    // The bar is clamped to full, but the suffix keeps the raw number
+    // past 100% so an over-limit context reads as over, not as 100%.
+    let pct = raw_pct.clamp(0.0, 100.0);
     let over = pct >= 80.0;
     lines.push(Line::from(Span::styled("Context", dim)));
     // Adaptive bar: the suffix text is fixed first, the bar takes what
@@ -331,7 +334,7 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     let suffix = format!(
         "{} / {:.0}% used",
         super::statusbar::fmt_count(live as u64),
-        pct
+        raw_pct
     );
     let cells = inner
         .saturating_sub(suffix.chars().count() + 4)
@@ -513,7 +516,7 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     lines
 }
 
-/// Paint the bottom sidebar card: the agent view. Tail-anchored: the
+/// Paint the bottom sidebar card: the agent view. Top-anchored: the
 /// header always stays, and the latest activity wins when the card
 /// overflows.
 pub fn render_agent_card(f: &mut Frame, area: Rect, state: &TuiState) {
