@@ -120,7 +120,13 @@ pub fn request(
     // Reasoning effort is opt-in only: `Off` leaves the body exactly as
     // before, so endpoints that reject unknown fields never see one.
     // Mapped to OpenAI's `reasoning_effort` verbatim (low|medium|high).
-    if !matches!(reasoning, pantheon_api::model::ReasoningLevel::Off) {
+    // A model the catalog *knows* cannot take reasoning never gets
+    // the field: sending it earns a non-retryable 400, and the chain
+    // then burns every fallback with the same poisoned body.
+    // Uncatalogued models keep the old behaviour (unknown, not known-bad).
+    let known_no_reasoning = crate::catalog::model_known(provider_id, model)
+        && !crate::catalog::model_meta(provider_id, model).reasoning;
+    if !matches!(reasoning, pantheon_api::model::ReasoningLevel::Off) && !known_no_reasoning {
         let level = reasoning.as_str();
         let mapped = crate::catalog::provider(provider_id)
             .and_then(|p| p.reasoning_map.get(level).cloned())
@@ -233,25 +239,23 @@ fn stream_err_from(v: &serde_json::Value) -> PantheonError {
 fn usage_of(v: &serde_json::Value) -> Option<ModelUsage> {
     let u = v.get("usage")?;
     if !u.is_null() {
-        // Cached prompt tokens count toward context and are billed: fold
-        // them into the input total so cost accounting never understates
-        // a cached turn. Conservative for the cost ceiling - OpenAI
-        // documents `prompt_tokens` as already inclusive of cached
-        // tokens, so for first-party OpenAI this slightly overcounts;
-        // the ceiling is an upper bound, and overcounting is its safe
-        // direction.
-        let cached = u
-            .pointer("/prompt_tokens_details/cached_tokens")
+        // OpenAI documents `prompt_tokens` as already inclusive of
+        // cached tokens; adding `cached_tokens` on top double-counted
+        // every cached turn. Input is `prompt_tokens` verbatim.
+        let prompt = u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+        let output = u
+            .get("completion_tokens")
             .and_then(|x| x.as_u64())
             .unwrap_or(0);
-        let prompt = u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+        let total = u
+            .get("total_tokens")
+            .and_then(|x| x.as_u64())
+            .filter(|t| *t > 0)
+            .unwrap_or(prompt + output);
         return Some(ModelUsage {
-            input_tokens: prompt + cached,
-            output_tokens: u
-                .get("completion_tokens")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0),
-            total_tokens: u.get("total_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            input_tokens: prompt,
+            output_tokens: output,
+            total_tokens: total,
             cost_usd: None,
         });
     }
@@ -282,10 +286,18 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
             });
         }
     }
+    let text = msg
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
     let tcs = msg.get("tool_calls").and_then(|t| t.as_array());
     match tcs {
         Some(calls) if !calls.is_empty() => {
-            let mut out = Vec::with_capacity(calls.len());
+            // Collect + validate first, then emit (see the Anthropic
+            // parser): a late missing-name error must not leave early
+            // ToolCall events behind for a retry to duplicate.
+            let mut parsed: Vec<(String, String, String)> = Vec::with_capacity(calls.len());
             for (i, c) in calls.iter().enumerate() {
                 let id = c
                     .get("id")
@@ -312,6 +324,11 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                         false,
                     ));
                 }
+                let args = crate::http::normalise_tool_args(&args, finish_reason.as_deref())?;
+                parsed.push((id, name, args));
+            }
+            let mut out = Vec::with_capacity(parsed.len());
+            for (id, name, args) in parsed {
                 sink.emit(ModelEvent::ToolCall {
                     id: id.clone(),
                     name: name.clone(),
@@ -323,9 +340,13 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
                     args,
                 });
             }
+            if !text.is_empty() {
+                sink.emit(ModelEvent::TextDelta { text: text.clone() });
+            }
             Ok(AdapterTurn {
                 outcome: TurnOutcome::Tools {
                     calls: out,
+                    text,
                     tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
                     cost_cents: usage
                         .as_ref()
@@ -338,11 +359,6 @@ pub fn parse_response(body: &str, sink: &dyn ModelEventSink) -> Result<AdapterTu
             })
         }
         _ => {
-            let text = msg
-                .get("content")
-                .and_then(|c| c.as_str())
-                .unwrap_or("")
-                .to_string();
             if !text.is_empty() {
                 sink.emit(ModelEvent::TextDelta { text: text.clone() });
             }
@@ -376,10 +392,12 @@ impl OpenStream {
     /// Feed one SSE `data:` payload. Emits TextDelta/ReasoningDelta as
     /// chunks arrive; tool fragments accumulate until `finish`.
     pub fn push(&mut self, payload: &str, sink: &dyn ModelEventSink) -> Result<(), PantheonError> {
-        if payload == "[DONE]" {
+        // Fully trimmed: `data: [DONE] ` (trailing space) previously
+        // fell through to JSON parsing instead of terminating.
+        if payload.trim() == "[DONE]" {
             return Ok(());
         }
-        let v: serde_json::Value = serde_json::from_str(payload)
+        let v: serde_json::Value = serde_json::from_str(payload.trim())
             .map_err(|e| perr("PROVIDER_PARSE", format!("stream chunk: {e}"), false))?;
         // Some gateways/proxies send mid-stream errors as SSE `data:` events
         // with HTTP 200. Surface them as structured errors (mirrors the
@@ -469,7 +487,9 @@ impl OpenStream {
                 finish_reason,
             });
         }
-        let mut out = Vec::with_capacity(self.tools.len());
+        // Validate everything before emitting anything (see the
+        // single-shot parser), and normalise empty args to `"{}"`.
+        let mut parsed: Vec<(String, String, String)> = Vec::with_capacity(self.tools.len());
         for (idx, (mut id, name, args)) in self.tools {
             if id.is_empty() {
                 id = format!("call_{idx}");
@@ -481,6 +501,11 @@ impl OpenStream {
                     false,
                 ));
             }
+            let args = crate::http::normalise_tool_args(&args, finish_reason.as_deref())?;
+            parsed.push((id, name, args));
+        }
+        let mut out = Vec::with_capacity(parsed.len());
+        for (id, name, args) in parsed {
             sink.emit(ModelEvent::ToolCall {
                 id: id.clone(),
                 name: name.clone(),
@@ -495,6 +520,7 @@ impl OpenStream {
         Ok(AdapterTurn {
             outcome: TurnOutcome::Tools {
                 calls: out,
+                text: self.text,
                 tokens: usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0),
                 cost_cents: usage
                     .as_ref()
@@ -725,5 +751,99 @@ mod stream_truncation_tests {
             done: true,
         };
         assert!(stream(&t, wire_req(), &NoopModelSink).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod fix_model_tests {
+    use super::*;
+    use crate::model_event::NoopModelSink;
+
+    struct RecordingSink {
+        tool_calls: std::sync::Mutex<Vec<String>>,
+    }
+    impl ModelEventSink for RecordingSink {
+        fn emit(&self, event: ModelEvent) {
+            if let ModelEvent::ToolCall { name, .. } = event {
+                self.tool_calls.lock().unwrap().push(name);
+            }
+        }
+    }
+
+    #[test]
+    fn push_trims_done_terminator() {
+        let mut s = OpenStream::default();
+        let sink = NoopModelSink;
+        assert!(s.push(" [DONE] ", &sink).is_ok());
+        assert!(s.push("[DONE] ", &sink).is_ok());
+    }
+
+    #[test]
+    fn streamed_empty_args_normalise_to_empty_object() {
+        let mut s = OpenStream::default();
+        let sink = NoopModelSink;
+        s.push(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bare","arguments":""}}]},"finish_reason":null}]}"#,
+            &sink,
+        )
+        .unwrap();
+        s.finish_reason = Some("tool_calls".into());
+        let turn = s.finish(&sink).unwrap();
+        match turn.outcome {
+            TurnOutcome::Tools { calls, .. } => assert_eq!(calls[0].args, "{}"),
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncated_tool_args_are_truncation_not_tool_error() {
+        let mut s = OpenStream::default();
+        let sink = NoopModelSink;
+        s.push(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"t","arguments":"{\"x\":"}}]},"finish_reason":"length"}]}"#,
+            &sink,
+        )
+        .unwrap();
+        let err = match s.finish(&sink) {
+            Ok(_) => panic!("cut-off args must fail"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, "PROVIDER_TRUNCATED");
+    }
+
+    #[test]
+    fn text_beside_tool_calls_survives_in_outcome() {
+        let body = r#"{"choices":[{"message":{"content":"working on it","tool_calls":[{"id":"c","type":"function","function":{"name":"read","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let turn = parse_response(body, &NoopModelSink).unwrap();
+        match turn.outcome {
+            TurnOutcome::Tools { text, calls, .. } => {
+                assert_eq!(text, "working on it");
+                assert_eq!(calls.len(), 1);
+            }
+            other => panic!("expected Tools, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_response_emits_nothing_on_late_missing_name() {
+        let sink = RecordingSink {
+            tool_calls: std::sync::Mutex::new(vec![]),
+        };
+        let body = r#"{"choices":[{"message":{"tool_calls":[
+            {"id":"a","type":"function","function":{"name":"good","arguments":"{}"}},
+            {"id":"b","type":"function","function":{"arguments":"{}"}}
+        ]},"finish_reason":"tool_calls"}]}"#;
+        assert!(parse_response(body, &sink).is_err());
+        assert!(sink.tool_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn usage_does_not_double_count_cached_tokens() {
+        let body = r#"{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":5,"total_tokens":105}}"#;
+        let turn = parse_response(body, &NoopModelSink).unwrap();
+        let u = turn.usage.expect("usage present");
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.total_tokens, 105);
     }
 }

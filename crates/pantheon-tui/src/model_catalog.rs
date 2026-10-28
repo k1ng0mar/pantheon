@@ -203,6 +203,10 @@ pub struct CatalogModel {
     pub context_limit: Option<u64>,
     pub input_per_mtok_usd: Option<f64>,
     pub output_per_mtok_usd: Option<f64>,
+    /// Catalog capability flags; `None` on rows built before flags
+    /// were threaded (live-only rows stay `None` — unknown, not false).
+    pub vision: Option<bool>,
+    pub reasoning: Option<bool>,
 }
 
 /// One picker row: the union of curated and live.
@@ -214,6 +218,9 @@ pub struct ModelRow {
     pub output_per_mtok_usd: Option<f64>,
     /// True when the id came from the catalog (curated metadata wins).
     pub curated: bool,
+    /// Catalog capability flags (`None` = unknown: live-only rows).
+    pub vision: Option<bool>,
+    pub reasoning: Option<bool>,
 }
 
 /// Union by model id. Curated entries win on metadata (context limit,
@@ -229,6 +236,8 @@ pub fn merge_model_rows(curated: &[CatalogModel], live: &[LiveModel]) -> Vec<Mod
             input_per_mtok_usd: c.input_per_mtok_usd,
             output_per_mtok_usd: c.output_per_mtok_usd,
             curated: true,
+            vision: c.vision,
+            reasoning: c.reasoning,
         })
         .collect();
     for l in live {
@@ -241,6 +250,8 @@ pub fn merge_model_rows(curated: &[CatalogModel], live: &[LiveModel]) -> Vec<Mod
             input_per_mtok_usd: l.input_per_mtok_usd,
             output_per_mtok_usd: l.output_per_mtok_usd,
             curated: false,
+            vision: None,
+            reasoning: None,
         });
     }
     rows
@@ -308,6 +319,8 @@ mod tests {
             input_per_mtok_usd: inp,
             output_per_mtok_usd: out,
             curated: true,
+            vision: None,
+            reasoning: None,
         }
     }
 

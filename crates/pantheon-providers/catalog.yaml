@@ -61,11 +61,11 @@ providers:
     api_mode: anthropic
     base_env: PANTHEON_BASE_ANTHROPIC
     key_env: ANTHROPIC_API_KEY
-    reasoning_map:
-      low: low
-      medium: medium
-      high: high
-      max: high
+    # No reasoning_map here: the Anthropic adapter builds a thinking
+    # budget from the level directly and never reads this map (it has
+    # no provider id at request time), so a map row was dead config
+    # that implied a mapping that never happened. OpenAI-mode
+    # providers (e.g. DeepSeek) keep theirs: that adapter does read it.
     prominent: true
     tag: Major frontier lab, native Messages API
     models:

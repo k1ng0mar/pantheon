@@ -300,6 +300,36 @@ pub fn model(provider_id: &str, model_id: &str) -> Option<&'static ModelMeta> {
     })
 }
 
+/// Canonical wire id for a model: an alias match returns the row's
+/// real `model` id (e.g. `opus` → `claude-opus-4-8`); anything else
+/// passes through unchanged. The chain sends the canonical id: the
+/// old code looked the alias up for limits but sent the alias on the
+/// wire, which Anthropic rejects.
+pub fn canonical_model(provider_id: &str, model_id: &str) -> String {
+    model(provider_id, model_id)
+        .map(|m| m.model.clone())
+        .unwrap_or_else(|| model_id.to_string())
+}
+
+/// Whether the catalog (or a user-registered custom) actually knows
+/// this model. Distinct from `model_meta`, whose conservative
+/// defaults make unknown models look like known non-reasoning ones.
+pub fn model_known(provider_id: &str, model_id: &str) -> bool {
+    if model(provider_id, model_id).is_some() {
+        return true;
+    }
+    if let Ok(customs) = CUSTOM.read() {
+        if customs
+            .iter()
+            .flat_map(|p| p.models.iter())
+            .any(|m| m.provider == provider_id && m.model == model_id)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Model metadata with conservative defaults for unknown models:
 /// context unknown, tools on, vision off, reasoning off, streaming on,
 /// cost unknown.
