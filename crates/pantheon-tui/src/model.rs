@@ -2093,3 +2093,46 @@ fn run_aux_slot_list(dd: &std::path::Path) {
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_choice_preserves_timeout_ms_and_reasoning() {
+        // A model pick rebuilds `[model]` with the new provider/model;
+        // a timeout or reasoning level the user chose must survive it,
+        // exactly like the fallbacks do — never silently reset.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dd = std::env::temp_dir().join(format!(
+            "pantheon-model-pick-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dd).unwrap();
+        std::fs::write(
+            dd.join("config.toml"),
+            "[model]\nprovider = \"old-provider\"\nmodel = \"old-model\"\nreasoning = \"high\"\ntimeout_ms = 45000\n",
+        )
+        .unwrap();
+        let choice = ModelChoice {
+            provider: "new-provider".to_string(),
+            model: "new-model".to_string(),
+            base_url: None,
+            api_mode: ApiMode::OpenAi,
+            key_env: "PANTHEON_API_KEY".to_string(),
+            raw_keys: None,
+            target: Target::Default,
+        };
+        save_choice(&dd, &choice).unwrap();
+        let cfg = Config::load_for_save(&dd).unwrap();
+        let m = cfg.model.expect("model section survives the pick");
+        assert_eq!(m.provider, "new-provider");
+        assert_eq!(m.model, "new-model");
+        assert_eq!(m.reasoning.as_deref(), Some("high"));
+        assert_eq!(m.timeout_ms, Some(45000));
+        std::fs::remove_dir_all(&dd).ok();
+    }
+}
