@@ -130,37 +130,56 @@ pub fn nightly_set_enabled(app: &App, req: &Request) -> Response {
     };
     // A missing config.toml starts from an empty document (equivalent to
     // the defaults for this write); a present-but-unparseable one is a
-    // 500, never a silent default.
+    // 500, never a silent default. The write is format-preserving
+    // (toml_edit over the raw text), so toggling nightly no longer
+    // strips the file's comments the way the old re-serialize did.
     let path = app.data_dir.join("config.toml");
-    let mut doc: toml::Value = if path.exists() {
-        let raw = match std::fs::read_to_string(&path) {
+    let raw = if path.exists() {
+        match std::fs::read_to_string(&path) {
             Ok(r) => r,
             Err(e) => {
                 return err_json(500, "CONFIG", &format!("read {}: {e}", path.display()));
             }
-        };
+        }
+    } else {
+        String::new()
+    };
+    let mut parsed: toml::Value = toml::Value::Table(toml::map::Map::new());
+    if !raw.is_empty() {
         match toml::from_str::<toml::Value>(&raw) {
-            Ok(d) => d,
+            Ok(d) => {
+                if let Some(n) = d.get("nightly") {
+                    if !n.is_table() {
+                        return bad_json("[nightly] exists but is not a table");
+                    }
+                }
+                parsed = d;
+            }
             Err(e) => {
                 return err_json(500, "CONFIG", &format!("parse {}: {e}", path.display()));
             }
         }
-    } else {
-        toml::Value::Table(toml::map::Map::new())
+    }
+    let mut changes = std::collections::BTreeMap::new();
+    changes.insert("nightly.enabled".to_string(), toml::Value::Boolean(enabled));
+    // A preserving edit that cannot land (e.g. a dotted-key document)
+    // falls back to the old re-serialization, which is valid but loses
+    // comments - never a corrupt file, never a failed toggle.
+    let text = match crate::config::apply_edits_preserving(&raw, &changes) {
+        Ok(t) => t,
+        Err(_) => {
+            let table = parsed
+                .as_table_mut()
+                .expect("parsed config root is a table");
+            let nightly = table
+                .entry("nightly".to_string())
+                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+            if let Some(nightly_table) = nightly.as_table_mut() {
+                nightly_table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
+            }
+            toml::to_string_pretty(&parsed).unwrap_or_default()
+        }
     };
-    let table = match doc.as_table_mut() {
-        Some(t) => t,
-        None => return err_json(500, "CONFIG", "config.toml root is not a table"),
-    };
-    let nightly = table
-        .entry("nightly".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    let nightly_table = match nightly.as_table_mut() {
-        Some(t) => t,
-        None => return bad_json("[nightly] exists but is not a table"),
-    };
-    nightly_table.insert("enabled".to_string(), toml::Value::Boolean(enabled));
-    let text = toml::to_string_pretty(&doc).unwrap_or_default();
     if let Err(e) = atomic_write(&path, &text) {
         return err_json(500, "CONFIG", &format!("write {}: {e}", path.display()));
     }

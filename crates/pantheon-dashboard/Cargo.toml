@@ -46,6 +46,8 @@ toml.workspace = true
 toml_edit = "0.25"
 # toml 0.8 re-exports Datetime only privately; parse datetimes directly.
 toml_datetime = "1"
+# Format-preserving edits for PUT /api/config (comments survive a write).
+toml_edit = "0.25"
 # Sync tungstenite (no TLS features - the dashboard is plain HTTP on
 # localhost); the browser take-control stream reuses the WS takeover
 # pattern live voice established in pantheon-gateway.
