@@ -117,6 +117,17 @@ fn verify_plugin_returns_canonical_runner_path() {
     std::fs::write(root.join("manifest.yaml"), "name: t\n").unwrap();
     std::fs::write(root.join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
 
+    // Canonical-bundled no longer covers a hand-written fixture dir
+    // under `bundled/`: record a real approval for the fixture bytes
+    // (scope: the dir above `bundled/`, i.e. the link target's parent
+    // here) so verification reaches the canonical-path check.
+    pantheon_api::approval::record_approval_for(
+        &tmp.path().join("link"),
+        "t",
+        "0.1.0",
+        &root,
+    )
+    .unwrap();
     let out = pantheon_exec::plugins::verify_plugin(&plugin).unwrap();
     // BEFORE FIX: returned root.join("run.sh") (through the symlink).
     // AFTER: the canonical path the containment check actually proved.
@@ -166,6 +177,10 @@ fn spawn_execs_verified_target_despite_symlink_swap() {
         root: plug.clone(),
     };
     std::fs::write(plug.join("manifest.yaml"), "name: t\n").unwrap();
+
+    // Same approval-gate point as above: the fixture dir is not
+    // canonical-bundled, so approve its bytes before verifying.
+    pantheon_api::approval::record_approval_for(tmp.path(), "t", "0.1.0", &plug).unwrap();
 
     // Verify: binds the canonical target (good.sh).
     let verified = pantheon_exec::plugins::verify_plugin(&plugin).unwrap();

@@ -156,7 +156,9 @@ fn tool_allowed_filters_by_capability() {
 fn verify_rejects_dotdot_runner() {
     let d = tempdir().unwrap();
     for bad in ["../evil.sh", "sub/../../evil.sh"] {
-        let err = verify_plugin(&plugin_with_runner(d.path(), bad)).unwrap_err();
+        let plugin = plugin_with_runner(d.path(), bad);
+        approve_runner_fixture(d.path(), &plugin);
+        let err = verify_plugin(&plugin).unwrap_err();
         assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER", "{bad:?}");
     }
 }
@@ -173,7 +175,9 @@ fn verify_rejects_dotdot_runner_windows_separator() {
 #[test]
 fn verify_rejects_absolute_runner() {
     let d = tempdir().unwrap();
-    let err = verify_plugin(&plugin_with_runner(d.path(), "/bin/sh")).unwrap_err();
+    let plugin = plugin_with_runner(d.path(), "/bin/sh");
+    approve_runner_fixture(d.path(), &plugin);
+    let err = verify_plugin(&plugin).unwrap_err();
     assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
 }
 
@@ -181,7 +185,9 @@ fn verify_rejects_absolute_runner() {
 fn verify_rejects_empty_runner() {
     let d = tempdir().unwrap();
     for bad in ["", "   "] {
-        let err = verify_plugin(&plugin_with_runner(d.path(), bad)).unwrap_err();
+        let plugin = plugin_with_runner(d.path(), bad);
+        approve_runner_fixture(d.path(), &plugin);
+        let err = verify_plugin(&plugin).unwrap_err();
         assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER", "{bad:?}");
     }
 }
@@ -194,6 +200,7 @@ fn verify_rejects_symlinked_runner_escape() {
     let d = tempdir().unwrap();
     let plugin = plugin_with_runner(d.path(), "link.sh");
     std::os::unix::fs::symlink("/bin/true", plugin.root.join("link.sh")).unwrap();
+    approve_runner_fixture(d.path(), &plugin);
     let err = verify_plugin(&plugin).unwrap_err();
     assert_eq!(err.code, "PLUGIN_UNSAFE_RUNNER");
 }
@@ -208,6 +215,7 @@ fn verify_accepts_nested_relative_runner() {
         "#!/bin/sh\necho hi\n",
     )
     .unwrap();
+    approve_runner_fixture(d.path(), &plugin);
     let out = verify_plugin(&plugin).unwrap();
     // verify_plugin returns the CANONICAL runner path (symlinks resolved):
     // the containment proof is about this path, so it is the only safe
@@ -247,9 +255,18 @@ fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>)
     }
 }
 
+/// Runner-safety tests must pass the approval gate to reach the
+/// runner checks: a hand-written fixture dir under `bundled/` is
+/// path-bundled but NOT canonical-bundled (registry-verified), so it
+/// no longer skips approval. Record a real approval for the fixture
+/// bytes after all fixture files are written, before verifying.
+fn approve_runner_fixture(d: &Path, plugin: &DiscoveredPlugin) {
+    pantheon_api::approval::record_approval_for(d, "t", "0.1.0", &plugin.root).unwrap();
+}
+
 fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
-    // First-party ("bundled") location: skips the third-party approval gate
-    // so these runner-safety tests don't depend on the approval store.
+    // Bundled-path location (see approve_runner_fixture: callers
+    // record a real approval for the fixture bytes).
     let proot = root.join("bundled").join("t");
     std::fs::create_dir_all(&proot).unwrap();
     DiscoveredPlugin {

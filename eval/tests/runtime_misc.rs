@@ -261,11 +261,12 @@ fn skill_exec_description_says_none_when_no_executables_declared() {
     assert!(desc.contains("/tmp/skills-rt/plain"), "{desc}");
 }
 
-/// Extra capabilities follow the declared side effects: a read
-/// executable needs only the static read capability, a write
-/// executable additionally requires ShellExecute (the normal approval
-/// path); unresolvable calls fail closed to the static capability and
-/// the executor rejects the call itself.
+/// Extra capabilities follow the declared side effects, on top of
+/// the static read capability every skill_exec call carries - and
+/// since the security fix, ShellExecute too: running skill code is
+/// itself shell-equivalent, so even a read-declared executable must
+/// not run under FilesystemRead alone. Unresolvable calls fail closed
+/// to the static capability and the executor rejects the call itself.
 #[test]
 fn skill_exec_extra_capabilities_follow_side_effects() {
     let mut reg = ToolRegistry::new();
@@ -283,8 +284,12 @@ fn skill_exec_extra_capabilities_follow_side_effects() {
             &serde_json::json!({"skill": skill, "name": name}).to_string(),
         )
     };
-    // Read-side-effect: only the static FilesystemRead.
-    assert_eq!(caps("with-exec", "fetch"), vec![Capability::FilesystemRead]);
+    // Read-side-effect: the static FilesystemRead plus ShellExecute
+    // for executing the skill's code (see the doc comment above).
+    assert_eq!(
+        caps("with-exec", "fetch"),
+        vec![Capability::FilesystemRead, Capability::ShellExecute]
+    );
     // Write-side-effect: additionally ShellExecute (normal approval path).
     let write_caps = caps("with-exec", "write-it");
     assert!(
