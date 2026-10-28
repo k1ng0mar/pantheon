@@ -295,6 +295,12 @@ fn run_delivered_task(
                 std::process::exit(1);
             }
         };
+    // Headless turns serve real turns, so they get the same config
+    // wiring as the TUI, /agui, gateway, and resume paths: without
+    // this, a headless `run --deliver` turn silently ignored the
+    // [tools] enablement, [budget] tiers, and [delegation] section
+    // the interactive session honors.
+    crate::config::apply_session_config(&session, file_cfg.as_ref());
     // The dashboard passes the ledger's run mode on every turn child
     // (`--mode plan|build`); without it a resumed plan-mode run would
     // silently run in Build. Default (no flag) keeps Build.
