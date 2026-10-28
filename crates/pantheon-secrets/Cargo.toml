@@ -9,6 +9,7 @@ authors.workspace = true
 pantheon-api = { path = "../pantheon-api" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+toml = { workspace = true }
 aes-gcm = "0.11"
 rand.workspace = true
 zeroize = { version = "1", features = ["std"] }
