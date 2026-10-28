@@ -1,11 +1,32 @@
 //! TUI themes: named semantic color palettes.
 //!
-//! Every color the session renderer uses flows through [`Theme`]; nothing
-//! outside this module names a raw [`Color`] for the conversation view.
+//! Every color the conversation view (transcript, composer, sidebar,
+//! tab bar) uses flows through this module: [`Theme`] fields for the
+//! per-theme palette, and the fixed chrome constants below for values
+//! that are the same in every theme (divider tint, meter track,
+//! todo-card palette). Nothing outside this module names a raw
+//! [`Color`] for the conversation view. Two deliberate exceptions:
+//! modal widget chrome in `render.rs` (pickers/overlays, not the
+//! conversation view) and the splash wordmark gradient, whose colors
+//! are computed by interpolation, not picked from a palette.
 //! Three built-ins ship; `/theme [name]` switches live and persists the
 //! choice in `[tui]` config.
 
 use ratatui::style::Color;
+
+/// Subtle column divider tint (sidebar divider column background).
+pub const DIVIDER_BG: Color = Color::Rgb(38, 38, 38);
+
+/// Unfilled meter track color for the sidebar context meter.
+pub const METER_TRACK: Color = Color::Rgb(52, 52, 62);
+
+/// Todo-card palette (previously literals in `todo_card.rs`).
+pub const TODO_PURPLE: Color = Color::Rgb(0xA7, 0x8B, 0xFA);
+pub const TODO_GREEN: Color = Color::Rgb(0x7E, 0xE7, 0x87);
+pub const TODO_ORANGE: Color = Color::Rgb(0xF0, 0xA3, 0x5E);
+pub const TODO_DIM_GRAY: Color = Color::Rgb(0x6B, 0x72, 0x80);
+pub const TODO_BLUE: Color = Color::Rgb(0x5B, 0x8C, 0xFF);
+pub const TODO_NEAR_BLACK: Color = Color::Rgb(0x0B, 0x0B, 0x0F);
 
 /// Semantic colors for the session view. Field names are roles, not
 /// hues: a theme redefines what "primary" means, renderers never branch
@@ -71,7 +92,10 @@ impl Theme {
             body: Color::Rgb(237, 237, 237),
             input_accent: Color::Rgb(147, 95, 255),
             bg: Color::Rgb(0, 0, 0),
-            panel: Color::Rgb(0, 0, 0),
+            // Distinct from bg: with panel == bg the sidebar wash
+            // was invisible and only the divider tint separated the
+            // columns. #121212 keeps the wash subtle but real.
+            panel: Color::Rgb(18, 18, 18),
         }
     }
 

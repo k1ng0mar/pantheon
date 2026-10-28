@@ -14,10 +14,15 @@
 //! - [`background_jobs_line`]: the `↓ N` footer indicator for background
 //!   work, and [`jump_to_latest_line`] for the scrolled-up affordance.
 //!
-//! Expansion state (`expanded`) is owned here as plain data. Wiring it to
-//! keys (Enter to expand/collapse) and feeding live durations belongs in
-//! `session.rs`, which the concurrent fix pass is editing - that
-//! integration is intentionally left for after it settles.
+//! Expansion state (`expanded`) is owned here as plain data. The live
+//! transcript path in `session.rs::render_block` renders through
+//! [`ToolCard`] (plus [`ThoughtView`] and [`ShellView`]); the older
+//! [`ToolView`] / [`EditView`] renderers and the
+//! [`activity_summary_line`] / [`background_jobs_line`] /
+//! [`run_stats_segment`] / [`jump_to_latest_line`] helpers are NOT
+//! session-integrated - they are reference renderers exercised by
+//! `examples/transcript_shots.rs` and their own unit tests. Do not
+//! document them as live session features.
 
 use std::time::Duration;
 

@@ -1890,6 +1890,77 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
     }
 }
 
+/// Find the pending (unstarted) tool card for a `ToolStarted` event,
+/// newest-first. Two identical concurrent calls announce two pending
+/// cards; the runtime start that arrives next belongs to the most
+/// recently announced one, so an oldest-first search adopted the
+/// wrong card (and the second start then rendered a duplicate).
+fn adopt_pending_card<'a>(
+    blocks: &'a mut [TranscriptBlock],
+    tool: &str,
+    args: &str,
+) -> Option<&'a mut TranscriptBlock> {
+    blocks.iter_mut().rev().find(|block| {
+        matches!(
+            &block.kind,
+            BlockKind::ToolCall {
+                name: pending_name,
+                args: pending_args,
+                started: None,
+                ..
+            } if pending_name == tool && pending_args == args
+        )
+    })
+}
+
+#[cfg(test)]
+mod pending_adoption_tests {
+    use super::*;
+
+    fn pending_card(call_id: &str) -> TranscriptBlock {
+        TranscriptBlock {
+            kind: BlockKind::ToolCall {
+                name: "shell".to_string(),
+                args: "ls".to_string(),
+                ok: None,
+                call_id: call_id.to_string(),
+                started: None,
+                duration: None,
+                error: None,
+                tokens: None,
+                expanded: false,
+                output: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn identical_concurrent_calls_adopt_newest_first() {
+        let mut blocks = vec![pending_card("first"), pending_card("second")];
+        let adopted = adopt_pending_card(&mut blocks, "shell", "ls").expect("pending card");
+        let BlockKind::ToolCall { call_id, .. } = &adopted.kind else {
+            panic!("adopted block is not a tool call");
+        };
+        assert_eq!(call_id, "second");
+        // A started card is not pending and is never re-adopted: the
+        // next start falls through to the older identical card.
+        if let BlockKind::ToolCall { started, .. } = &mut adopted.kind {
+            *started = Some(std::time::Instant::now());
+        }
+        let adopted = adopt_pending_card(&mut blocks, "shell", "ls").expect("first card");
+        let BlockKind::ToolCall { call_id, .. } = &adopted.kind else {
+            panic!("adopted block is not a tool call");
+        };
+        assert_eq!(call_id, "first");
+        if let BlockKind::ToolCall { started, .. } = &mut adopted.kind {
+            *started = Some(std::time::Instant::now());
+        }
+        // Nothing left pending, and other tools never match.
+        assert!(adopt_pending_card(&mut blocks, "shell", "ls").is_none());
+        assert!(adopt_pending_card(&mut blocks, "read", "ls").is_none());
+    }
+}
+
 impl TuiState {
     /// Whether a submitted UI action was an approval-card decision, by
     /// the action's kind in the displayed document. Used to clear the
@@ -2189,17 +2260,9 @@ impl TuiState {
                 // Provider streaming already announced the call before the
                 // runtime had its stable id. Adopt that pending card by the
                 // call's name and arguments instead of rendering a duplicate.
-                let pending = self.blocks.iter_mut().find(|block| {
-                    matches!(
-                        &block.kind,
-                        BlockKind::ToolCall {
-                            name: pending_name,
-                            args: pending_args,
-                            started: None,
-                            ..
-                        } if pending_name == tool && pending_args == args
-                    )
-                });
+                // Newest-first: with two identical concurrent calls the
+                // oldest-first search adopted the wrong card.
+                let pending = adopt_pending_card(&mut self.blocks, tool, args);
                 if let Some(block) = pending {
                     if let BlockKind::ToolCall {
                         args: saved_args,
@@ -3734,8 +3797,8 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
 
 /// Subtle column divider: a 1-cell column with a slightly lighter
 /// background tint than the surrounding #121212/#1E1E1E. No glyphs
-/// the box-drawing ban still stands.
-const DIVIDER_BG: Color = Color::Rgb(38, 38, 38);
+/// the box-drawing ban still stands. The tint itself lives in the
+/// theme module ([`theme::DIVIDER_BG`]).
 
 /// Session body: single-column base — transcript + input block. At
 /// ≥160 cols with the sidebar toggled on, a 25% sidebar appears on
@@ -3756,7 +3819,7 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
         let right = Rect::new(area.x + left_w + 1, area.y, side_w, area.height);
         render_left(state, f, left);
         f.render_widget(
-            Paragraph::new("").style(Style::default().bg(DIVIDER_BG)),
+            Paragraph::new("").style(Style::default().bg(theme::DIVIDER_BG)),
             divider,
         );
         render_sidebar(f, right, state);
@@ -4505,6 +4568,11 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Empty-draft placeholder, shared by the composer box and the
+/// tiny-terminal fallback row: the two used to disagree ("Ask
+/// anything, ..." vs "Ask anything, 'Fix broken tests'").
+const COMPOSER_PLACEHOLDER: &str = "Ask anything, 'Fix broken tests'";
+
 /// Draw the input box at the bottom.
 /// The composer text with its cursor marker, no chrome. Shared by the
 /// bottom input row and the splash's centered input so both always show
@@ -4583,7 +4651,7 @@ fn composer_line_spans(
     // the raw draft instead.
     if state.input.is_empty() && first {
         spans.push(Span::styled(
-            "Ask anything, ...",
+            COMPOSER_PLACEHOLDER,
             Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
         ));
         if state.is_inputting {
@@ -4675,7 +4743,7 @@ fn bordered_row(
 fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
     if state.input.is_empty() {
         let mut spans = vec![Span::styled(
-            "Ask anything, 'Fix broken tests'",
+            COMPOSER_PLACEHOLDER,
             Style::default().fg(th.dim).add_modifier(Modifier::ITALIC),
         )];
         if state.is_inputting {
@@ -5067,8 +5135,10 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
 /// rect is painted with the panel wash first; column separation is
 /// the divider column's bg tint - zero borders, zero box-drawing.
 /// No title/mode header: those already live in the tab bar and the
-/// composer's provider row. The agent view pins to the bottom (tail-anchored: the
-/// latest activity always wins).
+/// composer's provider row. The agent view is top-anchored (see
+/// `render_agent_card`: the header stays and middle lines drop when
+/// the card overflows, so the latest activity wins) - it does not pin
+/// to the bottom, despite what this comment used to claim.
 fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     // Panel wash over the whole rect: this fill IS the column separation.
@@ -5625,6 +5695,28 @@ fn click_tab_bar(state: &mut TuiState, session: &Arc<Session>, col: u16, row: u1
                 }
                 // Clicking the active tab: swallow, don't toggle blocks.
                 Some(_) => true,
+                None => false,
+            }
+        }
+        Some(crate::tabs::TabHit::Close(i)) => {
+            let id = state.tabs.tabs().get(i).map(|t| t.run_id.clone());
+            match id {
+                Some(id) if id == state.session_id => {
+                    close_active_tab(state, session);
+                    refresh_tabs(state, session);
+                    true
+                }
+                // Parking an inactive tab must not switch to it first:
+                // its draft is not the composer's draft.
+                Some(id) => {
+                    state.open_tabs.retain(|t| t != &id);
+                    state.tabs.remove(&id);
+                    state.add_status(format!(
+                        "closed tab {id} (run parked, reopen via /sessions)"
+                    ));
+                    refresh_tabs(state, session);
+                    true
+                }
                 None => false,
             }
         }
@@ -13944,6 +14036,17 @@ mod streaming_response_tests {
         assert!(text.contains("second line"), "cursor line must show: {text}");
         assert!(text.contains("L2/3"), "multi-line marker missing: {text}");
         assert!(!text.contains("first line"), "first line must not show: {text}");
+    }
+
+    #[test]
+    fn composer_prompt_placeholder_matches_fallback() {
+        let mut state = test_state();
+        state.set_composer_text("".into());
+        let spans = composer_prompt_spans(&state, &state.theme, 60);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        // The fallback row renders COMPOSER_PLACEHOLDER by
+        // construction; the box must show the same string.
+        assert!(text.contains(COMPOSER_PLACEHOLDER), "got: {text}");
     }
 
     #[test]

@@ -308,6 +308,10 @@ const DOT_IDLE: &str = "○";
 pub enum TabHit {
     /// Switch to tab N (index into [`TabList::tabs`]).
     Switch(usize),
+    /// Close tab N: the active tab's trailing `×`. Kept separate from
+    /// [`TabHit::Switch`] so clicking `×` closes instead of switching
+    /// (a no-op on the active tab, which is the only tab that shows it).
+    Close(usize),
     /// The trailing `+`: open a new session tab.
     NewTab,
 }
@@ -393,7 +397,16 @@ pub fn render_tab_bar(
             x += sep_w as u16;
         }
         let w = widths[i] as u16;
-        hits.push((x, x + w, TabHit::Switch(i)));
+        if i == active {
+            // Active segment: " ● " (3) + label + " × " (3). The ×
+            // gets its own hit: inside the Switch range it could only
+            // ever switch to the already-active tab.
+            let label_w = tabs.tabs()[i].label().chars().count() as u16;
+            hits.push((x, x + 3 + label_w, TabHit::Switch(i)));
+            hits.push((x + 3 + label_w, x + w, TabHit::Close(i)));
+        } else {
+            hits.push((x, x + w, TabHit::Switch(i)));
+        }
         x += w;
         let (dot, dot_color) = if tab.approval {
             (DOT_APPROVAL, theme.warning)
@@ -459,6 +472,40 @@ mod tests {
             Some(TabAction::Prev)
         );
         assert_eq!(tab_key_action(KeyCode::BackTab, KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn active_tab_close_glyph_has_its_own_hit() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut list = TabList::default();
+        list.refresh_from_explicit(
+            &[
+                ("r1".to_string(), Some("Alpha".to_string())),
+                ("r2".to_string(), Some("Beta".to_string())),
+            ],
+            |_| false,
+            "r1",
+        );
+        let theme = crate::session::theme::Theme::pantheon();
+        let backend = TestBackend::new(80, 1);
+        let mut term = Terminal::new(backend).unwrap();
+        let hits: std::sync::Mutex<Vec<(u16, u16, TabHit)>> = std::sync::Mutex::new(vec![]);
+        term.draw(|f| {
+            let h = render_tab_bar(f, f.area(), &list, &theme);
+            *hits.lock().unwrap() = h;
+        })
+        .unwrap();
+        let hits = hits.lock().unwrap();
+        // Active "Alpha": " ○ " + "Alpha" + " × ". The × range must
+        // close, not switch (switching to the active tab is a no-op).
+        assert!(
+            hits.contains(&(0, 8, TabHit::Switch(0))),
+            "switch range wrong: {hits:?}"
+        );
+        assert!(
+            hits.contains(&(8, 11, TabHit::Close(0))),
+            "close range wrong: {hits:?}"
+        );
     }
 
     #[test]

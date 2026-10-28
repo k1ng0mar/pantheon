@@ -375,10 +375,18 @@ fn render_code(c: &Code, th: &Theme, width: usize, pad: &str, out: &mut Vec<Line
             Style::default().fg(th.dim),
         )));
     }
+    let total = c.code.lines().count();
     for line in c.code.lines().take(200) {
         out.push(Line::from(Span::styled(
             format!("{pad}{}", fit(line, width.saturating_sub(pad.len()).max(8))),
             Style::default().fg(th.code),
+        )));
+    }
+    if total > 200 {
+        // Silent truncation hid code: say how much was dropped.
+        out.push(Line::from(Span::styled(
+            format!("{pad}… {} more lines", total - 200),
+            Style::default().fg(th.dim),
         )));
     }
 }
@@ -667,20 +675,15 @@ fn render_layout(l: &Layout, th: &Theme, width: usize, pad: &str, out: &mut Vec<
             }
         }
         LayoutKind::Tabs => {
-            // v1: tab switching is local state the transcript doesn't
-            // keep; render the tab bar and the first tab's content.
+            // Tab switching is local state the transcript doesn't
+            // keep, so a tabs layout cannot be switched here. Hiding
+            // every tab but the first behind an unswitchable bar was
+            // worse: like Columns, stack every tab's content under
+            // the bar, each labelled, so nothing is unreachable.
             let bar: Vec<String> = l
                 .children
                 .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let label = tab_label(&c.component);
-                    if i == 0 {
-                        format!("[{label}]")
-                    } else {
-                        format!(" {label} ")
-                    }
-                })
+                .map(|c| format!(" {} ", tab_label(&c.component)))
                 .collect();
             out.push(Line::from(Span::styled(
                 format!(
@@ -689,8 +692,17 @@ fn render_layout(l: &Layout, th: &Theme, width: usize, pad: &str, out: &mut Vec<
                 ),
                 Style::default().fg(th.dim),
             )));
-            if let Some(first) = l.children.first() {
-                render_component(&first.component, th, width, out, pad.len());
+            for (i, child) in l.children.iter().enumerate() {
+                if i > 0 {
+                    out.push(Line::from(Span::styled(
+                        format!(
+                            "{pad}{}",
+                            "─".repeat(width.saturating_sub(pad.len()).clamp(8, 60))
+                        ),
+                        Style::default().fg(th.dim),
+                    )));
+                }
+                render_component(&child.component, th, width, out, pad.len());
             }
         }
     }
@@ -804,6 +816,48 @@ mod tests {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert!(w <= 20, "line exceeds width: {w}");
         }
+    }
+
+    #[test]
+    fn code_truncation_names_the_dropped_lines() {
+        let body = (0..250)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = text(&render_ui_node(
+            &node(Component::Code(Code {
+                code: body,
+                language: "rust".to_string(),
+                title: None,
+            })),
+            &Theme::dark(),
+            80,
+        ));
+        assert!(out.contains("… 50 more lines"), "got: {out}");
+        assert!(
+            !out.contains("line 249"),
+            "line 249 must be truncated: {out}"
+        );
+    }
+
+    #[test]
+    fn tabs_layout_stacks_all_tabs() {
+        let md = |title: &str, body: &str| {
+            node(Component::Markdown(Markdown {
+                text: body.to_string(),
+                title: Some(title.to_string()),
+            }))
+        };
+        let out = text(&render_ui_node(
+            &node(Component::Layout(Layout {
+                kind: LayoutKind::Tabs,
+                children: vec![md("One", "first tab body"), md("Two", "second tab body")],
+            })),
+            &Theme::dark(),
+            80,
+        ));
+        assert!(out.contains("first tab body"), "got: {out}");
+        assert!(out.contains("second tab body"), "got: {out}");
     }
 
     #[test]

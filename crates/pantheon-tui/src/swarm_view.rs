@@ -16,8 +16,9 @@ use std::sync::Arc;
 use crate::session::TuiState;
 use pantheon_runtime::session::Session;
 
-/// Maximum rendered depth of the delegation tree.
-pub const MAX_DEPTH: usize = 5;
+/// Maximum rendered delegations: the ledger records only direct
+// delegations, so this caps how many are listed, not a tree depth.
+pub const MAX_DELEGATIONS: usize = 5;
 
 /// One delegation seen in the ledger: profile name + completion state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,17 +73,17 @@ pub fn render_swarm(entries: &[LedgerEntry], run_id: &str) -> String {
         dels.len(),
         if dels.len() == 1 { "" } else { "s" }
     )];
-    for (i, d) in dels.iter().enumerate().take(MAX_DEPTH) {
-        let last = i + 1 == dels.len().min(MAX_DEPTH);
+    for (i, d) in dels.iter().enumerate().take(MAX_DELEGATIONS) {
+        let last = i + 1 == dels.len().min(MAX_DELEGATIONS);
         let branch = if last { "└─" } else { "├─" };
         let status = if d.done { "done" } else { "running" };
         lines.push(format!("{branch} {} ({status})", d.agent));
     }
-    if dels.len() > MAX_DEPTH {
+    if dels.len() > MAX_DELEGATIONS {
         lines.push(format!(
-            "... {} more (depth cap {})",
-            dels.len() - MAX_DEPTH,
-            MAX_DEPTH
+            "... {} more (delegation cap {})",
+            dels.len() - MAX_DELEGATIONS,
+            MAX_DELEGATIONS
         ));
     }
     lines.join("\n")

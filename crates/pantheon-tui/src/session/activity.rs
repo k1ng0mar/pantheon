@@ -18,7 +18,7 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -347,7 +347,7 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
             ('█', if over { th.failure } else { th.success })
         } else {
             // Solid dark track, blended with the panel wash.
-            ('█', Color::Rgb(52, 52, 62))
+            ('█', super::theme::METER_TRACK)
         };
         bar.push(Span::styled(ch.to_string(), Style::default().fg(color)));
     }
@@ -467,17 +467,18 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     }
 
     // Subagent sections, in spawn order, Running only: the sidebar is
-    // the live view, and done agents used to linger here (capped at
-    // 6, crowding live ones out). Done agents still render in the
-    // transcript's Swarm block, where history belongs. The live
-    // count (`active_subagent_count`, Running only, hidden at 0)
-    // already feeds the composer row.
+    // the live view, and done agents used to linger here (crowding
+    // live ones out). Done agents still render in the transcript's
+    // Swarm block, where history belongs. The live count
+    // (`active_subagent_count`, Running only, hidden at 0) already
+    // feeds the composer row. The sidebar shows the same cap as the
+    // record store ([`MAX_SUBAGENTS`]), not a second magic number.
     let subs: Vec<&SubAgentRecord> = state
         .subagents
         .iter()
         .filter(|r| r.parent_run_id == state.session_id && r.status == SubAgentStatus::Running)
         .collect();
-    for (i, rec) in subs.iter().take(6).enumerate() {
+    for (i, rec) in subs.iter().take(MAX_SUBAGENTS).enumerate() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("SUBAGENT {:02}", i + 1),
