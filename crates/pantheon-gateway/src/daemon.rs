@@ -364,8 +364,43 @@ fn pending_none(outbound: &Mutex<Vec<OutboundMessage>>) -> bool {
     outbound.lock().map(|q| q.is_empty()).unwrap_or(true)
 }
 
+/// Observer called before the daemon dispatches an inbound event to
+/// the sink: the `pre_gateway_dispatch` fire point. The gateway crate
+/// deliberately depends only on `pantheon-api` + `pantheon-storage`
+/// and so cannot reach the extension manager itself; hosts that own a
+/// manager (the TUI gateway) pass a closure that fires the hook there.
+/// Observer-class by contract: the return value is ignored and a
+/// panicking hook must never stop the dispatch that follows it.
+pub type PreDispatchHook = Arc<dyn Fn(&ChannelEvent) + Send + Sync>;
+
 /// Route one channel event to the sink. Returns the thread id it came from.
 pub fn route_event(sink: &dyn EventSink, event: &ChannelEvent) -> String {
+    route_event_with_hook(sink, event, None)
+}
+
+/// Like [`route_event`], but fires `hook` (when present) before the
+/// sink sees the event. A hook panic is caught and logged: dispatch
+/// proceeds, because an observer must never veto delivery by crashing.
+pub fn route_event_with_hook(
+    sink: &dyn EventSink,
+    event: &ChannelEvent,
+    hook: Option<&PreDispatchHook>,
+) -> String {
+    if let Some(hook) = hook {
+        let hook = Arc::clone(hook);
+        let event = event.clone();
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            hook(&event);
+        }))
+        .is_err()
+        {
+            eprintln!("gateway: pre-dispatch hook panicked; dispatching anyway");
+        }
+    }
+    route_event_inner(sink, event)
+}
+
+fn route_event_inner(sink: &dyn EventSink, event: &ChannelEvent) -> String {
     match (&event.approval, &event.scope) {
         (Some(answer), Some(scope)) => {
             sink.on_approval(
@@ -448,6 +483,7 @@ pub struct ChannelDaemon {
     pub poll_interval: Duration,
     pub long_poll_timeout: u64,
     state_path: PathBuf,
+    pre_dispatch: Option<PreDispatchHook>,
 }
 
 impl ChannelDaemon {
@@ -456,7 +492,15 @@ impl ChannelDaemon {
             poll_interval: Duration::from_secs(1),
             long_poll_timeout: 25,
             state_path,
+            pre_dispatch: None,
         }
+    }
+
+    /// Attach the pre-dispatch observer (see [`PreDispatchHook`]).
+    /// Absent = today's behavior: events go straight to the sink.
+    pub fn with_pre_dispatch(mut self, hook: PreDispatchHook) -> Self {
+        self.pre_dispatch = Some(hook);
+        self
     }
 
     /// Run until `stop` signals. `channels` are drained each tick (their
@@ -525,7 +569,7 @@ impl ChannelDaemon {
                         for outcome in &outcomes {
                             match outcome {
                                 VoiceOutcome::Event(event) => {
-                                    route_event(sink, event);
+                                    route_event_with_hook(sink, event, self.pre_dispatch.as_ref());
                                     if let Some(owner) = &telegram_owner {
                                         claimed
                                             .entry(event.thread_id.clone())
@@ -555,7 +599,7 @@ impl ChannelDaemon {
             // Drain every channel's inbox (webhook-fed Discord, bridges).
             for channel in &channels {
                 for event in channel.poll() {
-                    route_event(sink, &event);
+                    route_event_with_hook(sink, &event, self.pre_dispatch.as_ref());
                     claimed
                         .entry(event.thread_id.clone())
                         .or_insert_with(|| channel.name().to_string());
@@ -796,5 +840,71 @@ mod health_tests {
                 .len(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod pre_dispatch_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct RecSink {
+        order: std::sync::Arc<Mutex<Vec<String>>>,
+    }
+    impl EventSink for RecSink {
+        fn on_message(&self, _thread_id: &str, _sender: Option<&str>, _text: &str) {
+            self.order.lock().unwrap().push("sink".to_string());
+        }
+        fn on_approval(
+            &self,
+            _thread_id: &str,
+            _sender: Option<&str>,
+            _run_id: Option<&str>,
+            _scope: &str,
+            _grant: bool,
+        ) {
+            self.order.lock().unwrap().push("sink".to_string());
+        }
+    }
+
+    fn event() -> ChannelEvent {
+        ChannelEvent {
+            thread_id: "t1".to_string(),
+            run_id: None,
+            text: "hello".to_string(),
+            approval: None,
+            scope: None,
+            sender: Some("user-1".to_string()),
+        }
+    }
+
+    #[test]
+    fn pre_dispatch_hook_fires_before_the_sink_and_a_panicking_hook_does_not_block_dispatch() {
+        let order = std::sync::Arc::new(Mutex::new(vec![]));
+        let sink = RecSink {
+            order: order.clone(),
+        };
+        let seen = order.clone();
+        let hook: PreDispatchHook = std::sync::Arc::new(move |ev: &ChannelEvent| {
+            seen.lock().unwrap().push(format!("hook:{}", ev.text));
+        });
+        let thread = route_event_with_hook(&sink, &event(), Some(&hook));
+        assert_eq!(thread, "t1");
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["hook:hello".to_string(), "sink".to_string()],
+            "hook must fire before the sink dispatches"
+        );
+
+        // A panicking observer must never veto delivery: the sink
+        // still runs, and the panic is swallowed with a log line.
+        let panicking: PreDispatchHook = std::sync::Arc::new(|_ev: &ChannelEvent| panic!("boom"));
+        let order2 = std::sync::Arc::new(Mutex::new(vec![]));
+        let sink2 = RecSink {
+            order: order2.clone(),
+        };
+        let thread = route_event_with_hook(&sink2, &event(), Some(&panicking));
+        assert_eq!(thread, "t1");
+        assert_eq!(*order2.lock().unwrap(), vec!["sink".to_string()]);
     }
 }
