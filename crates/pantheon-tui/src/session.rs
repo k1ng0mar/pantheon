@@ -14677,7 +14677,7 @@ mod slash_dispatch_tests {
             "{lines:?}"
         );
         sess.supervisor.start_run("other-run").expect("start other");
-        handle_slash(&mut s, &sess, &tx, "/resume other-run");
+        handle_slash(&mut s, &sess, "/resume other-run", &tx);
         assert_eq!(s.session_id, "other-run");
         assert!(matches!(
             s.blocks.last().map(|b| &b.kind),
