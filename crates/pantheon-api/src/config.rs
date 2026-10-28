@@ -209,6 +209,50 @@ pub const TTS_BACKENDS: &[&str] = &[
     "fishaudio",
 ];
 
+/// `[browser] backend` ids the runtime can construct, mirroring
+/// `pantheon-web`'s `BackendKind::parse` (canonical ids plus the
+/// aliases it accepts). Same duplication caveat as [`STT_BACKENDS`]:
+/// `pantheon-api` cannot depend on `pantheon-web`.
+pub const BROWSER_BACKENDS: &[&str] = &[
+    "gsd",
+    "gsd-browser",
+    "chromiumoxide",
+    "chromium-oxide",
+    "native",
+    "cdp",
+    "steel",
+    "browserbase",
+    "playwright",
+    "playwright-cli",
+    "camofox",
+    "camoufox",
+];
+
+/// `[websearch] provider` ids the runtime can construct, mirroring
+/// `pantheon-web`'s `build_provider` match arms. Same duplication
+/// caveat as [`STT_BACKENDS`].
+pub const WEBSEARCH_PROVIDERS: &[&str] = &[
+    "tinyfish",
+    "tavily",
+    "exa",
+    "brave",
+    "firecrawl",
+    "ollama",
+    "perplexity",
+    "marginalia",
+    "searxng",
+    "exa_free",
+    "parallel_free",
+    "firecrawl_free",
+    "keenable_free",
+    "ddgs",
+];
+
+/// `[tui] theme` names the TUI can render, mirroring
+/// `pantheon-tui`'s `Theme::from_name`. Same duplication caveat as
+/// [`STT_BACKENDS`].
+pub const TUI_THEMES: &[&str] = &["pantheon", "dark", "light"];
+
 /// `[stt]` / `[tts]`: speech service selection. These are provider-plane
 /// services (a local binary or an HTTP endpoint), never model-policy
 /// entries - same shape as `[memory]`'s backend selection. Absent = the
@@ -978,8 +1022,10 @@ pub const MIN_CONTEXT_WINDOW: u32 = 32_000;
 ///
 /// The winner is then clamped to the model's known maximum output
 /// the clamp applies to user overrides too (`/tokens 20000` on a
-/// model capped at 8192 resolves to 8192, silently, no error). With
-/// no known maximum the winner stands as-is.
+/// model capped at 8192 resolves to 8192, no error). The clamp is
+/// not silent at the UI layer: the TUI surfaces it at `/tokens`
+/// set time and at `/model` switch time. With no known maximum
+/// the winner stands as-is.
 pub fn resolve_max_output_tokens(
     session: Option<u32>,
     budget: Option<u32>,
@@ -1335,8 +1381,11 @@ impl ToolGroup {
 ///
 /// Every field is `Option<bool>` with absent = enabled, so a config
 /// written before this section existed behaves exactly as before (all
-/// groups on). Session search has no field here: it is default-on and
-/// always registered.
+/// groups on). Two tools ride existing groups rather than their own:
+/// `session_search` is gated by `memory` (past-conversation recall)
+/// and the OAuth connector tools (`github_api`, `google_api`,
+/// `notion_api`, `spotify_api`) are gated by `plugins` (external
+/// integrations, like MCP server tools).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ToolsSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2972,6 +3021,15 @@ impl Config {
                             "custom_providers.{name}.api_mode {other:?} is not openai|anthropic"
                         )),
                     }
+                    // An endpoint with no URL is skipped silently at
+                    // registration, so a declared-but-unusable custom
+                    // provider used to look configured while doing
+                    // nothing.
+                    if sec.base_url.trim().is_empty() {
+                        problems.push(format!(
+                            "custom_providers.{name}.base_url is empty: the endpoint is skipped at registration"
+                        ));
+                    }
                 }
             }
         }
@@ -2995,6 +3053,200 @@ impl Config {
                             "gateway.channels.{name} declares no usable platform"
                         ));
                     }
+                    // A channel profile must name a declared agent
+                    // profile (same rule as the top-level `agent` key);
+                    // an undeclared one fails only when the channel
+                    // starts, with no hint at config time. An
+                    // explicitly-set-but-empty token secret is likewise
+                    // not the same as absent (absent falls back to the
+                    // platform's standard token).
+                    if let Some(p) = ch.profile.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    {
+                        if !self.agents.contains_key(p) {
+                            problems.push(format!(
+                                "gateway.channels.{name}.profile {p:?} is not declared; add [agents.{p}] or remove the profile setting"
+                            ));
+                        }
+                    }
+                    if let Some(t) = ch.token_secret.as_deref() {
+                        if t.trim().is_empty() {
+                            problems.push(format!(
+                                "gateway.channels.{name}.token_secret is empty; omit it to use the platform's standard token"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        // `[browser]`: an unknown backend id warns and falls back to
+        // gsd at registration, so the typo only surfaces as "why is
+        // gsd running". Flag it here like the `[stt]`/`[tts]`
+        // backend checks above.
+        if let Some(b) = &self.browser {
+            if let Some(backend) = b.backend.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            {
+                if !BROWSER_BACKENDS.contains(&backend.to_ascii_lowercase().as_str()) {
+                    problems.push(format!(
+                        "browser.backend {backend:?} is not {} (unknown ids fall back to gsd)",
+                        BROWSER_BACKENDS.join("|")
+                    ));
+                }
+            }
+        }
+        // `[websearch]`: an unknown provider id leaves `web_search`
+        // unregistered with a session-start warning. Flag it here so
+        // doctor names the typo instead.
+        if let Some(w) = &self.websearch {
+            if let Some(provider) = w.provider.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            {
+                if !WEBSEARCH_PROVIDERS.contains(&provider.to_ascii_lowercase().as_str()) {
+                    problems.push(format!(
+                        "websearch.provider {provider:?} is not {}",
+                        WEBSEARCH_PROVIDERS.join("|")
+                    ));
+                }
+            }
+        }
+        // `[temporal]`: an unparseable timezone falls back to UTC at
+        // runtime, so a typo silently shifts every temporal hint.
+        // Parse here with the same IANA table the runtime uses.
+        if let Some(t) = &self.temporal {
+            if let Some(tz) = t.timezone.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                if tz.parse::<chrono_tz::Tz>().is_err() {
+                    problems.push(format!(
+                        "temporal.timezone {tz:?} is not a parseable IANA timezone name (e.g. \"Africa/Lagos\")"
+                    ));
+                }
+            }
+        }
+        // `[swarm]`: a 0 cap does not mean "default" here (unlike
+        // `[budget].max_delegations`, which treats 0 as unset) - it is
+        // passed through verbatim, so 0 silently disables delegation
+        // for that dimension. Disabling delegation deliberately is
+        // `allow_child_spawn = false`, not a 0 cap.
+        if let Some(s) = &self.swarm {
+            if s.max_subagents == 0 {
+                problems.push(
+                    "swarm.max_subagents is 0: no sub-agent can ever spawn; use allow_child_spawn = false to disable delegation instead"
+                        .into(),
+                );
+            }
+            if s.max_depth == 0 {
+                problems.push(
+                    "swarm.max_depth is 0: no child can run (depth 0 is the primary itself); use allow_child_spawn = false to disable delegation instead"
+                        .into(),
+                );
+            }
+            if s.max_concurrent == 0 {
+                problems.push(
+                    "swarm.max_concurrent is 0: no sub-agent can run live; use allow_child_spawn = false to disable delegation instead"
+                        .into(),
+                );
+            }
+        }
+        // `[nightly]`: repair thresholds of 0 invert their meaning -
+        // every schedule (0 consecutive failures) and every unused
+        // tool (0 calls, 0 errors) counts as broken. A negative
+        // `max_age_days` can never match a recency window, so it
+        // silently disables memory promotion.
+        if let Some(n) = &self.nightly {
+            if n.repair_mcp_max_failures == Some(0) {
+                problems.push(
+                    "nightly.repair_mcp_max_failures is 0: every failed/backoff MCP server counts as broken"
+                        .into(),
+                );
+            }
+            if n.repair_schedule_max_failures == Some(0) {
+                problems.push(
+                    "nightly.repair_schedule_max_failures is 0: every scheduled job counts as broken"
+                        .into(),
+                );
+            }
+            if n.repair_tool_min_calls == Some(0) {
+                problems.push(
+                    "nightly.repair_tool_min_calls is 0: every unused tool (0 calls, 0 errors) counts as broken"
+                        .into(),
+                );
+            }
+            if n.max_age_days < 0 {
+                problems.push(format!(
+                    "nightly.max_age_days is {}: a negative recency window can never match, so memory promotion never runs",
+                    n.max_age_days
+                ));
+            }
+        }
+        // `[formatters]`: the runtime drops empty commands and empty
+        // extension keys silently, so a typo'd rule looks enabled
+        // while formatting nothing.
+        if let Some(f) = &self.formatters {
+            let mut keys: Vec<&String> = f.commands.keys().collect();
+            keys.sort();
+            for key in keys {
+                let normalized = key.trim().trim_start_matches('.');
+                if normalized.is_empty() {
+                    problems.push(
+                        "formatters.commands has an empty extension key (dropped at runtime)".into(),
+                    );
+                    continue;
+                }
+                if let Some(cmd) = f.commands.get(key) {
+                    if cmd.trim().is_empty() {
+                        problems.push(format!(
+                            "formatters.commands.{key:?} is empty (dropped at runtime)"
+                        ));
+                    }
+                }
+            }
+        }
+        // `[delegation]`: routes resolve at call time, so a route
+        // naming an undeclared profile, a duplicate name, or a
+        // default naming no route fails only when the model picks it.
+        if let Some(d) = &self.delegation {
+            let mut seen: Vec<&str> = Vec::new();
+            for route in &d.routes {
+                if route.name.trim().is_empty() {
+                    problems.push("delegation.routes has a route with an empty name".into());
+                } else if seen.contains(&route.name.as_str()) {
+                    problems.push(format!(
+                        "delegation.routes.{:?} is declared more than once",
+                        route.name
+                    ));
+                } else {
+                    seen.push(route.name.as_str());
+                }
+                if route.profile.trim().is_empty() {
+                    problems.push(format!(
+                        "delegation.routes.{:?}.profile is empty: the route names no agent profile",
+                        route.name
+                    ));
+                } else if !self.agents.contains_key(route.profile.trim()) {
+                    problems.push(format!(
+                        "delegation.routes.{:?}.profile {:?} is not declared; add [agents.{:?}] or fix the route",
+                        route.name,
+                        route.profile,
+                        route.profile.trim()
+                    ));
+                }
+            }
+            if let Some(default) = d.default.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            {
+                if !d.routes.iter().any(|r| r.name == default) {
+                    problems.push(format!(
+                        "delegation.default {default:?} names no declared route"
+                    ));
+                }
+            }
+        }
+        // `[tui]`: an unknown theme name falls back to the default
+        // silently at startup, so a typo reads as "my theme didn't
+        // apply" with no hint.
+        if let Some(t) = &self.tui {
+            if let Some(theme) = t.theme.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                if !TUI_THEMES.contains(&theme.to_ascii_lowercase().as_str()) {
+                    problems.push(format!(
+                        "tui.theme {theme:?} is not {} (unknown names fall back to the default theme)",
+                        TUI_THEMES.join("|")
+                    ));
                 }
             }
         }
@@ -3729,6 +3981,201 @@ mod fix_pass4_leaf1_tests {
             !problems.iter().any(|p| p.contains("custom_providers.ok")),
             "unexpected problem for valid api_mode: {problems:?}"
         );
+    }
+
+    #[test]
+    fn validate_flags_browser_websearch_temporal_swarm_nightly_formatter() {
+        let mut cfg = cfg_with_model();
+        cfg.browser = Some(BrowserSection {
+            backend: Some("chrme".to_string()),
+            ..Default::default()
+        });
+        cfg.websearch = Some(WebsearchSection {
+            provider: Some("googol".to_string()),
+            ..Default::default()
+        });
+        cfg.temporal = Some(TemporalSection {
+            timezone: Some("Mars/Olympus".to_string()),
+            ..Default::default()
+        });
+        cfg.swarm = Some(SwarmSection {
+            max_subagents: 0,
+            max_depth: 0,
+            max_concurrent: 0,
+            ..Default::default()
+        });
+        cfg.nightly = Some(NightlySection {
+            repair_mcp_max_failures: Some(0),
+            repair_schedule_max_failures: Some(0),
+            repair_tool_min_calls: Some(0),
+            max_age_days: -1,
+            ..Default::default()
+        });
+        cfg.formatters = Some(FormattersSection {
+            enabled: true,
+            commands: std::collections::HashMap::from([
+                ("rs".to_string(), String::new()),
+                (String::new(), "rustfmt {file}".to_string()),
+            ]),
+            ..Default::default()
+        });
+        let problems = cfg.validate();
+        for needle in [
+            "browser.backend",
+            "websearch.provider",
+            "temporal.timezone",
+            "swarm.max_subagents",
+            "swarm.max_depth",
+            "swarm.max_concurrent",
+            "nightly.repair_mcp_max_failures",
+            "nightly.repair_schedule_max_failures",
+            "nightly.repair_tool_min_calls",
+            "nightly.max_age_days",
+            "formatters.commands",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.contains(needle)),
+                "expected a {needle} problem, got: {problems:?}"
+            );
+        }
+        // The valid spellings pass: backend aliases, a real provider,
+        // a real IANA zone, non-zero caps, and a non-empty command.
+        cfg.browser = Some(BrowserSection {
+            backend: Some("camoufox".to_string()),
+            ..Default::default()
+        });
+        cfg.websearch = Some(WebsearchSection {
+            provider: Some("tinyfish".to_string()),
+            ..Default::default()
+        });
+        cfg.temporal = Some(TemporalSection {
+            timezone: Some("Africa/Lagos".to_string()),
+            ..Default::default()
+        });
+        cfg.swarm = Some(SwarmSection::default());
+        cfg.nightly = Some(NightlySection::default());
+        cfg.formatters = Some(FormattersSection {
+            enabled: true,
+            commands: std::collections::HashMap::from([(
+                "rs".to_string(),
+                "rustfmt {file}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let problems = cfg.validate();
+        assert!(
+            problems.is_empty(),
+            "valid sections must not be flagged: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn validate_flags_empty_custom_base_url_and_channel_and_delegation_profiles() {
+        let mut cfg = cfg_with_model();
+        cfg.custom_providers.insert(
+            "mine".to_string(),
+            CustomProviderSection {
+                base_url: String::new(),
+                api_mode: "openai".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut gw = GatewaySection::default();
+        gw.channels.insert(
+            "bot-a".to_string(),
+            GatewayChannelSection {
+                platform: Some("telegram".to_string()),
+                token_secret: Some(String::new()),
+                profile: Some("ghost".to_string()),
+                ..Default::default()
+            },
+        );
+        cfg.gateway = Some(gw);
+        cfg.delegation = Some(DelegationSection {
+            routes: vec![
+                DelegationRoute {
+                    name: "research".to_string(),
+                    profile: "ghost".to_string(),
+                    ..Default::default()
+                },
+                DelegationRoute {
+                    name: "research".to_string(),
+                    profile: String::new(),
+                    ..Default::default()
+                },
+            ],
+            default: Some("nope".to_string()),
+        });
+        let problems = cfg.validate();
+        for needle in [
+            "custom_providers.mine.base_url",
+            "gateway.channels.bot-a.profile",
+            "gateway.channels.bot-a.token_secret",
+            "delegation.routes.\"research\".profile",
+            "declared more than once",
+            "delegation.default",
+        ] {
+            assert!(
+                problems.iter().any(|p| p.contains(needle)),
+                "expected a {needle} problem, got: {problems:?}"
+            );
+        }
+        // Declared profiles pass: add the agent the channel and the
+        // route name, point the default at a real route, and give
+        // the custom provider a URL.
+        if let Some(sec) = cfg.custom_providers.get_mut("mine") {
+            sec.base_url = "https://example.com/v1".to_string();
+        }
+        cfg.agents.insert(
+            "support".to_string(),
+            AgentIdentity::default(),
+        );
+        if let Some(gw) = cfg.gateway.as_mut() {
+            if let Some(ch) = gw.channels.get_mut("bot-a") {
+                ch.profile = Some("support".to_string());
+                ch.token_secret = None;
+            }
+        }
+        cfg.delegation = Some(DelegationSection {
+            routes: vec![DelegationRoute {
+                name: "research".to_string(),
+                profile: "support".to_string(),
+                ..Default::default()
+            }],
+            default: Some("research".to_string()),
+        });
+        let problems = cfg.validate();
+        assert!(
+            !problems.iter().any(|p| p.contains("custom_providers.mine.base_url")
+                || p.contains("gateway.channels")
+                || p.contains("delegation")),
+            "declared profiles and routes must not be flagged: {problems:?}"
+        );
+    }
+
+    #[test]
+    fn validate_flags_unknown_tui_theme_and_accepts_known_ones() {
+        let mut cfg = cfg_with_model();
+        cfg.tui = Some(TuiSection {
+            theme: Some("neon".to_string()),
+            ..Default::default()
+        });
+        let problems = cfg.validate();
+        assert!(
+            problems.iter().any(|p| p.contains("tui.theme")),
+            "unknown theme must be flagged: {problems:?}"
+        );
+        for theme in ["pantheon", "dark", "light", "Dark"] {
+            cfg.tui = Some(TuiSection {
+                theme: Some(theme.to_string()),
+                ..Default::default()
+            });
+            let problems = cfg.validate();
+            assert!(
+                !problems.iter().any(|p| p.contains("tui.theme")),
+                "{theme:?} must validate: {problems:?}"
+            );
+        }
     }
 
     #[test]
