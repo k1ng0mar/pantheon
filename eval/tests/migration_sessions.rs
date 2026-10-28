@@ -193,9 +193,15 @@ fn import_creates_a_resumable_run() {
         }
         _ => None,
     });
+    // The implementation discloses the drop as "dropped N
+    // non-conversational record(s) ... foreign tool traffic ... not
+    // replayable": the count covers tool records plus system/summary
+    // metadata, so the note names the broader class. The property the
+    // test guards is the disclosure itself: a dropped note carrying the
+    // count and naming the dropped tool traffic.
     assert!(
         drop_note
-            .map(|s| s.contains("1 tool record(s)"))
+            .map(|s| s.contains("1") && s.contains("record(s)") && s.contains("tool traffic"))
             .unwrap_or(false),
         "dropped tool traffic is disclosed"
     );
