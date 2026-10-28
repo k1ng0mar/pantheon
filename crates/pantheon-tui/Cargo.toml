@@ -39,6 +39,7 @@ pantheon-nightly = { path = "../pantheon-nightly" }
 pantheon-dashboard = { path = "../pantheon-dashboard" }
 # Structured diagnostics engine (`pantheon doctor`, `GET /api/health`).
 pantheon-doctor = { path = "../pantheon-doctor" }
+pantheon-release-verify = { path = "../pantheon-release-verify" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 ratatui = "0.30"
