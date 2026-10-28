@@ -523,7 +523,12 @@ fn a_skill_with_broken_frontmatter_is_archived_not_imported() {
         "a skill the runtime rejects must not import"
     );
     match &it.action {
-        Action::Archive { reason } => assert!(reason.contains("no name"), "{reason}"),
+        // The parser's wording is serde's "missing field `name`", not
+        // "no name": assert the reason identifies the missing name
+        // field, not one specific phrasing of it.
+        Action::Archive { reason } => {
+            assert!(reason.contains("missing field") && reason.contains("name"), "{reason}")
+        }
         other => panic!("expected archive, got {other:?}"),
     }
 }
