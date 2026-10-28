@@ -2426,6 +2426,7 @@ dependencies = [
  "serde_yaml",
  "toml",
  "toml_datetime",
+ "toml_edit",
  "tungstenite 0.30.0",
  "ureq",
  "url",
