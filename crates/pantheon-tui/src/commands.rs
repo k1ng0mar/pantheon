@@ -218,6 +218,11 @@ pub fn registry() -> BTreeMap<&'static str, CommandMeta> {
             category: "session",
         },
         CommandMeta {
+            name: "project",
+            desc: "named project buckets for sessions",
+            category: "session",
+        },
+        CommandMeta {
             name: "worktree",
             desc: "managed git worktrees; move re-roots this live session",
             category: "session",
@@ -409,4 +414,29 @@ pub fn complete(prefix: &str) -> Vec<String> {
 /// A key the palette should react to while the composer is empty.
 pub fn is_palette_key(k: Key) -> bool {
     matches!(k, Key::CtrlK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_covers_every_dispatched_command_including_project() {
+        // /project is dispatched by handle_slash_inner but used to be
+        // missing here, so completion never suggested it and the
+        // built-in-vs-skill check did not treat it as built-in.
+        let reg = registry();
+        assert!(reg.contains_key("project"), "registry lacks /project");
+        assert!(is_builtin("project"));
+        assert_eq!(reg["project"].desc, "named project buckets for sessions");
+    }
+
+    #[test]
+    fn complete_suggests_project() {
+        let suggestions = complete("proj");
+        assert!(
+            suggestions.iter().any(|s| s == "/project"),
+            "complete('proj') = {suggestions:?}"
+        );
+    }
 }
