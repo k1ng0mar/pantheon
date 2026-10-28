@@ -428,6 +428,14 @@ impl<'a> ModelEventSink for LedgerModelSink<'a> {
 /// stop the call, and a transform must return the payload the model sees.
 /// The manager is optional so a bare `Session` (tests, embedded use) keeps
 /// working with no extensions loaded.
+/// Legacy `ToolRunner` path. The production turn loop executes tools
+/// through `RegistryToolAdapter` (`durable_tool`), not through this
+/// runner, so gates that live only here (loop guard, extension gates,
+/// redaction) would be dead on the production path. The adapter now
+/// enforces the same gates; this runner keeps them for the remaining
+/// `AgentLoop::tools` consumers (engine paths that still take a
+/// `ToolRunner`) on its own guard instance. Do not add a new gate here
+/// without adding it to the adapter too.
 struct RegRunner<'a> {
     registry: &'a ToolRegistry,
     /// Policy for Code Mode's nested calls. The outer call has already been
@@ -564,6 +572,14 @@ struct RegistryToolAdapter<'a> {
     redaction: Arc<RedactionRegistry>,
     /// Data dir for the Bot Screen takeover gate (see RegRunner).
     data_dir: PathBuf,
+    /// Loop-hygiene gate for this turn. `drive` executes tools through
+    /// this adapter (`durable_tool`), never through `RegRunner`, so the
+    /// guard must live here or the production path has no loop
+    /// protection at all: the only `admit` call used to be in
+    /// `RegRunner::run`, which the parallel tool path never invoked.
+    /// `None` keeps bare-adapter tests and embedded uses working; the
+    /// production `durable_tool` path always passes `Some`.
+    loop_guard: Option<&'a crate::loop_guard::LoopGuard>,
 }
 
 impl<'a> RegistryToolAdapter<'a> {
@@ -604,6 +620,19 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // Runtime-owned loop hygiene, on the production path: a stuck
+        // model gets the same tool-shaped refusal an extension deny
+        // produces, and the underlying tool never runs for the denied
+        // call. This is the adapter's gate; `RegRunner::run` keeps its
+        // own guard for the legacy `ToolRunner` path, on a separate
+        // instance, so a call is never counted twice.
+        if let Some(guard) = self.loop_guard {
+            if let Err(reason) = guard.admit(name, args) {
+                return Ok(serde_json::Value::String(format!(
+                    "[blocked by runtime policy] {reason}"
+                )));
+            }
+        }
         let computer_use = crate::desktop_takeover::is_computer_use_tool(name);
         if computer_use {
             if let Some(refusal) = desktop_takeover_gate(&self.data_dir, name) {
@@ -3683,6 +3712,7 @@ impl Session {
         name: &str,
         args: &str,
         registry: &ToolRegistry,
+        loop_guard: &crate::loop_guard::LoopGuard,
     ) -> Result<String, PantheonError> {
         self.supervisor.assert_lease(run_id).map_err(|e| {
             PantheonError::new(
@@ -3703,6 +3733,7 @@ impl Session {
             call_id: call_id.to_string(),
             redaction: self.secrets.redaction_registry(),
             data_dir: self.supervisor.data_dir().to_path_buf(),
+            loop_guard: Some(loop_guard),
         };
         let operation_id = format!("{run_id}:{call_id}");
         let op = run_tool_operation(
@@ -5424,6 +5455,7 @@ impl Session {
             &mut tool_failures,
             &mut failure_warned,
             &watchdog,
+            &loop_guard,
             &ledger_poison,
         ) {
             Ok(o) => o,
@@ -5893,6 +5925,7 @@ impl Session {
         failure_warned: &mut bool,
 
         watchdog: &std::sync::Mutex<TurnWatchdog>,
+        loop_guard: &crate::loop_guard::LoopGuard,
         ledger_poison: &LedgerPoison,
     ) -> Result<LoopOutcome, PantheonError> {
         // A dead ledger parks the turn: the infallible sinks (SupSink, the
@@ -6193,7 +6226,7 @@ impl Session {
                             let run_ref = run_id;
                             let call_id = tc.id.clone();
                             s.spawn(move || {
-                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref)
+                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref, loop_guard)
                             })
                         })
                         .collect();
@@ -6514,7 +6547,7 @@ impl Session {
                             let args = c.args.clone();
                             let run_ref = run_id;
                             s.spawn(move || {
-                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref)
+                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref, loop_guard)
                             })
                         })
                         .collect();
@@ -6601,6 +6634,7 @@ impl Session {
                     tool_failures,
                     failure_warned,
                     watchdog,
+                    loop_guard,
                     ledger_poison,
                 )
             }
@@ -8981,6 +9015,59 @@ mod delegate_tool_tests {
         );
     }
 
+    /// Adapter-level loop guard: the production path (`durable_tool`)
+    /// executes through `RegistryToolAdapter`, never `RegRunner`, so the
+    /// guard must bite here. Three consecutive identical calls through
+    /// one adapter deny the third with a tool-shaped refusal, and the
+    /// underlying tool runs exactly twice.
+    #[test]
+    fn adapter_loop_guard_denies_third_identical_call() {
+        use pantheon_api::message::ToolSchema;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (session, dir) = test_session();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let runs_clone = std::sync::Arc::clone(&runs);
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            ToolSchema {
+                name: "echo".into(),
+                description: "echo".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            pantheon_api::capability::Capability::Other("echo".into()),
+            move |_args| {
+                runs_clone.fetch_add(1, Ordering::SeqCst);
+                Ok("ok".to_string())
+            },
+        );
+        let guard = crate::loop_guard::LoopGuard::new();
+        let adapter = RegistryToolAdapter {
+            registry: &reg,
+            policy: &session.policy,
+            name: "echo".to_string(),
+            hooks: None,
+            run_id: "run-guard".to_string(),
+            call_id: "call_guard".to_string(),
+            redaction: RedactionRegistry::for_scope("test-adapter-guard"),
+            data_dir: dir.path().to_path_buf(),
+            loop_guard: Some(&guard),
+        };
+        let req = serde_json::json!({"name": "echo", "args": r#"{"x":1}"#});
+        assert_eq!(adapter.execute(&req).unwrap().as_str(), Some("ok"));
+        assert_eq!(adapter.execute(&req).unwrap().as_str(), Some("ok"));
+        let third = adapter.execute(&req).unwrap();
+        let text = third.as_str().expect("tool-shaped refusal is text");
+        assert!(
+            text.contains("loop guard") && text.contains("3 times"),
+            "third identical call must be refused, not executed: {text}"
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "denied call never ran");
+        // A differing call resets the streak.
+        let other = serde_json::json!({"name": "echo", "args": r#"{"x":2}"#});
+        assert_eq!(adapter.execute(&other).unwrap().as_str(), Some("ok"));
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
     /// End-to-end linkage: the registered `delegate` tool, executed
     /// through the production adapter seam, stamps the executing call's
     /// id onto both lifecycle events. The component tests above pass the
@@ -9003,6 +9090,7 @@ mod delegate_tool_tests {
             call_id: "call_e2e".to_string(),
             redaction: RedactionRegistry::for_scope("test-adapter-redaction"),
             data_dir: dir.path().to_path_buf(),
+            loop_guard: None,
         };
         let out = adapter
             .execute(&serde_json::json!({
