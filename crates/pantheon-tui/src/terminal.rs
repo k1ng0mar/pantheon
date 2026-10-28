@@ -776,6 +776,39 @@ fn resolve_say_stdin(say: Option<String>) -> Option<String> {
     Some(text)
 }
 
+/// Delivered and synthetic `run` flags are disjoint, and the mismatch
+/// used to be silent in both directions: --tool/--fail/--ext seed
+/// synthetic ledger events and have no meaning on a real turn, while
+/// --resume/--mode/--agent/--verdict-tool only shape a delivered turn
+/// and were swallowed by the synthetic writer (a resumed plan-mode run
+/// that never resumed). Pure so the dispatch arm's exit-2 cases stay
+/// testable without spawning a process.
+#[allow(clippy::too_many_arguments)]
+fn check_run_flag_mix(
+    deliver: &Option<String>,
+    tool: &Option<String>,
+    fail: &Option<String>,
+    with_ext: bool,
+    resume: bool,
+    mode: &Option<pantheon_api::mode::AgentMode>,
+    agent_profile: &Option<String>,
+    verdict_tool: bool,
+) -> Result<(), String> {
+    if deliver.is_some() && (tool.is_some() || fail.is_some() || with_ext) {
+        return Err(
+            "run --deliver does not take --tool/--fail/--ext (synthetic ledger flags); drop them for a real turn"
+                .to_string(),
+        );
+    }
+    if deliver.is_none() && (resume || mode.is_some() || agent_profile.is_some() || verdict_tool) {
+        return Err(
+            "run --resume/--mode/--agent/--verdict-tool need --deliver session (or another delivery target); without it `run` only writes synthetic ledger events"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Parsed `pantheon run` flags. Extracted from the dispatch arm so the
 /// flag surface is unit-testable: a swallowed or mistyped flag used to
 /// vanish into `_ => {}` (the dashboard's `--resume`/`--mode` resume
@@ -1452,6 +1485,19 @@ timeout_ms = 5000
                 }
                 return;
             }
+            if let Err(e) = check_run_flag_mix(
+                &deliver,
+                &tool,
+                &fail,
+                with_ext,
+                resume,
+                &mode,
+                &agent_profile,
+                verdict_tool,
+            ) {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
             // A named delivery target means a real turn, not a synthetic
             // ledger write: the whole point is that the answer arrives where
             // the user is. Without one, `run` stays the synthetic writer the
@@ -1491,7 +1537,7 @@ timeout_ms = 5000
                 eprintln!();
                 eprintln!("run writes synthetic ledger events only: it never calls a model and");
                 eprintln!(
-                    "never executes the tool named by --tool. Use `pantheon run --say TEXT` for a real"
+                    "never executes the tool named by --tool. Use `pantheon run --taskID <id> --say TEXT --deliver session` for a real"
                 );
                 eprintln!("turn, or `pantheon run --say TEXT` to seed a run for recovery testing.");
                 std::process::exit(2);
@@ -2174,6 +2220,80 @@ mod run_args_tests {
     fn stray_positional_is_an_error() {
         let args = argv(&["run", "oops"]);
         assert!(parse_run_args(&args).is_err());
+    }
+
+    #[test]
+    fn delivered_and_synthetic_flags_do_not_mix() {
+        let some = |s: &str| Some(s.to_string());
+        // Dashboard resume/message argv: all delivered-only flags with
+        // a delivery target is the happy path.
+        assert!(check_run_flag_mix(
+            &some("session"),
+            &None,
+            &None,
+            false,
+            true,
+            &Some(pantheon_api::mode::AgentMode::Plan),
+            &some("lead"),
+            true,
+        )
+        .is_ok());
+        // Synthetic writer alone: fine.
+        assert!(
+            check_run_flag_mix(&None, &some("t"), &None, false, false, &None, &None, false).is_ok()
+        );
+        // Each delivered-only flag without --deliver is an error.
+        for (resume, mode, agent, verdict) in [
+            (true, None, None, false),
+            (
+                false,
+                Some(pantheon_api::mode::AgentMode::Build),
+                None,
+                false,
+            ),
+            (false, None, Some("lead".to_string()), false),
+            (false, None, None, true),
+        ] {
+            assert!(
+                check_run_flag_mix(&None, &None, &None, false, resume, &mode, &agent, verdict)
+                    .is_err(),
+                "delivered-only flag without --deliver must be rejected"
+            );
+        }
+        // Each synthetic flag with --deliver is an error.
+        assert!(check_run_flag_mix(
+            &some("session"),
+            &some("t"),
+            &None,
+            false,
+            false,
+            &None,
+            &None,
+            false
+        )
+        .is_err());
+        assert!(check_run_flag_mix(
+            &some("session"),
+            &None,
+            &some("F"),
+            false,
+            false,
+            &None,
+            &None,
+            false
+        )
+        .is_err());
+        assert!(check_run_flag_mix(
+            &some("session"),
+            &None,
+            &None,
+            true,
+            false,
+            &None,
+            &None,
+            false
+        )
+        .is_err());
     }
 }
 
