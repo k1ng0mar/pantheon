@@ -9548,6 +9548,7 @@ mod delegate_tool_tests {
             }],
         };
         let tools = crate::tool_config::ToolEnablement::default();
+        let mcp = McpToolConfig::default();
         // Inline (not a closure): a closure returning DelegateContext
         // ties the borrowed `tools` lifetime to the `profile` argument
         // lifetime and will not compile.
@@ -9568,6 +9569,7 @@ mod delegate_tool_tests {
                 parent_tools: &tools,
                 parent_mode: AgentMode::default(),
                 parent_permission_mode: PermissionMode::default(),
+                parent_mcp: &mcp,
             },
             mk_policy(),
         )
@@ -9599,6 +9601,7 @@ mod delegate_tool_tests {
                 parent_tools: &tools,
                 parent_mode: AgentMode::default(),
                 parent_permission_mode: PermissionMode::default(),
+                parent_mcp: &mcp,
             },
             mk_policy(),
         )
