@@ -223,10 +223,26 @@ impl ToolRegistry {
         for cap in &required {
             match policy.check(cap) {
                 Decision::Allow => {}
-                other => {
+                // Approval is not a denial, and this choke point has
+                // no run id or scope to fill a grant command with: the
+                // old message told direct callers (CLI vault commands,
+                // nightly probes, Code Mode) to run
+                // `pantheon run --taskID <run> --grant <scope>`, a
+                // command that names nothing real in their context.
+                // Say what is actually needed instead. The code stays
+                // TOOL_DENIED: callers key on it (the UI path maps it
+                // to UI_TOOL_DENIED), and the cause text now states
+                // which verdict produced it.
+                Decision::Approval => {
                     return Err(tool_err("TOOL_DENIED", Layer::Execution, false, format!(
-                            "tool '{name}' needs capability {cap:?}, policy says {other:?}; \
-                             grant it with `pantheon run --taskID <run> --grant <scope>` or widen the policy preset"
+                            "tool '{name}' needs capability {cap:?}, which requires operator approval; \
+                             run it through a session where an operator can approve this call, or widen the policy preset"
+                        ), "check tool name and arguments"))
+                }
+                Decision::Deny => {
+                    return Err(tool_err("TOOL_DENIED", Layer::Execution, false, format!(
+                            "tool '{name}' needs capability {cap:?}, which the policy denies; \
+                             widen the policy preset to allow it"
                         ), "check tool name and arguments"))
                 }
             }
@@ -344,6 +360,53 @@ mod call_context_tests {
             },
         );
         reg
+    }
+
+    #[test]
+    fn execute_gated_names_the_verdict_without_a_fake_grant_command() {
+        // A BinaryTrace tool: the coder policy parks it (Approval),
+        // the default policy denies it. Neither error may name a
+        // `pantheon run --taskID <run> --grant <scope>` command:
+        // execute_gated has no run or scope, so that remediation
+        // named placeholders, not anything the caller could run.
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            ToolSchema {
+                name: "trace".into(),
+                description: "binary trace".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            Capability::BinaryTrace,
+            |_| Ok("ran".to_string()),
+        );
+        let approval = reg
+            .execute_gated(&Policy::coder(), "trace", "")
+            .expect_err("coder policy parks binary trace");
+        assert_eq!(approval.code, "TOOL_DENIED");
+        assert!(
+            approval.cause.contains("requires operator approval"),
+            "approval must not read as a denial: {}",
+            approval.cause
+        );
+        assert!(
+            !approval.cause.contains("--taskID"),
+            "no fake grant command: {}",
+            approval.cause
+        );
+        let denied = reg
+            .execute_gated(&Policy::default(), "trace", "")
+            .expect_err("default policy denies binary trace");
+        assert_eq!(denied.code, "TOOL_DENIED");
+        assert!(
+            denied.cause.contains("policy denies"),
+            "denial must say denied: {}",
+            denied.cause
+        );
+        assert!(
+            !denied.cause.contains("--taskID"),
+            "no fake grant command: {}",
+            denied.cause
+        );
     }
 
     #[test]
