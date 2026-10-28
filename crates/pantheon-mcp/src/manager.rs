@@ -1227,10 +1227,14 @@ impl McpManager {
                 report.skipped.push((name, e.to_string()));
                 continue;
             }
-            // Post-handshake gate: the exact identity must be approved,
-            // so a version bump lapses consent even with the same hash.
-            // Only the canonical bundled recipe skips this: there is no
-            // consent record to lapse, and catalog updates are pinned by
+            // Post-handshake gate: the content hash must be approved.
+            // The hash is authoritative; the version the server
+            // reports on handshake is recorded for DISPLAY only and
+            // never gates execution (a version string can lie, and a
+            // version bump with identical content is not a consent
+            // change). Only a content change lapses consent. Only the
+            // canonical bundled recipe skips this: there is no consent
+            // record to lapse, and catalog updates are pinned by
             // recipe. A name-colliding spec is a custom server and must
             // be approved.
             let (version, server_impl_version, ok) = {
@@ -1240,7 +1244,7 @@ impl McpManager {
                 let v = server_impl_version
                     .clone()
                     .unwrap_or_else(|| c.negotiated_version().to_string());
-                let ok = is_canonical_bundled(&st.spec) || store.is_approved(&name, &v, &hash);
+                let ok = is_canonical_bundled(&st.spec) || store.is_approved_for_hash(&name, &hash);
                 (v, server_impl_version, ok)
             };
             if !ok {
@@ -1250,7 +1254,7 @@ impl McpManager {
                 }
                 st.status = ServerStatus::Unapproved;
                 st.last_error = Some(format!(
-                    "approval lapsed: version {version:?} is not approved for this content hash"
+                    "approval lapsed: content hash {hash} is not approved for '{name}' (server reports version {version:?}; version is display-only, the hash gates)"
                 ));
                 report.pending_approval.push(name);
                 continue;

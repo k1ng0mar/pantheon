@@ -878,8 +878,10 @@ fn build_approve_spec(data_dir: &Path, name: &str) -> Option<pantheon_mcp::manag
 ///
 /// Record operator consent for a **custom** server in the unified
 /// approval store, binding the server's name to its content hash (the
-/// binary bytes, or the URL bytes for remote transports) AND to the
-/// version the server reports on handshake - exactly like
+/// binary bytes, or the URL bytes for remote transports). The version
+/// the server reports on handshake is recorded for DISPLAY only: the
+/// launcher's gate is hash-bound, so a version string can never gate
+/// (or lapse) execution on its own - exactly like
 /// `pantheon mcp approve`. The handshake runs here (a process spawn
 /// for stdio, a connection for remote transports); a failed handshake
 /// records nothing and returns 502.
@@ -940,11 +942,11 @@ pub fn approve(app: &App, name: &str, req: &Request) -> Response {
         Some(s) => s,
         None => return bad_json("cannot build a server spec for approval"),
     };
-    // Handshake like `pantheon mcp approve`: connect, then bind name +
-    // the server's reported version + hash. The old record wrote
-    // version "unverified" without connecting, and the launcher's
-    // post-handshake gate requires the exact reported version - so
-    // dashboard-approved servers stayed unapproved with 0 tools.
+    // Handshake like `pantheon mcp approve`: connect, then record the
+    // server's reported version (DISPLAY only) bound to its content
+    // hash. The launcher's post-handshake gate is hash-bound, so a
+    // version bump with identical content does not lapse consent;
+    // only a content change does.
     let manager = pantheon_mcp::manager::McpManager::new(app.data_dir.clone());
     if let Ok(cfg) = crate::session_factory::load_config(&app.data_dir) {
         let broker = crate::session_factory::secrets_broker(cfg.as_ref());
