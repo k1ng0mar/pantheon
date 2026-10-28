@@ -221,6 +221,140 @@ pub(crate) fn remove_preserving(raw: &str, paths: &[&str]) -> Result<String, Str
     Ok(text)
 }
 
+/// Segment-wise change between two parsed documents, for the
+/// format-preserving rewrite of a whole document (used by MCP config
+/// writes, which compute their new document as a `toml::Value` and
+/// then need it landed on the raw text without losing comments).
+/// Segments are literal keys - never re-joined into dotted strings -
+/// because a server name may itself contain dots.
+enum DocChange {
+    Set(Vec<String>, Value),
+    Remove(Vec<String>),
+}
+
+fn diff_docs(prefix: &mut Vec<String>, old: &Value, new: &Value, out: &mut Vec<DocChange>) {
+    match (old, new) {
+        (Value::Table(o), Value::Table(n)) => {
+            for (k, nv) in n {
+                match o.get(k) {
+                    Some(ov) => {
+                        prefix.push(k.clone());
+                        diff_docs(prefix, ov, nv, out);
+                        prefix.pop();
+                    }
+                    None => {
+                        prefix.push(k.clone());
+                        collect_sets(prefix, nv, out);
+                        prefix.pop();
+                    }
+                }
+            }
+            for k in o.keys() {
+                if !n.contains_key(k) {
+                    prefix.push(k.clone());
+                    out.push(DocChange::Remove(prefix.clone()));
+                    prefix.pop();
+                }
+            }
+        }
+        _ if old != new => out.push(DocChange::Set(prefix.clone(), new.clone())),
+        _ => {}
+    }
+}
+
+/// A whole new subtree becomes one `Set` per leaf, so intermediate
+/// tables are created as sections by [`set_path_like`] instead of
+/// landing as one inline table. An empty new table has no leaves, so
+/// it gets an explicit (empty, inline) set.
+fn collect_sets(prefix: &mut Vec<String>, v: &Value, out: &mut Vec<DocChange>) {
+    match v {
+        Value::Table(t) => {
+            for (k, child) in t {
+                prefix.push(k.clone());
+                collect_sets(prefix, child, out);
+                prefix.pop();
+            }
+            if t.is_empty() {
+                out.push(DocChange::Set(prefix.clone(), Value::Table(Default::default())));
+            }
+        }
+        _ => out.push(DocChange::Set(prefix.clone(), v.clone())),
+    }
+}
+
+/// Read a parsed document by literal segments.
+fn get_segments<'v>(mut cur: &'v Value, parts: &[String]) -> Option<&'v Value> {
+    for part in parts {
+        cur = cur.as_table()?.get(part)?;
+    }
+    Some(cur)
+}
+
+/// Land a whole new parsed document onto the raw TOML text, editing
+/// only what changed: comments, blank lines, and key order elsewhere
+/// survive, and keys are literal segments (so a server name containing
+/// dots is one key, not a path). Returns `Err` on any shape the
+/// segment writer cannot land, so the caller can fall back to the
+/// valid re-serialization instead of writing a corrupt document.
+pub(crate) fn write_doc_preserving(raw: &str, old: &Value, new: &Value) -> Result<String, String> {
+    let mut changes = Vec::new();
+    diff_docs(&mut Vec::new(), old, new, &mut changes);
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| format!("config.toml does not parse for edit: {e}"))?;
+    for change in &changes {
+        match change {
+            DocChange::Set(parts, value) => {
+                let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+                let root = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+                set_path_like(root, &refs, toml_edit::Item::Value(edit_value(value)?))?;
+            }
+            DocChange::Remove(parts) => {
+                let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+                let root = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+                remove_path_like(root, &refs)?;
+                // Prune parents left empty, longest prefix first.
+                for len in (1..refs.len()).rev() {
+                    let empty = match table_at_mut(&mut doc, &refs[..len]) {
+                        Some(t) => t.is_empty(),
+                        None => false,
+                    };
+                    if !empty {
+                        break;
+                    }
+                    let leaf = refs[len - 1];
+                    if len == 1 {
+                        doc.as_table_mut().remove(leaf);
+                    } else if let Some(parent) = table_at_mut(&mut doc, &refs[..len - 1]) {
+                        parent.remove(leaf);
+                    }
+                }
+            }
+        }
+    }
+    let text = doc.to_string();
+    let Ok(out) = toml::from_str::<Value>(&text) else {
+        return Err("format-preserving document write did not land; refusing to write it".to_string());
+    };
+    for change in &changes {
+        match change {
+            DocChange::Set(parts, value) => {
+                if get_segments(&out, parts) != Some(value) {
+                    return Err("format-preserving document write did not land; refusing to write it"
+                        .to_string());
+                }
+            }
+            DocChange::Remove(parts) => {
+                if get_segments(&out, parts).is_some() {
+                    return Err("format-preserving document write did not land; refusing to write it"
+                        .to_string());
+                }
+            }
+        }
+    }
+    Ok(text)
+}
+
 fn type_of(v: &Value) -> &'static str {
     match v {
         Value::String(_) => "string",

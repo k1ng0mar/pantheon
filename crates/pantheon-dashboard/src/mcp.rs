@@ -144,12 +144,29 @@ fn read_config_doc(data_dir: &Path) -> Result<toml::Value, String> {
     }
 }
 
-/// The document is edited, not re-serialized from the struct, so
-/// unknown keys survive. Comments and original key order do not: the
-/// TOML document model drops comments and sorts keys.
+/// Land an edited document onto `config.toml` without losing
+/// comments, blank lines, or key order elsewhere: the change set
+/// between the file's current document and the edited one is applied
+/// segment by segment to the raw text (server names are literal keys,
+/// so dots inside a name are not path separators). Only if that
+/// preserving edit cannot land does the write fall back to the valid
+/// re-serialization, which loses comments but never corrupts.
 fn write_config_doc(data_dir: &Path, doc: &toml::Value) -> Result<(), String> {
     let path = config_path(data_dir);
-    let text = toml::to_string_pretty(doc).map_err(|e| format!("serialize: {e}"))?;
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let old: toml::Value = if raw.is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        toml::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?
+    };
+    let text = match crate::config::write_doc_preserving(&raw, &old, doc) {
+        Ok(text) => text,
+        Err(_) => toml::to_string_pretty(doc).map_err(|e| format!("serialize: {e}"))?,
+    };
     crate::util::atomic_write(&path, &text)
 }
 
@@ -1352,6 +1369,74 @@ for line in sys.stdin:
             store.is_approved("fake", &rec.version, &rec.dir_hash),
             "record must pass the launcher's post-handshake gate"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Enabling a custom server through the dashboard write path must
+    /// land in `config.toml` without deleting comments or unrelated
+    /// sections (the preserving writer, not the old re-serialization).
+    #[test]
+    fn enable_preserves_comments_elsewhere() {
+        let dir = scratch_dir("enable-comments");
+        std::fs::write(
+            config_path(&dir),
+            "# Operator note\n[mcp.servers.myserver]\ncommand = \"/bin/true\"\nenabled = false\n\n[nightly]\nenabled = true\n",
+        )
+        .expect("seed config");
+        write_enabled(dir.as_path(), "myserver", true).expect("enable");
+        let text = std::fs::read_to_string(config_path(&dir)).expect("config written");
+        assert!(text.contains("# Operator note"), "comment must survive: {text}");
+        assert!(text.contains("[nightly]"), "unrelated section must survive: {text}");
+        let table = read_server_table(dir.as_path(), "myserver");
+        assert_eq!(table.get("enabled"), Some(&toml::Value::Boolean(true)));
+        assert_eq!(table.get("command"), Some(&toml::Value::String("/bin/true".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A server name containing dots is ONE literal key, not a path:
+    /// enabling it must not split it into nested tables.
+    #[test]
+    fn enable_dotted_server_name_stays_one_key() {
+        let dir = scratch_dir("enable-dotted");
+        std::fs::write(
+            config_path(&dir),
+            "[mcp.servers.\"my.server\"]\ncommand = \"/bin/true\"\nenabled = false\n",
+        )
+        .expect("seed config");
+        write_enabled(dir.as_path(), "my.server", true).expect("enable");
+        let table = read_server_table(dir.as_path(), "my.server");
+        assert_eq!(table.get("enabled"), Some(&toml::Value::Boolean(true)));
+        let text = std::fs::read_to_string(config_path(&dir)).expect("config written");
+        assert!(
+            !text.contains("[mcp.servers.my]"),
+            "dotted name must not split into nested tables: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deleting one custom server must leave the other server, the
+    /// comment, and unrelated sections intact.
+    #[test]
+    fn delete_preserves_comments_and_other_servers() {
+        let dir = scratch_dir("delete-comments");
+        std::fs::write(
+            config_path(&dir),
+            "# Operator note\n[mcp.servers.keep]\ncommand = \"/bin/true\"\nenabled = true\n\n[mcp.servers.drop]\ncommand = \"/bin/false\"\nenabled = false\n\n[nightly]\nenabled = true\n",
+        )
+        .expect("seed config");
+        let app = scratch_app(dir.clone());
+        let resp = delete(&app, "drop");
+        let status = match resp {
+            Response::Buffered { status, .. } => status,
+            _ => panic!("expected a buffered response"),
+        };
+        assert_eq!(status, 200, "delete must succeed");
+        let text = std::fs::read_to_string(config_path(&dir)).expect("config written");
+        assert!(text.contains("# Operator note"), "comment must survive: {text}");
+        assert!(text.contains("[nightly]"), "unrelated section must survive: {text}");
+        assert!(!text.contains("drop"), "deleted server must be gone: {text}");
+        let table = read_server_table(dir.as_path(), "keep");
+        assert_eq!(table.get("enabled"), Some(&toml::Value::Boolean(true)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
