@@ -461,6 +461,13 @@ fn check_gateway_channels(ctx: &DoctorCtx) -> Vec<Finding> {
     // gateway.env, channels in `[gateway.channels.*]`) reported idle
     // while the gateway itself ran fine.
     let mut live = Vec::new();
+    // Channels whose explicit token_secret names a secret the broker
+    // cannot resolve (env, then <data_dir>/gateway.env, then vault).
+    // validate() cannot check this - it is pure, with no data dir or
+    // broker - so this probe names them one by one instead of leaving
+    // them silently absent from the live list. Only the secret NAME
+    // is reported, never the value.
+    let mut missing_tokens: Vec<(String, String)> = Vec::new();
     if std::env::var("PANTHEON_DISCORD_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
         live.push("discord (env)".to_string());
     }
@@ -470,15 +477,19 @@ fn check_gateway_channels(ctx: &DoctorCtx) -> Vec<Finding> {
     if let Ok(cfg) = load_config(ctx) {
         if let Some(gw) = cfg.gateway.as_ref() {
             for (name, ch) in &gw.channels {
-                let platform = ch
-                    .resolved_platform(name)
-                    .unwrap_or_else(|| name.clone());
+                let platform = ch.resolved_platform(name).unwrap_or_else(|| name.clone());
                 let has_token = match ch.token_secret.as_deref() {
-                    Some(secret_name) => pantheon_secrets::gateway_token(
-                        &ctx.data_dir,
-                        secret_name,
-                    )
-                    .is_some(),
+                    Some(secret_name) => {
+                        let resolved =
+                            pantheon_secrets::gateway_token(&ctx.data_dir, secret_name).is_some();
+                        // An empty name is validate's shape territory
+                        // (flagged there); only a named-but-unresolvable
+                        // secret is this probe's finding.
+                        if !resolved && !secret_name.trim().is_empty() {
+                            missing_tokens.push((name.clone(), secret_name.to_string()));
+                        }
+                        resolved
+                    }
                     // No token_secret: the platform's standard token,
                     // resolved the daemon's way (env > gateway.env).
                     None => {
@@ -500,22 +511,34 @@ fn check_gateway_channels(ctx: &DoctorCtx) -> Vec<Finding> {
     }
     live.sort();
     live.dedup();
+    let mut findings = Vec::new();
+    for (name, secret_name) in missing_tokens {
+        findings.push(Finding::failed(
+            format!("runtime.gateway_channels.{name}"),
+            Subsystem::Runtime,
+            Severity::Warning,
+            format!("channel '{name}' token_secret {secret_name:?} does not resolve; the channel never starts"),
+            "the secrets broker (process env, then <data_dir>/gateway.env, then vault) holds no value under that name",
+            "set the secret under that name, or remove token_secret to use the platform's standard token",
+        ));
+    }
     if live.is_empty() {
-        vec![Finding::failed(
+        findings.push(Finding::failed(
             "runtime.gateway_channels",
             Subsystem::Runtime,
             Severity::Warning,
             "no channel tokens set; gateway is idle",
             "the messaging gateway has no live surface",
             "set PANTHEON_DISCORD_TOKEN and/or PANTHEON_TELEGRAM_BOT_TOKEN to run `pantheon gateway`",
-        )]
+        ));
     } else {
-        vec![Finding::passed(
+        findings.push(Finding::passed(
             "runtime.gateway_channels",
             Subsystem::Runtime,
             format!("{} surface(s) enabled: {}", live.len(), live.join(", ")),
-        )]
+        ));
     }
+    findings
 }
 
 // -- providers --------------------------------------------------------

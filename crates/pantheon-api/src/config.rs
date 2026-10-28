@@ -2827,6 +2827,15 @@ impl Config {
             })
     }
     /// Validate the config for doctor. Returns one error per problem.
+    ///
+    /// Pure: this reads only the config document, never the data dir,
+    /// the secrets broker, or the network. That purity is why channel
+    /// token EXISTENCE is not checked here: a `token_secret` name can
+    /// only be resolved through the broker (process env, then
+    /// `<data_dir>/gateway.env`, then vault), which validate does not
+    /// have. The shape is checked here (empty vs absent); existence
+    /// is a doctor probe (`check_gateway_channels` in pantheon-doctor),
+    /// because doctor probes and validate only reads config.
     pub fn validate(&self) -> Vec<String> {
         let mut problems = Vec::new();
         if let Some(m) = &self.model {
@@ -3134,6 +3143,10 @@ impl Config {
                                 "gateway.channels.{name}.token_secret is empty; omit it to use the platform's standard token"
                             ));
                         }
+                        // Existence is NOT checked here: validate is
+                        // pure (no data dir, no broker). A named but
+                        // unresolvable secret is a doctor probe
+                        // (check_gateway_channels), not a config error.
                     }
                 }
             }
