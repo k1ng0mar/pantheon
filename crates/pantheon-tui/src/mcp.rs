@@ -228,6 +228,12 @@ fn approved_names(dd: &Path) -> Vec<String> {
 
 pub fn cmd_mcp(args: &[String]) {
     let verb = args.first().map(|s| s.as_str()).unwrap_or("list");
+    // Help is not an unknown verb: `mcp --help` used to exit 2 with
+    // an "unknown verb" error.
+    if matches!(verb, "help" | "--help" | "-h") {
+        println!("usage: pantheon mcp <list|status|health|approve|enable|disable|resources|templates|read|prompts|prompt|login|logout|auth> [--json]");
+        return;
+    }
     match verb {
         "list" | "" => list(args),
         "status" => status(args),

@@ -179,8 +179,14 @@ pub fn parse_swarm_spawn(args: &[String]) -> Result<SpawnSpec, String> {
         match rest[i].as_str() {
             "--delivery" => {
                 i += 1;
-                if i < rest.len() {
-                    delivery = Some(rest[i].clone());
+                match rest.get(i) {
+                    Some(v) if !v.starts_with("--") => {
+                        delivery = Some(v.clone());
+                    }
+                    _ => {
+                        return Err("error: --delivery needs a target, e.g. --delivery telegram"
+                            .to_string());
+                    }
                 }
             }
             // `--roles` takes exactly one comma-separated value, so flags
@@ -643,5 +649,33 @@ mod tests {
         let back = from_shared(shared);
         assert_eq!(back.created_ms, 42);
         assert_eq!(back.delivery.as_deref(), Some("telegram"));
+    }
+
+    fn spawn_argv(words: &[&str]) -> Vec<String> {
+        std::iter::once("pantheon".to_string())
+            .chain(std::iter::once("swarm".to_string()))
+            .chain(words.iter().map(|w| w.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn delivery_without_a_value_is_an_error_not_a_silent_default() {
+        // The old parse left `delivery` as None when --delivery was
+        // the last token, so `swarm 2 task --delivery` silently ran
+        // with session delivery instead of the channel the operator
+        // thought they had chosen.
+        let err = parse_swarm_spawn(&spawn_argv(&["2", "do the thing", "--delivery"])).unwrap_err();
+        assert!(err.contains("--delivery needs"), "{err}");
+        let err = parse_swarm_spawn(&spawn_argv(&["2", "do the thing", "--delivery", "--roles"]))
+            .unwrap_err();
+        assert!(err.contains("--delivery needs"), "{err}");
+        let spec = parse_swarm_spawn(&spawn_argv(&[
+            "2",
+            "do the thing",
+            "--delivery",
+            "telegram",
+        ]))
+        .expect("valued --delivery must parse");
+        assert_eq!(spec.delivery.as_deref(), Some("telegram"));
     }
 }
