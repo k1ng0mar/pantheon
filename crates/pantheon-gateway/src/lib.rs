@@ -29,6 +29,7 @@ pub mod sse;
 pub mod stream;
 pub mod telegram;
 pub mod voice;
+pub mod watchdog;
 
 pub use channel::{
     chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
@@ -74,6 +75,7 @@ pub use voice::{
     content_type_for, SpeakBody, TranscribeBody, VoiceEdge, VoiceHttp, DEFAULT_REQUEST_TIMEOUT,
     MAX_AUDIO_BYTES, MAX_TEXT_CHARS, SPEAK_PATH, TRANSCRIBE_PATH,
 };
+pub use watchdog::{GatewayHeartbeat, GatewayWatchdog, WatchdogAction, HANG_BUDGET};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identity {

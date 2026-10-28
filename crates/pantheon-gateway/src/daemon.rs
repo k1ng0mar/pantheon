@@ -448,6 +448,10 @@ pub struct ChannelDaemon {
     pub poll_interval: Duration,
     pub long_poll_timeout: u64,
     state_path: PathBuf,
+    /// Heartbeat the loop touches each iteration, watched by the
+    /// hung-gateway watchdog ([`crate::watchdog`]). `None` = unwatched
+    /// (unit tests, embedding callers that supervise differently).
+    heartbeat: Option<std::sync::Arc<crate::watchdog::GatewayHeartbeat>>,
 }
 
 impl ChannelDaemon {
@@ -456,7 +460,20 @@ impl ChannelDaemon {
             poll_interval: Duration::from_secs(1),
             long_poll_timeout: 25,
             state_path,
+            heartbeat: None,
         }
+    }
+
+    /// Attach a heartbeat for the hung-gateway watchdog. The loop
+    /// touches it at the top of every iteration, so a thread blocked
+    /// inside a transport call stops ticking and the supervisor can
+    /// tell a hung poller from a merely idle one.
+    pub fn with_heartbeat(
+        mut self,
+        heartbeat: std::sync::Arc<crate::watchdog::GatewayHeartbeat>,
+    ) -> Self {
+        self.heartbeat = Some(heartbeat);
+        self
     }
 
     /// Run until `stop` signals. `channels` are drained each tick (their
@@ -506,6 +523,12 @@ impl ChannelDaemon {
             .clone()
             .unwrap_or_else(|| "telegram".to_string());
         while !stop() {
+            // Hung-gateway watchdog: tick once per loop iteration, so a
+            // thread blocked inside a transport call stops ticking and
+            // the supervisor can abandon + restart it (once).
+            if let Some(hb) = &self.heartbeat {
+                hb.touch();
+            }
             // Retention: prune old events/search chunks/claims past the
             // configured window. The 24h gate lives inside
             // `maybe_run_retention`, so this is a cheap check per tick.
