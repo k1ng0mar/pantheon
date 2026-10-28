@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod catalog;
 pub mod chain;
 pub mod compress;
+pub mod credential_error;
 pub mod distill;
 pub mod embeddings;
 pub mod error_kind;
