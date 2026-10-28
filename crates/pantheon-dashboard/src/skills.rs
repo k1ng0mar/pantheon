@@ -59,6 +59,16 @@ pub fn toggle(app: &App, name: &str) -> Response {
 
 /// `POST /api/skills/:name/enable` or `.../disable`.
 pub fn set_enabled(app: &App, name: &str, enabled: bool) -> Response {
+    // A typo used to write a stray `disabled.json` entry for a skill
+    // that does not exist, silently shadowing nothing today and
+    // everything if a skill of that name ever appears. Check
+    // existence against the same discovery the list endpoint uses.
+    let known = discover_skills_ext(&app.data_dir, &project_root(), &[])
+        .iter()
+        .any(|s| s.meta.name == name);
+    if !known {
+        return err_json(404, "NOT_FOUND", &format!("no skill named '{name}'"));
+    }
     if let Err(e) = set_skill_disabled(&app.data_dir, name, !enabled) {
         return err_json(500, "SKILLS", &e.to_string());
     }

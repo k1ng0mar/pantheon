@@ -55,7 +55,7 @@ fn next_nightly_run_ms(data_dir: &Path) -> Option<i64> {
 ///                               // on via PANTHEON_NIGHTLY_* env,
 ///                               // off (no flag, no model pin)
 ///   "explicit": true,           // the raw `enabled` flag (null = absent)
-///   "model_pin": false,         // `[nightly.model]` table present
+///   "model_pin": false,         // `[nightly.model]` names a non-empty provider or model (an empty table does not count)
 ///   "next_run_ms": 1790449200000, // next `schedule nightly` fire, if any
 ///   "last_run_ms": 0,
 ///   "last_summary": "..."
