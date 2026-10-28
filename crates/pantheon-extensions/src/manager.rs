@@ -5,6 +5,16 @@
 //! closed (see `fire_gate`); other hook failures are per-plugin
 //! fail-open, not a blanket fail-open policy.
 //!
+//! Load-gate outages quarantine, never fail open: a plugin whose own
+//! gate check fails (e.g. its content hash cannot be computed) is
+//! quarantined alone - recorded in [`ExtensionManager::quarantined`]
+//! with a loud warning naming it - while the rest keep loading. A
+//! systemic gate failure (the approval store itself corrupt or
+//! unreadable) quarantines every plugin that store gates, which is
+//! fail-closed in effect. Canonical bundled plugins skip the store, so
+//! a store outage does not quarantine them; their gate is the config
+//! flag, and a config that does not parse still fails closed.
+//!
 //! Session-scoped dedup: plugins marked `once_per_session: true` in
 //! plugin.yaml (or Hermes `__init__.py` plugins that keep in-process
 //! `_seen_sessions`, which our subprocess runner can't preserve) fire at
@@ -51,6 +61,13 @@ pub struct ExtensionManager {
     /// Approvals are keyed by name alone, so the second dir is never
     /// silently dropped and the first is never silently shadowed.
     conflicts: Vec<String>,
+    /// Plugins quarantined during load because their gate check failed
+    /// (per-plugin) or the approval store itself failed (systemic).
+    /// Quarantined plugins are neither loaded nor pending: pending
+    /// would imply an operator approval could load them, but a gate
+    /// failure is not fixed by approving. Surfaced so session start
+    /// can warn and ledger-log them.
+    quarantined: Vec<String>,
     /// Explicit data dir (the dir holding `config.toml`). When set,
     /// enablement reads config from here instead of inferring it as
     /// `ext_dir.parent()` - that inference is wrong under a custom
@@ -74,6 +91,18 @@ pub struct ExtensionManager {
 pub enum GateDecision {
     Allow,
     Deny { reason: String, plugin: String },
+}
+
+/// The outcome of one plugin's load-time gate check. `GateFailed` is
+/// deliberately distinct from `NotApproved`: a failed check quarantines
+/// the plugin (alone) or, when the store itself failed, everything it
+/// gates - it must never degrade into "unapproved" (pending) or, worse,
+/// into loading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GateVerdict {
+    Approved,
+    NotApproved,
+    GateFailed(String),
 }
 
 /// Consecutive hook failures after which a plugin is skipped for the
@@ -109,6 +138,7 @@ impl ExtensionManager {
             pending: Vec::new(),
             load_errors: Vec::new(),
             conflicts: Vec::new(),
+            quarantined: Vec::new(),
             data_dir: None,
             project_root: None,
         }
@@ -137,6 +167,21 @@ impl ExtensionManager {
     /// Duplicate-name conflicts recorded during [`Self::load_dir`].
     pub fn conflicts(&self) -> &[String] {
         &self.conflicts
+    }
+
+    /// Plugins quarantined during load because a gate check failed.
+    /// Each entry names the plugin and the reason; quarantined plugins
+    /// are never loaded and never fired.
+    pub fn quarantined(&self) -> &[String] {
+        &self.quarantined
+    }
+
+    /// Record a quarantine with a loud warning naming the plugin. The
+    /// rest keep loading; only this plugin is held out.
+    fn quarantine(&mut self, name: &str, reason: &str) {
+        let msg = format!("extension '{name}' quarantined: {reason}");
+        eprintln!("WARNING: {msg}");
+        self.quarantined.push(msg);
     }
 
     /// `extra` plus the project/data-dir context hook plugins need.
@@ -209,11 +254,16 @@ impl ExtensionManager {
             }
         }
         tops.sort();
+        // Systemic gate state, computed once: when the approval store
+        // itself is corrupt or unreadable, every plugin it gates is
+        // quarantined (fail-closed in effect) instead of each being
+        // reported as merely unapproved.
+        let gate_failure = approval::store_gate_failure(dir);
         for p in tops {
-            self.load_plugin_dir(dir, &p);
+            self.load_plugin_dir(dir, &p, gate_failure.as_deref());
         }
         for p in plugin_dirs(&dir.join("bundled")) {
-            self.load_plugin_dir(dir, &p);
+            self.load_plugin_dir(dir, &p, gate_failure.as_deref());
         }
         self.plugins
             .sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
@@ -223,20 +273,39 @@ impl ExtensionManager {
 
     /// Try one plugin directory: load it when approved (bundled plugins
     /// consult the config enablement flag, third-party ones the approval
-    /// store), otherwise record why it was skipped.
-    fn load_plugin_dir(&mut self, ext_dir: &Path, p: &Path) {
+    /// store), otherwise record why it was skipped. `store_gate_failure`
+    /// is the systemic gate state from [`load_dir`]: when `Some`, every
+    /// third-party plugin here is quarantined alone-or-all - alone in
+    /// the sense that bundled plugins (which skip the store) and the
+    /// load itself are unaffected, all in the sense that nothing the
+    /// store gates loads.
+    fn load_plugin_dir(&mut self, ext_dir: &Path, p: &Path, store_gate_failure: Option<&str>) {
         match PythonPlugin::load(p) {
             Ok(pl) => {
                 let name = pl.manifest.name.clone();
                 let canonical_bundled = Self::is_canonical_bundled(ext_dir, p);
-                if self.approved_here(
+                if let Some(reason) = store_gate_failure.filter(|_| !canonical_bundled) {
+                    // Systemic gate failure: quarantine everything the
+                    // store gates. Never fail open, never merely pend:
+                    // an approval cannot be recorded into a broken store.
+                    self.quarantine(&name, &format!("systemic gate failure: {reason}"));
+                    return;
+                }
+                let verdict = self.gate_verdict(
                     ext_dir,
                     p,
                     &pl.manifest.name,
                     &pl.manifest.version,
                     pl.manifest.enabled,
                     pl.manifest.enabled_set,
-                ) {
+                );
+                if let GateVerdict::GateFailed(reason) = verdict {
+                    // Per-plugin gate failure: quarantine this plugin
+                    // alone; the rest keep loading.
+                    self.quarantine(&name, &format!("gate check failed: {reason}"));
+                    return;
+                }
+                if verdict == GateVerdict::Approved {
                     if self.plugins.iter().any(|q| q.manifest.name == name) {
                         // Duplicate manifest name: approvals are keyed by
                         // name alone, so loading both would let one
@@ -304,7 +373,18 @@ impl ExtensionManager {
         // its parent. Approval still applies - an explicit load is not
         // consent.
         let ext_dir = dir.parent().unwrap_or(dir);
-        if !self.approved_here(
+        let canonical_bundled = Self::is_canonical_bundled(ext_dir, dir);
+        // Systemic gate failure on a single-plugin load: fail closed
+        // with the systemic reason, never merely "not approved".
+        if let Some(reason) = approval::store_gate_failure(ext_dir).filter(|_| !canonical_bundled)
+        {
+            self.quarantine(&name, &format!("systemic gate failure: {reason}"));
+            return Err(merr(
+                "EXT_GATE_FAILED",
+                format!("extension '{name}' quarantined: systemic gate failure: {reason}"),
+            ));
+        }
+        match self.gate_verdict(
             ext_dir,
             dir,
             &pl.manifest.name,
@@ -312,25 +392,35 @@ impl ExtensionManager {
             pl.manifest.enabled,
             pl.manifest.enabled_set,
         ) {
-            if Self::is_canonical_bundled(ext_dir, dir) {
+            GateVerdict::Approved => {}
+            GateVerdict::GateFailed(reason) => {
+                self.quarantine(&name, &format!("gate check failed: {reason}"));
                 return Err(merr(
-                    "EXT_BUNDLED_DISABLED",
+                    "EXT_GATE_FAILED",
+                    format!("extension '{name}' quarantined: gate check failed: {reason}"),
+                ));
+            }
+            GateVerdict::NotApproved => {
+                if canonical_bundled {
+                    return Err(merr(
+                        "EXT_BUNDLED_DISABLED",
+                        format!(
+                            "extension '{name}' is bundled but disabled; enable it with [plugins.{name}] enabled = true"
+                        ),
+                    ));
+                }
+                self.pending.push(PendingPlugin {
+                    name: name.clone(),
+                    version: pl.manifest.version.clone(),
+                    dir: dir.to_path_buf(),
+                });
+                return Err(merr(
+                    "EXT_NOT_APPROVED",
                     format!(
-                        "extension '{name}' is bundled but disabled; enable it with [plugins.{name}] enabled = true"
+                        "extension '{name}' is not approved; run `pantheon extensions approve {name}`"
                     ),
                 ));
             }
-            self.pending.push(PendingPlugin {
-                name: name.clone(),
-                version: pl.manifest.version.clone(),
-                dir: dir.to_path_buf(),
-            });
-            return Err(merr(
-                "EXT_NOT_APPROVED",
-                format!(
-                    "extension '{name}' is not approved; run `pantheon extensions approve {name}`"
-                ),
-            ));
         }
         // Same-name handling, both ways: a reload of the SAME dir
         // replaces the old entry in place (loading twice used to push
@@ -377,7 +467,7 @@ impl ExtensionManager {
     /// that says `enabled: false` does not fire even when approved.
     /// (A manifest that omits `enabled` keeps the old approved-means-
     /// loaded behaviour; only an explicit `false` opts out.)
-    fn approved_here(
+    fn gate_verdict(
         &self,
         ext_dir: &Path,
         plugin_dir: &Path,
@@ -385,7 +475,7 @@ impl ExtensionManager {
         version: &str,
         manifest_enabled: bool,
         manifest_enabled_set: bool,
-    ) -> bool {
+    ) -> GateVerdict {
         if Self::is_canonical_bundled(ext_dir, plugin_dir) {
             // Bundled (first-party) plugins skip the third-party approval
             // store. Enablement: the config file (`[plugins.<name>]`) is
@@ -400,16 +490,31 @@ impl ExtensionManager {
                 .data_dir
                 .clone()
                 .unwrap_or_else(|| ext_dir.parent().unwrap_or(ext_dir).to_path_buf());
-            return crate::bundled::load_config(&data_dir)
+            return if crate::bundled::load_config(&data_dir)
                 .map(|c| crate::bundled::is_enabled_with_default(&c, name, manifest_enabled))
-                .unwrap_or(false);
+                .unwrap_or(false)
+            {
+                GateVerdict::Approved
+            } else {
+                GateVerdict::NotApproved
+            };
         }
         if manifest_enabled_set && !manifest_enabled {
-            return false;
+            return GateVerdict::NotApproved;
         }
         match approval::dir_hash(plugin_dir) {
-            Ok(h) => approval::is_approved(ext_dir, name, version, &h),
-            Err(_) => false,
+            Ok(h) => {
+                if approval::is_approved(ext_dir, name, version, &h) {
+                    GateVerdict::Approved
+                } else {
+                    GateVerdict::NotApproved
+                }
+            }
+            // A hash failure is a GATE failure, not a "not approved":
+            // collapsing it to false used to pend the plugin, inviting
+            // an approval that the broken hash could never satisfy.
+            // Callers quarantine it instead - alone, never fail-open.
+            Err(e) => GateVerdict::GateFailed(e.to_string()),
         }
     }
     pub fn names(&self) -> Vec<String> {

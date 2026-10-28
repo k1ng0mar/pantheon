@@ -485,6 +485,31 @@ pub fn is_approved(scope_dir: &Path, name: &str, version: &str, hash: &str) -> b
     ApprovalStore::open(scope_dir).is_approved(name, version, hash)
 }
 
+/// Systemic gate state for a plugin scope: `None` when the store is
+/// usable (a missing store reads as empty, the normal first-run
+/// state), else a reason when the store file exists but cannot be
+/// trusted - corrupt JSON or unreadable. Callers use this to
+/// quarantine everything the store gates, instead of treating each
+/// plugin as merely unapproved (which would invite re-approval into a
+/// broken store that can never record it).
+pub fn store_gate_failure(scope_dir: &Path) -> Option<String> {
+    let path = scope_dir.join(APPROVALS_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<HashMap<String, ApprovalRecord>>(&text) {
+            Ok(_) => None,
+            Err(e) => Some(format!(
+                "approval store {} is corrupt ({e}); repair or remove it by hand",
+                path.display()
+            )),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(format!(
+            "approval store {} is unreadable ({e}); no plugin gated by it can load",
+            path.display()
+        )),
+    }
+}
+
 /// Record operator approval for a plugin without checking the pending set.
 /// The caller must have shown [`PRIVILEGE_WARNING`] and obtained explicit
 /// consent first - this only persists the record.
