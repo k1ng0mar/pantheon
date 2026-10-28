@@ -1,9 +1,9 @@
 //! Todo card for the transcript.
 //!
-//! Standalone by design: it renders [`TodoCardItem`]s with ratatui only,
-//! no pantheon types, so it compiles against ratatui alone. The backend
-//! maps `pantheon_api::todo::TodoItem` onto [`TodoCardItem`] at the
-//! integration point.
+//! Standalone by design: it renders [`TodoCardItem`]s with ratatui only.
+//! The backend maps `pantheon_api::todo::TodoItem` onto [`TodoCardItem`]
+//! at the integration point. Its palette comes from the theme module
+//! (see `session::theme`), not from literals here.
 //!
 //! ```text
 //! ⬢ Working on 2 to-dos
@@ -14,18 +14,17 @@
 //! ```
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-/// Exact palette for the card.
-pub const PURPLE: Color = Color::Rgb(0xA7, 0x8B, 0xFA);
-pub const GREEN: Color = Color::Rgb(0x7E, 0xE7, 0x87);
-pub const ORANGE: Color = Color::Rgb(0xF0, 0xA3, 0x5E);
-pub const DIM_GRAY: Color = Color::Rgb(0x6B, 0x72, 0x80);
-pub const BLUE: Color = Color::Rgb(0x5B, 0x8C, 0xFF);
-pub const NEAR_BLACK: Color = Color::Rgb(0x0B, 0x0B, 0x0F);
+// The card's palette lives in the theme module, not here: no renderer
+// outside `session::theme` names a raw color for the conversation view.
+use crate::session::theme::{
+    TODO_BLUE as BLUE, TODO_DIM_GRAY as DIM_GRAY, TODO_NEAR_BLACK as NEAR_BLACK,
+    TODO_PURPLE as PURPLE,
+};
 
 /// Lifecycle state of one card row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +101,10 @@ pub fn todo_card_lines(items: &[TodoCardItem]) -> Vec<Line<'_>> {
 ///
 /// The card takes `1 + items.len()` rows; anything taller is left blank,
 /// anything shorter clips from the bottom.
+///
+/// Widget form of [`todo_card_lines`]. The session sidebar embeds
+/// `todo_card_lines` directly (see `render_sidebar_todos`) and does
+/// not call this; it exists for standalone embedding.
 pub fn render_todo_card(frame: &mut Frame, area: Rect, items: &[TodoCardItem]) {
     let lines = todo_card_lines(items);
     let card = Paragraph::new(lines).style(Style::default().bg(NEAR_BLACK));
