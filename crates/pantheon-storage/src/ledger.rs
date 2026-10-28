@@ -1603,8 +1603,9 @@ impl Ledger {
         Ok(pruned)
     }
 
-    /// Delete a run outright: its events, its `runs` row, and its
-    /// session-search chunks and FTS rows, all in a single transaction. A
+    /// Delete a run outright: its events, its `runs` row, its
+    /// session-search chunks and FTS rows, its `todos` snapshot, and
+    /// its `run_process_groups` rows, all in a single transaction. A
     /// deleted run must not leave searchable text behind - orphaned FTS
     /// rows would make `session_search` return hits for a run that no
     /// longer exists. Returns `(events_deleted, run_row_deleted)`. Used by
@@ -1613,6 +1614,16 @@ impl Ledger {
     /// not an error. The home session can never be deleted: this is a
     /// hard error, not a silent no-op, so a caller that meant to delete
     /// something real learns it targeted the wrong id.
+    ///
+    /// Deliberately NOT deleted here, because no run link exists to
+    /// delete by (deleting by guess would destroy other runs' data):
+    /// - `claims`: global idempotency keys, not run-scoped;
+    /// - `artifacts`: keyed by `task_id`, which carries no run id;
+    /// - `browser_activity`: keyed by browser `session`, not run id;
+    /// - `collaboration.db` tasks/messages: a separate file this store
+    ///   does not own, keyed by collaboration/task, not run id.
+    /// Those leftovers are documented, not silently dropped on the
+    /// floor: a future run-keyed schema could extend this list.
     pub fn delete_run(&self, run_id: &str) -> Result<(usize, usize), PantheonError> {
         if run_id == HOME_SESSION_ID {
             return Err(err(
@@ -1656,6 +1667,17 @@ impl Ledger {
             )
             .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
         }
+        // Run-scoped side tables in this same file: the todo snapshot
+        // would otherwise resurrect the run's plan on resume-by-id, and
+        // stale process-group rows would let a later lease query reap
+        // (or signal) pgids that belong to a dead run.
+        tx.execute("DELETE FROM todos WHERE run_id = ?1", params![run_id])
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+        tx.execute(
+            "DELETE FROM run_process_groups WHERE run_id = ?1",
+            params![run_id],
+        )
+        .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
         tx.commit()
             .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
         Ok((events, runs))
@@ -2462,6 +2484,46 @@ mod delete_run_tests {
         assert_eq!(hits.len(), 1, "deleted run's FTS rows must be gone");
         assert_eq!(hits[0].chunk.run_id, "run-b");
         assert!(ledger.replay("run-a").unwrap().is_empty());
+    }
+
+    /// `delete_run` also removes the run-scoped side tables (`todos`,
+    /// `run_process_groups`) in the same transaction, while the
+    /// documented leftovers (claims, artifacts - neither carries a run
+    /// id to delete by) survive, as `delete_run`'s doc promises.
+    #[test]
+    fn delete_run_removes_todos_and_process_groups_but_keeps_unlinked_rows() {
+        let (ledger, _search, _dir) = stores();
+        ledger
+            .append(&Event::RunStarted {
+                run_id: "run-a".into(),
+            })
+            .unwrap();
+        ledger
+            .set_todos(
+                "run-a",
+                &[pantheon_api::todo::TodoItem {
+                    content: "do the thing".into(),
+                    status: pantheon_api::todo::TodoStatus::Pending,
+                    active_form: None,
+                }],
+            )
+            .unwrap();
+        ledger
+            .register_process_group("run-a", 4242, "lease-1")
+            .unwrap();
+        ledger.put_artifact("task-1", "text/plain", b"blob").unwrap();
+        assert!(ledger.claim("claim-1").unwrap());
+
+        let (events, _rows) = ledger.delete_run("run-a").unwrap();
+        assert_eq!(events, 1);
+        assert!(ledger.todos("run-a").unwrap().is_empty(), "todo snapshot must go");
+        assert!(
+            ledger.process_groups("run-a", "lease-1").unwrap().is_empty(),
+            "process-group rows must go"
+        );
+        // Documented leftovers: no run link exists to delete these by.
+        assert!(ledger.artifact("task-1").unwrap().is_some(), "artifacts are task-keyed, not run-keyed");
+        assert!(!ledger.claim("claim-1").unwrap(), "claims are global, not run-scoped");
     }
 
     /// A ledger opened without the search sidecar has no FTS tables; the
