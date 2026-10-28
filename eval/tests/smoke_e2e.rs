@@ -215,6 +215,7 @@ fn fake_session(data_dir: &Path, port: u16, policy: Policy) -> Session {
         default: DefaultModel {
             provider: format!("http://127.0.0.1:{port}"),
             model: "fake-smoke".into(),
+            key_env: None,
         },
         fallbacks: FallbackChain { fallbacks: vec![] },
         auxiliaries: vec![],
@@ -824,12 +825,14 @@ fn nvidia_chain(
         default: DefaultModel {
             provider: "https://integrate.api.nvidia.com/v1".into(),
             model: "nvidia-primary".into(),
+            key_env: None,
         },
         fallbacks: FallbackChain {
             fallbacks: if with_fallback {
                 vec![DefaultModel {
                     provider: "https://integrate.api.nvidia.com/v1".into(),
                     model: "nvidia-fallback".into(),
+                    key_env: None,
                 }]
             } else {
                 vec![]
