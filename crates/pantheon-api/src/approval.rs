@@ -253,6 +253,11 @@ pub fn bytes_hash(bytes: &[u8]) -> String {
 pub struct ApprovalStore {
     path: PathBuf,
     records: HashMap<String, ApprovalRecord>,
+    /// True when the store file existed but did not parse. The store
+    /// reads as empty (fail-closed: nothing is approved), but it must
+    /// never be overwritten by a save - that would silently discard
+    /// every approval the corrupt file once held.
+    corrupt: bool,
 }
 
 impl ApprovalStore {
@@ -263,11 +268,30 @@ impl ApprovalStore {
         // a later `record` doesn't fail on a missing directory.
         let _ = std::fs::create_dir_all(scope_dir);
         let path = scope_dir.join(APPROVALS_FILE);
-        let records = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<HashMap<String, ApprovalRecord>>(&t).ok())
-            .unwrap_or_default();
-        Self { path, records }
+        let mut corrupt = false;
+        let records = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<HashMap<String, ApprovalRecord>>(&text) {
+                Ok(records) => records,
+                Err(_) => {
+                    corrupt = true;
+                    HashMap::new()
+                }
+            },
+            Err(_) => HashMap::new(),
+        };
+        Self {
+            path,
+            records,
+            corrupt,
+        }
+    }
+
+    /// True when the store file existed but failed to parse. Reads are
+    /// fail-closed (nothing approved); saves are refused until the file
+    /// is repaired or removed by hand, so a corrupt store can never be
+    /// silently overwritten with an empty one.
+    pub fn is_corrupt(&self) -> bool {
+        self.corrupt
     }
 
     /// True when a live approval exists for this exact name + version +
@@ -309,13 +333,37 @@ impl ApprovalStore {
     }
 
     fn save(&self) -> Result<(), PantheonError> {
+        if self.corrupt {
+            return Err(merr(
+                "APPROVAL_CORRUPT",
+                format!(
+                    "refusing to overwrite corrupt approval store {}; repair or remove it by hand first",
+                    self.path.display()
+                ),
+            ));
+        }
         let text = serde_json::to_string_pretty(&self.records)
             .map_err(|e| merr("APPROVAL_WRITE", format!("serialize: {e}")))?;
-        // Atomic: write tmp then rename, so a crash never leaves half JSON.
+        // Atomic: write tmp, fsync the tmp file, then rename, so a crash
+        // never leaves half JSON and the renamed file is durable. The
+        // directory fsync is best-effort (not all filesystems support it).
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| merr("APPROVAL_WRITE", format!("write: {e}")))?;
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)
+                .map_err(|e| merr("APPROVAL_WRITE", format!("write: {e}")))?;
+            f.write_all(text.as_bytes())
+                .map_err(|e| merr("APPROVAL_WRITE", format!("write: {e}")))?;
+            f.sync_all()
+                .map_err(|e| merr("APPROVAL_WRITE", format!("fsync: {e}")))?;
+        }
         std::fs::rename(&tmp, &self.path)
             .map_err(|e| merr("APPROVAL_WRITE", format!("rename: {e}")))?;
+        if let Some(parent) = self.path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
         Ok(())
     }
 }
@@ -358,6 +406,12 @@ pub fn revoke_approval_for(scope_dir: &Path, name: &str) -> Result<bool, Pantheo
 
 /// List third-party plugins in `scope_dir` that are installed but not
 /// approved (or whose approval lapsed after a code change).
+///
+/// Fail-closed visibility note: a plugin whose directory cannot be
+/// hashed (dangling symlink, unreadable dir) or whose manifest loader
+/// returns `None` is skipped here, so it appears in neither the
+/// pending list nor the approved set - it cannot be approved through
+/// this path until its directory is readable again.
 ///
 /// `load_name_version` maps a plugin directory to its `(name, version)`;
 /// each plugin kind supplies its own manifest loader, so this store never
@@ -454,6 +508,30 @@ mod tests {
         std::fs::write(p.join("run.sh"), "echo one").unwrap();
         symlink(target, p.join("helper.py")).unwrap();
         p
+    }
+
+    #[test]
+    fn corrupt_store_reads_empty_but_refuses_overwrite() {
+        let scope = test_dir("corrupt-store");
+        std::fs::write(scope.join(".approvals.json"), "{not json").unwrap();
+        let mut store = ApprovalStore::open(&scope);
+        assert!(store.is_corrupt(), "corrupt file must be flagged");
+        assert!(!store.is_approved("anything", "1", "abc"));
+        let rec = ApprovalRecord {
+            plugin: "x".to_string(),
+            version: "1".to_string(),
+            dir_hash: "abc".to_string(),
+            approved_at_ms: 0,
+        };
+        let err = store
+            .record(rec)
+            .expect_err("save must refuse a corrupt store");
+        assert!(err.to_string().contains("corrupt"), "got: {err}");
+        // The corrupt file itself is untouched by the refused save.
+        assert_eq!(
+            std::fs::read_to_string(scope.join(".approvals.json")).unwrap(),
+            "{not json"
+        );
     }
 
     #[test]

@@ -122,7 +122,14 @@ impl Capability {
             Capability::AgentMessage => "agent.message".to_string(),
             Capability::PluginEnable => "plugin.enable".to_string(),
             Capability::McpEnable => "mcp.enable".to_string(),
-            Capability::Other(name) => format!("other.{}", name.trim().replace(' ', ".")),
+            // Space is percent-encoded, not collapsed to '.': without
+            // this `Other("a b")` and `Other("a.b")` produced the same
+            // token. '%' is escaped first so a literal "%20" in a name
+            // survives the round trip.
+            Capability::Other(name) => format!(
+                "other.{}",
+                name.trim().replace('%', "%25").replace(' ', "%20")
+            ),
         }
     }
 
@@ -138,6 +145,7 @@ impl Capability {
             "git.write" => Capability::GitWrite,
             "git.push" => Capability::GitPush,
             "network.outbound" => Capability::NetworkOutbound,
+            "message.send" => Capability::MessageSend(String::new()),
             "browser" => Capability::Browser,
             "browser.act" => Capability::BrowserAct,
             "browser.fill_login" => Capability::BrowserFillLogin,
@@ -151,7 +159,16 @@ impl Capability {
             "agent.message" => Capability::AgentMessage,
             "plugin.enable" => Capability::PluginEnable,
             "mcp.enable" => Capability::McpEnable,
-            other => Capability::Other(other.to_string()),
+            // Strip the "other." prefix once: `Other("a.b").token()` is
+            // "other.a.b", so parsing it must yield the same capability,
+            // not `Other("other.a.b")`. Decode the token escaping above.
+            other => Capability::Other(
+                other
+                    .strip_prefix("other.")
+                    .unwrap_or(other)
+                    .replace("%20", " ")
+                    .replace("%25", "%"),
+            ),
         }
     }
 }
@@ -306,6 +323,35 @@ mod binary_trace_tests {
         assert_eq!(
             Policy::coder().check(&Capability::FilesystemRead),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn message_send_token_round_trip() {
+        // `token()` is the channel class, not the message, so the
+        // payload is not recoverable; the round trip must at least
+        // land back on `MessageSend`, not `Other("message.send")`.
+        assert_eq!(Capability::MessageSend("hi".into()).token(), "message.send");
+        assert!(matches!(
+            Capability::from_token("message.send"),
+            Capability::MessageSend(_)
+        ));
+    }
+
+    #[test]
+    fn other_token_round_trip_distinguishes_space_and_dot() {
+        assert_ne!(
+            Capability::Other("a b".into()).token(),
+            Capability::Other("a.b".into()).token()
+        );
+        for name in ["a b", "a.b", "cloudflare.write", "a%20b"] {
+            let cap = Capability::Other(name.into());
+            assert_eq!(Capability::from_token(&cap.token()), cap, "for {name}");
+        }
+        // Legacy tokens without the double prefix also parse.
+        assert_eq!(
+            Capability::from_token("other.cloudflare.write"),
+            Capability::Other("cloudflare.write".into())
         );
     }
 
