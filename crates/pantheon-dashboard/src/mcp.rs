@@ -43,10 +43,11 @@
 //! added disabled; consent (for custom servers) and enabling are
 //! separate explicit acts.
 //!
-//! This surface never launches a server. A full handshake needs an
-//! explicit `pantheon mcp approve <name>` on the operator's machine, or
-//! the `approve` endpoint below (which records consent against a
-//! locally-computed content hash, still without connecting).
+//! This surface never launches a server for browsing. A full handshake
+//! happens on the `approve` endpoint below (which connects exactly like
+//! `pantheon mcp approve` and records name + reported version + hash),
+//! and `pantheon doctor`'s `test` probe. New servers are added disabled;
+//! consent (for custom servers) and enabling are separate explicit acts.
 //!
 //! ## Catalog source
 //!
@@ -57,7 +58,7 @@
 //! dependency cycle.)
 
 use crate::{bad_json, body_json, err_json, json_ok, App};
-use pantheon_api::approval::{self, ApprovalRecord, ApprovalStore};
+use pantheon_api::approval::{self, ApprovalStore};
 use pantheon_api::mcp_catalog;
 use pantheon_gateway::http::{Request, Response};
 
@@ -816,14 +817,54 @@ pub fn add(app: &App, req: &Request) -> Response {
     json_ok(body)
 }
 
+/// Build the manager spec for dashboard approval: the config entry
+/// when one exists, else the legacy declaration (whose `requires_env`
+/// names become `env:` refs, exactly as the launcher's resolver does).
+/// `None` when the server is unknown to both, or its transport does
+/// not parse.
+fn build_approve_spec(data_dir: &Path, name: &str) -> Option<pantheon_mcp::manager::McpServerSpec> {
+    use pantheon_mcp::manager::{McpAuth, McpServerSpec, McpTransport};
+    if let Some((_, e)) = config_servers(data_dir)
+        .into_iter()
+        .find(|(n, _)| n == name)
+    {
+        return McpServerSpec::from_entry(name, &e);
+    }
+    for d in read_mcp_declarations(data_dir) {
+        if let Some(s) = d.servers.iter().find(|s| s.name == name) {
+            let transport = McpTransport::parse(s.transport.as_str())?;
+            let mut env = HashMap::new();
+            for var in &s.requires_env {
+                env.insert(var.clone(), format!("env:{var}"));
+            }
+            return Some(McpServerSpec {
+                name: name.to_string(),
+                transport,
+                command: s.command.clone(),
+                args: s.args.clone(),
+                env,
+                url: s.url.clone(),
+                enabled: s.enabled,
+                timeout: Duration::from_secs(30),
+                headers: HashMap::new(),
+                auth: McpAuth::default(),
+                scopes: Vec::new(),
+                client_id: None,
+            });
+        }
+    }
+    None
+}
+
 /// `POST /api/mcp/servers/:name/approve` - `{confirm: true}`.
 ///
 /// Record operator consent for a **custom** server in the unified
 /// approval store, binding the server's name to its content hash (the
-/// binary bytes, or the URL bytes for remote transports). The hash is
-/// computed locally: no process is spawned and no connection is opened.
-/// The UI shows the privilege warning before calling; the endpoint only
-/// persists the record.
+/// binary bytes, or the URL bytes for remote transports) AND to the
+/// version the server reports on handshake - exactly like
+/// `pantheon mcp approve`. The handshake runs here (a process spawn
+/// for stdio, a connection for remote transports); a failed handshake
+/// records nothing and returns 502.
 ///
 /// Bundled servers are first-party and skip consent (409) - enabling is
 /// their only gate. Approval is consent, not enablement: an approved
@@ -867,21 +908,39 @@ pub fn approve(app: &App, name: &str, req: &Request) -> Response {
             )
         }
     };
-    let rec = ApprovalRecord {
-        plugin: name.to_string(),
-        // No handshake here, so no self-reported version: the hash is
-        // the identity the launcher checks. A later `pantheon mcp
-        // approve` (with handshake) overwrites with the real version.
-        version: "unverified".to_string(),
-        dir_hash: hash,
-        approved_at_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
+    let _ = hash;
+    let spec = match build_approve_spec(&app.data_dir, name) {
+        Some(s) => s,
+        None => return bad_json("cannot build a server spec for approval"),
     };
-    if let Err(e) = ApprovalStore::open(&mcp_dir(&app.data_dir)).record(rec.clone()) {
-        return err_json(500, "MCP_APPROVE", &e.to_string());
+    // Handshake like `pantheon mcp approve`: connect, then bind name +
+    // the server's reported version + hash. The old record wrote
+    // version "unverified" without connecting, and the launcher's
+    // post-handshake gate requires the exact reported version - so
+    // dashboard-approved servers stayed unapproved with 0 tools.
+    let manager = pantheon_mcp::manager::McpManager::new(app.data_dir.clone());
+    if let Ok(cfg) = crate::session_factory::load_config(&app.data_dir) {
+        let broker = crate::session_factory::secrets_broker(cfg.as_ref());
+        manager.set_secrets(broker.clone());
+        let resolver_broker = broker;
+        manager.set_env_resolver(std::sync::Arc::new(move |var: &str| {
+            resolver_broker
+                .resolve(var)
+                .ok()
+                .flatten()
+                .map(|v| v.expose().to_owned())
+                .or_else(|| std::env::var(var).ok())
+        }));
     }
+    manager.configure(vec![spec]);
+    let rec = match manager.approve_server(name) {
+        Ok(rec) => rec,
+        Err(e) => {
+            manager.shutdown();
+            return err_json(502, "MCP_APPROVE", &format!("handshake failed: {e}"));
+        }
+    };
+    manager.shutdown();
     json_ok(serde_json::json!({
         "ok": true, "name": name, "approved": true,
         "version": rec.version,
@@ -1149,5 +1208,94 @@ mod tests {
             let _ = std::fs::remove_dir_all(&dash_dir);
             let _ = std::fs::remove_dir_all(&agent_dir);
         }
+    }
+
+    /// Minimal newline-delimited JSON-RPC MCP server: answers
+    /// `initialize` with a fixed reported version, ignores everything
+    /// else. Enough for the approve handshake (which connects and
+    /// reads `serverInfo.version`, nothing more).
+    const FAKE_MCP_PY: &str = r#"
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if msg.get("method") == "initialize":
+        out = {"jsonrpc": "2.0", "id": msg.get("id"),
+               "result": {"protocolVersion": "2025-06-18", "capabilities": {},
+                          "serverInfo": {"name": "fake", "version": "9.9.9"}}}
+        sys.stdout.write(json.dumps(out) + "\n")
+        sys.stdout.flush()
+"#;
+
+    fn scratch_app(data_dir: PathBuf) -> App {
+        App {
+            data_dir: data_dir.clone(),
+            token: "test".to_string(),
+            bind: "127.0.0.1".to_string(),
+            bind_all: false,
+            on_approval: None,
+            send_locks: Default::default(),
+            ui_action_locks: Default::default(),
+            turn_children: Default::default(),
+            swarm: crate::swarm::orchestrator_for(&data_dir),
+            desktop: Default::default(),
+        }
+    }
+
+    /// Cluster 1 (b): dashboard approve must handshake like CLI
+    /// approve. Before the fix it recorded version "unverified"
+    /// without connecting, and the launcher's post-handshake gate
+    /// (exact reported version + hash) never matched - so a
+    /// dashboard-approved server stayed unapproved with 0 tools.
+    /// After the fix the record carries the handshaked version and
+    /// passes the launcher's own `is_approved` check.
+    #[test]
+    fn dashboard_approve_handshakes_and_records_real_version() {
+        let dir = scratch_dir("approve-handshake");
+        let script = dir.join("fake_mcp.py");
+        std::fs::write(&script, FAKE_MCP_PY).expect("write fake server");
+        std::fs::write(
+            dir.join("config.toml"),
+            format!(
+                "[mcp.servers.fake]\nenabled = false\ntransport = \"stdio\"\ncommand = \"python3\"\nargs = [{}]\n",
+                serde_json::to_string(&script.to_string_lossy()).unwrap()
+            ),
+        )
+        .expect("write config");
+        let app = scratch_app(dir.clone());
+        let req = Request {
+            method: "POST".to_string(),
+            path: "/api/mcp/servers/fake/approve".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+            body: br#"{"confirm": true}"#.to_vec(),
+        };
+        let resp = approve(&app, "fake", &req);
+        let (status, body) = match resp {
+            Response::Buffered { status, body, .. } => (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+            ),
+            _ => panic!("expected a buffered response"),
+        };
+        assert_eq!(status, 200, "approve must handshake successfully: {body}");
+        assert_eq!(body["approved"], serde_json::json!(true));
+        assert_eq!(body["version"], serde_json::json!("9.9.9"));
+        // The launcher's own gate must now pass: exact version + hash.
+        let store = ApprovalStore::open(&mcp_dir(&dir));
+        let rec = store.get("fake").expect("approval record written");
+        assert_eq!(rec.version, "9.9.9");
+        assert_ne!(rec.version, "unverified");
+        assert!(!rec.dir_hash.is_empty());
+        assert!(
+            store.is_approved("fake", &rec.version, &rec.dir_hash),
+            "record must pass the launcher's post-handshake gate"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
