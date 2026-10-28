@@ -40,6 +40,15 @@ pub enum NightlyEvent {
         reason: String,
         at_ms: i64,
     },
+    /// Queueing for approval failed (IO, corrupt queue file). Deliberately
+    /// NOT EvalRejected: a queue failure is an infrastructure failure,
+    /// not a judgement that the proposal was bad, and counting it as
+    /// "rejected" inflated the rejection count.
+    QueueFailed {
+        id: String,
+        reason: String,
+        at_ms: i64,
+    },
     ReplayPassed {
         id: String,
         summary: String,
@@ -162,7 +171,10 @@ pub fn last_run_summary(data_dir: &Path) -> Option<String> {
             NightlyEvent::PassFinished { at_ms, .. } => Some(*at_ms),
             _ => None,
         })
-        .unwrap_or(i64::MAX);
+        // No PassFinished yet means the pass is still running or died
+        // mid-pass: bound the window at now, not i64::MAX, or usage
+        // from every later pass would be folded into this one.
+        .unwrap_or_else(|| pantheon_api::logging::now_ms());
     let mut proposed = 0;
     let mut applied = 0;
     let mut queued = 0;

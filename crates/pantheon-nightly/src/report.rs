@@ -72,9 +72,42 @@ fn fmt_ms(ms: i64) -> String {
     if ms <= 0 {
         return "never".into();
     }
-    // Render as a plain UTC timestamp; callers can localize.
-    let secs = ms / 1000;
-    format!("{secs}s since epoch")
+    // A real UTC date, not "Ns since epoch": the old rendering forced
+    // the operator to convert epoch seconds by hand to know when a
+    // pass ran. Civil-from-days (Hinnant's algorithm), std-only.
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
 }
 
 // Small deterministic invariant tests only.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_ms_renders_utc_date_not_epoch_seconds() {
+        assert_eq!(fmt_ms(0), "never");
+        assert_eq!(fmt_ms(-5), "never");
+        // 1790449200s == 2026-09-26 19:00:00 UTC.
+        assert_eq!(fmt_ms(1_790_449_200_000), "2026-09-26 19:00:00 UTC");
+        assert_eq!(fmt_ms(1_000), "1970-01-01 00:00:01 UTC");
+    }
+}
