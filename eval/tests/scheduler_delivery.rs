@@ -148,7 +148,7 @@ fn rest_sender_reports_missing_config_as_error() {
     // (Cleared explicitly: no other test reads these.)
     std::env::remove_var("PANTHEON_TELEGRAM_BOT_TOKEN");
     std::env::remove_var("PANTHEON_DELIVER_TELEGRAM_TO");
-    let s = RestChannelSender;
+    let s = RestChannelSender::new();
     let err = deliver_summary(&s, &Deliver::Telegram, "job1", "x").unwrap_err();
     assert!(
         err.contains("PANTHEON_TELEGRAM_BOT_TOKEN"),
