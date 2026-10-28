@@ -1786,11 +1786,13 @@ mod rate_limit_tests {
                 default: DefaultModel {
                     provider: "nvidia-rate".to_string(),
                     model: "nvidia-rate-model-a".to_string(),
+                    key_env: None,
                 },
                 fallbacks: FallbackChain {
                     fallbacks: vec![DefaultModel {
                         provider: "nvidia-rate".to_string(),
                         model: "nvidia-rate-model-b".to_string(),
+                        key_env: None,
                     }],
                 },
                 auxiliaries: vec![],
