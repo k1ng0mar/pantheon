@@ -114,10 +114,20 @@ pub fn cmd_logs(args: &[String]) {
         let a = args[i].as_str();
         // Each flag that takes a value refuses a missing one by name, rather
         // than consuming the next flag and failing somewhere unrelated.
+        // A flag-like next token is not a value either: `logs --grep
+        // --level error` used to swallow `--level` as the grep pattern
+        // and then treat `error` as the log name.
         let mut need = |what: &str| -> String {
             i += 1;
             match args.get(i) {
-                Some(v) => v.clone(),
+                Some(v) if !v.starts_with('-') => v.clone(),
+                Some(v) => {
+                    eprintln!(
+                        "logs: {what} needs a value, got flag-like {v:?}\n{}",
+                        usage()
+                    );
+                    std::process::exit(2);
+                }
                 None => {
                     eprintln!("logs: {what} needs a value\n{}", usage());
                     std::process::exit(2);

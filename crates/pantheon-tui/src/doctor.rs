@@ -79,14 +79,25 @@ pub fn cmd_doctor(args: &[String], data_dir: &Path) -> ! {
                 fail_usage(&format!("unexpected flag {s:?}"));
             }
             s => {
-                if plugin_dir.is_none() {
-                    plugin_dir = Some(s);
+                // A second positional used to vanish silently, and a
+                // plugin dir silently dropped `--check` (the plugin
+                // form runs before the subsystem engine). Both are
+                // argument errors now: the plugin form takes exactly
+                // one directory and no `--check`.
+                if plugin_dir.is_some() {
+                    fail_usage(&format!(
+                        "unexpected extra argument {s:?}; doctor takes at most one plugin directory"
+                    ));
                 }
+                plugin_dir = Some(s);
             }
         }
     }
     if check_arg_pending {
         fail_usage("--check needs a subsystem argument");
+    }
+    if plugin_dir.is_some() && check.is_some() {
+        fail_usage("--check does not apply to the plugin-directory form; run it without --check, or without a plugin directory");
     }
     if json && verbose {
         fail_usage("--json and --verbose are mutually exclusive");

@@ -458,17 +458,19 @@ pub fn cmd_gateway(args: &[String]) {
         Some("status") => service_ctl(ServiceAction::Status),
         Some("help") | Some("--help") | Some("-h") => {
             println!(
-                "pantheon serve gateway [start|stop|restart|status|run]\n\n\
+                "pantheon gateway [start|stop|restart|status|run]\n\n\
                  Run the always-on channel daemon in the foreground, or control\n\
                  its installed service. With no subcommand, the daemon runs.\n\n\
-                 Tokens come from PANTHEON_DISCORD_TOKEN and\n\
-                 PANTHEON_TELEGRAM_BOT_TOKEN; a missing token disables that\n\
-                 surface. At least one surface must be configured."
+                 Tokens resolve through the secrets broker: process env\n\
+                 wins, then <data_dir>/gateway.env (per-channel\n\
+                 `token_secret`, falling back to the platform's standard\n\
+                 token env var). A missing token disables that surface.\n\
+                 At least one surface must be configured."
             );
         }
         Some(other) => {
             eprintln!("gateway: unknown subcommand '{other}'");
-            eprintln!("usage: pantheon serve gateway [start|stop|restart|status|run]");
+            eprintln!("usage: pantheon gateway [start|stop|restart|status|run]");
             std::process::exit(2);
         }
     }
