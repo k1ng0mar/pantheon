@@ -39,4 +39,4 @@ Secrets a server needs go in its `env` map as `"env:NAME"` references. They reso
 - `pantheon mcp enable|disable <name>` - toggle a declared server (config-defined servers are toggled in `config.toml`).
 - Inside the TUI: `/mcp reload` re-reads config + declarations and hands the new specs to the launcher without dropping your session.
 
-The dashboard's MCP page shows the same merged view with live health. A server that keeps failing backs off (1s, doubling, capped at 5 minutes) instead of hammering retries; a server that dies mid-call gets one reconnect and one retry, then the error goes to the model like any other tool failure.
+The dashboard's MCP page shows the same merged view with live health. A server that keeps failing backs off (2s, doubling, capped at 5 minutes) instead of hammering retries; a server that dies mid-call gets one reconnect and one retry, then the error goes to the model like any other tool failure.

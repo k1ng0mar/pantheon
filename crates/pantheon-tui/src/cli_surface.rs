@@ -376,7 +376,7 @@ const TOOLS_HELP: &str = "\
 pantheon tools <command> [args]
 
 Commands:
-  mcp <list|status|approve|resources|templates|read|prompts|prompt>
+  mcp <list|status|health|approve|enable|disable|resources|templates|read|prompts|prompt|login|logout|auth>
   oauth <login|status|logout> [app]
   skills <list|import|doctor>
   plugins <list|install|enable|disable>

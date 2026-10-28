@@ -306,10 +306,22 @@ fn repair_mcp(
             continue;
         }
         if !is_broken_server(&snap, config.mcp_max_failures) {
+            // Label distinctly: only "ready" is healthy. A failed /
+            // backoff server below the repair threshold is not
+            // healthy, it is below threshold - no action, but the
+            // report must not call it Healthy.
+            let detail = if snap.status == "ready" {
+                format!("status=ready failures={}", snap.failures)
+            } else {
+                format!(
+                    "status={} failures={} (below repair threshold, not ready)",
+                    snap.status, snap.failures
+                )
+            };
             reports.push(RepairReport {
                 target: id,
                 outcome: RepairOutcome::Healthy,
-                detail: format!("status={} failures={}", snap.status, snap.failures),
+                detail,
             });
             continue;
         }
