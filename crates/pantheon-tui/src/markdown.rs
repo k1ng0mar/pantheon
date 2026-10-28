@@ -111,9 +111,9 @@ pub fn render_markdown_wrapped(text: &str, th: &Theme, width: usize) -> Vec<Line
 type Defs = HashMap<String, String>;
 
 fn render_markdown_at(text: &str, th: &Theme, width: Option<usize>) -> Vec<Line<'static>> {
-    // Tabs expand to the next multiple of 4 for indentation purposes
-    // (GFM 2.2); interior tabs are kept as-is by the block code, which
-    // only strips leading indentation.
+    // Tabs expand to the next multiple of 4 everywhere (GFM 2.2:
+    // expansion happens before block parsing, so interior tabs are
+    // not literal content either).
     let expanded = expand_tabs(text);
     let lines: Vec<String> = expanded.lines().map(|s| s.to_string()).collect();
     let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
@@ -134,22 +134,21 @@ fn render_markdown_at(text: &str, th: &Theme, width: Option<usize>) -> Vec<Line<
     out
 }
 
-/// Expand leading tabs to spaces (tab stops of 4). Interior tabs are
-/// left untouched: they are literal content in code and prose.
+/// Expand every tab to spaces (tab stops of 4, GFM 2.2). Column is
+/// counted in chars, matching the previous leading-only behaviour.
 fn expand_tabs(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
         let mut col = 0usize;
-        let mut expanded = String::new();
         for c in line.chars() {
-            if c == '\t' && expanded.chars().all(|ch| ch == ' ') {
+            if c == '\t' {
                 let n = 4 - (col % 4);
                 for _ in 0..n {
-                    expanded.push(' ');
+                    out.push(' ');
                 }
                 col += n;
             } else {
-                expanded.push(c);
+                out.push(c);
                 if c == '\n' {
                     col = 0;
                 } else {
@@ -157,7 +156,6 @@ fn expand_tabs(text: &str) -> String {
                 }
             }
         }
-        out.push_str(&expanded);
     }
     out
 }
@@ -185,11 +183,13 @@ impl<'a> Renderer<'a> {
             let trimmed = line.trim();
 
             // --- link reference definitions: consumed, never rendered.
+            // Multi-line defs (destination/title on the next line)
+            // consume their continuation lines too.
             if indent <= 3 {
-                if let Some((label, dest)) = parse_def_line(trimmed) {
+                if let Some((label, dest, consumed)) = parse_def_at(lines, i) {
                     let _ = (label, dest); // defs already collected globally
                     self.last_was_paragraph = false;
-                    i += 1;
+                    i += consumed;
                     continue;
                 }
             }
@@ -950,7 +950,16 @@ fn task_checkbox(body: &str) -> Option<(String, &str)> {
 
 fn is_section_header(lines: &[&str], i: usize) -> bool {
     let trimmed = lines[i].trim();
-    if trimmed.is_empty() || trimmed.chars().count() > SHORT_LINE || trimmed.ends_with(':') {
+    if trimmed.is_empty()
+        || trimmed.chars().count() > SHORT_LINE
+        || trimmed.ends_with(':')
+        // A short ordinary sentence is not a heading: headings do
+        // not end in sentence punctuation. Without this, any short
+        // sentence after a blank line rendered as a heading.
+        || trimmed.ends_with('.')
+        || trimmed.ends_with('!')
+        || trimmed.ends_with('?')
+    {
         return false;
     }
     for prefix in [">", "#", "`", "|", "+ "] {
@@ -1050,13 +1059,28 @@ fn html_block_end(lines: &[&str], i: usize, last_was_paragraph: bool) -> Option<
     if !trimmed.starts_with('<') {
         return None;
     }
-    // Comment, processing instruction, declaration, CDATA: to blank line.
-    if trimmed.starts_with("<!--")
-        || trimmed.starts_with("<?")
-        || trimmed.starts_with("<!")
-    {
-        let mut j = i + 1;
-        while j < lines.len() && !is_blank(lines[j]) {
+    // Comment, processing instruction, declaration, CDATA: to the
+    // closing marker (GFM 4.6 types 2-5), like script/pre/style/
+    // textarea run to their end tag. Running to a blank line instead
+    // swallowed the first paragraph after a multi-line comment.
+    if trimmed.starts_with("<!--") || trimmed.starts_with("<?") || trimmed.starts_with("<!") {
+        let marker = if trimmed.starts_with("<!--") {
+            "-->"
+        } else if trimmed.starts_with("<?") {
+            "?>"
+        } else if trimmed.starts_with("<![CDATA[") {
+            "]]>"
+        } else {
+            // Declaration: ends at the first '>' (usually on this line).
+            ">"
+        };
+        // The opening line itself may already contain the marker
+        // (e.g. a one-line comment); scan from `i`, not `i + 1`.
+        let mut j = i;
+        while j < lines.len() {
+            if lines[j].contains(marker) {
+                return Some(j + 1);
+            }
             j += 1;
         }
         return Some(j);
@@ -1269,6 +1293,104 @@ fn parse_def_line(trimmed: &str) -> Option<(String, String)> {
     }
 }
 
+/// Parse a link reference definition starting at `lines[i]`, which
+/// may span lines: the destination and/or the title may sit on the
+/// following line(s) (GFM 4.7: a definition is not confined to one
+/// line). Returns (label, destination, lines consumed), or None.
+/// A blank line ends the attempt; at most 3 lines are consumed.
+fn parse_def_at(lines: &[&str], i: usize) -> Option<(String, String, usize)> {
+    let first = lines[i].trim_start();
+    if leading_spaces(lines[i]) > 3 {
+        return None;
+    }
+    if let Some((label, dest)) = parse_def_line(first) {
+        // Single-line def, but a title alone on the next line still
+        // belongs to it (e.g. `[foo]: /url` followed by `"Title"`):
+        // consume it only when line 1 carried no title of its own.
+        let mut consumed = 1;
+        if first_def_remainder(first).is_empty() && i + 1 < lines.len() && !is_blank(lines[i + 1]) {
+            let next = lines[i + 1].trim();
+            if let Some(end) = parse_title(next) {
+                if next[end..].trim().is_empty() {
+                    consumed = 2;
+                }
+            }
+        }
+        return Some((label, dest, consumed));
+    }
+    // Multi-line: label + colon with the destination (or a title
+    // completing a partial one) on the next line(s).
+    let mut joined = first.to_string();
+    for extra in 1..=2 {
+        let Some(next) = lines.get(i + extra) else {
+            break;
+        };
+        if is_blank(next) {
+            break;
+        }
+        joined.push(' ');
+        joined.push_str(next.trim());
+        if let Some((label, dest)) = parse_def_line(&joined) {
+            // As in the single-line case, a title alone on the next
+            // line still belongs to this definition.
+            let mut consumed = extra + 1;
+            if first_def_remainder(&joined).is_empty() {
+                if let Some(title_line) = lines.get(i + consumed) {
+                    if !is_blank(title_line) {
+                        let t = title_line.trim();
+                        if let Some(end) = parse_title(t) {
+                            if t[end..].trim().is_empty() {
+                                consumed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            return Some((label, dest, consumed));
+        }
+    }
+    None
+}
+
+/// Remainder of a single-line def after its destination, trimmed:
+/// empty when the line carries no title. Used to decide whether a
+/// title on the following line belongs to this definition.
+fn first_def_remainder(trimmed: &str) -> String {
+    let Some(rest) = trimmed.strip_prefix('[') else {
+        return trimmed.to_string();
+    };
+    let Some(close) = rest.find(']') else {
+        return trimmed.to_string();
+    };
+    let Some(after) = rest[close + 1..].strip_prefix(':') else {
+        return trimmed.to_string();
+    };
+    let after = after.trim_start();
+    if let Some(a) = after.strip_prefix('<') {
+        if let Some(end) = a.find('>') {
+            return a[end + 1..].trim().to_string();
+        }
+        return after.to_string();
+    }
+    let mut depth = 0i32;
+    let mut end = 0usize;
+    for (idx, c) in after.char_indices() {
+        if c.is_whitespace() {
+            break;
+        }
+        if c == '(' {
+            depth += 1;
+        } else if c == ')' {
+            if depth == 0 {
+                break;
+            }
+            depth -= 1;
+        }
+        end = idx + c.len_utf8();
+    }
+    after[end..].trim().to_string()
+}
+
 /// Parse a title at the start of `s`; returns the byte index just
 /// past the title, or None.
 fn parse_title(s: &str) -> Option<usize> {
@@ -1332,7 +1454,10 @@ fn parse_title_bytes(s: &str) -> Option<usize> {
 fn collect_defs(lines: &[&str]) -> Defs {
     let mut defs: Defs = HashMap::new();
     let mut in_fence: Option<(char, usize)> = None;
-    for line in lines {
+    let mut in_indented = false;
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i];
         let trimmed = line.trim_start();
         let indent = leading_spaces(line);
         if let Some((fc, flen)) = in_fence {
@@ -1343,18 +1468,57 @@ fn collect_defs(lines: &[&str]) -> Defs {
                     }
                 }
             }
+            i += 1;
+            continue;
+        }
+        if in_indented {
+            if is_blank(line) {
+                // A blank line belongs to the block only if an
+                // indented line follows it.
+                let mut k = i + 1;
+                while k < lines.len() && is_blank(lines[k]) {
+                    k += 1;
+                }
+                if k < lines.len() && leading_spaces(lines[k]) >= 4 {
+                    i += 1;
+                    continue;
+                }
+                in_indented = false;
+                i += 1;
+                continue;
+            }
+            if indent >= 4 {
+                i += 1;
+                continue;
+            }
+            in_indented = false;
+            // Fall through: this line ends the code block.
+        }
+        if indent >= 4 {
+            in_indented = true;
+            i += 1;
             continue;
         }
         if indent <= 3 {
             if let Some((fc, flen, _)) = fence_open(trimmed) {
                 in_fence = Some((fc, flen));
+                i += 1;
                 continue;
             }
-            if let Some((label, dest)) = parse_def_line(trimmed) {
+            // A def-looking line inside an HTML block is literal
+            // block content, not a definition: skip the whole block.
+            if let Some(end) = html_block_end(lines, i, false) {
+                i = end.max(i + 1);
+                continue;
+            }
+            if let Some((label, dest, consumed)) = parse_def_at(lines, i) {
                 // First definition wins (GFM 4.7).
                 defs.entry(label).or_insert(dest);
+                i += consumed;
+                continue;
             }
         }
+        i += 1;
     }
     defs
 }
@@ -2123,7 +2287,26 @@ fn trim_bare_url(raw: &str) -> usize {
             break;
         }
         let last = raw[..end].chars().last().unwrap();
-        if matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | ']' | '}') {
+        if last == ';' {
+            // A ';' completing an entity reference (e.g. `&amp;` at
+            // the end of a bare URL) is part of the URL, not trailing
+            // punctuation: keep it instead of stripping it.
+            let prefix = &raw[..end - 1];
+            if let Some(amp) = prefix.rfind('&') {
+                let body = &prefix[amp + 1..];
+                if !body.is_empty()
+                    && body.len() <= 32
+                    && body
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '#')
+                {
+                    break;
+                }
+            }
+            end -= 1;
+            continue;
+        }
+        if matches!(last, '.' | ',' | ':' | '!' | '?' | '\'' | '"' | ']' | '}') {
             end -= last.len_utf8();
             continue;
         }
@@ -2137,10 +2320,14 @@ fn trim_bare_url(raw: &str) -> usize {
         }
         break;
     }
-    // A trailing ';' that is part of an entity (e.g. &amp;) is kept by
-    // the loop above only if it is the last char — GFM strips it, so
-    // the loop already handles it.
     end
+}
+
+/// Bare autolinks (the GFM extension) need a dotted domain, unlike
+/// `<...>` autolinks where `foo@bar` is valid per the spec's email
+/// pattern. Requiring the dot keeps `user@host` prose from linking.
+fn valid_bare_email(s: &str) -> bool {
+    valid_email(s) && s.split_once('@').is_some_and(|(_, d)| d.contains('.'))
 }
 
 /// Tokenize `text` into inline nodes (delimiters unresolved).
@@ -2437,7 +2624,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
                 // the previous char is not a word char, link it.
                 let word = &rest_str[..word_end];
                 let prev_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.');
-                if prev_ok && word.contains('@') && valid_email(word) {
+                if prev_ok && word.contains('@') && valid_bare_email(word) {
                     flush(&mut buf, &mut nodes);
                     nodes.push(INode::Link(vec![INode::Text(word.to_string())]));
                     let mut adv = i;
@@ -2930,6 +3117,122 @@ mod tests {
         // Collapsed label with spaces / case folding.
         let t = render("[my link]: /u\n\n[My  Link]");
         assert_eq!(t, "My  Link");
+    }
+
+    // --- minor-e: GFM remaining gaps ---
+    #[test]
+    fn html_comment_runs_to_closing_marker_not_blank_line() {
+        // A comment block ends at `-->`; markdown after it parses.
+        let input = "<!--\nnote\n-->\n*emph*\n";
+        assert!(
+            has_modifier(input, "emph", Modifier::ITALIC),
+            "emphasis after a comment must parse: {}",
+            render(input)
+        );
+        let input = "<![CDATA[\nx\n]]>\n*emph*\n";
+        assert!(
+            has_modifier(input, "emph", Modifier::ITALIC),
+            "emphasis after CDATA must parse: {}",
+            render(input)
+        );
+        let input = "<?pi\nmore?>\n*emph*\n";
+        assert!(
+            has_modifier(input, "emph", Modifier::ITALIC),
+            "emphasis after a PI must parse: {}",
+            render(input)
+        );
+    }
+
+    #[test]
+    fn multiline_link_reference_definitions() {
+        // Destination on the next line.
+        let t = render("[foo]:\n/url\n\n[foo]");
+        assert_eq!(t, "foo");
+        // Title alone on the next line belongs to the definition.
+        let t = render("[foo]: /url\n\"Title\"\n\n[foo]");
+        assert_eq!(t, "foo");
+        assert!(!t.contains("Title"), "title line must be consumed: {t}");
+        // Destination and title each on their own line.
+        let t = render("[foo]:\n/url\n\"Title\"\n\n[foo]");
+        assert_eq!(t, "foo");
+        assert!(!t.contains("Title"), "title line must be consumed: {t}");
+    }
+
+    #[test]
+    fn def_inside_html_block_is_not_collected() {
+        let t = render("<div>\n[foo]: /url\n</div>\n\n[foo]");
+        assert!(t.contains("[foo]"), "unresolved ref must stay literal: {t}");
+    }
+
+    #[test]
+    fn bare_email_requires_dotted_domain_but_angle_autolink_does_not() {
+        let input = "mail foo@bar and bar@baz.com end";
+        let style_plain = span_style(input, "foo@bar").expect("foo@bar span");
+        assert_eq!(
+            style_plain.fg,
+            Some(theme().body),
+            "foo@bar must not link (no dot in domain)"
+        );
+        let style_link = span_style(input, "bar@baz.com").expect("bar@baz.com span");
+        assert_eq!(
+            style_link.fg,
+            Some(theme().primary),
+            "bar@baz.com must link"
+        );
+        // Angle autolinks keep the spec's dot-less email pattern.
+        let style_angle = span_style("<foo@bar>", "foo@bar").expect("angle span");
+        assert_eq!(style_angle.fg, Some(theme().primary));
+    }
+
+    #[test]
+    fn bare_url_trailing_entity_semicolon_is_kept() {
+        // A stripped ';' still renders (as trailing text outside the
+        // link), so assert on the link span itself, not the joined text.
+        let link_span = |input: &str| {
+            render_markdown(input, &theme())
+                .into_iter()
+                .flat_map(|l| l.spans)
+                .find(|s| s.content.contains("example.com"))
+                .expect("link span")
+        };
+        let link = link_span("see https://example.com/?a=1&amp; end");
+        assert!(
+            link.content.ends_with("&amp;"),
+            "entity semicolon must stay in the link: {}",
+            link.content
+        );
+        // A plain trailing ';' is still stripped from the link.
+        let link = link_span("see https://example.com/a; end");
+        assert_eq!(link.content.as_ref(), "https://example.com/a");
+    }
+
+    #[test]
+    fn tab_expansion_covers_interior_tabs() {
+        assert_eq!(render("a\tb"), "a   b");
+        let t = render("\tcode");
+        assert!(t.contains("  code"), "tab-indented code must render: {t}");
+    }
+
+    #[test]
+    fn section_header_ignores_short_sentences() {
+        let input = "\nShort sentence here.\nmore text";
+        assert!(
+            !has_modifier(input, "Short sentence here.", Modifier::BOLD),
+            "a sentence must not render as a heading: {}",
+            render(input)
+        );
+        let input = "\nShort heading\nmore text";
+        assert!(
+            has_modifier(input, "Short heading", Modifier::BOLD),
+            "a bare short line still renders as a heading: {}",
+            render(input)
+        );
+    }
+
+    #[test]
+    fn underscore_emphasis_ignores_identifiers() {
+        assert!(!has_modifier("foo_bar_baz", "bar", Modifier::ITALIC));
+        assert_eq!(render("foo_bar_baz"), "foo_bar_baz");
     }
 
     // --- GFM 4.10 tables with inline ---
