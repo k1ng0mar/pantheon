@@ -7892,6 +7892,16 @@ pub fn outgoing_user_message(temporal_hint: &Option<String>, user_message: &str)
 
 pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Message> {
     let mut out = Vec::new();
+    // Calls retired by crash recovery: settled, never re-run, but their
+    // assistant `tool_calls` row still ships to the provider. Without a
+    // matching tool result row the provider rejects the next call, so
+    // the post-pass below fabricates one result per retired call.
+    let mut interrupted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in &entries {
+        if let Event::ToolInterrupted { call_id, .. } = &e.event {
+            interrupted.insert(call_id.clone());
+        }
+    }
     for e in entries {
         match e.event {
             Event::AssistantMessage { message, .. } | Event::ToolMessage { message, .. } => {
@@ -7932,6 +7942,53 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
             }
             _ => {}
         }
+    }
+    // Retired-call repair: every assistant `tool_calls` row must have
+    // exactly one matching tool result row before the transcript ships
+    // to the provider. A call retired by recovery has no result row in
+    // the ledger (that is what "settled, not pending" means), so fabricate
+    // one here, directly after its assistant row, stating the outcome is
+    // unconfirmed — never a success, never a re-run. Calls that are still
+    // genuinely pending (started, neither completed nor interrupted) are
+    // NOT fabricated here: `drive`'s pending path settles or re-runs
+    // them, and inventing a result would hide a call that may still run.
+    // Only interrupted ids get a fabricated row.
+    if !interrupted.is_empty() {
+        let has_result: std::collections::BTreeSet<String> = out
+            .iter()
+            .filter_map(|m| {
+                if m.role == pantheon_api::message::Role::Tool {
+                    m.tool_call_id.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut repaired = Vec::with_capacity(out.len() + interrupted.len());
+        for message in out {
+            let calls: Vec<String> = if message.role == pantheon_api::message::Role::Assistant {
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.id.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            repaired.push(message);
+            for call_id in calls {
+                if interrupted.contains(&call_id) && !has_result.contains(&call_id) {
+                    repaired.push(
+                        Message::tool(
+                            call_id,
+                            "interrupted; outcome unconfirmed: the call was retired by crash recovery before completing, so its result is unknown. Do not assume it succeeded or failed; re-check state before relying on it.",
+                        )
+                        .with_provenance(Provenance::system("pantheon")),
+                    );
+                }
+            }
+        }
+        return repaired;
     }
     out
 }
@@ -10557,6 +10614,127 @@ mod delegate_tool_tests {
             }
             other => panic!("expected ToolCall, got {other:?}"),
         }
+    }
+
+    /// The realistic shape the settled test above omits: a retired call
+    /// always has a real assistant `tool_calls` row in the ledger. Without
+    /// a fabricated result row that row ships to the provider with no
+    /// result and the next provider call is rejected, so `rebuild_messages`
+    /// must fabricate an "interrupted; outcome unconfirmed" tool result
+    /// directly after the assistant row.
+    #[test]
+    fn retired_call_in_rebuilt_transcript_gets_unconfirmed_result() {
+        use crate::session::rebuild_messages;
+        use pantheon_api::message::ToolCallRef;
+        let assistant = Message::assistant_tool_calls(vec![ToolCallRef {
+            id: "call-1".to_string(),
+            name: "shell".to_string(),
+            arguments: "{\"command\":\"ls\"}".to_string(),
+        }]);
+        let entries = vec![
+            pantheon_storage::LedgerEntry {
+                id: 1,
+                run_id: "r".to_string(),
+                seq: 1,
+                ts_ms: 1,
+                event: Event::AssistantMessage {
+                    run_id: "r".to_string(),
+                    message: assistant,
+                },
+            },
+            pantheon_storage::LedgerEntry {
+                id: 2,
+                run_id: "r".to_string(),
+                seq: 2,
+                ts_ms: 2,
+                event: Event::ToolStarted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    provenance: Provenance::system("test"),
+                },
+            },
+            pantheon_storage::LedgerEntry {
+                id: 3,
+                run_id: "r".to_string(),
+                seq: 3,
+                ts_ms: 3,
+                event: Event::ToolInterrupted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    output_seen: false,
+                    result_seen: false,
+                    detail: "interrupted before completion; outcome unconfirmed".to_string(),
+                },
+            },
+        ];
+        let rebuilt = rebuild_messages(entries);
+        assert_eq!(rebuilt.len(), 2, "assistant row + fabricated result: {rebuilt:?}");
+        let result = &rebuilt[1];
+        assert_eq!(result.role, pantheon_api::message::Role::Tool);
+        assert_eq!(result.tool_call_id.as_deref(), Some("call-1"));
+        assert!(
+            result.content.contains("outcome unconfirmed"),
+            "fabricated result must not claim success or failure: {}",
+            result.content
+        );
+        // A real ToolMessage already present must not gain a duplicate.
+        let entries_with_result = {
+            let mut v = vec![pantheon_storage::LedgerEntry {
+                id: 4,
+                run_id: "r".to_string(),
+                seq: 4,
+                ts_ms: 4,
+                event: Event::ToolMessage {
+                    run_id: "r".to_string(),
+                    message: Message::tool("call-1", "real result"),
+                },
+            }];
+            // Rebuild the full ledger order: assistant, started,
+            // interrupted, then the real result row.
+            let mut full = vec![];
+            full.push(pantheon_storage::LedgerEntry {
+                id: 1,
+                run_id: "r".to_string(),
+                seq: 1,
+                ts_ms: 1,
+                event: Event::AssistantMessage {
+                    run_id: "r".to_string(),
+                    message: Message::assistant_tool_calls(vec![ToolCallRef {
+                        id: "call-1".to_string(),
+                        name: "shell".to_string(),
+                        arguments: "{\"command\":\"ls\"}".to_string(),
+                    }]),
+                },
+            });
+            full.push(pantheon_storage::LedgerEntry {
+                id: 3,
+                run_id: "r".to_string(),
+                seq: 3,
+                ts_ms: 3,
+                event: Event::ToolInterrupted {
+                    run_id: "r".to_string(),
+                    call_id: "call-1".to_string(),
+                    tool: "shell".to_string(),
+                    args: "{\"command\":\"ls\"}".to_string(),
+                    output_seen: false,
+                    result_seen: false,
+                    detail: "interrupted".to_string(),
+                },
+            });
+            full.append(&mut v);
+            full
+        };
+        let rebuilt = rebuild_messages(entries_with_result);
+        assert_eq!(
+            rebuilt.len(),
+            2,
+            "existing result row must not be duplicated: {rebuilt:?}"
+        );
+        assert_eq!(rebuilt[1].content, "real result");
     }
 
     /// The `delegate_async` / `subagent_*` tools are wired end to end against
