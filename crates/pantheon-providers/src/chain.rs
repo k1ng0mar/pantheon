@@ -56,16 +56,21 @@ pub struct ProviderChain<T: ChatTransport> {
     pub oauth_broker: Option<pantheon_secrets::SecretsBroker>,
 }
 
-/// Tracks emitted text across attempt retries. The `emitted` field holds
-/// the concatenated text that has been delivered to the client. On retry,
-/// this text is prepended to the messages sent to the model so it can
-/// continue from where it left off. The `already_emitted` set prevents
-/// re-emitting the same delta chunks to append-only consumers.
+/// Tracks text emitted during one attempt. The `emitted` field holds
+/// the concatenated text delivered to the client; its only consumer is
+/// the interrupted-attempt check, which refuses to retry or fall back
+/// once output is already visible (a retry would append a second
+/// response to clients that cannot retract output). Nothing here
+/// prepends emitted text to a retry's messages, and nothing suppresses
+/// re-emission: every event is forwarded to the inner sink as-is.
+/// The `already_emitted` set only records which deltas have been seen.
 struct TextTrackingSink<'a> {
     inner: &'a dyn ModelEventSink,
-    /// Concatenated text emitted during this attempt; carried forward to retries.
+    /// Concatenated text emitted during this attempt; read only by the
+    /// interrupted-attempt check (see the struct doc).
     emitted: RefCell<String>,
-    /// Set of text deltas already emitted to prevent replay on retry.
+    /// Text deltas seen during this attempt, recorded for inspection;
+    /// recording a delta does not suppress forwarding it.
     already_emitted: RefCell<Vec<String>>,
 }
 
@@ -80,10 +85,6 @@ impl<'a> TextTrackingSink<'a> {
 
     fn emitted_text(&self) -> String {
         self.emitted.borrow().clone()
-    }
-
-    fn set_emitted_text(&self, text: String) {
-        *self.emitted.borrow_mut() = text;
     }
 
     fn add_emitted_text(&self, text: &str) {
@@ -1343,4 +1344,44 @@ mod fix_model_chain_tests {
         assert_eq!(*calls.lock().unwrap(), 1, "keyless fallback must not be called");
     }
 
+}
+
+#[cfg(test)]
+mod tracking_sink_tests {
+    use super::*;
+    use crate::model_event::NoopModelSink;
+
+    #[test]
+    fn tracking_sink_accumulates_emitted_text_and_forwards_every_event() {
+        // The sink's only job is observation: emitted text is visible
+        // to the interrupted-attempt check, and every event (including
+        // a repeated delta) still reaches the inner sink. There is no
+        // setter that rewrites the accumulated text, and no suppression.
+        use std::sync::Mutex;
+        struct Capture(Mutex<Vec<String>>);
+        impl ModelEventSink for Capture {
+            fn emit(&self, event: ModelEvent) {
+                if let ModelEvent::TextDelta { text } = event {
+                    self.0.lock().unwrap().push(text);
+                }
+            }
+        }
+        let inner = Capture(Mutex::new(Vec::new()));
+        let sink = TextTrackingSink::new(&inner);
+        sink.emit(ModelEvent::TextDelta {
+            text: "hel".into(),
+        });
+        sink.emit(ModelEvent::TextDelta {
+            text: "lo".into(),
+        });
+        sink.emit(ModelEvent::TextDelta {
+            text: "lo".into(),
+        });
+        assert_eq!(sink.emitted_text(), "hellolo");
+        assert_eq!(
+            *inner.0.lock().unwrap(),
+            vec!["hel".to_string(), "lo".to_string(), "lo".to_string()],
+            "a repeated delta must still be forwarded, not suppressed"
+        );
+    }
 }
