@@ -2577,6 +2577,7 @@ name = "pantheon-migration"
 version = "1.1.2"
 dependencies = [
  "pantheon-api",
+ "pantheon-exec",
  "pantheon-extensions",
  "pantheon-providers",
  "pantheon-storage",

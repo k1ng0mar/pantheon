@@ -109,10 +109,63 @@ fn timestamp_ms(v: Option<&serde_json::Value>) -> i64 {
 /// and would otherwise dominate the FTS table.
 const MAX_CHUNK_CHARS: usize = 4000;
 
-/// Parse one quarantined JSONL transcript into chunks.
+/// One parsed record as a chunk, or `None` when it carries no text.
+/// Shared by the JSONL line path and the whole-file `.json` path so
+/// both shapes index identically.
+fn record_to_chunk(rec: &Record, run_id: &str, stem: &str, seq: i64) -> Option<ImportedChunk> {
+    // Text, in the order the shapes appear in practice.
+    let mut text = String::new();
+    if let Some(s) = &rec.text {
+        text.push_str(s);
+    }
+    if let Some(c) = &rec.content {
+        content_to_text(c, &mut text);
+    }
+    if let Some(m) = &rec.message {
+        content_to_text(m, &mut text);
+    }
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    let text = if text.chars().count() > MAX_CHUNK_CHARS {
+        let cut: String = text.chars().take(MAX_CHUNK_CHARS).collect();
+        format!("{cut}...")
+    } else {
+        text
+    };
+
+    let kind = match rec.kind.as_deref() {
+        Some("tool") | Some("tool_call") | Some("ToolResult") => "tool",
+        Some("title") => "title",
+        _ => match rec.role.as_deref() {
+            Some("title") => "title",
+            Some("tool") | Some("tool_call") => "tool",
+            _ => "message",
+        },
+    };
+
+    Some(ImportedChunk {
+        // Stable across re-runs, so indexing is idempotent.
+        chunk_id: format!("{run_id}#{stem}:{seq}"),
+        run_id: run_id.to_string(),
+        seq,
+        kind: kind.to_string(),
+        text,
+        ts_ms: timestamp_ms(rec.timestamp.as_ref()),
+    })
+}
+
+/// Parse one quarantined transcript into chunks: JSONL (one record per
+/// line) or whole-file `.json` (an array of records, a `{"messages":
+/// [...]}` object, or a single pretty-printed record object).
 ///
-/// Malformed lines are skipped rather than failing the import: a truncated
-/// final line in a live transcript is normal, not corruption.
+/// `carry` copies `.json` transcripts into quarantine too, so the
+/// indexer must read them - filtering to `.jsonl` only left every
+/// `.json` transcript unindexed and invisible (not even listed in
+/// `empty_files`). Malformed lines are skipped rather than failing the
+/// import: a truncated final line in a live transcript is normal, not
+/// corruption.
 pub fn parse_transcript(path: &Path, source: &str, session: &str) -> Vec<ImportedChunk> {
     let Ok(body) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -122,8 +175,34 @@ pub fn parse_transcript(path: &Path, source: &str, session: &str) -> Vec<Importe
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "t".into());
+    let trimmed = body.trim();
+    // Whole-file JSON first: a pretty-printed `.json` transcript spans
+    // many lines, so line parsing would see only fragments of one
+    // record and yield nothing.
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let records: Vec<serde_json::Value> = match &v {
+                serde_json::Value::Array(items) => items.clone(),
+                serde_json::Value::Object(map) => match map.get("messages") {
+                    Some(serde_json::Value::Array(items)) => items.clone(),
+                    _ => vec![v.clone()],
+                },
+                _ => Vec::new(),
+            };
+            let mut out = Vec::new();
+            for (i, item) in records.iter().enumerate() {
+                if let Ok(rec) = serde_json::from_value::<Record>(item.clone()) {
+                    if let Some(chunk) = record_to_chunk(&rec, &run_id, &stem, i as i64) {
+                        out.push(chunk);
+                    }
+                }
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
     let mut out = Vec::new();
-
     for (i, line) in body.lines().enumerate() {
         let t = line.trim();
         if t.is_empty() {
@@ -132,49 +211,9 @@ pub fn parse_transcript(path: &Path, source: &str, session: &str) -> Vec<Importe
         let Ok(rec) = serde_json::from_str::<Record>(t) else {
             continue;
         };
-
-        // Text, in the order the shapes appear in practice.
-        let mut text = String::new();
-        if let Some(s) = &rec.text {
-            text.push_str(s);
+        if let Some(chunk) = record_to_chunk(&rec, &run_id, &stem, i as i64) {
+            out.push(chunk);
         }
-        if let Some(c) = &rec.content {
-            content_to_text(c, &mut text);
-        }
-        if let Some(m) = &rec.message {
-            content_to_text(m, &mut text);
-        }
-        let text = text.trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-        let text = if text.chars().count() > MAX_CHUNK_CHARS {
-            let cut: String = text.chars().take(MAX_CHUNK_CHARS).collect();
-            format!("{cut}...")
-        } else {
-            text
-        };
-
-        let kind = match rec.kind.as_deref() {
-            Some("tool") | Some("tool_call") | Some("ToolResult") => "tool",
-            Some("title") => "title",
-            _ => match rec.role.as_deref() {
-                Some("title") => "title",
-                Some("tool") | Some("tool_call") => "tool",
-                _ => "message",
-            },
-        };
-
-        let seq = i as i64;
-        out.push(ImportedChunk {
-            // Stable across re-runs, so indexing is idempotent.
-            chunk_id: format!("{run_id}#{stem}:{seq}"),
-            run_id: run_id.clone(),
-            seq,
-            kind: kind.to_string(),
-            text,
-            ts_ms: timestamp_ms(rec.timestamp.as_ref()),
-        });
     }
     out
 }
@@ -225,7 +264,10 @@ pub fn index_quarantine(
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
-                && p.extension().map(|e| e == "jsonl").unwrap_or(false)
+                && p
+                    .extension()
+                    .map(|e| e == "jsonl" || e == "json")
+                    .unwrap_or(false)
                 && p.file_name().map(|n| n != "manifest.json").unwrap_or(false)
         })
         .collect();
@@ -292,4 +334,99 @@ pub fn ensure_sessions_indexed(
             "see `pantheon migrate apply` output",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-index-test-{}-{}-{tag}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_tmp(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// A pretty-printed single-object `.json` transcript indexes its
+    /// text: before the fix, line parsing saw only fragments of the
+    /// object and yielded nothing.
+    #[test]
+    fn json_single_object_transcript_indexes() {
+        let dir = scratch("single");
+        let path = write_tmp(
+            &dir,
+            "chat.json",
+            "{\n  \"role\": \"user\",\n  \"content\": \"hello from json\"\n}\n",
+        );
+        let chunks = parse_transcript(&path, "test", "chat");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].text.contains("hello from json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.json` array of records indexes every record.
+    #[test]
+    fn json_array_transcript_indexes() {
+        let dir = scratch("array");
+        let path = write_tmp(
+            &dir,
+            "chat.json",
+            "[{\"role\": \"user\", \"content\": \"first\"}, {\"role\": \"assistant\", \"content\": \"second\"}]",
+        );
+        let chunks = parse_transcript(&path, "test", "chat");
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].text.contains("first"));
+        assert!(chunks[1].text.contains("second"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JSONL still parses line by line, unchanged.
+    #[test]
+    fn jsonl_transcript_unchanged() {
+        let dir = scratch("jsonl");
+        let path = write_tmp(
+            &dir,
+            "chat.jsonl",
+            "{\"role\": \"user\", \"content\": \"one\"}\n{\"role\": \"user\", \"content\": \"two\"}\n",
+        );
+        let chunks = parse_transcript(&path, "test", "chat");
+        assert_eq!(chunks.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `index_quarantine` picks up `.json` files (not just `.jsonl`)
+    /// and does not count a real transcript as empty.
+    #[test]
+    fn index_quarantine_includes_json_files() {
+        let dir = scratch("quarantine");
+        std::fs::write(
+            dir.join("a.json"),
+            "{\"role\": \"user\", \"content\": \"json transcript\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.jsonl"),
+            "{\"role\": \"user\", \"content\": \"jsonl transcript\"}",
+        )
+        .unwrap();
+        let index = SessionIndex::open_in_memory().unwrap();
+        let report = index_quarantine(&dir, "test", &index).unwrap();
+        assert_eq!(report.files, 2);
+        assert_eq!(report.chunks, 2);
+        assert!(report.empty_files.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

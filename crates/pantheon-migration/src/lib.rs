@@ -485,6 +485,8 @@ const SECRET_NAMES: &[&str] = &[
     "auth.json",
     "credentials",
     "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
     "google_client_secret.json",
     "google_token.json",
     "broker.token",
@@ -492,6 +494,8 @@ const SECRET_NAMES: &[&str] = &[
     "nous_auth.json",
     "service-account.json",
     "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
     "identity.json",
     ".netrc",
     "id_rsa",
@@ -509,6 +513,12 @@ pub fn is_secret_path(path: &Path) -> bool {
         .map(|n| n.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     if SECRET_NAMES.iter().any(|s| *s == name) {
+        return true;
+    }
+    // Dotenv variants (`.env.local`, `.env.production`, ...) hold the
+    // same material as `.env` itself; an exact-name list alone let
+    // every one of them slip through as ordinary content.
+    if name.starts_with(".env.") {
         return true;
     }
     if let Some(ext) = path
@@ -530,7 +540,9 @@ pub fn is_secret_path(path: &Path) -> bool {
 
 /// True when a config file is known to embed an inline API key. We classify
 /// the whole file rather than parsing it, because the point is to never copy
-/// a line we have not read.
+/// a line we have not read. Wired into the scan via [`flag_root_secrets`],
+/// which every analyzer calls on its root (Hermes additionally flags its
+/// `config.yaml` by name, as before).
 pub fn config_may_hold_keys(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -542,6 +554,35 @@ pub fn config_may_hold_keys(path: &Path) -> bool {
         name.as_str(),
         "models.yml" | "models.yaml" | "config.yaml" | "config.yml"
     )
+}
+
+/// Flag secret-like and key-bearing config files sitting directly under
+/// `dir` as [`ItemKind::Secret`] (never copied, never archived with
+/// content), skipping paths already reported. This is where
+/// [`config_may_hold_keys`] joins the scan: a `models.yml` /
+/// `config.yaml` at a source root routinely carries an inline `api_key:`,
+/// and without this pass it was invisible to the plan - neither flagged
+/// nor bridged. Flagging the file does not block its MCP/provider
+/// *shapes* from bridging as separate items (see
+/// [`scan_mcp_and_credentials`]): only the file itself is never copied.
+fn flag_root_secrets(dir: &Path, out: &mut Vec<Detected>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        if !(is_secret_path(&p) || config_may_hold_keys(&p)) {
+            continue;
+        }
+        let path = p.to_string_lossy().to_string();
+        if out.iter().any(|d| d.path == path) {
+            continue;
+        }
+        out.push(detected_secret(&p, "config / credential file (may hold keys)"));
+    }
 }
 
 fn detected_secret(path: &Path, what: &str) -> Detected {
@@ -562,31 +603,21 @@ fn is_hidden(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Frontmatter fields `parse_skill` requires. Declared here rather than
-/// depending on `pantheon-exec` (which pulls in storage, memory, sandbox and
-/// zip) so `migrate` stays a small, dependency-light crate.
-#[derive(Debug, serde::Deserialize)]
-struct SkillFrontmatter {
-    name: Option<String>,
-}
-
-/// Validate a `SKILL.md` with the same rules `pantheon_exec::skills::parse_skill`
-/// applies, so migrate never imports an artifact the runtime will reject on
-/// the next session. Returns the skill's name on success.
+/// Validate a `SKILL.md` with the runtime's own parser
+/// (`pantheon_exec::skills::parse_skill`), so migrate never imports an
+/// artifact the runtime will reject on the next session. Returns the
+/// skill's name on success.
+///
+/// This used to check frontmatter + a non-empty name only, while the
+/// runtime validates every `exec:` entry and fails the whole skill on
+/// one bad entry - so a skill that passed migration could be rejected
+/// at session start. Delegating (not re-implementing) the rules keeps
+/// the two in lockstep by construction.
 pub fn validate_skill_md(path: &Path) -> Result<String, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
-    let rest = raw
-        .strip_prefix("---")
-        .ok_or_else(|| "no frontmatter block".to_string())?;
-    let end = rest
-        .find("\n---")
-        .ok_or_else(|| "frontmatter not closed".to_string())?;
-    let meta: SkillFrontmatter =
-        serde_yaml::from_str(&rest[..end]).map_err(|e| format!("bad frontmatter: {e}"))?;
-    match meta.name {
-        Some(n) if !n.trim().is_empty() => Ok(n.trim().to_string()),
-        _ => Err("frontmatter has no name".to_string()),
-    }
+    let skill = pantheon_exec::skills::parse_skill(&raw, path)
+        .map_err(|e| e.cause.clone())?;
+    Ok(skill.meta.name)
 }
 
 // ---------------------------------------------------------------------------
@@ -872,6 +903,11 @@ fn analyze_hermes(root: &Path) -> Vec<Detected> {
             out.push(detected_secret(&p, "credential store dir"));
         }
     }
+    // Root-level secret-like and key-bearing config files (`.env.local`,
+    // `models.yml`, ...) are flagged even though they are not in the
+    // hardcoded list above; the hardcoded entries are skipped by the
+    // already-reported check inside.
+    flag_root_secrets(root, &mut out);
     // MCP servers and credential names bridge through their own items, so
     // they are covered even though their host config stays a secret.
     scan_mcp_and_credentials(root, &mut out);
@@ -1091,14 +1127,10 @@ fn analyze_openclaw(root: &Path) -> Vec<Detected> {
     scan_skills(&root.join("skills"), &mut out);
     scan_mcp_and_credentials(root, &mut out);
     scan_sessions(&[root.join("sessions")], &mut out, "openclaw");
-    if let Ok(rd) = std::fs::read_dir(root) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_file() && is_secret_path(&p) {
-                out.push(detected_secret(&p, "openclaw config / credential"));
-            }
-        }
-    }
+    // Root files: secret names AND key-bearing configs. The old loop
+    // only checked `is_secret_path`, so a root `config.yaml` /
+    // `models.yml` was never flagged as a file that must not be copied.
+    flag_root_secrets(root, &mut out);
     out
 }
 
@@ -1164,6 +1196,9 @@ fn analyze_omp(root: &Path) -> Vec<Detected> {
     scan_md(&agent.join("rules"), ItemKind::Rule, &mut out);
     scan_md(&agent.join("commands"), ItemKind::Command, &mut out);
     scan_md(&agent.join("prompts"), ItemKind::Prompt, &mut out);
+    // `agent/config.yml` and dotenv variants at the agent root are
+    // key-bearing files, never content to copy.
+    flag_root_secrets(&agent, &mut out);
 
     // OMP extensions are packages with a `package.json` carrying an `omp` or
     // `pi` field. A bare directory without that is not an extension.
@@ -1296,6 +1331,10 @@ fn analyze_claude_code(root: &Path) -> Vec<Detected> {
             "claude settings / config (may hold keys)",
         ));
     }
+    // Root dotenv variants and key-bearing configs, same rule as the
+    // other analyzers (settings.json itself is skipped as already
+    // reported).
+    flag_root_secrets(root, &mut out);
 
     out
 }
@@ -1502,4 +1541,96 @@ pub fn render(p: &MigrationPlan) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dotenv variants and credential YAML names are secrets, not
+    /// ordinary content; public-key material is not.
+    #[test]
+    fn secret_names_cover_dotenv_variants_and_credential_yaml() {
+        for name in [
+            ".env",
+            ".env.local",
+            ".env.production",
+            "credentials.yaml",
+            "credentials.yml",
+            "secrets.yaml",
+            "auth.json",
+        ] {
+            assert!(
+                is_secret_path(Path::new(name)),
+                "{name} must classify as a secret path"
+            );
+        }
+        for name in ["notes.txt", "id_rsa.pub", "config.toml", "README.md"] {
+            assert!(
+                !is_secret_path(Path::new(name)),
+                "{name} must not classify as a secret path"
+            );
+        }
+    }
+
+    /// `config_may_hold_keys` is wired into the scan: an OpenClaw root
+    /// holding a `models.yml` / `config.yaml` / `.env.local` reports
+    /// each as a Secret item, never as invisible-or-importable content.
+    #[test]
+    fn openclaw_root_flags_key_bearing_configs() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-migrate-secret-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["models.yml", "config.yaml", ".env.local"] {
+            std::fs::write(dir.join(name), "api_key: sk-test\n").unwrap();
+        }
+        let found = analyze(&dir, SourceKind::OpenClaw);
+        for name in ["models.yml", "config.yaml", ".env.local"] {
+            let hit = found.iter().find(|d| {
+                d.path == dir.join(name).to_string_lossy()
+                    && d.kind == ItemKind::Secret
+                    && !d.mappable
+            });
+            assert!(hit.is_some(), "{name} must be a non-mappable Secret item");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_skill(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("SKILL.md");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// A skill with one bad `exec:` entry fails migration validation,
+    /// exactly as the runtime rejects it at session start.
+    #[test]
+    fn validate_skill_md_rejects_bad_exec_entry() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-migrate-skill-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = write_skill(
+            &dir,
+            "---\nname: probe-skill\nexec:\n  - name: run-it\n    command: scripts/run.sh\n---\nBody.\n",
+        );
+        assert_eq!(validate_skill_md(&good).unwrap(), "probe-skill");
+        let bad = write_skill(
+            &dir,
+            "---\nname: probe-skill\nexec:\n  - name: Bad Name\n    command: scripts/run.sh\n---\nBody.\n",
+        );
+        let err = validate_skill_md(&bad).unwrap_err();
+        assert!(err.contains("Bad Name"), "error must name the bad entry: {err}");
+        let bad_path = write_skill(
+            &dir,
+            "---\nname: probe-skill\nexec:\n  - name: run-it\n    command: ../escape.sh\n---\nBody.\n",
+        );
+        assert!(validate_skill_md(&bad_path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

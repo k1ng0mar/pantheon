@@ -159,7 +159,8 @@ fn content_to_text(
 ///
 /// A record can yield up to two turns (reasoning, then its message), which
 /// keeps a Claude-style `thinking` + `text` pair in its original order.
-/// Returns the turns and the number of dropped tool records.
+/// Returns the turns and the number of dropped non-conversational
+/// records (tool traffic, system/summary metadata, unknown roles).
 fn record_to_turns(rec: &Record) -> (Vec<ImportedTurn>, usize) {
     let mut dropped = 0usize;
     let mut text = String::new();
@@ -215,7 +216,17 @@ fn record_to_turns(rec: &Record) -> (Vec<ImportedTurn>, usize) {
         }
     }
 
-    let role = classify_role(rec);
+    let Some(role) = classify_role(rec) else {
+        // Metadata, tool traffic, or an unknown role: dropped, never
+        // re-attributed as assistant speech. Counted only when the
+        // record actually carried text - an empty husk lost nothing.
+        let dropped = if text.trim().is_empty() && reasoning.trim().is_empty() {
+            dropped
+        } else {
+            dropped + 1
+        };
+        return (Vec::new(), dropped);
+    };
     let mut turns = Vec::new();
     match role {
         TurnRole::Reasoning => {
@@ -264,8 +275,18 @@ fn nested_role(rec: &Record) -> Option<TurnRole> {
     }
 }
 
-fn classify_role(rec: &Record) -> TurnRole {
-    // Tool records never become turns; the caller counts them as dropped.
+/// Roles that are metadata, not speech: a system prompt, a session
+/// summary, or a title must never land in the resumed session as
+/// assistant speech. The target format (ledger user/assistant messages
+/// + reasoning traces) has no system role, so these records are
+/// dropped and counted, not remapped (see [`classify_role`]).
+fn classify_role(rec: &Record) -> Option<TurnRole> {
+    // Only conversational roles become turns. Anything else - system /
+    // summary / title metadata, tool traffic, or an unknown role - is
+    // `None`: the caller drops it and counts it. Mapping unknown text
+    // to Assistant would put words in the assistant's mouth that it
+    // never said, and a resumed session would then replay them as its
+    // own history.
     let raw = rec
         .role
         .as_deref()
@@ -273,23 +294,10 @@ fn classify_role(rec: &Record) -> TurnRole {
         .or(rec.r#type.as_deref())
         .unwrap_or("");
     match raw.to_ascii_lowercase().as_str() {
-        "user" | "human" => TurnRole::User,
-        "assistant" | "ai" | "model" => TurnRole::Assistant,
-        "thinking" | "reasoning" | "thought" => TurnRole::Reasoning,
-        "tool"
-        | "tool_use"
-        | "tool_result"
-        | "tool_call"
-        | "function_call"
-        | "function_call_output"
-        | "computer_call"
-        | "title"
-        | "system"
-        | "summary" => {
-            // Not a conversational turn; counted as dropped by the caller.
-            TurnRole::Assistant
-        }
-        _ => TurnRole::Assistant,
+        "user" | "human" => Some(TurnRole::User),
+        "assistant" | "ai" | "model" => Some(TurnRole::Assistant),
+        "thinking" | "reasoning" | "thought" => Some(TurnRole::Reasoning),
+        _ => None,
     }
 }
 
@@ -315,20 +323,19 @@ fn is_tool_record(rec: &Record) -> bool {
 
 /// Parse one transcript file into ordered turns.
 ///
-/// Accepts JSONL (one record per line) and whole-file JSON (an array of
-/// records or `{"messages": [...]}`). Malformed lines are skipped: a
-/// truncated final line in a live transcript is normal, not corruption.
-/// Consecutive same-role turns merge, so a chatty exporter does not spray
-/// one-message-per-line across the imported session.
+/// Accepts JSONL (one record per line) and whole-file JSON: an array of
+/// records, `{"messages": [...]}`, a `{"messages": {...}}` single
+/// message, or a single record object (compact or pretty-printed).
+/// Malformed lines are skipped: a truncated final line in a live
+/// transcript is normal, not corruption. Consecutive same-role turns
+/// merge, so a chatty exporter does not spray one-message-per-line
+/// across the imported session.
 pub fn parse_session_transcript(path: &Path) -> (Vec<ImportedTurn>, usize) {
     let Ok(body) = std::fs::read_to_string(path) else {
         return (Vec::new(), 0);
     };
     let trimmed = body.trim();
     if trimmed.starts_with('[') || trimmed.starts_with('{') {
-        // Whole-file JSON: an array of records, or `{"messages": [...]}`.
-        // A single JSON object that is itself one record falls through to
-        // line parsing below.
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
             let arr: Option<Vec<serde_json::Value>> = v
                 .as_array()
@@ -337,9 +344,40 @@ pub fn parse_session_transcript(path: &Path) -> (Vec<ImportedTurn>, usize) {
             if let Some(arr) = arr {
                 return records_to_turns(arr.iter().map(|v| v.to_string()).collect());
             }
+            // A single message object under `messages`, or the whole
+            // file as one record: parse it as one record, not as lines
+            // (a pretty-printed object spans many lines, each of which
+            // fails record parsing, and the file used to yield
+            // `SkippedEmpty` for a perfectly good transcript).
+            let single: Option<serde_json::Value> = v
+                .get("messages")
+                .filter(|m| m.is_object())
+                .cloned()
+                .or_else(|| {
+                    if v.is_object() && looks_like_record(&v) {
+                        Some(v.clone())
+                    } else {
+                        None
+                    }
+                });
+            if let Some(one) = single {
+                return records_to_turns(vec![one.to_string()]);
+            }
         }
     }
     records_to_turns(trimmed.lines().map(|s| s.to_string()).collect())
+}
+
+/// True when a JSON object carries a record-shaped field, so a
+/// non-record object (e.g. `{"sessions": [...]}`) is not mistaken for
+/// a single-message transcript.
+fn looks_like_record(v: &serde_json::Value) -> bool {
+    v.get("role").is_some()
+        || v.get("kind").is_some()
+        || v.get("type").is_some()
+        || v.get("content").is_some()
+        || v.get("text").is_some()
+        || v.get("message").is_some()
 }
 
 fn records_to_turns(raw: Vec<String>) -> (Vec<ImportedTurn>, usize) {
@@ -614,7 +652,7 @@ pub fn import_session_transcript(
             .append(&Event::RunProgress {
                 run_id: run_id.clone(),
                 detail: format!(
-                    "dropped {dropped} tool record(s) at import: foreign tool traffic is not replayable"
+                    "dropped {dropped} non-conversational record(s) at import: foreign tool traffic and system/summary metadata are not replayable as conversation"
                 ),
             })
             .map_err(|e| serr("IMPORT_DROPPED", e.to_string()))?;
@@ -678,5 +716,106 @@ fn first_line(s: &str, max: usize) -> String {
         format!("{cut}...")
     } else {
         cut
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_transcript(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-session-import-test-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// System / summary / title records are dropped, never replayed as
+    /// assistant speech; the user turn still imports.
+    #[test]
+    fn system_summary_title_records_are_dropped_not_assistant() {
+        let dir = scratch("roles");
+        let path = write_transcript(
+            &dir,
+            "s.jsonl",
+            "{\"role\": \"system\", \"content\": \"You are helpful.\"}\n{\"role\": \"user\", \"content\": \"hello\"}\n{\"role\": \"summary\", \"content\": \"Session summary.\"}\n{\"role\": \"title\", \"content\": \"Chat title\"}\n{\"role\": \"assistant\", \"content\": \"hi there\"}\n",
+        );
+        let (turns, dropped) = parse_session_transcript(&path);
+        assert_eq!(
+            turns,
+            vec![
+                ImportedTurn {
+                    role: TurnRole::User,
+                    text: "hello".to_string(),
+                },
+                ImportedTurn {
+                    role: TurnRole::Assistant,
+                    text: "hi there".to_string(),
+                },
+            ]
+        );
+        assert_eq!(dropped, 3, "system + summary + title must be counted");
+        assert!(
+            !turns.iter().any(|t| t.text.contains("You are helpful")),
+            "system text must not appear as a turn"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unknown role is dropped, not silently voiced by the assistant.
+    #[test]
+    fn unknown_role_is_dropped() {
+        let dir = scratch("unknown");
+        let path = write_transcript(
+            &dir,
+            "s.jsonl",
+            "{\"role\": \"developer\", \"content\": \"secret instructions\"}\n{\"role\": \"user\", \"content\": \"hi\"}\n",
+        );
+        let (turns, dropped) = parse_session_transcript(&path);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].role, TurnRole::User);
+        assert_eq!(dropped, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pretty-printed single-object JSON transcript yields its turn
+    /// instead of `SkippedEmpty`.
+    #[test]
+    fn pretty_single_object_transcript_parses() {
+        let dir = scratch("single");
+        let path = write_transcript(
+            &dir,
+            "s.json",
+            "{\n  \"role\": \"user\",\n  \"content\": \"hello single\"\n}\n",
+        );
+        let (turns, _) = parse_session_transcript(&path);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].role, TurnRole::User);
+        assert_eq!(turns[0].text, "hello single");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `{"messages": {...}}` single message object also parses.
+    #[test]
+    fn messages_single_object_parses() {
+        let dir = scratch("messages-obj");
+        let path = write_transcript(
+            &dir,
+            "s.json",
+            "{\"messages\": {\"role\": \"assistant\", \"content\": \"wrapped\"}}",
+        );
+        let (turns, _) = parse_session_transcript(&path);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text, "wrapped");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

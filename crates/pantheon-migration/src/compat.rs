@@ -447,9 +447,36 @@ pub fn scan_registrations(js: &str) -> (Vec<String>, Vec<String>) {
 // Manifest generation
 // ---------------------------------------------------------------------------
 
+/// Render a scalar as a YAML double-quoted string, escaping every
+/// character that could end the scalar early. Interpolating a name raw
+/// (and the description via Rust `Debug` formatting, which is not YAML
+/// escaping) let a name containing a newline or colon break out of its
+/// field and inject new keys into the generated `plugin.yaml`.
+fn yaml_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Render a Pantheon `plugin.yaml` for a foreign extension, listing only the
 /// hooks that actually mapped. Written next to the extension so the existing
 /// manager can load it unchanged.
+///
+/// Every interpolated field is YAML-escaped: hook names are
+/// enum-controlled and safe, but name, version, and description come
+/// from foreign manifests and may contain anything.
 pub fn render_plugin_yaml(name: &str, version: &str, description: &str, mapped: &[Hook]) -> String {
     let hooks: Vec<String> = mapped.iter().map(|h| h.name().to_string()).collect();
     format!(
@@ -457,10 +484,13 @@ pub fn render_plugin_yaml(name: &str, version: &str, description: &str, mapped: 
          # Compat adapter: only the hooks below have a Pantheon equivalent.\n\
          # Regenerate rather than hand-editing; unsupported hooks are listed in\n\
          # the migration report, not silently dropped here.\n\
-         name: {name}\n\
-         version: \"{version}\"\n\
-         description: {description:?}\n\
+         name: {}\n\
+         version: {}\n\
+         description: {}\n\
          provides_hooks:\n{}\n",
+        yaml_double_quoted(name),
+        yaml_double_quoted(version),
+        yaml_double_quoted(description),
         hooks
             .iter()
             .map(|h| format!(" - {h}"))
@@ -502,4 +532,40 @@ pub fn inspect(dir: &Path) -> Option<CompatReport> {
         }
     }
     Some(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name carrying a newline + colon must round-trip as one scalar,
+    /// not inject a second top-level key into the generated YAML.
+    #[test]
+    fn render_plugin_yaml_escapes_hostile_name() {
+        let hostile = "evil:\n injected: true";
+        let out = render_plugin_yaml(hostile, "1.0\"x", "desc\nwith \"quotes\"", &[]);
+        let v: serde_yaml::Value = serde_yaml::from_str(&out).expect("rendered YAML parses");
+        let map = v.as_mapping().expect("top level is a mapping");
+        assert_eq!(
+            map.get(serde_yaml::Value::String("name".into()))
+                .and_then(|v| v.as_str()),
+            Some(hostile),
+            "name must round-trip verbatim: {out}"
+        );
+        assert!(
+            map.get(serde_yaml::Value::String("injected".into()))
+                .is_none(),
+            "no injected key may appear: {out}"
+        );
+        assert_eq!(
+            map.get(serde_yaml::Value::String("version".into()))
+                .and_then(|v| v.as_str()),
+            Some("1.0\"x")
+        );
+        assert_eq!(
+            map.get(serde_yaml::Value::String("description".into()))
+                .and_then(|v| v.as_str()),
+            Some("desc\nwith \"quotes\"")
+        );
+    }
 }
