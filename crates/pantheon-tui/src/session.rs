@@ -14956,6 +14956,7 @@ mod slash_dispatch_tests {
             default: pantheon_api::model::DefaultModel {
                 provider: "test".into(),
                 model: "test".into(),
+                key_env: None,
             },
             fallbacks: Default::default(),
             auxiliaries: Vec::new(),
