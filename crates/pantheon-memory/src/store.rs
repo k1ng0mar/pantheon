@@ -11,7 +11,7 @@
 use crate::{LayerKind, MemoryRecord, Proposal, Provenance};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::provenance::TrustTier;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
@@ -388,18 +388,25 @@ impl MemoryStore {
             .map_err(|e| serr("MEM_LOCK", e.to_string()))
     }
 
-    /// Delete a record. Returns whether a row was removed.
+    /// Delete a record. Returns whether a row was removed. The lookup
+    /// and the FTS+row delete run in one transaction: the old code did
+    /// the FTS delete and the row delete as separate statements, so a
+    /// crash between them left a present-but-unsearchable row, and a
+    /// failed delete could leave half the pair behind.
     pub fn forget(
         &self,
         layer: LayerKind,
         namespace: &str,
         key: &str,
     ) -> Result<bool, PantheonError> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-        let row: Option<(i64, String, String, String, String, String)> = conn
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| serr("MEM_DELETE", e.to_string()))?;
+        let row: Option<(i64, String, String, String, String, String)> = tx
             .query_row(
                 "SELECT id, key, value, namespace, layer, origin FROM memories
                  WHERE layer=?1 AND namespace=?2 AND key=?3",
@@ -420,7 +427,8 @@ impl MemoryStore {
         match row {
             None => Ok(false),
             Some((id, key, value, namespace, layer, origin)) => {
-                delete_row(&conn, id, &key, &value, &namespace, &layer, &origin)?;
+                delete_row(&tx, id, &key, &value, &namespace, &layer, &origin)?;
+                tx.commit().map_err(|e| serr("MEM_DELETE", e.to_string()))?;
                 Ok(true)
             }
         }
@@ -599,11 +607,23 @@ impl MemoryStore {
                 ));
             }
         }
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-        conn.execute(
+        // Upsert + eviction + re-read run in ONE transaction. The old
+        // code upserted, then evicted in separate statements: an evict
+        // failure after the upsert returned Err even though the row was
+        // stored, and a crash between the FTS delete and the row delete
+        // inside eviction left a present-but-unsearchable row. Inside
+        // the transaction any failure rolls the whole put back, so a
+        // failed put stores nothing and a successful put is fully
+        // searchable. Immediate mode takes the write lock up front so a
+        // second process opening the same file cannot interleave.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| serr("MEM_PUT", e.to_string()))?;
+        tx.execute(
             // Trust is a ceiling on the write, not a field the writer sets.
             // A low-trust (model-origin) write must not clobber the value of
             // a record a human already confirmed, nor reset its tier. Ranks:
@@ -627,7 +647,7 @@ impl MemoryStore {
             ],
         )
         .map_err(|e| serr("MEM_PUT", e.to_string()))?;
-        let id: i64 = conn
+        let id: i64 = tx
             .query_row(
                 "SELECT id FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
                 params![layer_str(p.layer), p.namespace, p.key],
@@ -638,16 +658,16 @@ impl MemoryStore {
         // is back under budget. The row just written is never evicted
         // `put` must not delete what it just stored.
         if let Some(budget) = budget {
-            evict_over_budget(&conn, p.layer, &p.namespace, budget, id)?;
+            evict_over_budget(&tx, p.layer, &p.namespace, budget, id)?;
         }
         // Re-read rather than echo the proposal: when a higher-trust row
         // held, the stored value is the old one, and returning `p` would tell
         // the caller its write landed when it did not.
         //
-        // The read runs on the connection already checked out above, NOT via
+        // The read runs on the transaction already open above, NOT via
         // `self.get`: `conn` is a `std::sync::Mutex` guard and `get` locks it
         // again, so calling it here deadlocks on a non-reentrant mutex.
-        let mut stmt = conn
+        let mut stmt = tx
             .prepare(
                 "SELECT layer, namespace, key, value, source, origin, trust, recorded_at_ms
                  FROM memories WHERE layer=?1 AND namespace=?2 AND key=?3",
@@ -659,13 +679,20 @@ impl MemoryStore {
                 record_from_row,
             )
             .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
-        match rows.next() {
-            Some(row) => row.map_err(|e| serr("MEM_QUERY", e.to_string())),
-            None => Err(serr(
-                "MEM_PUT",
-                format!("record vanished after write: {}/{}", p.namespace, p.key),
-            )),
-        }
+        let rec = match rows.next() {
+            Some(row) => row.map_err(|e| serr("MEM_QUERY", e.to_string()))?,
+            None => {
+                return Err(serr(
+                    "MEM_PUT",
+                    format!("record vanished after write: {}/{}", p.namespace, p.key),
+                ));
+            }
+        };
+        // Drop the statement before commit: it borrows the transaction.
+        drop(rows);
+        drop(stmt);
+        tx.commit().map_err(|e| serr("MEM_PUT", e.to_string()))?;
+        Ok(rec)
     }
 
     /// FTS recall, scoped to one namespace and a set of layers.
@@ -945,5 +972,118 @@ mod tests {
     fn unknown_trust_fails_closed_to_untrusted() {
         assert_eq!(trust_from("bogus-tier"), TrustTier::Untrusted);
         assert_eq!(trust_from("memory"), TrustTier::Memory);
+    }
+
+    #[test]
+    fn unknown_layer_fails_closed_to_most_ephemeral() {
+        assert_eq!(layer_from("bogus-layer"), LayerKind::EphemeralTurn);
+        assert_eq!(layer_from("agent"), LayerKind::Agent);
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+
+    fn proposal_with(key: &str, value: &str, trust: TrustTier) -> Proposal {
+        Proposal {
+            layer: LayerKind::Agent,
+            namespace: "test".to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+            provenance: Provenance {
+                source: "test".to_string(),
+                origin: "test".to_string(),
+                trust,
+                recorded_at_ms: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn put_with_eviction_keeps_rows_and_fts_in_sync() {
+        let store = MemoryStore::open_in_memory().unwrap();
+        let mut cfg = MemoryConfig::default();
+        cfg.budgets.agent = 10;
+        store.set_config(cfg).unwrap();
+        store
+            .put(&proposal_with("k1", "appleone", TrustTier::Untrusted))
+            .unwrap();
+        // 8 + 8 bytes > 10 budget: the oldest lowest-trust row (k1) is
+        // evicted as part of the same transaction as k2's upsert.
+        store
+            .put(&proposal_with("k2", "bananaoo", TrustTier::Untrusted))
+            .unwrap();
+        assert!(store.get(LayerKind::Agent, "test", "k1").unwrap().is_none());
+        assert!(store.get(LayerKind::Agent, "test", "k2").unwrap().is_some());
+        assert!(
+            store
+                .search_scoped(&["test"], &[LayerKind::Agent], "appleone", 10)
+                .unwrap()
+                .is_empty(),
+            "evicted row must not stay searchable"
+        );
+        assert_eq!(
+            store
+                .search_scoped(&["test"], &[LayerKind::Agent], "bananaoo", 10)
+                .unwrap()
+                .len(),
+            1,
+            "surviving row must stay searchable"
+        );
+    }
+
+    #[test]
+    fn failed_put_stores_nothing() {
+        // Fault injection for eviction alone is not possible in-process
+        // (evict SQL only fails on DB corruption, which fails the
+        // upsert's trigger first), so this tests the transaction
+        // contract at the put boundary: a failed put stores nothing,
+        // where the old code could return Err with the row stored.
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-mem-tx-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let path = dir.join("memory.db");
+        let store = MemoryStore::open(&path).unwrap();
+        damage_fts_for_test(&path);
+        let err = store
+            .put(&proposal_with("k1", "some value", TrustTier::Untrusted))
+            .expect_err("put against a dropped FTS table must fail");
+        assert_eq!(err.code, "MEM_PUT");
+        assert!(
+            store.get(LayerKind::Agent, "test", "k1").unwrap().is_none(),
+            "a failed put must not leave a stored row behind"
+        );
+    }
+
+    #[test]
+    fn failed_forget_rolls_back_the_row_delete() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-mem-tx-forget-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let path = dir.join("memory.db");
+        let store = MemoryStore::open(&path).unwrap();
+        store
+            .put(&proposal_with("k1", "some value", TrustTier::Untrusted))
+            .unwrap();
+        damage_fts_for_test(&path);
+        assert!(store.forget(LayerKind::Agent, "test", "k1").is_err());
+        // No half-delete: the row is still fully there, not
+        // present-but-unsearchable-by-construction (the FTS delete
+        // failed first, so the row delete never ran - and the
+        // transaction guarantees that ordering cannot be split by a
+        // crash either).
+        assert!(
+            store.get(LayerKind::Agent, "test", "k1").unwrap().is_some(),
+            "a failed forget must leave the row intact"
+        );
     }
 }
