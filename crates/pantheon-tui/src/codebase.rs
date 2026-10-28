@@ -107,16 +107,26 @@ fn positional(args: &[String], index: usize) -> Option<String> {
 
 /// Accept an optional positional root and `--json` in any order after the
 /// required argument. The path is always the first non-flag argument.
+/// Anything else is an error: the old `_ => {}` silently swallowed
+/// unknown flags and extra positionals, so `codebase search foo
+/// --bogus` searched as if the flag had never been typed.
 fn path_arg(args: &[String], start: usize) -> (PathBuf, bool) {
     let mut root: Option<PathBuf> = None;
     let mut json = false;
     for arg in args.iter().skip(start) {
         match arg.as_str() {
             "--json" => json = true,
-            s if !s.starts_with('-') && root.is_none() => {
+            s if s.starts_with('-') => {
+                eprintln!("codebase: unknown flag '{s}' (want --json)");
+                std::process::exit(2);
+            }
+            s if root.is_none() => {
                 root = Some(PathBuf::from(s));
             }
-            _ => {}
+            s => {
+                eprintln!("codebase: unexpected extra argument '{s}'");
+                std::process::exit(2);
+            }
         }
     }
     (

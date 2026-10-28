@@ -940,6 +940,93 @@ pub fn cmd_setup(args: &[String]) {
         setup_help();
         std::process::exit(0);
     }
+    // Unknown flags used to vanish into Args::parse: `setup --bogus`
+    // ran the wizard (or the text path, on a pipe) as if nothing had
+    // been asked for. A stray positional is the same class of error.
+    {
+        let known = [
+            "provider",
+            "model",
+            "api-key-env",
+            "fallback-provider",
+            "fallback-model",
+            "policy",
+            "websearch-provider",
+            "websearch-key-env",
+            "websearch-url",
+            "browser-provider",
+            "browser-key-env",
+            "browser-url",
+            "stt-provider",
+            "stt-key-env",
+            "stt-url",
+            "tts-provider",
+            "tts-key-env",
+            "tts-url",
+            "memory",
+            "computer",
+            "key",
+            "yes",
+            "help",
+            "h",
+        ];
+        // Every flag here except --yes/--help takes a value, in `--flag
+        // VALUE` or `--flag=VALUE` form (Args::parse reads both), so a
+        // value token must be skipped, not mistaken for a stray
+        // positional: `setup --provider openai` is legitimate, while a
+        // bare `setup openai` is not. Mirroring Args::parse, a value
+        // flag followed by another `--` flag is a boolean switch, so
+        // the following flag is not eaten as its value.
+        let value_flags = [
+            "provider",
+            "model",
+            "api-key-env",
+            "fallback-provider",
+            "fallback-model",
+            "policy",
+            "websearch-provider",
+            "websearch-key-env",
+            "websearch-url",
+            "browser-provider",
+            "browser-key-env",
+            "browser-url",
+            "stt-provider",
+            "stt-key-env",
+            "stt-url",
+            "tts-provider",
+            "tts-key-env",
+            "tts-url",
+            "memory",
+            "computer",
+            "key",
+        ];
+        let toks: &[String] = raw.get(1..).unwrap_or(&[]);
+        let mut i = 0;
+        while i < toks.len() {
+            let tok = &toks[i];
+            if let Some(stripped) = tok.strip_prefix("--") {
+                let name = stripped.split('=').next().unwrap_or(stripped);
+                if !known.contains(&name) {
+                    eprintln!("setup: unknown flag '--{name}' (see `pantheon setup --help`)");
+                    std::process::exit(2);
+                }
+                if value_flags.contains(&name) && !tok.contains('=') {
+                    if let Some(v) = toks.get(i + 1) {
+                        if !v.starts_with("--") {
+                            i += 1;
+                        }
+                    }
+                }
+            } else if tok.starts_with('-') {
+                eprintln!("setup: unknown flag '{tok}' (see `pantheon setup --help`)");
+                std::process::exit(2);
+            } else {
+                eprintln!("setup: unexpected argument '{tok}' (this command takes flags only)");
+                std::process::exit(2);
+            }
+            i += 1;
+        }
+    }
     let parsed = crate::args::Args::parse(raw);
     // A terminal with no flags is the interactive case, and the TUI
     // wizard is the experience that was built for it: lists, pickers,

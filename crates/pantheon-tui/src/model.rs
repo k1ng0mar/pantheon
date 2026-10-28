@@ -1853,6 +1853,45 @@ pub fn cmd_model(args: &[String]) {
     if raw.iter().any(|a| a == "--help" || a == "-h") {
         model_help();
     }
+    // Unknown flags used to fall through to the interactive picker
+    // (on a TTY) or to a confusing "needs both" error: `--model x
+    // --bogus y` never told the operator the flag was dropped.
+    // Value flags take their value as the next token, exactly like
+    // `flag()` reads them, so a value is never mistaken for a flag.
+    // The `--flag=value` form is not read by `flag()` at all, so it
+    // is rejected loudly instead of being silently ignored.
+    {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        let value_flags = [
+            "--auxiliary",
+            "--provider",
+            "--model",
+            "--key",
+            "--base-url",
+            "--api-mode",
+            "--api-key-env",
+            "--set",
+        ];
+        let bool_flags = ["--list", "--remove", "--delete-key", "--yes"];
+        let mut j = 0;
+        while j < rest.len() {
+            let tok = rest[j].as_str();
+            let base = tok.split('=').next().unwrap_or(tok);
+            if value_flags.contains(&base) {
+                if tok.contains('=') {
+                    eprintln!("model: {base}=... is not supported; use `{base} VALUE`");
+                    std::process::exit(2);
+                }
+                j += 1; // skip the value token, whatever it looks like
+            } else if bool_flags.contains(&base) {
+                // Boolean switch; nothing to skip.
+            } else if tok.starts_with('-') {
+                eprintln!("model: unknown flag '{tok}' (see `pantheon model --help`)");
+                std::process::exit(2);
+            }
+            j += 1;
+        }
+    }
     // dotenv + customs so --list key checks and saves see the full picture.
     let dd = data_dir();
     config::init_env_and_catalog(&dd);

@@ -116,7 +116,10 @@ fn open_session(
 pub fn cmd_pipeline(args: &[String]) {
     let parsed = crate::args::Args::parse(&args[2.min(args.len())..]);
     if parsed.has("help") || parsed.has("h") {
-        eprintln!(
+        // Help goes to stdout like every other verb's help, not stderr:
+        // the old stderr print exited 0, so `pipeline --help` looked
+        // like a failed run to anything capturing streams separately.
+        println!(
             "usage: pantheon pipeline [--spec \"task\"] | <run_id> --approve <stage> | <run_id> --deny <stage>"
         );
         return;
