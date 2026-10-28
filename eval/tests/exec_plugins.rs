@@ -43,6 +43,36 @@ fn discover_finds_user_plugin() {
 }
 
 #[test]
+fn manifest_with_key_is_rejected_fail_closed() {
+    // A top-level `key` in a user manifest must never load: serde
+    // would otherwise silently ignore it while the credential sits in
+    // a shareable file. The error must point at the secrets broker.
+    let err = parse_manifest("name: keyed\nkey: sk-live-secret\n")
+        .expect_err("a manifest `key` must be rejected");
+    assert!(
+        err.to_string().contains("secrets broker"),
+        "error must point the user to the secrets broker: {err}"
+    );
+    let ok = parse_manifest("name: plain\nenabled: false\n").expect("keyless manifest parses");
+    assert_eq!(ok.name, "plain");
+    // And through discovery: the keyed plugin is never discovered.
+    let d = tempdir().unwrap();
+    let data = d.path().join("data");
+    let plugins = data.join("plugins").join("keyed");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(
+        plugins.join("manifest.yaml"),
+        "name: keyed\nkey: sk-live-secret\n",
+    )
+    .unwrap();
+    let found = discover_plugins(&data, d.path());
+    assert!(
+        found.iter().all(|p| p.manifest.name != "keyed"),
+        "a keyed plugin must never be discovered"
+    );
+}
+
+#[test]
 fn discover_ignores_dirs_without_manifest() {
     let d = tempdir().unwrap();
     let data = d.path().join("data");

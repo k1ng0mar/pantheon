@@ -84,6 +84,30 @@ fn default_runner() -> String {
     "run.sh".into()
 }
 
+/// Parse a tool-plugin `manifest.yaml`, rejecting a top-level `key`
+/// field fail-closed. Serde would otherwise silently ignore the
+/// unknown field, leaving a credential sitting in a manifest that can
+/// be shared - while nothing ever reads it, so the operator would
+/// believe the plugin is authenticated when it is not, and the secret
+/// would leak with the manifest. A plugin that needs a credential
+/// declares it in `env_vars` and reads it from its own environment at
+/// startup; credentials Pantheon itself must inject go through the
+/// secrets broker, never through a manifest file.
+pub fn parse_manifest(text: &str) -> Result<PluginManifest, PantheonError> {
+    if let Ok(serde_yaml::Value::Mapping(map)) =
+        serde_yaml::from_str::<serde_yaml::Value>(text)
+    {
+        if map.contains_key(serde_yaml::Value::String("key".to_string())) {
+            return Err(merr(
+                "PLUGIN_MANIFEST_KEY",
+                "manifest sets a `key`: API keys must never live in plugin manifests, which can be shared; declare the credential in `env_vars` and provide it through the secrets broker instead".to_string(),
+            ));
+        }
+    }
+    serde_yaml::from_str::<PluginManifest>(text)
+        .map_err(|e| merr("PLUGIN_MANIFEST_PARSE", e.to_string()))
+}
+
 /// A tool the plugin exposes, plus the capability gate it needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCapability {
@@ -196,7 +220,7 @@ fn scan_dir(dir: &Path, loc: PluginLocation, out: &mut Vec<DiscoveredPlugin>) {
 pub fn load_plugin(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin> {
     let manifest_path = path.join("manifest.yaml");
     match std::fs::read_to_string(&manifest_path) {
-        Ok(s) => match serde_yaml::from_str::<PluginManifest>(&s) {
+        Ok(s) => match parse_manifest(&s) {
             Ok(manifest) => Some(DiscoveredPlugin {
                 manifest,
                 location: loc,
@@ -280,6 +304,20 @@ fn default_parameters() -> serde_json::Value {
 fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin> {
     let package_path = path.join("package.json");
     let text = std::fs::read_to_string(&package_path).ok()?;
+    // Same fail-closed rule as `parse_manifest`: a `key` in the
+    // `pantheon` block would otherwise be silently ignored while the
+    // secret sits in a shareable file.
+    if let Ok(serde_json::Value::Object(top)) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(serde_json::Value::Object(block)) = top.get("pantheon") {
+            if block.contains_key("key") {
+                eprintln!(
+                    "plugin {}: package.json pantheon block sets a `key`: API keys must never live in plugin manifests, which can be shared; declare the credential in `env_vars` and provide it through the secrets broker instead",
+                    path.display()
+                );
+                return None;
+            }
+        }
+    }
     let pkg: NpmPackage = match serde_json::from_str(&text) {
         Ok(p) => p,
         Err(e) => {
