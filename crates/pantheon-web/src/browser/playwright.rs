@@ -15,7 +15,7 @@
 //! <selector> <text>` is scoped via `eval`); `screenshot --filename
 //! --type <png|jpeg|webp>`; `close` ends the session.
 
-use super::backend::BrowserBackend;
+use super::backend::{BrowserBackend, WAIT_CAP};
 use super::cdp::{build_extract_arrow, js_str, wait_plan, WaitPlan};
 use super::error::BrowserError;
 use super::proc::{run_with_timeout, snip, SpawnSpec};
@@ -187,13 +187,15 @@ impl PlaywrightBackend {
     fn wait_for(&self, session: &str, argv: &[String]) -> Result<serde_json::Value, BrowserError> {
         match wait_plan(argv, "playwright")? {
             WaitPlan::Delay(ms) => {
-                let capped = ms.min(self.timeout().as_millis() as u64);
+                let capped = ms.min(WAIT_CAP.as_millis() as u64);
                 std::thread::sleep(Duration::from_millis(capped));
                 Ok(serde_json::json!({"ok": true, "slept_ms": capped}))
             }
             WaitPlan::Probe(probe) => {
                 let probe = format!("()=>{{return {};}}", probe);
-                let deadline = std::time::Instant::now() + self.timeout();
+                // The single shared wait cap, not the command timeout:
+                // a wait must not outlive WAIT_CAP on any backend.
+                let deadline = std::time::Instant::now() + self.timeout().min(WAIT_CAP);
                 loop {
                     let v = self.run_cli(session, &["eval".to_string(), probe.clone()])?;
                     // `--json` eval of a boolean expression yields JSON `true`/`false`.
