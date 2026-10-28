@@ -1040,13 +1040,18 @@ fn write_converted_manifest(
     meta: ConvertedMeta<'_>,
     original_raw: &[u8],
 ) -> Result<(), ImportError> {
+    // Flat keys, exactly as `pantheon_extensions::manifest::PluginManifest`
+    // parses them (`name`, `version`, ...). Dotted keys (`"meta.name"`)
+    // used to land in the manifest's flattened `extra` map while the
+    // required `name` field stayed missing, so the manifest failed to
+    // parse and the promoted plugin was silently unloaded (stderr only).
     let yaml = serde_yaml::to_string(&serde_json::json!({
-        "meta.name": meta.name,
-        "meta.version": meta.version,
-        "meta.description": meta.description,
-        "meta.author": meta.author,
-        "meta.license": meta.license,
-        "meta.provides_hooks": meta.provides_hooks,
+        "name": meta.name,
+        "version": meta.version,
+        "description": meta.description,
+        "author": meta.author,
+        "license": meta.license,
+        "provides_hooks": meta.provides_hooks,
         "hooks": meta.raw_hooks,
     }))
     .map_err(|e| ImportError::Io(e.to_string()))?;
@@ -1059,12 +1064,12 @@ fn write_converted_manifest(
 /// meta.description, meta.version, ...}`) into a Pantheon hook plugin.
 ///
 /// Field mapping mirrors the Claude Code converter:
-/// - `meta.name` (fallback: `id`) → plugin.yaml `meta.name` (sanitized to
+/// - `meta.name` (fallback: `id`) → plugin.yaml `name` (sanitized to
 ///   lowercase `[a-z0-9-_]`, ≤64 chars; required)
-/// - `meta.description` → `meta.description`
-/// - `meta.version` → `meta.version` (default `"0.0.0"`)
-/// - `meta.author` (string or `{meta.name}`) → `meta.author`
-/// - `meta.license` → `meta.license`
+/// - `meta.description` → `description`
+/// - `meta.version` → `version` (default `"0.0.0"`)
+/// - `meta.author` (string or `{meta.name}`) → `author`
+/// - `meta.license` → `license`
 /// - `commands` / `agents` / `skills` (arrays) → `openclaw-*`
 ///   capability counters
 /// - `hooks` (object of event → handler, or array) → event names kept
@@ -2363,5 +2368,53 @@ mod tests {
         assert_eq!(report.name, "my-plugin");
         assert_eq!(report.source_ref, "clawhub:owner/my-plugin@1.2.3");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cluster 1 (f): converted foreign manifests must write flat
+    /// `plugin.yaml` keys. Before the fix the converter wrote dotted
+    /// keys (`"meta.name"`), which the manifest parser files under
+    /// `extra` while the required `name` field stays missing - so the
+    /// manifest failed to parse and the promoted plugin was silently
+    /// unloaded. Both converters (OpenClaw and Claude Code) share
+    /// `write_converted_manifest`, so both are covered here.
+    #[test]
+    fn converted_openclaw_manifest_parses_with_flat_keys() {
+        let root = temp_data_dir();
+        std::fs::write(
+            root.join("openclaw.plugin.json"),
+            r#"{"id": "demo-claw", "name": "demo-claw", "description": "d", "version": "2.0.1"}"#,
+        )
+        .unwrap();
+        let detected = detect_format(&root).expect("openclaw fixture must detect");
+        assert_eq!(detected.name, "demo-claw");
+        let m = pantheon_extensions::manifest::PluginManifest::load(&root.join("plugin.yaml"))
+            .expect("converted plugin.yaml must parse");
+        assert_eq!(m.name, "demo-claw");
+        assert_eq!(m.version, "2.0.1");
+        let raw = std::fs::read_to_string(root.join("plugin.yaml")).unwrap();
+        assert!(
+            !raw.contains("meta.name"),
+            "dotted key leaked back in: {raw}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn converted_claude_manifest_parses_with_flat_keys() {
+        let root = temp_data_dir();
+        let dir = root.join(".claude-plugin");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plugin.json"),
+            r#"{"name": "demo-claude", "description": "d", "version": "0.3.0", "hooks": {}}"#,
+        )
+        .unwrap();
+        let detected = detect_format(&root).expect("claude fixture must detect");
+        assert_eq!(detected.name, "demo-claude");
+        let m = pantheon_extensions::manifest::PluginManifest::load(&root.join("plugin.yaml"))
+            .expect("converted plugin.yaml must parse");
+        assert_eq!(m.name, "demo-claude");
+        assert_eq!(m.version, "0.3.0");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
