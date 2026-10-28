@@ -1,5 +1,15 @@
 //! Activity-based turn watchdog.
 //!
+//! Scope contract (turn-boundary ledger-liveness ONLY):
+//! - The watchdog is polled at turn entry (`drive`'s head), never
+//!   mid-turn: it cannot poll while blocked inside the synchronous
+//!   provider call, so it can never kill a live turn. Silence alone
+//!   is slow, never stuck.
+//! - The probe is a ledger-status read. Only a FAILED probe escalates
+//!   to a kill; a successful probe is ordinary activity, and merely
+//!   observing silence past the budget yields `Probe`, never `Kill`.
+//! - A human pause is an explicit state, not inactivity.
+//!
 //! A turn is not killed because it ran for a long wall-clock duration.  The
 //! runtime calls `activity()` whenever it observes progress, and the
 //! watchdog probes only after a silence longer than the stall budget.  A
@@ -296,6 +306,27 @@ mod tests {
         assert_eq!(
             w.poll_at(t0 + Duration::from_secs(3630)),
             WatchdogAction::Probe
+        );
+    }
+
+    #[test]
+    fn silence_alone_never_kills_without_a_failed_probe() {
+        // Turn-boundary scope: however long the silence, observing it
+        // only ever yields Probe. Kill requires an explicit failed
+        // probe (or an expired in-flight probe), never the clock.
+        let (mut w, t0) = base();
+        assert_eq!(
+            w.poll_at(t0 + Duration::from_secs(3600)),
+            WatchdogAction::Probe
+        );
+        assert_eq!(
+            w.poll_at(t0 + Duration::from_secs(7200)),
+            WatchdogAction::Probe
+        );
+        // A probe that succeeds is activity, not a kill.
+        assert_eq!(
+            w.probe_result_at(true, t0 + Duration::from_secs(7201)),
+            WatchdogAction::Continue
         );
     }
 }
