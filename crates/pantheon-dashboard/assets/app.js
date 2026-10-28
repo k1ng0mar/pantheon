@@ -3199,7 +3199,12 @@ renderers.experts = async function () {
 
 (function boot() {
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    // Registration failure is surfaced, never swallowed: a dead
+    // service worker used to fail silently (stale shell, no offline
+    // cache) with nothing in the console to explain it.
+    navigator.serviceWorker.register("sw.js").catch((err) => {
+      console.warn("pantheon: service worker registration failed:", err);
+    });
   }
   initTheme();
   if (!TOKEN) {
