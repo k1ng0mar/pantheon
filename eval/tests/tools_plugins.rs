@@ -1,7 +1,7 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_api::capability::Capability;
-use pantheon_exec::plugins::{PluginManifest, ToolCapability};
+use pantheon_exec::plugins::{DiscoveredPlugin, PluginLocation, PluginManifest, ToolCapability};
 use pantheon_exec::supervisor::PluginSupervisor;
 use pantheon_tools::plugin_tools::register_plugin_tools;
 use pantheon_tools::tools::ToolRegistry;
@@ -20,15 +20,28 @@ use std::time::Duration;
 /// spawn failure still fails loudly, and persistent ETXTBSY panics after the
 /// budget is exhausted.
 fn spawn_plugin(
-    runner: &std::path::Path,
-    manifest: &PluginManifest,
     dir: &std::path::Path,
+    manifest: &PluginManifest,
+    data_dir: &std::path::Path,
     timeout: Duration,
     allowlist: &[String],
 ) -> PluginSupervisor {
+    // The approval-free spawn was deleted (minor-a): every spawn path must
+    // go through spawn_verified, which requires an operator approval bound
+    // to the plugin dir's hash. Record that approval for the test plugin
+    // first; the approval store lands in the parent of the plugin dir, so
+    // tests keep plugin root and data dir under one unique base dir that
+    // they remove afterwards.
+    let plugin = DiscoveredPlugin {
+        manifest: manifest.clone(),
+        location: PluginLocation::User,
+        root: dir.to_path_buf(),
+    };
+    pantheon_exec::plugin_approval::record_approval(&plugin)
+        .expect("record test plugin approval");
     let mut last_err = None;
     for _ in 0..50 {
-        match PluginSupervisor::spawn(runner, manifest, dir, timeout, allowlist) {
+        match PluginSupervisor::spawn_verified(&plugin, data_dir, timeout, allowlist) {
             Ok(sup) => return sup,
             Err(e) if e.code == "PLUGIN_SPAWN" && e.cause.contains("os error 26") => {
                 last_err = Some(e);
@@ -42,7 +55,7 @@ fn spawn_plugin(
 
 #[test]
 fn registry_wires_plugin_tool() {
-    let dir = std::env::temp_dir().join(format!(
+    let base = std::env::temp_dir().join(format!(
         "pantheon-sup-reg-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -50,7 +63,10 @@ fn registry_wires_plugin_tool() {
             .unwrap()
             .as_nanos()
     ));
+    let dir = base.join("plugin");
+    let data_dir = base.join("data");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
     let runner = dir.join("run.sh");
     std::fs::write(
             &runner,
@@ -81,9 +97,9 @@ fn registry_wires_plugin_tool() {
         enabled: true,
     };
     let sup = Arc::new(Mutex::new(spawn_plugin(
-        &runner,
-        &manifest,
         &dir,
+        &manifest,
+        &data_dir,
         Duration::from_secs(5),
         &[],
     )));
@@ -92,7 +108,7 @@ fn registry_wires_plugin_tool() {
     let out = reg.execute("greet", "{}").unwrap();
     assert!(out.contains("hi"), "got: {out}");
     sup.lock().unwrap().stop();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 fn err_code(err: &pantheon_api::error::PantheonError) -> &str {
@@ -124,7 +140,7 @@ fn register_plugin_tools_rejects_squat() {
     // For the full registration path we need an Arc<Mutex<PluginSupervisor>>
     // even though the squat is rejected before it is touched. Spawn one
     // once and reuse it.
-    let dir = std::env::temp_dir().join(format!(
+    let base = std::env::temp_dir().join(format!(
         "pantheon-squat-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -132,7 +148,10 @@ fn register_plugin_tools_rejects_squat() {
             .unwrap()
             .as_nanos()
     ));
+    let dir = base.join("plugin");
+    let data_dir = base.join("data");
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
     let runner = dir.join("run.sh");
     std::fs::write(
         &runner,
@@ -147,9 +166,9 @@ fn register_plugin_tools_rejects_squat() {
         std::fs::set_permissions(&runner, p).unwrap();
     }
     let sup = Arc::new(Mutex::new(spawn_plugin(
-        &runner,
-        &manifest_of("ok_tool"),
         &dir,
+        &manifest_of("ok_tool"),
+        &data_dir,
         Duration::from_secs(5),
         &[],
     )));
@@ -169,5 +188,5 @@ fn register_plugin_tools_rejects_squat() {
     assert_eq!(reg.names(), vec!["legit_tool".to_string()]);
 
     sup.lock().unwrap().stop();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&base);
 }
