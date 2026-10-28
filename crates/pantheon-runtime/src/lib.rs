@@ -1466,13 +1466,11 @@ impl Supervisor {
     ///   copying them would mark the fresh fork terminal before it runs;
     /// - `UsageRecorded` rows: they are accounting, not conversation,
     ///   and copying them would double-count the source's spend in
-    ///   `usage_between` (the fork's own later usage is still recorded);
-    /// - the queued-message list: queued follow-ups belong to the
-    ///   source's future, not to a branch taken at an earlier turn, so
-    ///   copying them needs a product decision (see `fork_run`'s
-    ///   needs-decision note) and they are left behind.
-    /// Copied alongside the events: the source's todo snapshot and its
-    /// agent mode, so the fork resumes the same plan in the same mode.
+    ///   `usage_between` (the fork's own later usage is still recorded).
+    /// Copied alongside the events: the source's todo snapshot, its
+    /// agent mode, and its queued-message list (FIFO order preserved):
+    /// a fork continues the conversation, and queued follow-ups are
+    /// part of the user's intent, not the source's private future.
     pub fn fork_run(
         &self,
         src: &str,
@@ -1536,16 +1534,21 @@ impl Supervisor {
             }
             self.emit(e.event.with_run_id(&new_id))?;
         }
-        // Resume state: the source's todo snapshot and agent mode move
-        // to the fork (the queued-message list deliberately does not).
-        // Failures propagate rather than leaving a fork that silently
-        // lost its plan.
+        // Resume state: the source's todo snapshot, agent mode, and
+        // queued-message list move to the fork (a fork continues the
+        // conversation, and queued follow-ups are part of the user's
+        // intent). Failures propagate rather than leaving a fork that
+        // silently lost its plan or its queued follow-ups.
         let items = self.ledger().todos(src)?;
         if !items.is_empty() {
             self.ledger().set_todos(&new_id, &items)?;
         }
         let mode = self.ledger().run_mode(src)?;
         self.ledger().set_run_mode(&new_id, &mode)?;
+        let queued = self.ledger().queued_messages(src)?;
+        for msg in &queued {
+            self.ledger().set_queued_message(&new_id, Some(msg))?;
+        }
         if let Some(title) = self
             .ledger_title(&new_id)
             .ok()
@@ -1852,5 +1855,32 @@ mod fork_tests {
             sup.ledger_status(&src).unwrap().as_deref(),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn fork_run_copies_queued_messages_in_order() {
+        let (sup, _dir) = fork_supervisor();
+        let src = new_run_id();
+        sup.start_run(&src).unwrap();
+        sup.emit(Event::AssistantMessage {
+            run_id: src.clone(),
+            message: pantheon_api::message::Message::user("hello"),
+        })
+        .unwrap();
+        sup.ledger()
+            .set_queued_message(&src, Some("first follow-up"))
+            .unwrap();
+        sup.ledger()
+            .set_queued_message(&src, Some("second follow-up"))
+            .unwrap();
+
+        let (fork, _) = sup.fork_run(&src, None).unwrap();
+        assert_eq!(
+            sup.ledger().queued_messages(&fork).unwrap(),
+            vec!["first follow-up".to_string(), "second follow-up".to_string()],
+            "queued follow-ups are part of the user's intent and move to the fork"
+        );
+        // The source keeps its own queue: forking copies, it does not drain.
+        assert_eq!(sup.ledger().queued_messages(&src).unwrap().len(), 2);
     }
 }
