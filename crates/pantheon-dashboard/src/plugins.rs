@@ -61,8 +61,11 @@ fn safe_name(name: &str) -> bool {
 /// Config-derived enablement for a bundled plugin: the `[plugins.<name>]`
 /// config entry wins when present; when absent, the bundled manifest's
 /// own `enabled` flag is the default (true only for plugins that ship
-/// on, like noisegate). A missing or unparsable config fails closed
-/// (disabled). This is the same resolution the runtime, TUI, and CLI
+/// on, like noisegate). A missing config counts as empty, so manifest
+/// defaults apply on a fresh install; an unparsable config fails closed
+/// (disabled). This is the config-defaults layer only, not the approval
+/// gate: third-party plugins still need a live approval regardless of
+/// any flag. This is the same resolution the runtime, TUI, and CLI
 /// use, so every surface reports the same state.
 fn bundled_enabled(app: &App, name: &str, manifest_default: bool) -> bool {
     bundled::load_config(&app.data_dir)
@@ -623,13 +626,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A missing config file fails closed (disabled), even for a
-    /// default-on plugin - a missing config must never flip anything on.
+    /// A missing config file counts as EMPTY, so shipped manifest
+    /// defaults apply on a fresh install: a default-on plugin is on,
+    /// a default-off one is off. This is the config-defaults layer
+    /// only - it does not relax the approval gate, which is separate:
+    /// a third-party plugin still needs a live approval (its
+    /// `enabled` rendering is `manifest.enabled && approved` in
+    /// `list`, never the flag alone), so "missing config applies
+    /// defaults" can never approve unapproved code.
     #[test]
-    fn bundled_enabled_missing_config_fails_closed() {
+    fn bundled_enabled_missing_config_uses_manifest_default() {
         let dir = fresh_dir("missing");
         let app = scratch_app(dir.clone());
-        assert!(!bundled_enabled(&app, "noisegate", true));
+        assert!(bundled_enabled(&app, "noisegate", true));
+        assert!(!bundled_enabled(&app, "security-guidance", false));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

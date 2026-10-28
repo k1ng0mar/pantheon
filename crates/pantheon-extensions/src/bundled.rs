@@ -253,17 +253,19 @@ pub fn is_enabled_with_default(config: &Config, name: &str, manifest_default: bo
 /// Load the config for enablement decisions without
 /// [`Config::load_or_report`]'s process-exit behavior: a library must
 /// never `exit(2)` the host because the config has a typo. A missing
-/// config fails closed (disabled), even for a default-on plugin: a
-/// missing file must never flip anything on, and callers map `None`
-/// to disabled. An empty config file is different - there the
-/// manifest defaults apply (a plugin that ships on, like noisegate,
-/// is on; the rest are off). A config that exists but does not parse
-/// is reported on stderr and fails closed - a typo must never
-/// silently flip a plugin on.
+/// config counts as an EMPTY config, so the shipped manifest defaults
+/// apply on a fresh install (a plugin that ships on, like noisegate,
+/// is on; the rest are off) - exactly as if the file existed but had
+/// no `[plugins.<name>]` entry. A config that exists but does not
+/// parse is reported on stderr and fails closed (`None`, and callers
+/// map `None` to disabled) - a typo must never silently flip a plugin
+/// on. This is the config-defaults layer only: it does not relax the
+/// approval gate, which is a separate layer (third-party plugins still
+/// need a live approval no matter what any flag says).
 pub fn load_config(data_dir: &Path) -> Option<Config> {
     match Config::load(data_dir) {
         Ok(c) => Some(c),
-        Err(e) if e.code == "CONFIG_OPEN" => None,
+        Err(e) if e.code == "CONFIG_OPEN" => Some(Config::default()),
         Err(e) => {
             eprintln!("pantheon: bundled plugins disabled: {}", e.cause);
             eprintln!("pantheon: fix: {}", e.remediation);
@@ -485,5 +487,24 @@ mod tests {
             "not-a-plugin",
             false
         ));
+    }
+
+    #[test]
+    fn load_config_missing_counts_as_empty_not_fail_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-dec-sec-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No config.toml at all: missing counts as empty, so manifest
+        // defaults apply through the normal resolution path.
+        let cfg = load_config(&dir).expect("missing config must load as empty");
+        assert!(is_enabled_with_default(&cfg, "noisegate", true));
+        assert!(!is_enabled_with_default(&cfg, "security-guidance", false));
+        // A config that exists but does not parse still fails closed.
+        std::fs::write(dir.join("config.toml"), "this is [not valid toml").unwrap();
+        assert!(load_config(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
