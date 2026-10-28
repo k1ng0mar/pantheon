@@ -85,6 +85,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/swarm retry <id>", "relaunch a swarm ([feedback])"),
     ("/swarm tree", "this session's delegation tree (read-only)"),
     ("/team [<id> [<task>]]", "team of experts: list, roster, or launch on a task"),
+    ("/plugins [import|search]", "plugins: import by URL/slug, search registry"),
     ("/plugin [import|search]", "plugins: import by URL/slug, search registry (also /plugins)"),
     ("/btw PROMPT", "run a task in the background (result lands here)"),
     ("/bg [ID]", "list background tasks, or show one's output"),
@@ -119,13 +120,18 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/tasks <agent>", "that agent's open tasks"),
     ("/inbox", "messages sent to this agent"),
     ("/approvals", "pending approvals for this run"),
+    ("/approve <index>", "approve a pending approval by index"),
+    ("/deny <index>", "deny a pending approval by index"),
     ("/schedule", "scheduled jobs"),
     ("/mcp [reload]", "MCP server declarations (reload re-scans them)"),
     ("/migrate", "import from other harnesses (hermes, openclaw, omp, claude)"),
+    ("/oauth [status|logout|login]", "connect hosted apps via local OAuth2"),
     ("/env", "secret names and status (never values)"),
     ("/voice", "speech backends ([stt]/[tts]) status"),
     ("/clear", "clear visible transcript"),
     ("/reset", "reset turn state: clear transcript, cancel turn, drop queue (session, title, ledger kept; /clear is display-only, /new starts a new session)"),
+    ("/quit", "leave pantheon"),
+    ("/exit", "leave pantheon"),
 ];
 
 /// Key hints shown at the end of `/help`. Not commands: kept separate so
@@ -137,10 +143,10 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("Ctrl+B", "toggle sidebar"),
     ("Ctrl+G", "sidebar: activity / todo view"),
     ("Tab", "toggle Build / Plan mode"),
-    ("Shift+Tab", "previous session"),
+    ("Shift+Tab", "cycle permission mode"),
+    ("Ctrl+Shift+Tab", "previous session"),
     ("/", "command palette (type to filter, Enter runs)"),
     ("Esc Esc (idle)", "offer to rewind the last turn"),
-    ("/exit, /quit", "leave pantheon"),
 ];
 
 /// One `/help` line per registry entry, in the two-space-separated format
@@ -14315,5 +14321,37 @@ mod composer_arrow_tests {
         assert_eq!(s.input, "previous");
         assert!(handle_composer_arrow(&mut s, KeyCode::Down));
         assert_eq!(s.input, "hello");
+    }
+}
+
+#[cfg(test)]
+mod slash_help_tests {
+    use super::*;
+
+    #[test]
+    fn help_lists_every_dispatched_command_and_true_key_hints() {
+        // /help used to omit /approve, /deny, /oauth, /plugins, /quit
+        // and /exit even though all six dispatch, and its key hints
+        // claimed Shift+Tab was "previous session" when Shift+Tab
+        // cycles the permission mode (previous session is
+        // Ctrl+Shift+Tab).
+        let lines = help_lines();
+        let joined = lines.join("\n");
+        for cmd in ["/approve", "/deny", "/oauth", "/plugins", "/quit", "/exit"] {
+            assert!(joined.contains(cmd), "/help omits {cmd}:\n{joined}");
+        }
+        assert!(joined.contains("Ctrl+Shift+Tab"), "{joined}");
+        // The only "previous session" hint must be the Ctrl+Shift+Tab
+        // one: a bare Shift+Tab hint with that description is the stale
+        // claim (Shift+Tab cycles the permission mode).
+        for line in &lines {
+            if line.contains("previous session") {
+                assert!(
+                    line.trim_start().starts_with("Ctrl+Shift+Tab"),
+                    "stale previous-session hint: {line}"
+                );
+            }
+        }
+        assert!(joined.contains("cycle permission mode"), "{joined}");
     }
 }
