@@ -729,10 +729,12 @@ impl ChatTransport for ReasoningThenFailStub {
 }
 
 #[test]
-fn failed_stream_after_reasoning_only_is_retried() {
-    // Reasoning is not a deliverable answer and the ledger does not persist
-    // it, so a failed stream that only streamed thoughts must retry rather
-    // than surfacing a dead turn.
+fn failed_stream_after_reasoning_only_is_terminal() {
+    // Decided retry split: a stream that only streamed thoughts and then
+    // failed is terminal for that entry. Reasoning is not a deliverable
+    // answer, but retrying the identical request risks repeating the
+    // failure, so the entry does not retry. With no fallback configured
+    // the turn fails with PROVIDER_STREAM_INTERRUPTED.
     rate_provider("retry-stream-thoughts");
     let clock = Arc::new(FakeClock::default());
     let chain = ProviderChain {
@@ -751,21 +753,40 @@ fn failed_stream_after_reasoning_only_is_retried() {
     };
     let events = Collect(RefCell::new(Vec::new()));
 
-    let outcome = chain
+    let err = chain
         .turn_stream(&[Message::user("go")], &events)
-        .expect("the retry recovers");
-    assert!(matches!(
-        outcome,
-        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "done"
-    ));
-    assert_eq!(chain.transport.calls.load(Ordering::SeqCst), 2);
+        .expect_err("a thoughts-only failed stream must not recover by retry");
+    // No fallback means the walk exhausts, as with every other
+    // no-fallback failure in this file; the exhaustion names the
+    // interruption that ended the chain.
+    assert_eq!(err.code, "PROVIDER_EXHAUSTED");
+    assert!(
+        err.cause.contains("PROVIDER_STREAM_INTERRUPTED"),
+        "exhaustion names the last failure: {}",
+        err.cause
+    );
+    assert_eq!(chain.transport.calls.load(Ordering::SeqCst), 1);
     let borrowed = events.0.borrow();
     assert!(
-        borrowed
+        !borrowed
             .iter()
             .any(|e| matches!(e, ModelEvent::RetryAttempt { .. })),
-        "a thoughts-only failed stream retries"
+        "a thoughts-only failed stream must not retry"
     );
+    assert!(
+        !borrowed
+            .iter()
+            .any(|e| matches!(e, ModelEvent::Fallback { .. })),
+        "with no fallback there is nothing to fall back to"
+    );
+    assert!(borrowed.iter().any(|e| matches!(
+        e,
+        ModelEvent::AttemptFailed {
+            code,
+            retryable: false,
+            ..
+        } if code == "PROVIDER_STREAM_INTERRUPTED"
+    )));
     let visible: Vec<&str> = borrowed
         .iter()
         .filter_map(|e| match e {
@@ -773,5 +794,143 @@ fn failed_stream_after_reasoning_only_is_retried() {
             _ => None,
         })
         .collect();
-    assert_eq!(visible, ["done"], "no visible text is duplicated");
+    assert!(visible.is_empty(), "no visible text was ever delivered");
+}
+
+#[test]
+fn reasoning_only_interruption_falls_back_immediately() {
+    // Same terminal failure, but with a fallback configured the chain
+    // moves to the next model at once: one attempt on the default, no
+    // retries, then the fallback succeeds.
+    rate_provider("retry-stream-thoughts-fb");
+    rate_provider("retry-stream-thoughts-fb2");
+    let clock = Arc::new(FakeClock::default());
+    let chain = ProviderChain {
+        policy: policy(
+            "retry-stream-thoughts-fb",
+            &["retry-stream-thoughts-fb2"],
+        ),
+        transport: ReasoningThenFailStub {
+            calls: AtomicUsize::new(0),
+        },
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock.clone(),
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    let events = Collect(RefCell::new(Vec::new()));
+
+    let outcome = chain
+        .turn_stream(&[Message::user("go")], &events)
+        .expect("the fallback should succeed");
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "done"
+    ));
+    assert_eq!(chain.transport.calls.load(Ordering::SeqCst), 2);
+    let borrowed = events.0.borrow();
+    assert!(
+        !borrowed
+            .iter()
+            .any(|e| matches!(e, ModelEvent::RetryAttempt { .. })),
+        "a thoughts-only interruption must not retry before falling back"
+    );
+    assert!(borrowed.iter().any(|e| matches!(
+        e,
+        ModelEvent::Fallback { to_provider, .. }
+            if to_provider == "retry-stream-thoughts-fb2"
+    )));
+    let attempts: Vec<String> = borrowed
+        .iter()
+        .filter_map(|e| match e {
+            ModelEvent::Attempt { provider, .. } => Some(provider.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        attempts,
+        vec![
+            "retry-stream-thoughts-fb".to_string(),
+            "retry-stream-thoughts-fb2".to_string()
+        ],
+        "exactly one attempt per chain entry"
+    );
+}
+
+#[test]
+fn empty_completion_exhausts_retries_before_fallback() {
+    // Decided retry split, counted per entry: an empty length finish is
+    // retryable, so the default burns all 3 retries (4 attempts total)
+    // before the fallback is engaged, and the fallback then succeeds.
+    rate_provider("retry-empty-fb");
+    rate_provider("retry-empty-fb2");
+    let clock = Arc::new(FakeClock::default());
+    let chain = ProviderChain {
+        policy: policy("retry-empty-fb", &["retry-empty-fb2"]),
+        transport: EmptyStub {
+            calls: AtomicUsize::new(0),
+            finish_reason: "length",
+            recover_on: 5,
+        },
+        tools: vec![],
+        api_key: Some(SecretValue::new("k1")),
+        retry: RetryConfig::default(),
+        sleeper: clock.clone(),
+        last_resolved: RefCell::new(None),
+        session_max_tokens: None,
+        budget_max_tokens: None,
+        oauth_broker: None,
+    };
+    let events = Collect(RefCell::new(Vec::new()));
+
+    let outcome = chain
+        .turn_with_sink(&[Message::user("go")], &events)
+        .expect("the fallback should succeed after the retries are spent");
+    assert!(matches!(
+        outcome,
+        pantheon_agent::TurnOutcome::Text { ref text, .. } if text == "ok"
+    ));
+    assert_eq!(chain.transport.calls.load(Ordering::SeqCst), 5);
+    let borrowed = events.0.borrow();
+    let retries: Vec<(String, u32)> = borrowed
+        .iter()
+        .filter_map(|e| match e {
+            ModelEvent::RetryAttempt {
+                provider, attempt, ..
+            } => Some((provider.clone(), *attempt)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        retries,
+        vec![
+            ("retry-empty-fb".to_string(), 1),
+            ("retry-empty-fb".to_string(), 2),
+            ("retry-empty-fb".to_string(), 3),
+        ],
+        "all 3 retries belong to the default entry, before any fallback"
+    );
+    assert!(borrowed.iter().any(|e| matches!(
+        e,
+        ModelEvent::Fallback { to_provider, .. } if to_provider == "retry-empty-fb2"
+    )));
+    assert_eq!(
+        borrowed
+            .iter()
+            .filter(|e| matches!(
+                e,
+                ModelEvent::AttemptFailed {
+                    code,
+                    retryable: true,
+                    ..
+                } if code == "PROVIDER_OUTPUT_LIMIT"
+            ))
+            .count(),
+        4,
+        "initial attempt plus three retries, all output-limit failures"
+    );
 }
