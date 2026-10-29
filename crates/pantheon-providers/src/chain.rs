@@ -66,9 +66,14 @@ pub struct ProviderChain<T: ChatTransport> {
 /// The `already_emitted` set only records which deltas have been seen.
 struct TextTrackingSink<'a> {
     inner: &'a dyn ModelEventSink,
-    /// Concatenated text emitted during this attempt; read only by the
-    /// interrupted-attempt check (see the struct doc).
+    /// Concatenated visible text emitted during this attempt; read by
+    /// the interrupted-attempt check (see the struct doc). Reasoning
+    /// deltas are tracked separately below: reasoning is not a
+    /// deliverable answer, so a reasoning-only interruption must not be
+    /// mistaken for visible output already delivered to the client.
     emitted: RefCell<String>,
+    /// Concatenated reasoning emitted during this attempt.
+    reasoning: RefCell<String>,
     /// Text deltas seen during this attempt, recorded for inspection;
     /// recording a delta does not suppress forwarding it.
     already_emitted: RefCell<Vec<String>>,
@@ -79,6 +84,7 @@ impl<'a> TextTrackingSink<'a> {
         Self {
             inner,
             emitted: RefCell::new(String::new()),
+            reasoning: RefCell::new(String::new()),
             already_emitted: RefCell::new(Vec::new()),
         }
     }
@@ -87,12 +93,25 @@ impl<'a> TextTrackingSink<'a> {
         self.emitted.borrow().clone()
     }
 
+    fn emitted_reasoning(&self) -> String {
+        self.reasoning.borrow().clone()
+    }
+
     fn add_emitted_text(&self, text: &str) {
         let mut emitted = self.emitted.borrow_mut();
         if emitted.is_empty() {
             *emitted = text.to_string();
         } else {
             emitted.push_str(text);
+        }
+    }
+
+    fn add_emitted_reasoning(&self, text: &str) {
+        let mut reasoning = self.reasoning.borrow_mut();
+        if reasoning.is_empty() {
+            *reasoning = text.to_string();
+        } else {
+            reasoning.push_str(text);
         }
     }
 
@@ -120,7 +139,7 @@ impl ModelEventSink for TextTrackingSink<'_> {
         }
         if let ModelEvent::ReasoningDelta { text } = &event {
             if !text.is_empty() {
-                self.add_emitted_text(text);
+                self.add_emitted_reasoning(text);
             }
             if !self.is_emitted(&text) {
                 self.mark_emitted(text.clone());
@@ -129,6 +148,12 @@ impl ModelEventSink for TextTrackingSink<'_> {
         self.inner.emit(event);
     }
 }
+
+/// Evidence marker carried on a PROVIDER_STREAM_INTERRUPTED error when
+/// visible text was already delivered to the client. run() returns such
+/// errors immediately (no retry, no fallback); a reasoning-only
+/// interruption carries no marker and enters the fallback walk instead.
+const VISIBLE_OUTPUT_EVIDENCE: &str = "visible_output_delivered";
 
 /// Retry budget + backoff shape for one chain entry (Umar's spec:
 /// retry 3 times before fallback or fail).
@@ -497,6 +522,70 @@ impl<T: ChatTransport> ProviderChain<T> {
 
             match &mut result {
                 Ok(turn) => {
+                    // Empty answer conversion lives here, not in run():
+                    // only an error returned from attempt() passes through
+                    // attempt_with_retries, so converting in run() would
+                    // skip retries and fallback entirely. An empty Text
+                    // outcome delivers nothing usable, whatever the finish
+                    // reason, so it is retryable: a transient provider
+                    // failure can produce it, and after the retries are
+                    // spent the walk falls back. Tool-call outcomes are
+                    // not empty answers and pass through untouched.
+                    let empty_text = matches!(
+                        &turn.outcome,
+                        TurnOutcome::Text { text, .. } if text.trim().is_empty()
+                    );
+                    if empty_text {
+                        let hit_cap = matches!(
+                            turn.finish_reason.as_deref(),
+                            Some("length") | Some("max_tokens")
+                        );
+                        let (code, remedy) = if hit_cap {
+                            (
+                                "PROVIDER_OUTPUT_LIMIT",
+                                if self.policy.reasoning != pantheon_api::model::ReasoningLevel::Off {
+                                    "lower reasoning effort (`/reasoning low` or \
+                                     `/reasoning off` — reasoning can consume the \
+                                     output budget before any answer is produced) \
+                                     or raise the output cap (`/tokens N` or \
+                                     [budget].max_tokens)"
+                                } else {
+                                    "raise the output cap (`/tokens N` or \
+                                     [budget].max_tokens)"
+                                },
+                            )
+                        } else {
+                            (
+                                "PROVIDER_EMPTY_ANSWER",
+                                "the provider returned an empty answer; if it \
+                                 persists, retry the prompt or try a different model",
+                            )
+                        };
+                        sink.emit(ModelEvent::AttemptFailed {
+                            provider: model.provider.clone(),
+                            model: model.model.clone(),
+                            chain_index: idx,
+                            code: code.into(),
+                            retryable: true,
+                            cause: format!(
+                                "provider returned an empty answer (finish_reason: {})",
+                                turn.finish_reason.as_deref().unwrap_or("none")
+                            ),
+                        });
+                        return Err(PantheonError::new(
+                            code,
+                            Layer::Provider,
+                            true,
+                            format!(
+                                "provider returned an empty answer on {}/{} (finish_reason: {})",
+                                model.provider,
+                                model.model,
+                                turn.finish_reason.as_deref().unwrap_or("none")
+                            ),
+                            remedy,
+                            "",
+                        ));
+                    }
                     let mut usage = turn.usage.unwrap_or_default();
                     if turn.usage.is_some() {
                         if usage.total_tokens == 0 {
@@ -533,6 +622,10 @@ impl<T: ChatTransport> ProviderChain<T> {
                     // Streamed output is already visible and persisted.
                     // Retrying this provider or falling back would append a
                     // second response to clients that cannot retract output.
+                    // The evidence marker is how run() tells this shape
+                    // apart from a reasoning-only interruption below: the
+                    // error code alone cannot distinguish them, and the
+                    // walk must differ (return here, fall back there).
                     let code = "PROVIDER_STREAM_INTERRUPTED";
                     sink.emit(ModelEvent::AttemptFailed {
                         provider: model.provider.clone(),
@@ -558,6 +651,50 @@ impl<T: ChatTransport> ProviderChain<T> {
                             failure_snippet(e)
                         ),
                         "review the partial output and retry the prompt if needed",
+                        VISIBLE_OUTPUT_EVIDENCE,
+                    ));
+                }
+                Err(e) if !tracked_sink.emitted_reasoning().is_empty() => {
+                    // Reasoning-only interruption: thoughts were streamed
+                    // but no usable answer was ever delivered, so retrying
+                    // the identical request risks repeating the failure.
+                    // Terminal for this entry, but unlike the visible-text
+                    // case above it must enter the fallback walk in run()
+                    // (no evidence marker), so the chain moves to a
+                    // different model immediately instead of stalling.
+                    // CAVEAT, deliberately not acted on here: the
+                    // underlying error (e.code / e.retryable) is still
+                    // available at this point, so telemetry CAN tell a
+                    // transient transport break (e.g. PROVIDER_READ) from
+                    // a genuine output-limit finish (which arrives as an
+                    // Ok turn with finish_reason length, not as this
+                    // error). Making transport-caused reasoning-only
+                    // interruptions retryable would change the decided
+                    // terminal behaviour for exactly the canonical
+                    // transport-break shape, so it stays terminal unless
+                    // Umar explicitly overrides the decision above.
+                    let code = "PROVIDER_STREAM_INTERRUPTED";
+                    sink.emit(ModelEvent::AttemptFailed {
+                        provider: model.provider.clone(),
+                        model: model.model.clone(),
+                        chain_index: idx,
+                        code: code.into(),
+                        retryable: false,
+                        cause: format!(
+                            "stream failed after reasoning only; no usable output was delivered; {}",
+                            failure_snippet(e)
+                        ),
+                    });
+                    return Err(PantheonError::new(
+                        code,
+                        Layer::Provider,
+                        false,
+                        format!(
+                            "provider stream failed after reasoning only: {} ({})",
+                            e.code,
+                            failure_snippet(e)
+                        ),
+                        "fall back to a different model",
                         "",
                     ));
                 }
@@ -723,12 +860,15 @@ impl<T: ChatTransport> ProviderChain<T> {
                 ));
             }
         }
-        // (failed_idx, provider, model, code, cause-snippet) of last failure.
-        let mut failed: Option<(usize, String, String, String, String)> = None;
+        // (failed_idx, provider, model, code, cause-snippet, remedy) of
+        // last failure. The remedy is carried so exhaustion can report
+        // the actionable fix from the failure that ended the chain,
+        // instead of a generic reachability guess.
+        let mut failed: Option<(usize, String, String, String, String, String)> = None;
         loop {
             let (idx, model) = match &failed {
                 None => (0usize, &self.policy.default),
-                Some((f, fp, fm, fc, fcause)) => match self.next_in_chain(*f) {
+                Some((f, fp, fm, fc, fcause, _)) => match self.next_in_chain(*f) {
                     Some((ni, nm)) => {
                         // The ledger records the fallback, but the ledger is
                         // per-run and a chain that fails before any run is
@@ -758,7 +898,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         pantheon_api::logging::error(
                             "provider",
                             match &failed {
-                                Some((_, fp, fm, fc, _)) => {
+                                Some((_, fp, fm, fc, _, _)) => {
                                     format!("chain exhausted; last failure {fc} on {fp}/{fm}")
                                 }
                                 None => "chain exhausted; no provider was configured".to_string(),
@@ -773,17 +913,32 @@ impl<T: ChatTransport> ProviderChain<T> {
                         // connection refused and an auth rejection need
                         // completely different fixes, and both arrived here
                         // as the same three words.
-                        let (cause, entry) = match &failed {
-                            Some((_, fp, fm, fc, _)) => {
-                                (format!("last failure: {fc}"), format!("{fp}/{fm}"))
+                        let (cause, entry, last_remedy) = match &failed {
+                            Some((_, fp, fm, fc, _, fremedy)) => {
+                                (
+                                    format!("last failure: {fc}"),
+                                    format!("{fp}/{fm}"),
+                                    fremedy.clone(),
+                                )
                             }
-                            None => ("no provider was configured".to_string(), "none".into()),
+                            None => (
+                                "no provider was configured".to_string(),
+                                "none".into(),
+                                String::new(),
+                            ),
                         };
-                        let remedy = format!(
-                            "check {entry}: is the endpoint reachable, is the API key set, \
-                             and does that provider serve that model? `pantheon doctor` and \
-                             `pantheon model --list` check both"
-                        );
+                        // Prefer the failure's own remedy when it has one:
+                        // an output-limit exhaustion must name raising the
+                        // cap, not guess at reachability.
+                        let remedy = if !last_remedy.is_empty() {
+                            last_remedy
+                        } else {
+                            format!(
+                                "check {entry}: is the endpoint reachable, is the API key set, \
+                                 and does that provider serve that model? `pantheon doctor` and \
+                                 `pantheon model --list` check both"
+                            )
+                        };
                         return Err(PantheonError::new(
                             "PROVIDER_EXHAUSTED",
                             Layer::Provider,
@@ -797,18 +952,12 @@ impl<T: ChatTransport> ProviderChain<T> {
             };
             match self.attempt_with_retries(idx, model, messages, stream, opts, sink) {
                 Ok(turn) => {
-                    // Output cap hit with zero visible answer: this is
-                    // NOT a successful turn. Reasoning can consume the
-                    // whole output budget first, leaving nothing for an
-                    // answer — and retrying identically (same reasoning
-                    // level, same cap) fails identically on every
-                    // attempt. Fail non-retryable here, before the
-                    // fallback walk, with the remedy attached: the
-                    // operator must change a parameter, not retry.
-                    // (A non-empty `length` finish still returns its
-                    // partial text; only the zero-answer case is
-                    // converted, so no visible output is ever hidden
-                    // behind this error.)
+                    // Empty answers never reach here: attempt() converts
+                    // them to retryable errors so they burn their retries
+                    // in attempt_with_retries before this walk falls back.
+                    // A non-empty `length` finish still returns its
+                    // partial text; no visible output is ever hidden
+                    // behind an error here.
                     let output_empty = matches!(
                         &turn.outcome,
                         TurnOutcome::Text { text, .. } if text.trim().is_empty()
@@ -821,8 +970,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                     // partial text, but it used to do so silently: the
                     // loop reported it as a successful answer with no
                     // hint anything was cut. Warn so the truncation is
-                    // visible in `pantheon logs` (the empty case below
-                    // is an error, not a warning, as before).
+                    // visible in `pantheon logs`.
                     if hit_cap && !output_empty {
                         pantheon_api::logging::warn(
                             "provider",
@@ -832,33 +980,6 @@ impl<T: ChatTransport> ProviderChain<T> {
                             ),
                         );
                     }
-                    if output_empty && hit_cap {
-                        let remedy = if self.policy.reasoning
-                            != pantheon_api::model::ReasoningLevel::Off
-                        {
-                            "lower reasoning effort (`/reasoning low` or \
-                             `/reasoning off` — reasoning can consume the \
-                             output budget before any answer is produced) \
-                             or raise the output cap (`/tokens N` or \
-                             [budget].max_tokens)"
-                        } else {
-                            "raise the output cap (`/tokens N` or \
-                             [budget].max_tokens)"
-                        };
-                        return Err(PantheonError::new(
-                            "PROVIDER_OUTPUT_LIMIT",
-                            Layer::Provider,
-                            false,
-                            format!(
-                                "model hit its output-token limit before \
-                                 producing any visible answer \
-                                 (finish_reason: length) on {}/{}",
-                                model.provider, model.model
-                            ),
-                            remedy,
-                            "",
-                        ));
-                    }
                     *self.last_resolved.borrow_mut() = Some(ResolvedModel {
                         provider: model.provider.clone(),
                         model: model.model.clone(),
@@ -866,7 +987,17 @@ impl<T: ChatTransport> ProviderChain<T> {
                     });
                     return Ok(turn.outcome);
                 }
-                Err(e) if e.code == "PROVIDER_STREAM_INTERRUPTED" => return Err(e),
+                // Only a visible-text interruption returns immediately:
+                // visible output can never be followed by another model's
+                // output. A reasoning-only interruption (no evidence
+                // marker) falls through to the walk below and falls back
+                // immediately, with no retries spent on this entry.
+                Err(e)
+                    if e.code == "PROVIDER_STREAM_INTERRUPTED"
+                        && e.evidence == VISIBLE_OUTPUT_EVIDENCE =>
+                {
+                    return Err(e)
+                }
                 Err(e) => {
                     // Retryable or not, the walk continues to the next
                     // chain entry: retryable failures already burned their
@@ -882,6 +1013,7 @@ impl<T: ChatTransport> ProviderChain<T> {
                         model.model.clone(),
                         e.code.clone(),
                         failure_snippet(&e),
+                        e.remediation.clone(),
                     ));
                     continue;
                 }
@@ -1064,12 +1196,20 @@ mod output_limit_tests {
 
     #[test]
     fn length_finish_with_no_visible_answer_is_an_error_not_an_empty_answer() {
+        // Decided retry split: an empty length finish is retryable, so
+        // with no fallback the chain burns its retries and exhausts,
+        // naming the output limit and carrying its remedy (not a
+        // generic reachability guess).
         let chain = chain_with("");
         let err = chain
             .turn_stream(&[Message::user("hi")], &NoopModelSink)
             .expect_err("empty length finish must fail");
-        assert_eq!(err.code, "PROVIDER_OUTPUT_LIMIT");
-        assert!(!err.retryable, "must not retry identically");
+        assert_eq!(err.code, "PROVIDER_EXHAUSTED");
+        assert!(
+            err.cause.contains("PROVIDER_OUTPUT_LIMIT"),
+            "exhaustion names the last failure: {}",
+            err.cause
+        );
         assert!(
             err.remediation.contains("/reasoning"),
             "remedy names lowering reasoning: {}",
