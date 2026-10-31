@@ -1,0 +1,122 @@
+# Pantheon execution ledger
+
+One ledger for every reported finding across the audit roadmap (`pantheon-catch-up-audit-roadmap.md`),
+the Grok and Kimi reviews, and this session's own verification. Findings are **not** treated as
+facts: each row records where it came from, what the current tree actually does, and what is
+still unproven.
+
+- **Tree under test:** branch `chloe/all-merged`, head `b7af55a`, clean at start.
+- **Verification date:** 2026-10-29.
+- **Evidence rule:** a `CONFIRMED` row cites current code (file/function) or a test that was run
+  in this session. Anything read-only and unexercised says so. Implemented ≠ verified; the
+  statuses below are separate on purpose.
+
+Status vocabulary: `CONFIRMED`, `PARTIALLY CONFIRMED`, `NOT REPRODUCED`, `CONTRADICTED`,
+`UNVERIFIED`, `FIXED`, `TESTED`, `INTEGRATION VERIFIED`, `LIVE VERIFIED`.
+
+## Baseline (this session)
+
+| Check | Command | Result |
+|---|---|---|
+| Workspace compiles | `cargo check --workspace --all-targets` | exit 0, warnings only |
+| Nightly eval suite | `cargo test -p pantheon-eval --test nightly` | 35 passed, exit 0 |
+| Nightly repair suite | `cargo test -p pantheon-eval --test nightly_repair` | 16 passed, exit 0 |
+| Nightly crate unit tests | `cargo test -p pantheon-nightly` | exit 0 |
+| Full workspace suite | `cargo test --workspace --all-targets --no-fail-fast` | **EXIT=0**, 160 `test result: ok`, 0 failed (log `/tmp/opencode/full-s6.log`, after all code edits including the S6 crash-injection tests; earlier run `/tmp/opencode/full-after.log`). At clean baseline `b7af55a` the same command exited 101 with 7 failures — see "Eval-suite reconciliation": all pre-existing stale tests, now fixed. |
+
+## Eval-suite reconciliation (7 pre-existing failures)
+
+`cargo test --workspace --all-targets --no-fail-fast` on a **detached worktree at clean
+`b7af55a`** (`/tmp/opencode/wt-base`, `CARGO_TARGET_DIR=/tmp/opencode/wt-base-target`) reproduced
+the identical 7 failures (`BASE_EXIT=101`), proving they are pre-existing, not regressions of this
+session's changes. Each traces to a deliberate product change that updated its inline unit tests
+but missed `eval/tests/`. In every case the **test** was stale, not the product: the new behaviour
+is the safer contract (fail-closed auth, one-fire-per-occurrence scheduling, provider/model
+survival, explicit empty-result notes, Memory-gated session search, refuse-overwrite on corrupt
+containment records). Tests were rewritten to assert the new contracts — none were weakened or
+deleted.
+
+| Failing test | Root-cause commit | New contract asserted | Result after fix |
+|---|---|---|---|
+| `runtime_tool_gating::all_groups_off_registry_has_no_gated_tools_but_keeps_session_search` | `c893846` (session_search rides Memory) | Renamed to `..._has_no_gated_tools`; `session_search` is now **absent** with all groups off; new `session_search_is_registered_by_default` covers the default build | 13/13 pass |
+| `runtime_misc::nightly_corrupt_file_reads_as_empty` | `c893846` (corrupt disable list refuses overwrite) | Renamed to `..._reads_as_empty_and_refuses_overwrite`; corrupt file is left byte-identical, write refused, corruption named in the error | 15/15 pass |
+| `websearch_tools::web_search_uses_default_max_results_when_arg_missing` | `651a3c4` (empty result returns a note object) | Expects `[{"note":"no results found for this query"}]` instead of `[]` | 5/5 pass |
+| `tui_provider_fallback::fallback_engagement_renders_error_card` | `2a8913d` (state.model stays `provider/model`) | Asserts `deepseek/deepseek-chat`, not the bare model id | 5/5 pass |
+| `scheduler_tick::overlap_queue_runs_once_more_after_inflight` | `d294158` (one fire per occurrence, ever) | Renamed to `..._same_occurrence_drains_once_not_twice`; the same-occurrence drain is consumed without firing: one completion, then channel disconnect, `runs == 1` | 9/9 pass |
+| `unified_serve::unified_listener_serves_dashboard_and_api_behind_one_token` | `7229269` (query-string token rejected) | `?token=` → **401**; header token → 200; `POST /api/session` cookie alone → 200 (header-less client path) | 3/3 pass |
+| `unified_serve::unified_agui_health_rpc_and_stream_behind_one_token` | `7229269` (query-string token rejected everywhere, incl. the old `/agui/stream` exception) | `?token=` on `/agui/stream` → 401; session cookie → 400 from the handler (`missing ?run=`), proving cookie auth reaches the stream | 3/3 pass |
+
+
+## P0 — Nightly validation integrity
+
+| ID | Source | Location | Evidence | Severity | Status | Next action |
+|---|---|---|---|---|---|---|
+| N1 | Roadmap `docs/nightly-repair-proposal.md`; Grok/Kimi via directive | `pantheon-nightly/src/fixloop.rs`, `gate.rs` | The old repair pruned a failing eval tag and re-ran the gate; `gate()` returned `Pass("no evals tagged")`, so a draft failing every eval validated green. Current tree has **no** `try_prune_failing_tag`: eval reject revises the draft via the Repair slot and re-runs the **full immutable** tag set (`fixloop.rs:154-201`). Empty tag set returns `EvalVerdict::Skipped`, and `eval_skip_allowed()` allowlists no kind (`fixloop.rs:116-122`, `gate.rs:125-131`). | Critical | FIXED + TESTED | Regression tests `draft_failing_every_eval_cannot_validate`, `fix_loop_sharpens_draft_on_eval_reject_and_revalidates`, `exhaustion_after_repair_sharpen_still_escalates` pass (35/35 target). |
+| N1a | This session (from directive §2 "incomplete required evaluations") | `gate.rs:118-150` | `gate()` silently did `.take(config.max_evals)`: a proposal with 4 tags and a cap of 3 ran 3 and returned `Pass`. A partial required set must never validate. | High | FIXED + TESTED | Over-cap sets now return `Reject` before running anything; duplicate tags collapse; tests `gate_refuses_more_required_evals_than_the_cap`, `gate_collapses_duplicate_tags`. |
+| N1b | This session (directive §2 "bind validation to the exact revision") | `apply.rs` queue/decide | `queue_for_approval` stamped `ReplayPassed` on any skill/persona it was handed; `route()` did the same with no gate; nothing tied the queued proposal to the draft/eval set that passed. | High | FIXED + TESTED | Queue entries carry `ValidationBinding { body_sha256, eval_tags }`; queueing without one, with an empty eval set, or with a mismatched draft/tag set is refused; `decide` re-verifies before applying. Tests `unvalidated_skill_proposal_is_refused_by_the_queue`, `approval_refuses_draft_edited_after_validation`, `queue_refuses_binding_for_a_different_eval_set`. |
+| N1c | Directive §2 | `apply.rs` (legacy queue files) | Entries written before bindings existed have no `validation`; they now refuse approval with "carries no validation binding". | Medium | CONFIRMED (behaviour) | Intentional fail-closed migration cost: the operator re-runs the nightly pass to revalidate. Note it in release notes if nightly was enabled anywhere. |
+| N1d | Directive §2 | `fixloop.rs` attempts | A repair revision consumes one of `max_fix_attempts`; exhaustion escalates and is recorded in `nightly-escalated.json`. | — | CONFIRMED + TESTED | Covered by `exhaustion_after_repair_sharpen_still_escalates`. |
+| N1e | Directive §2 | `apply.rs` `route()` | `route()` is a public queueing API with no validation; it now refuses skill/persona. | Low | FIXED | It has no in-tree callers; kept for the memory-lesson path. |
+
+## P1 — Release and update integrity
+
+| ID | Source | Location | Evidence | Severity | Status | Next action |
+|---|---|---|---|---|---|---|
+| R1 | Roadmap W1, Kimi | `pantheon-release-verify/src/lib.rs:33` | `PINNED_PUBLIC_KEY: Option<&str> = None`; verification fails closed with an actionable message. | Critical | CONFIRMED | Provision the keypair and pin the public key only with the operator's authorization (roadmap W1). |
+| R2 | Roadmap W1, Kimi | `.github/workflows/release.yml:96-134` | Signing steps `exit 0` when `MINISIGN_SECRET_KEY` is absent, so a release can publish unsigned artifacts that `pantheon update` then refuses. | High | FIXED (implemented; CI run not executable here) | Skip-when-absent kept (failing CI would block all releases with no key), but the unsigned state is now **visible**: the publish job prepends an `UNSIGNED` status block to the release body and emits a workflow annotation. No bypass was added. |
+| R3 | Roadmap W1, Kimi | `install.sh:119-160` | First install verifies `.sha256` only (same-origin, so integrity not authorship); `PANTHEON_ALLOW_UNVERIFIED=1` and `PANTHEON_NO_VERIFY=1` remain as explicit opt-outs. | Medium | FIXED (implemented; install path not run against a live release) | `install.sh` now prints the trust bar at install time (checksum-only, signature not yet provisioned) and cross-links `docs/release-signing.md`. Still no signature bypass in `pantheon update`. |
+| R4 | This session | `docs/release-signing.md` | Doc is accurate: states "key NOT provisioned", the skip behaviour, and the chicken-and-egg. | — | CONTRADICTS "documented as shipped" | No change needed beyond pointing users at it from the install path. |
+| R5 | This session | `pantheon-tui/src/update.rs:331-342, 402` | `pantheon update --help` states fail-closed signature verification and no bypass; `verify_signature` runs on both the asset and the helper. | — | CONFIRMED | — |
+| R6 | Roadmap W1 | `pantheon-tui/src/update.rs` staged archive | Unverified whether the download is staged before swap. | Low | UNVERIFIED | Read the swap path and add a test before claiming staging. |
+
+## P2 — Execution security and trust boundaries
+
+| ID | Source | Location | Evidence | Severity | Status | Next action |
+|---|---|---|---|---|---|---|
+| S1 | Roadmap 1.3 | `pantheon-exec/src/sandbox/runner.rs:663-676` | `PANTHEON_SANDBOX_FALLBACK=allow` (or `profile.allow_direct_fallback`) runs the command directly with namespaces omitted. Any process that can set the env var defeats isolation for later calls. | High | CONFIRMED (code) | Assess gating it behind a logged, per-run opt-in; do not remove without a compatibility decision. |
+| S2 | Roadmap 1.3 / Kimi | `pantheon-mcp/src/manager.rs:345-395`, `pantheon-api/src/capability.rs:241` | Unknown MCP tools fell through to `Capability::NetworkOutbound`, which coder policy allows — server approval was the only gate. | High | FIXED + TESTED | New `Capability::McpUnclassified` ("mcp.unclassified"): the manager projects it for any unclassified tool, the coder policy parks it for approval, and the exec sandbox does not treat it as network. Per-server/per-tool overrides still win. Tests: `capability_resolution_tests::unclassified_tools_park_for_approval` and the coder-policy assertion in `manager.rs`; `pantheon-mcp` 48 and `pantheon-api` 110 tests pass. |
+| S3 | Roadmap 1.3 | `pantheon-exec/src/supervisor.rs` | Plugin runner processes are not routed through `build_sandboxed_checked`; LSP servers likewise raw-spawn. | High | CONFIRMED (roadmap, not re-verified here) | Sandbox plugin/LSP spawn at a declared level (W5 §1). |
+| S4 | Roadmap 1.4 | `pantheon-tui/src/gateway.rs` (`RuntimeSink`) | Allowlist is env-only and required for daemon start; the ingest path membership check was not traced. | High | FIXED + TESTED | `RuntimeSink::allowed()` now gates **both** `on_message` (ingest) and `on_approval` (human decisions) before any runtime contact: a non-allowlisted sender cannot post a message or decide an approval, and an active allowlist refuses senders with no identity. Tests in `gateway.rs`: `non_allowlisted_sender_is_refused_before_the_runtime`, `missing_sender_identity_is_refused_when_allowlist_is_active`, `non_allowlisted_sender_cannot_decide_an_approval`, `absent_allowlist_allows_any_sender` (11/11 in the module). |
+| S5 | Directive §4 | `pantheon-dashboard` HTTP parser | Hand-written parser; origin guards exist (`http.rs` PATCH origin tests). Full XSS/insertion-sink audit not done here. | Medium | UNVERIFIED | Audit sinks with external data (logs, tool results, memory) before changing the stack. |
+| S6 | Directive §4 | Approvals + crash recovery; `session.rs` grant-resume + tool-result cache | Duplicate execution after restart is bounded by per-call scope settling; until now no crash-injection test exercised it. The bound is real and layered: (1) `granted_unexecuted_calls`/`unfinished_calls` recovery re-runs a granted call exactly once when nothing durable survived; (2) once the tool-result cache (`write_cached_tool_result`, atomic temp+rename inside `execute_keyed`) holds the result, the resume **replays** it instead of re-executing; (3) a settled grant is never re-run on later restarts. Residual window: a kill *inside* the tool's own execution, after the side effect commits but before the cache write — only closable by making the side effect transactional with the cache, which is out of the runtime's hands. | High | FIXED + TESTED | Three real crash-injection tests in `eval/tests/smoke_e2e.rs` (Session dropped without finishing = crash; new Session on same data dir = restart; side effect observed on disk, not just in the ledger): `smoke_fake_provider_crash_after_grant_executes_exactly_once_after_restart` (incl. a third restart proving a settled grant never re-executes), `..._crash_after_grant_and_start_still_executes_exactly_once`, `..._crash_after_cached_result_replays_without_reexecuting`. Mutation check: breaking `read_cached_tool_result` makes the replay test fail on its transcript + no-re-execution assertions. `write_cached_tool_result` exported `pub` so the test seeds exactly the bytes a killed process leaves (no format replication). |
+| S7 | Roadmap 1.3 | `pantheon-secrets/src/{dotenv,gateway_tokens,logins}.rs` | `gateway.env` and `logins.env` are 0600 plaintext dotenv files; file-vault key sits beside ciphertext. | High | CONFIRMED (roadmap) | Migrate to broker references or document the threat model (W5 §4). |
+
+## P3 — Documentation and product truthfulness
+
+| ID | Source | Location | Evidence | Severity | Status | Next action |
+|---|---|---|---|---|---|---|
+| D1 | Kimi | `README.md:99` | "HMAC-SHA256-verified webhooks" — webhook triggers are removed: `pantheon-scheduler/src/lib.rs:623-640` parses `LegacyKind::Webhook` only to drop it with a warning. No HMAC code exists in the scheduler. | High | FIXED | Claim removed; the row now describes cron/one-shot/interval + durable claims and states that a persisted legacy webhook row is dropped on load, never executed. |
+| D2 | Kimi | `README.md:121` | "Browser control \| **Planned**" — six backends and registered tools exist (`pantheon-web/src/browser/{registry,tools}.rs`; registration in `pantheon-runtime/src/session.rs:4742`). | High | FIXED | Row now reads "**Built, not live-verified** (six backends, keyless and cloud)" — honest about both the code and the missing live run. |
+| D3 | This session | `README.md:142` | Crate map still says the scheduler does "webhooks". | Medium | FIXED | Crate map now says "cron, one-shot, interval, claims". |
+| D4 | This session | `README.md:118` | "Cost control \| Run budgets enforced by the runtime" in a comparison table implies spend caps; the audit and `budget` code show turn/tool-call caps with no cost cap. | Medium | FIXED | Row now says "Turn and tool-call budgets enforced; **no spend cap yet**". |
+| D5 | This session | `README.md:116` | "Sandbox \| Fail-closed isolation" omits that plugins and LSP servers are not sandboxed. | Medium | FIXED | Row now says "Fail-closed when a backend is available; plugins/LSP unsandboxed" (ties to S3). |
+| D6 | This session | `README.md:124` | The note "the 'planned' rows are deliberate: Pantheon claims nothing it hasn't built" becomes wrong once D2 is corrected. | Low | FIXED | Note rewritten: planned rows are not built; the browser row is built but not live-verified, stated as a distinct claim. |
+| D7 | Kimi | README/docs | "Update workflow documented as shipped" — no user-facing update instructions exist outside `docs/release-signing.md`; the TUI help is honest. | Low | FIXED | `docs/getting-started.md` now states the checksum-is-not-a-signature trust bar, why `pantheon update` refuses every release by design, and links `release-signing.md`. |
+| D8 | Roadmap | `web/*.html` | Marketing pages load Google Fonts; the dashboard self-hosts. | Low | CONFIRMED (roadmap) | Self-host fonts or document the exception (W10 §5). |
+| D9 | Roadmap 1.6 | Comparison table | Competitor cells are dated "September 2026" with no per-row source. | Low | CONFIRMED | Keep the snapshot date visible; qualify unsourced rows. |
+
+## P4 — Maintainability
+
+| ID | Source | Location | Evidence | Severity | Status | Next action |
+|---|---|---|---|---|---|---|
+| M1 | Kimi | sizes | `runtime/src/session.rs` 12,144; `api/src/config.rs` 4,547; `storage/src/ledger.rs` 3,069; `exec/src/danger.rs` 3,090; `exec/src/skills.rs` 1,846; `runtime/src/swarm_exec.rs` 2,362; TUI 81 files / 59,785 lines. | Medium | CONFIRMED (counts) | Treat as diagnostics only; split where a seam and tests justify it, never wholesale. |
+| M2 | Kimi | `crates/**` | `.unwrap()` 961, `.expect(` 900, `panic!(` 95 — matches Kimi's report exactly. | Medium | CONFIRMED (raw counts) | Split production vs `#[cfg(test)]` before prioritising; fix security/approval/persistence paths first. |
+| M3 | Roadmap 1.1 | `storage/src/ledger.rs` | Append-only claim is qualified by `delete_run`/`prune_events_before*`; replay orders by `id`; no event-format version. | Medium | CONFIRMED (roadmap) | Do not claim tamper evidence; W4 §2 for the real fix. |
+| M4 | Directive §6 | `desktop/` | Desktop sits outside the Cargo workspace; CI coverage of its TS/Tauri code not established here. | Medium | UNVERIFIED | Check `.github/workflows/ci.yml` for desktop jobs; add a minimal gate. |
+
+## Blocked / not verified (do not fill by assumption)
+
+- **Live provider, channel, browser, OAuth, keychain, mobile, desktop** runs: no credentials, device,
+  or live browser in this session. All such claims stay `UNVERIFIED`.
+- **bwrap host behaviour** (read-only workspace under `Container`/`StrictNamespaces`): bwrap absent
+  on this VM — code-reading only.
+- **CI/release workflow execution**: the changed `release.yml` is YAML-validated by reading only; no
+  GitHub Actions run was triggered here. The `UNSIGNED` release-body note and annotation are
+  implemented but not observed on a real release.
+- **`install.sh` against a live release**: the trust-bar output is implemented; the install path was
+  not executed against a published release in this session.
+- **Grok review**: the review text was not in the workspace; its findings are represented only where
+  the directive restates them, and each is marked with the verification above.
+- **Formatting gate**: repo-wide `cargo fmt --all --check` was already dirty at baseline `b7af55a`
+  (files untouched this session), so it cannot be used as a gate; only files touched here were
+  formatted, and clippy on `pantheon-nightly`/`-api`/`-exec`/`-mcp --all-targets` exits 0.
