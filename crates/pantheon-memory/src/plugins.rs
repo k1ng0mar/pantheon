@@ -638,9 +638,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Success path: the old code returned without wait() here.
+        //
+        // The script must CONSUME stdin before responding: the backend
+        // writes the request immediately after spawn, and a child that
+        // echoes and exits without reading loses that race under load
+        // (EPIPE on the write made this test flaky, once per full-suite
+        // run). Reading first makes the handshake deterministic - the
+        // assertions below are unchanged: Ok + reaped, Err + reaped.
         let pidfile = dir.join("ok.pid");
         let script = format!(
-            "echo $$ > {}; echo '{{\"ok\":true,\"removed\":true}}'",
+            "echo $$ > {}; cat > /dev/null; echo '{{\"ok\":true,\"removed\":true}}'",
             pidfile.display()
         );
         let backend = StdioBackend::new("sh".into(), vec!["-c".into(), script], 5000);
@@ -651,9 +658,12 @@ mod tests {
         );
 
         // Read/decode-error path: the old code returned without even
-        // kill() here.
+        // kill() here. Same stdin handshake for the same reason.
         let pidfile = dir.join("bad.pid");
-        let script = format!("echo $$ > {}; echo 'not json at all'", pidfile.display());
+        let script = format!(
+            "echo $$ > {}; cat > /dev/null; echo 'not json at all'",
+            pidfile.display()
+        );
         let backend = StdioBackend::new("sh".into(), vec!["-c".into(), script], 5000);
         assert!(backend.forget(LayerKind::Agent, "ns", "k").is_err());
         assert!(
