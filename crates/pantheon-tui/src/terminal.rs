@@ -332,13 +332,14 @@ fn run_delivered_task(
                 // Resolve against the config-level default preset, exactly
                 // as the CLI swarm path does, so a `--agent` child inherits
                 // the same policy shape as a `pantheon swarm` role.
-                let effective = match reg.resolve(name, cfg.policy.map(|p| p.as_str()).unwrap_or("coder")) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!("resolve --agent {name:?}: {e}");
-                        std::process::exit(1);
-                    }
-                };
+                let effective =
+                    match reg.resolve(name, cfg.policy.map(|p| p.as_str()).unwrap_or("coder")) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("resolve --agent {name:?}: {e}");
+                            std::process::exit(1);
+                        }
+                    };
                 let agent = match pantheon_runtime::AgentRuntime::new(
                     session.supervisor.clone(),
                     reg,
@@ -539,10 +540,7 @@ fn parse_memory_recall(args: &[String], default_namespace: &str) -> (Vec<String>
             args.get(5..).map(|a| a.join(" ")).unwrap_or_default(),
         )
     } else {
-        (
-            vec![default_namespace.to_string()],
-            args[3..].join(" "),
-        )
+        (vec![default_namespace.to_string()], args[3..].join(" "))
     }
 }
 
@@ -551,10 +549,7 @@ fn parse_memory_recall(args: &[String], default_namespace: &str) -> (Vec<String>
 /// `runs --metrics <id>` no longer folds metrics for a run literally
 /// named "--metrics" (all zeros, exit 0).
 fn parse_runs_metrics_id(args: &[String]) -> Option<String> {
-    args.iter()
-        .skip(2)
-        .find(|a| !a.starts_with('-'))
-        .cloned()
+    args.iter().skip(2).find(|a| !a.starts_with('-')).cloned()
 }
 
 fn runs_help() {
@@ -606,9 +601,7 @@ fn load_mgr() -> ExtensionManager {
     let dd = data_dir();
     let mut m = ExtensionManager::new(RunnerConfig::default())
         .with_data_dir(dd.clone())
-        .with_project_root(
-            std::env::current_dir().unwrap_or_else(|_| dd.clone()),
-        );
+        .with_project_root(std::env::current_dir().unwrap_or_else(|_| dd.clone()));
     let d = ext_dir();
     if d.exists() {
         // Report a failed load. Swallowing it made a broken plugin directory
@@ -1064,8 +1057,7 @@ pub fn run() {
                     // `--ns <name>` (or `--ns '*'`) is the explicit way to
                     // read another agent's memory. Nothing defaults to it.
                     let (namespaces, query) = parse_memory_recall(&args, &namespace);
-                    let namespaces: Vec<&str> =
-                        namespaces.iter().map(String::as_str).collect();
+                    let namespaces: Vec<&str> = namespaces.iter().map(String::as_str).collect();
                     let hits = pantheon_memory::recall_via(
                         backend.as_ref(),
                         &Policy::coder(),
@@ -1749,12 +1741,7 @@ timeout_ms = 5000
                             // neither, printing only `approved <name>`.
                             println!("{}", pantheon_api::approval::warning_text(&p.name));
                             println!();
-                            println!(
-                                "plugin: {} (v{}) at {}",
-                                p.name,
-                                p.version,
-                                p.dir.display()
-                            );
+                            println!("plugin: {} (v{}) at {}", p.name, p.version, p.dir.display());
                             println!();
                             if !yes {
                                 use std::io::Write as _;
@@ -2336,7 +2323,9 @@ mod recall_and_runs_parse_tests {
 
     #[test]
     fn recall_ns_flag_reads_named_namespace() {
-        let args = argv(&["pantheon", "memory", "recall", "--ns", "foo", "hello", "world"]);
+        let args = argv(&[
+            "pantheon", "memory", "recall", "--ns", "foo", "hello", "world",
+        ]);
         let (ns, query) = parse_memory_recall(&args, "nyx");
         assert_eq!(ns, vec!["foo".to_string()]);
         assert_eq!(query, "hello world");

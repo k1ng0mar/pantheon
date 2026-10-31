@@ -87,8 +87,7 @@ fn set_path_like(
         // copy it onto the replacement for scalar-to-scalar edits,
         // the same rule `set_in_table` uses.
         if let Some(item) = table.get_mut(parts[0]) {
-            if let (toml_edit::Item::Value(old), toml_edit::Item::Value(new)) =
-                (&*item, &mut value)
+            if let (toml_edit::Item::Value(old), toml_edit::Item::Value(new)) = (&*item, &mut value)
             {
                 let decor = old.decor().clone();
                 *new.decor_mut() = decor;
@@ -285,7 +284,10 @@ fn collect_sets(prefix: &mut Vec<String>, v: &Value, out: &mut Vec<DocChange>) {
                 prefix.pop();
             }
             if t.is_empty() {
-                out.push(DocChange::Set(prefix.clone(), Value::Table(Default::default())));
+                out.push(DocChange::Set(
+                    prefix.clone(),
+                    Value::Table(Default::default()),
+                ));
             }
         }
         _ => out.push(DocChange::Set(prefix.clone(), v.clone())),
@@ -344,20 +346,26 @@ pub(crate) fn write_doc_preserving(raw: &str, old: &Value, new: &Value) -> Resul
     }
     let text = doc.to_string();
     let Ok(out) = toml::from_str::<Value>(&text) else {
-        return Err("format-preserving document write did not land; refusing to write it".to_string());
+        return Err(
+            "format-preserving document write did not land; refusing to write it".to_string(),
+        );
     };
     for change in &changes {
         match change {
             DocChange::Set(parts, value) => {
                 if get_segments(&out, parts) != Some(value) {
-                    return Err("format-preserving document write did not land; refusing to write it"
-                        .to_string());
+                    return Err(
+                        "format-preserving document write did not land; refusing to write it"
+                            .to_string(),
+                    );
                 }
             }
             DocChange::Remove(parts) => {
                 if get_segments(&out, parts).is_some() {
-                    return Err("format-preserving document write did not land; refusing to write it"
-                        .to_string());
+                    return Err(
+                        "format-preserving document write did not land; refusing to write it"
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -688,7 +696,10 @@ pub fn schema(app: &App) -> Response {
 /// the orchestrator at startup - all four used to report "live" while
 /// needing a restart/rebuild to take effect.
 fn restart_scoped(top: &str) -> bool {
-    matches!(top, "stt" | "tts" | "voice" | "gateway" | "server" | "swarm")
+    matches!(
+        top,
+        "stt" | "tts" | "voice" | "gateway" | "server" | "swarm"
+    )
 }
 
 /// Does a [`Config::validate`] problem name exactly one of the changed
@@ -1019,7 +1030,11 @@ pub(crate) fn apply_changes(
                 ));
             }
         }
-        Err(e) => return bad_json(&format!("config change does not form a valid document: {e}")),
+        Err(e) => {
+            return bad_json(&format!(
+                "config change does not form a valid document: {e}"
+            ))
+        }
     }
     // Format-preserving write: the changes go into the raw text via
     // `toml_edit`, so comments, blank lines, and key order elsewhere
@@ -1572,7 +1587,10 @@ mod tests {
         });
         redact_values("", &mut v);
         assert_eq!(v["model"]["provider"], "openai");
-        assert_eq!(v["gateway"]["channels"]["bot"]["token_secret"], "[redacted]");
+        assert_eq!(
+            v["gateway"]["channels"]["bot"]["token_secret"],
+            "[redacted]"
+        );
         assert_eq!(v["mcp"]["servers"]["srv"]["env"]["KEY"], "[redacted]");
     }
 

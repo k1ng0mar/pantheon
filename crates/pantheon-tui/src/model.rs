@@ -1048,16 +1048,17 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
     match &choice.target {
         Target::Default => {
             let prev = cfg.model.clone();
-            let fallbacks = prev.as_ref().map(|m| m.fallbacks.clone()).unwrap_or_default();
+            let fallbacks = prev
+                .as_ref()
+                .map(|m| m.fallbacks.clone())
+                .unwrap_or_default();
             cfg.model = Some(config::ModelSection {
                 // A model pick does not touch reasoning or the timeout:
                 // changing providers must not silently reset an effort
                 // level or a timeout the user chose. (The old literal
                 // wrote `reasoning_budget: None` / `timeout_ms: None`,
                 // resetting both on every pick.)
-                reasoning_budget: prev
-                    .as_ref()
-                    .and_then(|m| m.reasoning_budget),
+                reasoning_budget: prev.as_ref().and_then(|m| m.reasoning_budget),
                 provider: choice.provider.clone(),
                 model: choice.model.clone(),
                 api_key_env: Some(choice.key_env.clone()),

@@ -713,9 +713,7 @@ fn wait_for_code(
     timeout: Duration,
 ) -> Result<String, SecretsError> {
     let deadline = Instant::now() + timeout;
-    listener
-        .set_nonblocking(true)
-        .map_err(SecretsError::from)?;
+    listener.set_nonblocking(true).map_err(SecretsError::from)?;
     loop {
         if Instant::now() >= deadline {
             return Err(SecretsError::Invalid(format!(
@@ -727,9 +725,7 @@ fn wait_for_code(
                 // Accepted sockets inherit non-blocking mode; reads
                 // below need blocking mode plus a read deadline that
                 // never extends past the overall deadline.
-                stream
-                    .set_nonblocking(false)
-                    .map_err(SecretsError::from)?;
+                stream.set_nonblocking(false).map_err(SecretsError::from)?;
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 stream
                     .set_read_timeout(Some(remaining))
@@ -1357,15 +1353,24 @@ mod callback_tests {
             .with_vault(Box::new(vault))
             .with_env(crate::env::EnvVault::from_map(Vec::<(&str, &str)>::new()));
         let store = OAuthStore::new(&broker);
-        store.save("github", &token("old-access", "old-refresh")).unwrap();
+        store
+            .save("github", &token("old-access", "old-refresh"))
+            .unwrap();
         fail.store(true, Ordering::SeqCst);
-        assert!(store.save("github", &token("new-access", "new-refresh")).is_err());
-        let loaded = store.load("github").unwrap().expect("previous set restored");
+        assert!(store
+            .save("github", &token("new-access", "new-refresh"))
+            .is_err());
+        let loaded = store
+            .load("github")
+            .unwrap()
+            .expect("previous set restored");
         assert_eq!(loaded.access_token.expose(), "old-access");
         assert_eq!(loaded.refresh_token.unwrap().expose(), "old-refresh");
         // And with the failure cleared, a fresh save lands whole.
         fail.store(false, Ordering::SeqCst);
-        store.save("github", &token("new-access", "new-refresh")).unwrap();
+        store
+            .save("github", &token("new-access", "new-refresh"))
+            .unwrap();
         let loaded = store.load("github").unwrap().expect("saved token");
         assert_eq!(loaded.access_token.expose(), "new-access");
     }

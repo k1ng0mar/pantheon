@@ -581,7 +581,10 @@ fn flag_root_secrets(dir: &Path, out: &mut Vec<Detected>) {
         if out.iter().any(|d| d.path == path) {
             continue;
         }
-        out.push(detected_secret(&p, "config / credential file (may hold keys)"));
+        out.push(detected_secret(
+            &p,
+            "config / credential file (may hold keys)",
+        ));
     }
 }
 
@@ -615,8 +618,7 @@ fn is_hidden(p: &Path) -> bool {
 /// the two in lockstep by construction.
 pub fn validate_skill_md(path: &Path) -> Result<String, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
-    let skill = pantheon_exec::skills::parse_skill(&raw, path)
-        .map_err(|e| e.cause.clone())?;
+    let skill = pantheon_exec::skills::parse_skill(&raw, path).map_err(|e| e.cause.clone())?;
     Ok(skill.meta.name)
 }
 
@@ -1625,7 +1627,10 @@ mod tests {
             "---\nname: probe-skill\nexec:\n  - name: Bad Name\n    command: scripts/run.sh\n---\nBody.\n",
         );
         let err = validate_skill_md(&bad).unwrap_err();
-        assert!(err.contains("Bad Name"), "error must name the bad entry: {err}");
+        assert!(
+            err.contains("Bad Name"),
+            "error must name the bad entry: {err}"
+        );
         let bad_path = write_skill(
             &dir,
             "---\nname: probe-skill\nexec:\n  - name: run-it\n    command: ../escape.sh\n---\nBody.\n",

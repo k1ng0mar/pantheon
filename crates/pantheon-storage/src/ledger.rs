@@ -1823,8 +1823,7 @@ impl Ledger {
     pub fn unfinished_calls(&self, run_id: &str) -> Result<Vec<UnfinishedCall>, PantheonError> {
         let entries = self.replay(run_id)?;
         let mut started: Vec<UnfinishedCall> = Vec::new();
-        let mut index: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut interrupted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut output_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1832,7 +1831,10 @@ impl Ledger {
         for e in &entries {
             match &e.event {
                 Event::ToolStarted {
-                    call_id, tool, args, ..
+                    call_id,
+                    tool,
+                    args,
+                    ..
                 } => {
                     if !index.contains_key(call_id) {
                         index.insert(call_id.clone(), started.len());
@@ -1997,10 +1999,7 @@ impl Ledger {
         // as a run that did nothing. Fail loudly instead.
         let entries = self.replay(run_id)?;
         if entries.is_empty() {
-            return Err(err(
-                "LEDGER_NO_RUN",
-                format!("no such run {run_id:?}"),
-            ));
+            return Err(err("LEDGER_NO_RUN", format!("no such run {run_id:?}")));
         }
         let mut m = RunMetrics::default();
         for e in entries {
@@ -2516,19 +2515,33 @@ mod delete_run_tests {
         ledger
             .register_process_group("run-a", 4242, "lease-1")
             .unwrap();
-        ledger.put_artifact("task-1", "text/plain", b"blob").unwrap();
+        ledger
+            .put_artifact("task-1", "text/plain", b"blob")
+            .unwrap();
         assert!(ledger.claim("claim-1").unwrap());
 
         let (events, _rows) = ledger.delete_run("run-a").unwrap();
         assert_eq!(events, 1);
-        assert!(ledger.todos("run-a").unwrap().is_empty(), "todo snapshot must go");
         assert!(
-            ledger.process_groups("run-a", "lease-1").unwrap().is_empty(),
+            ledger.todos("run-a").unwrap().is_empty(),
+            "todo snapshot must go"
+        );
+        assert!(
+            ledger
+                .process_groups("run-a", "lease-1")
+                .unwrap()
+                .is_empty(),
             "process-group rows must go"
         );
         // Documented leftovers: no run link exists to delete these by.
-        assert!(ledger.artifact("task-1").unwrap().is_some(), "artifacts are task-keyed, not run-keyed");
-        assert!(!ledger.claim("claim-1").unwrap(), "claims are global, not run-scoped");
+        assert!(
+            ledger.artifact("task-1").unwrap().is_some(),
+            "artifacts are task-keyed, not run-keyed"
+        );
+        assert!(
+            !ledger.claim("claim-1").unwrap(),
+            "claims are global, not run-scoped"
+        );
     }
 
     /// A ledger opened without the search sidecar has no FTS tables; the
@@ -2872,13 +2885,7 @@ mod cancel_and_recovery_tests {
         assert_eq!(l.settle_expired_runs().unwrap(), Vec::<String>::new());
     }
 
-    fn started_call(
-        ledger: &Ledger,
-        run_id: &str,
-        call_id: &str,
-        tool: &str,
-        args: &str,
-    ) {
+    fn started_call(ledger: &Ledger, run_id: &str, call_id: &str, tool: &str, args: &str) {
         ledger
             .append(&Event::ToolStarted {
                 run_id: run_id.to_string(),
@@ -2920,7 +2927,10 @@ mod cancel_and_recovery_tests {
 
         let unfinished = l.unfinished_calls("r1").expect("unfinished");
         assert_eq!(
-            unfinished.iter().map(|c| c.call_id.as_str()).collect::<Vec<_>>(),
+            unfinished
+                .iter()
+                .map(|c| c.call_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["call-1", "call-2"],
             "completed calls are not unfinished"
         );
@@ -3003,7 +3013,13 @@ mod cancel_and_recovery_tests {
         let (_dir, db) = tmp_db("settle-retires-calls");
         let l = Ledger::open(&db).expect("open ledger");
         start(&l, "orphan");
-        started_call(&l, "orphan", "call-1", "shell", "{\"command\":\"sleep 60\"}");
+        started_call(
+            &l,
+            "orphan",
+            "call-1",
+            "shell",
+            "{\"command\":\"sleep 60\"}",
+        );
         started_call(&l, "orphan", "call-done", "read", "{\"path\":\"x\"}");
         l.append(&Event::ToolCompleted {
             run_id: "orphan".into(),
@@ -3042,7 +3058,9 @@ mod cancel_and_recovery_tests {
             "approval parks are still untouched by the sweep"
         );
         assert!(
-            l.unfinished_calls("parked").expect("parked scan").is_empty(),
+            l.unfinished_calls("parked")
+                .expect("parked scan")
+                .is_empty(),
             "a parked run has no started calls to retire"
         );
         std::fs::remove_dir_all(&_dir).ok();
@@ -3056,7 +3074,9 @@ mod metrics_tests {
     #[test]
     fn metrics_unknown_run_errors_instead_of_zeroes() {
         let l = Ledger::open_in_memory().expect("in-memory ledger");
-        let err = l.metrics("no-such-run").expect_err("unknown run must error");
+        let err = l
+            .metrics("no-such-run")
+            .expect_err("unknown run must error");
         assert_eq!(err.code, "LEDGER_NO_RUN");
     }
 

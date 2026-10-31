@@ -43,12 +43,10 @@ pub(crate) fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
         nanos
     ));
     #[cfg(unix)]
-    let existing_mode = std::fs::metadata(path)
-        .ok()
-        .map(|m| {
-            use std::os::unix::fs::MetadataExt;
-            m.mode() & 0o777
-        });
+    let existing_mode = std::fs::metadata(path).ok().map(|m| {
+        use std::os::unix::fs::MetadataExt;
+        m.mode() & 0o777
+    });
     let write = (|| -> Result<(), String> {
         std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
         #[cfg(unix)]

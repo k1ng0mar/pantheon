@@ -505,13 +505,25 @@ mod redact_tests {
     fn embedded_json_secrets_are_redacted() {
         let out = redact(r#"request: {"password": "hunter2", "user": "bob"} done"#);
         assert!(!out.contains("hunter2"), "embedded password leaked: {out}");
-        assert!(out.contains("bob"), "non-sensitive value must survive: {out}");
-        assert!(out.starts_with("request: "), "surrounding text survives: {out}");
+        assert!(
+            out.contains("bob"),
+            "non-sensitive value must survive: {out}"
+        );
+        assert!(
+            out.starts_with("request: "),
+            "surrounding text survives: {out}"
+        );
         assert!(out.ends_with(" done"), "trailing text survives: {out}");
         let nested = redact(r#"upstream said {"outer": {"api_key": "k-secret"}} ok"#);
-        assert!(!nested.contains("k-secret"), "nested embedded secret leaked: {nested}");
+        assert!(
+            !nested.contains("k-secret"),
+            "nested embedded secret leaked: {nested}"
+        );
         let in_array = redact(r#"got [{"token": "tok-9"}] done"#);
-        assert!(!in_array.contains("tok-9"), "array-embedded secret leaked: {in_array}");
+        assert!(
+            !in_array.contains("tok-9"),
+            "array-embedded secret leaked: {in_array}"
+        );
     }
 
     /// Embedded clean JSON keeps its formatting; non-JSON braces pass

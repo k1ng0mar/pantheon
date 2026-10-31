@@ -55,10 +55,8 @@ fn telegram_http_err(resp: &ureq::http::Response<ureq::Body>) -> ChannelError {
     let status = resp.status().as_u16();
     let mut err = ChannelError::from_ureq("TELEGRAM_HTTP", resp);
     if let Some(d) = pantheon_providers::credential_error::classify_telegram(status, "") {
-        err.message.push_str(&format!(
-            " [credential: {} {}]",
-            d.summary, d.remediation
-        ));
+        err.message
+            .push_str(&format!(" [credential: {} {}]", d.summary, d.remediation));
     }
     err
 }

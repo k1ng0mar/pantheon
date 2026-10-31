@@ -574,7 +574,9 @@ fn wait_with_drain(
                 // thread sees EOF once the child (and any stdout
                 // inheritor it waited on) is gone.
                 let _ = child.wait();
-                let buf = drain.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+                let buf = drain
+                    .map(|h| h.join().unwrap_or_default())
+                    .unwrap_or_default();
                 return Ok((buf, status));
             }
             Ok(None) => {
@@ -774,7 +776,10 @@ mod tests {
             dir.display()
         );
         let staged = dir.join("escape.md");
-        assert!(staged.is_file(), "sanitized skill file lands inside the dir");
+        assert!(
+            staged.is_file(),
+            "sanitized skill file lands inside the dir"
+        );
         assert_eq!(staged.parent().unwrap(), dir);
         assert!(
             !std::env::temp_dir().join("escape.md").exists()
@@ -841,7 +846,10 @@ mod tests {
             }),
         };
         TaskSpecReplayRunner::new(Duration::from_secs(30))
-            .run_transcript(&task, Some(&skill_proposal("cleanup-probe-replay", "probe")))
+            .run_transcript(
+                &task,
+                Some(&skill_proposal("cleanup-probe-replay", "probe")),
+            )
             .expect("run succeeds");
         let leftovers: Vec<_> = std::fs::read_dir(std::env::temp_dir())
             .unwrap()

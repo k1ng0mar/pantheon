@@ -267,7 +267,10 @@ mod host_match_tests {
     #[test]
     fn exact_and_page_subdomain_match() {
         assert!(host_matches_site("github.com", "github.com"));
-        assert!(host_matches_site("https://github.com/login", "gist.github.com"));
+        assert!(host_matches_site(
+            "https://github.com/login",
+            "gist.github.com"
+        ));
         assert!(host_matches_site("GITHUB.COM", "github.com"));
     }
 

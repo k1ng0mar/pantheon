@@ -348,10 +348,8 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pantheon-logins-test-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-logins-test-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -414,9 +412,7 @@ mod tests {
         let store = LoginStore::open(&dir);
         let cred = store.create("example.com", "user", "pw-old").unwrap();
         block_meta(&dir);
-        assert!(store
-            .update(&cred.id, None, None, Some("pw-new"))
-            .is_err());
+        assert!(store.update(&cred.id, None, None, Some("pw-new")).is_err());
         unblock_meta(&dir);
         assert_eq!(
             store.password_for(&cred.id).unwrap().unwrap().expose(),

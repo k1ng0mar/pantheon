@@ -463,10 +463,7 @@ mod tests {
         // Shift+Tab must reach the permission-mode cycle, not tab
         // switching: most terminals report it as BackTab+SHIFT.
         // Previous-tab stays on Ctrl+Shift+Tab (Ctrl+BackTab).
-        assert_eq!(
-            tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT),
-            None
-        );
+        assert_eq!(tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT), None);
         assert_eq!(
             tab_key_action(KeyCode::BackTab, KeyModifiers::CONTROL),
             Some(TabAction::Prev)
@@ -551,7 +548,8 @@ mod tests {
             "active tab must be brand purple #7223FF, row: {row}"
         );
         assert_eq!(
-            buf[(idle_at, 0)].fg, theme.tab_idle,
+            buf[(idle_at, 0)].fg,
+            theme.tab_idle,
             "inactive tab must keep the idle colour, row: {row}"
         );
     }
@@ -609,10 +607,7 @@ mod tests {
         // unreachable). Previous-tab stays on Ctrl+Shift+Tab, i.e.
         // Ctrl+BackTab above; Ctrl+Shift+Tab also carries SHIFT but
         // the CONTROL branch wins.
-        assert_eq!(
-            tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT),
-            None
-        );
+        assert_eq!(tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT), None);
         assert_eq!(
             tab_key_action(
                 KeyCode::BackTab,

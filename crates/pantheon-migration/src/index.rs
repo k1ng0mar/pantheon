@@ -264,8 +264,7 @@ pub fn index_quarantine(
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
-                && p
-                    .extension()
+                && p.extension()
                     .map(|e| e == "jsonl" || e == "json")
                     .unwrap_or(false)
                 && p.file_name().map(|n| n != "manifest.json").unwrap_or(false)

@@ -315,8 +315,7 @@ mod empty_results_tests {
 
     fn run_with(hits: Vec<SearchResult>) -> String {
         let mut reg = ToolRegistry::new();
-        register_search_tools(&mut reg, Arc::new(StubProvider { hits }), 5)
-            .expect("register");
+        register_search_tools(&mut reg, Arc::new(StubProvider { hits }), 5).expect("register");
         reg.execute("web_search", r#"{"query":"hello"}"#)
             .expect("execute")
     }

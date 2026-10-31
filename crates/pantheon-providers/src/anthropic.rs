@@ -674,12 +674,8 @@ pub fn stream(
         // so the chain retries or falls back instead of presenting a
         // silently truncated turn as complete.
         let cause = match end {
-            StreamEnd::Done => {
-                "stream ended with terminator but no stop_reason".to_string()
-            }
-            StreamEnd::Eof => {
-                "stream ended without terminator and no stop_reason".to_string()
-            }
+            StreamEnd::Done => "stream ended with terminator but no stop_reason".to_string(),
+            StreamEnd::Eof => "stream ended without terminator and no stop_reason".to_string(),
         };
         return Err(perr("PROVIDER_TRUNCATED", cause, true));
     }
@@ -892,10 +888,7 @@ mod context_retention_tests {
         // The parent's own context is untouched.
         assert_eq!(before["messages"], after["messages"]);
         // Stable tools, in order, with the breakpoint on the last one.
-        assert_eq!(
-            tool_names(&before),
-            vec!["read", "shell", "delegate"]
-        );
+        assert_eq!(tool_names(&before), vec!["read", "shell", "delegate"]);
         assert_eq!(cached_names(&before), vec!["shell"]);
         assert_eq!(cached_names(&after), vec!["shell"]);
         // Caller tools ride after the breakpoint, uncached.

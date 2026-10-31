@@ -616,7 +616,9 @@ impl McpClient {
             let tools = result
                 .get("tools")
                 .and_then(|t| t.as_array())
-                .ok_or_else(|| McpError::Protocol("tools/list response has no tools array".into()))?;
+                .ok_or_else(|| {
+                    McpError::Protocol("tools/list response has no tools array".into())
+                })?;
             for t in tools {
                 let name = t
                     .get("name")
@@ -978,7 +980,8 @@ mod client_policy_tests {
     /// "transport closed".
     #[test]
     fn crash_on_start_surfaces_stderr() {
-        let script = "import sys; sys.stderr.write('boom: missing lib\n'); sys.stderr.flush(); sys.exit(1)";
+        let script =
+            "import sys; sys.stderr.write('boom: missing lib\n'); sys.stderr.flush(); sys.exit(1)";
         let cfg = McpServerConfig::new("fake-crash", "python3")
             .with_args(vec!["-c".to_string(), script.to_string()]);
         let err = match McpClient::connect(&cfg, None) {
@@ -1030,8 +1033,8 @@ mod client_policy_tests {
             "        write_msg({'jsonrpc': '2.0', 'id': msg['id'], 'result': result})",
         ]
         .join("\n");
-        let cfg = McpServerConfig::new("fake-tools", "python3")
-            .with_args(vec!["-c".to_string(), script]);
+        let cfg =
+            McpServerConfig::new("fake-tools", "python3").with_args(vec!["-c".to_string(), script]);
         let mut client = McpClient::connect(&cfg, None).expect("connect fake server");
         let tools = client.list_tools().expect("tools/list");
         assert_eq!(

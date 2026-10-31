@@ -991,17 +991,16 @@ pub fn verify_bundled_dir(dir: &Path) -> bool {
         match registry.iter().find(|e| e.dir_name == dir_name) {
             Some(e) => (
                 e.sha256.to_string(),
-                e.files.iter().map(|f| f.path.to_string()).collect::<Vec<_>>(),
+                e.files
+                    .iter()
+                    .map(|f| f.path.to_string())
+                    .collect::<Vec<_>>(),
             ),
             None => return false,
         }
     };
     let mut pairs: Vec<(String, String)> = Vec::new();
-    fn walk(
-        dir: &Path,
-        root: &Path,
-        out: &mut Vec<(String, String)>,
-    ) -> Result<(), ()> {
+    fn walk(dir: &Path, root: &Path, out: &mut Vec<(String, String)>) -> Result<(), ()> {
         let entries = std::fs::read_dir(dir).map_err(|_| ())?;
         for entry in entries {
             let entry = entry.map_err(|_| ())?;
@@ -1034,14 +1033,16 @@ pub fn verify_bundled_dir(dir: &Path) -> bool {
     if walk(dir, dir, &mut pairs).is_err() {
         return false;
     }
-    let embedded: std::collections::BTreeSet<String> =
-        expected_files.into_iter().collect();
+    let embedded: std::collections::BTreeSet<String> = expected_files.into_iter().collect();
     let on_disk: std::collections::BTreeSet<String> =
         pairs.iter().map(|(r, _)| r.clone()).collect();
     if on_disk != embedded {
         return false;
     }
-    let pair_refs: Vec<(&str, &str)> = pairs.iter().map(|(r, c)| (r.as_str(), c.as_str())).collect();
+    let pair_refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(r, c)| (r.as_str(), c.as_str()))
+        .collect();
     plugin_hash::canonical_sha256(&pair_refs) == expected_sha
 }
 

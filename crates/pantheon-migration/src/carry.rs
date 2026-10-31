@@ -1161,11 +1161,7 @@ mod carry_env_tests {
         let dir = scratch("corrupt-decl");
         let data_dir = dir.join("data");
         std::fs::create_dir_all(data_dir.join("mcp")).unwrap();
-        std::fs::write(
-            data_dir.join("mcp").join("broken.json"),
-            "{not valid json",
-        )
-        .unwrap();
+        std::fs::write(data_dir.join("mcp").join("broken.json"), "{not valid json").unwrap();
         let decls = read_mcp_declarations(&data_dir);
         assert_eq!(decls.len(), 1, "corrupt file must leave a placeholder row");
         assert_eq!(decls[0].servers.len(), 1);

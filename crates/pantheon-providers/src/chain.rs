@@ -387,9 +387,8 @@ impl<T: ChatTransport> ProviderChain<T> {
         // a 401 that `list`/`doctor` never warned about. Loopback
         // endpoints are exempt: keyless local providers are legitimate
         // and an empty key is how they are called.
-        let loopback = base.contains("127.0.0.1")
-            || base.contains("localhost")
-            || base.contains("[::1]");
+        let loopback =
+            base.contains("127.0.0.1") || base.contains("localhost") || base.contains("[::1]");
         if effective_key.trim().is_empty() && !loopback {
             let key_env = catalog::provider(&model.provider)
                 .map(|p| {
@@ -408,7 +407,10 @@ impl<T: ChatTransport> ProviderChain<T> {
                     "no API key for provider {} (checked {key_env})",
                     model.provider
                 ),
-                format!("set {key_env} before using {}/{}", model.provider, model.model),
+                format!(
+                    "set {key_env} before using {}/{}",
+                    model.provider, model.model
+                ),
                 "",
             ));
         }
@@ -437,13 +439,12 @@ impl<T: ChatTransport> ProviderChain<T> {
             // effort skip, this stops one 400 from poisoning every
             // fallback with the same body. An explicit budget still
             // flows (explicit intent beats the catalog flag).
-            let anth_reasoning = if catalog::model_known(&model.provider, &model.model)
-                && !meta.reasoning
-            {
-                pantheon_api::model::ReasoningLevel::Off
-            } else {
-                self.policy.reasoning
-            };
+            let anth_reasoning =
+                if catalog::model_known(&model.provider, &model.model) && !meta.reasoning {
+                    pantheon_api::model::ReasoningLevel::Off
+                } else {
+                    self.policy.reasoning
+                };
             let req = match api_mode {
                 ApiMode::OpenAi => {
                     let key_header = catalog::key_header_for(&model.provider);
@@ -543,7 +544,8 @@ impl<T: ChatTransport> ProviderChain<T> {
                         let (code, remedy) = if hit_cap {
                             (
                                 "PROVIDER_OUTPUT_LIMIT",
-                                if self.policy.reasoning != pantheon_api::model::ReasoningLevel::Off {
+                                if self.policy.reasoning != pantheon_api::model::ReasoningLevel::Off
+                                {
                                     "lower reasoning effort (`/reasoning low` or \
                                      `/reasoning off` — reasoning can consume the \
                                      output budget before any answer is produced) \
@@ -914,13 +916,11 @@ impl<T: ChatTransport> ProviderChain<T> {
                         // completely different fixes, and both arrived here
                         // as the same three words.
                         let (cause, entry, last_remedy) = match &failed {
-                            Some((_, fp, fm, fc, _, fremedy)) => {
-                                (
-                                    format!("last failure: {fc}"),
-                                    format!("{fp}/{fm}"),
-                                    fremedy.clone(),
-                                )
-                            }
+                            Some((_, fp, fm, fc, _, fremedy)) => (
+                                format!("last failure: {fc}"),
+                                format!("{fp}/{fm}"),
+                                fremedy.clone(),
+                            ),
                             None => (
                                 "no provider was configured".to_string(),
                                 "none".into(),
@@ -1596,7 +1596,12 @@ mod fix_model_chain_tests {
             true,
             "PANTHEON_FIXMODEL_VISION_KEY",
         );
-        custom_provider("fixmodel-blind", "blind", false, "PANTHEON_FIXMODEL_BLIND_KEY");
+        custom_provider(
+            "fixmodel-blind",
+            "blind",
+            false,
+            "PANTHEON_FIXMODEL_BLIND_KEY",
+        );
         let calls = std::sync::Arc::new(Mutex::new(0usize));
         struct FailCount {
             calls: std::sync::Arc<Mutex<usize>>,
@@ -1713,9 +1718,12 @@ mod fix_model_chain_tests {
             "last failure must be the key preflight, got cause: {}",
             err.cause
         );
-        assert_eq!(*calls.lock().unwrap(), 1, "keyless fallback must not be called");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            1,
+            "keyless fallback must not be called"
+        );
     }
-
 }
 
 #[cfg(test)]
@@ -1740,15 +1748,9 @@ mod tracking_sink_tests {
         }
         let inner = Capture(Mutex::new(Vec::new()));
         let sink = TextTrackingSink::new(&inner);
-        sink.emit(ModelEvent::TextDelta {
-            text: "hel".into(),
-        });
-        sink.emit(ModelEvent::TextDelta {
-            text: "lo".into(),
-        });
-        sink.emit(ModelEvent::TextDelta {
-            text: "lo".into(),
-        });
+        sink.emit(ModelEvent::TextDelta { text: "hel".into() });
+        sink.emit(ModelEvent::TextDelta { text: "lo".into() });
+        sink.emit(ModelEvent::TextDelta { text: "lo".into() });
         assert_eq!(sink.emitted_text(), "hellolo");
         assert_eq!(
             *inner.0.lock().unwrap(),
@@ -1800,7 +1802,9 @@ mod rate_limit_tests {
                     code,
                     wait_secs,
                     ..
-                } => format!("retry:{provider}/{model}:{attempt}/{max_attempts}:{code}:wait={wait_secs}s"),
+                } => format!(
+                    "retry:{provider}/{model}:{attempt}/{max_attempts}:{code}:wait={wait_secs}s"
+                ),
                 ModelEvent::Fallback {
                     from_provider,
                     from_model,

@@ -126,8 +126,7 @@ fn sdk_err(e: steel::Error) -> BrowserError {
 /// query string at the first `&` or `=` in the key - and hand the
 /// remainder to the server as separate parameters.
 fn percent_encode_query_value(s: &str) -> String {
-    const UNRESERVED: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+    const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if UNRESERVED.contains(&b) {

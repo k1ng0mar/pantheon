@@ -1187,7 +1187,9 @@ fn tool_group_desc(g: ToolGroup) -> &'static str {
         ToolGroup::Browser => "browser automation \u{2014} provider screen follows",
         ToolGroup::Terminal => "run shell commands",
         ToolGroup::Files => "read, write, and list files",
-        ToolGroup::Memory => "persistent memory + session_search recall \u{2014} provider screen follows",
+        ToolGroup::Memory => {
+            "persistent memory + session_search recall \u{2014} provider screen follows"
+        }
         ToolGroup::Skills => "SKILL.md capabilities",
         ToolGroup::Tasks => "the agent's todo list",
         ToolGroup::Delegation => "spawn subagents",

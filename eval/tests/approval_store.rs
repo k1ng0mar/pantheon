@@ -192,8 +192,7 @@ fn exec_adapter_bundled_needs_no_approval() {
     // other unvetted code. Seed a real shipped plugin instead: its
     // bytes match the embedded registry, so it carries bundled trust
     // with no approval record.
-    let seeded = pantheon_exec::plugins::seed_bundled_plugins(&data)
-        .expect("seed bundled plugins");
+    let seeded = pantheon_exec::plugins::seed_bundled_plugins(&data).expect("seed bundled plugins");
     // Tool plugins seed under plugins/bundled; hook plugins seed
     // under extensions/bundled, so pick a seeded tool dir.
     let first = seeded

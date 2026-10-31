@@ -55,7 +55,10 @@ fn bundled_plugins_ship_disabled() {
     let d = tempdir().unwrap();
     let config = bundled::load_config(d.path()).expect("missing config reads as empty config");
     let empty = Config::default();
-    assert!(config.plugins.is_empty(), "missing config must carry no plugin entries");
+    assert!(
+        config.plugins.is_empty(),
+        "missing config must carry no plugin entries"
+    );
     for p in bundled::bundled_plugins() {
         assert!(!bundled::is_enabled(&config, &p.name));
         assert!(!bundled::is_enabled(&empty, &p.name));

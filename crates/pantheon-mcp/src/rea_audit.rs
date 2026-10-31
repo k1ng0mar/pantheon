@@ -680,8 +680,8 @@ pub fn rea_tool_capabilities() -> HashMap<(String, String), Capability> {
             // The audit tier alone does not decide the capability:
             // a Read-tier tool that spawns a process or touches the
             // network is an external effect, not a static read.
-            let external = t.mask & FLAG_LAUNCHES_PROCESS != 0
-                || t.mask & FLAG_ACCESSES_NETWORK != 0;
+            let external =
+                t.mask & FLAG_LAUNCHES_PROCESS != 0 || t.mask & FLAG_ACCESSES_NETWORK != 0;
             let cap = match t.tier {
                 ReaTier::Read if !external => Capability::FilesystemRead,
                 _ => Capability::BinaryTrace,
@@ -749,8 +749,8 @@ mod tests {
         for t in REA_TOOLS {
             if t.tier == ReaTier::Read {
                 let key = (REA_SERVER_NAME.to_string(), t.name.to_string());
-                let external = t.mask & FLAG_LAUNCHES_PROCESS != 0
-                    || t.mask & FLAG_ACCESSES_NETWORK != 0;
+                let external =
+                    t.mask & FLAG_LAUNCHES_PROCESS != 0 || t.mask & FLAG_ACCESSES_NETWORK != 0;
                 if external {
                     external_read += 1;
                 }
@@ -768,7 +768,11 @@ mod tests {
             }
         }
         assert_eq!(external_read, 26);
-        for tool in ["start_gdb_session", "inspect_adb_device", "list_cutter_sessions"] {
+        for tool in [
+            "start_gdb_session",
+            "inspect_adb_device",
+            "list_cutter_sessions",
+        ] {
             let key = (REA_SERVER_NAME.to_string(), tool.to_string());
             assert_eq!(m.get(&key), Some(&Capability::BinaryTrace), "tool {tool}");
         }

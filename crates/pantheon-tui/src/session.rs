@@ -1565,13 +1565,17 @@ impl TuiState {
         let Some(start) = self.thinking_started_at else {
             return;
         };
-        let stamped = self.blocks.iter_mut().rev().find_map(|b| match &mut b.kind {
-            BlockKind::Thinking { duration, .. } if duration.is_none() => {
-                *duration = Some(start.elapsed());
-                Some(())
-            }
-            _ => None,
-        });
+        let stamped = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find_map(|b| match &mut b.kind {
+                BlockKind::Thinking { duration, .. } if duration.is_none() => {
+                    *duration = Some(start.elapsed());
+                    Some(())
+                }
+                _ => None,
+            });
         if stamped.is_some() {
             self.thinking_started_at = None;
         }
@@ -2744,7 +2748,9 @@ impl TuiState {
     fn resolve_approval_block_for(&mut self, tool: Option<&str>, decision: Option<bool>) {
         if let Some(block) = self.blocks.iter_mut().rev().find(|b| match &b.kind {
             BlockKind::Approval {
-                tool: t, decision: None, ..
+                tool: t,
+                decision: None,
+                ..
             } => tool.is_none_or(|want| t == want),
             _ => false,
         }) {
@@ -5107,11 +5113,12 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
 /// model · effort) and appends the mode word. This row lives INSIDE
 /// the composer box, below the input line — it is not a separate
 /// footer. There is no footer row in the main view at all.
-fn composer_provider_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled(
-        "Provider: ",
-        Style::default().fg(th.dim),
-    )];
+fn composer_provider_spans(
+    state: &TuiState,
+    th: &theme::Theme,
+    max_w: usize,
+) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled("Provider: ", Style::default().fg(th.dim))];
     spans.extend(composer_variant_spans(state, th, max_w.saturating_sub(10)));
     spans.push(Span::styled(" • ", Style::default().fg(th.dim)));
     spans.push(Span::styled(
@@ -5154,11 +5161,7 @@ fn resolve_context_warn_pct(cfg: Option<&crate::config::Config>) -> f64 {
 /// ESTIMATE, marked with `~` (`~107 tok`); once `Usage` lands,
 /// `turn_estimate` is 0 and the same element shows the FINAL number
 /// with no `~`. The estimate is never presented as a final number.
-fn composer_provider_row(
-    state: &TuiState,
-    th: &theme::Theme,
-    budget: usize,
-) -> Vec<Span<'static>> {
+fn composer_provider_row(state: &TuiState, th: &theme::Theme, budget: usize) -> Vec<Span<'static>> {
     // ONE threshold, shared with the sidebar meter
     // (`build_agent_view_lines`): `[tui] context_warn_pct`, 80 by
     // default. The old 78% (row) vs 80% (meter) split is gone.
@@ -5286,7 +5289,10 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     let form_row: u16 = if state.form_fill.is_some() && area.height >= 6 {
         let shown: String = state.status_line.chars().take(w).collect();
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(shown, Style::default().fg(th.emphasis)))),
+            Paragraph::new(Line::from(Span::styled(
+                shown,
+                Style::default().fg(th.emphasis),
+            ))),
             Rect::new(area.x, area.y, area.width, 1),
         );
         1
@@ -6266,8 +6272,7 @@ fn render_block(
         live_tokens,
         agent_label,
     } = ctx;
-    let (th, term_width, live_tokens, agent_label) =
-        (*th, *term_width, *live_tokens, *agent_label);
+    let (th, term_width, live_tokens, agent_label) = (*th, *term_width, *live_tokens, *agent_label);
     let img = &mut **img;
     match &block.kind {
         BlockKind::UserMessage(text) => {
@@ -6356,8 +6361,7 @@ fn render_block(
                 Some(true) => crate::transcript::ToolStatus::Succeeded,
                 Some(false) => crate::transcript::ToolStatus::Failed,
             };
-            let effective_duration = (*duration)
-                .or_else(|| started.map(|s| s.elapsed()));
+            let effective_duration = (*duration).or_else(|| started.map(|s| s.elapsed()));
             let count = match (tokens, ok) {
                 (Some(t), _) => Some(statusbar::fmt_count(*t as u64)),
                 (None, None) => Some(statusbar::fmt_count(live_tokens as u64)),
@@ -9331,7 +9335,9 @@ fn tui_loop(
                     if let Some(form) = state.secrets_form.as_mut() {
                         if form.step == crate::secrets_form::FormStep::Outcome
                             && matches!(key.code, KeyCode::Char('r'))
-                            && !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                            && !key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
                         {
                             form.retry();
                         } else if let Some(fk) = secrets_form_key(key) {
@@ -9971,7 +9977,8 @@ fn tui_loop(
                                         )
                                         .is_ok()
                                         {
-                                            let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
+                                            let tool =
+                                                parse_scope(&scope).map(|(_, t, _)| t.to_string());
                                             state.resolve_approval_block_for(
                                                 tool.as_deref(),
                                                 Some(false),
@@ -9983,7 +9990,8 @@ fn tui_loop(
                                             // Esc deny: without this a d-deny
                                             // could start a new turn while the
                                             // parked worker was still cleaning up.
-                                            session.cancel_current_run(&run, "user denied approval");
+                                            session
+                                                .cancel_current_run(&run, "user denied approval");
                                             // Deny ends the parked turn without a
                                             // TurnComplete event, so drain here.
                                             drain_queued_message(state, &session, tx);
@@ -10254,8 +10262,10 @@ fn tui_loop(
                                 {
                                     let tool = parse_scope(&scope).map(|(_, t, _)| t.to_string());
                                     state.resolve_approval_block_for(tool.as_deref(), Some(false));
-                                    session
-                                        .cancel_current_run(&run, "user pressed esc during approval");
+                                    session.cancel_current_run(
+                                        &run,
+                                        "user pressed esc during approval",
+                                    );
                                     state.status_line = "denied; turn cancelled".into();
                                     state.ready = true;
                                     state.active_run = None;
@@ -11352,11 +11362,7 @@ fn handle_slash_inner(
         }
         return;
     }
-    if cmd == "/exit"
-        || cmd == "/quit"
-        || cmd.starts_with("/exit ")
-        || cmd.starts_with("/quit ")
-    {
+    if cmd == "/exit" || cmd == "/quit" || cmd.starts_with("/exit ") || cmd.starts_with("/quit ") {
         state.shutting_down = true;
         return;
     }
@@ -12688,8 +12694,7 @@ fn handle_slash_inner(
     if cmd == "/secrets list" {
         let data_dir = crate::terminal::data_dir();
         let store = pantheon_secrets::SecureFormStore::new(&session.secrets, &data_dir);
-        let config_text = std::fs::read_to_string(data_dir.join("config.toml"))
-            .unwrap_or_default();
+        let config_text = std::fs::read_to_string(data_dir.join("config.toml")).unwrap_or_default();
         let refs = pantheon_secrets::SecureFormStore::references(&config_text);
         let entries = store.list();
         if entries.is_empty() {
@@ -13105,7 +13110,10 @@ mod inline_todo_card_tests {
     #[test]
     fn base_sidebar_is_opt_in_not_default() {
         let s = test_state();
-        assert!(!s.show_sidebar, "sidebar must default off in the base design");
+        assert!(
+            !s.show_sidebar,
+            "sidebar must default off in the base design"
+        );
         assert!(!s.sidebar_visible());
     }
 
@@ -13371,7 +13379,10 @@ mod picker_tests {
         s.models_input = "zzz-no-match".into();
         assert!(s.take_model_selection().is_none());
         assert!(s.models.is_some(), "models picker closed on empty Enter");
-        assert!(s.providers.is_some(), "providers picker closed on empty Enter");
+        assert!(
+            s.providers.is_some(),
+            "providers picker closed on empty Enter"
+        );
 
         let mut s = test_state();
         s.history = Some(vec![run("a", "Alpha work", None, 1000)]);
@@ -13508,7 +13519,10 @@ mod picker_render_tests {
         s.plugin_count = 75;
         let text = render_to_string(render_splash_bottom, &s).join("\n");
         assert!(text.contains("Context limit: 256.0k"), "got: {text}");
-        assert!(!text.contains("MCP"), "MCP must not be in the main view: {text}");
+        assert!(
+            !text.contains("MCP"),
+            "MCP must not be in the main view: {text}"
+        );
         assert!(
             !text.contains("plugin"),
             "plugins must not be in the main view: {text}"
@@ -13641,9 +13655,7 @@ mod picker_render_tests {
         // the snapshot must, or the >=160 sidebar gate never opens.
         s.term_width = width;
         s.blocks.push(TranscriptBlock {
-            kind: BlockKind::UserMessage(
-                "find the largest files in my Downloads".to_string(),
-            ),
+            kind: BlockKind::UserMessage("find the largest files in my Downloads".to_string()),
         });
         s.blocks.push(TranscriptBlock {
             kind: BlockKind::AssistantMessage("scanning Downloads".to_string()),
@@ -13666,10 +13678,7 @@ mod picker_render_tests {
         s.input = "Yes, go ahead".to_string();
         let lines = draw_frame(&mut s, width, height);
         if let Ok(dir) = std::env::var("PANTHEON_SNAPSHOT_DIR") {
-            let _ = std::fs::write(
-                format!("{dir}/frame-{width}.txt"),
-                lines.join("\n"),
-            );
+            let _ = std::fs::write(format!("{dir}/frame-{width}.txt"), lines.join("\n"));
         }
         lines
     }
@@ -13702,14 +13711,29 @@ mod picker_render_tests {
                 text.contains("coder"),
                 "{name} missing profile-name label:\n{text}"
             );
-            assert!(text.contains("Provider:"), "{name} missing composer provider row:\n{text}");
-            assert!(text.contains("Yes, go ahead"), "{name} missing composer:\n{text}");
+            assert!(
+                text.contains("Provider:"),
+                "{name} missing composer provider row:\n{text}"
+            );
+            assert!(
+                text.contains("Yes, go ahead"),
+                "{name} missing composer:\n{text}"
+            );
         }
         // Inspector sidebar only at >=160 cols, even when toggled on.
-        assert!(!narrow.contains("Turns:"), "sidebar leaked at 80:\n{narrow}");
-        assert!(!normal.contains("Turns:"), "sidebar leaked at 120:\n{normal}");
+        assert!(
+            !narrow.contains("Turns:"),
+            "sidebar leaked at 80:\n{narrow}"
+        );
+        assert!(
+            !normal.contains("Turns:"),
+            "sidebar leaked at 120:\n{normal}"
+        );
         assert!(wide.contains("Turns:"), "sidebar missing at 180:\n{wide}");
-        assert!(wide.contains("Swarm"), "wide frame missing swarm block:\n{wide}");
+        assert!(
+            wide.contains("Swarm"),
+            "wide frame missing swarm block:\n{wide}"
+        );
     }
 
     #[test]
@@ -13770,8 +13794,14 @@ mod picker_render_tests {
         });
         let lines = draw_frame(&mut s, 120, 30);
         let text = lines.join("\n");
-        assert!(text.contains("Running:"), "tool card header missing:\n{text}");
-        assert!(!text.contains("Thinking..."), "sweep status leaked:\n{text}");
+        assert!(
+            text.contains("Running:"),
+            "tool card header missing:\n{text}"
+        );
+        assert!(
+            !text.contains("Thinking..."),
+            "sweep status leaked:\n{text}"
+        );
         assert!(!text.contains("✓ ready"), "footer status leaked:\n{text}");
         let last = lines
             .iter()
@@ -13832,7 +13862,10 @@ mod picker_render_tests {
             .iter()
             .position(|l| l.contains("rewind turn 2"))
             .expect("rewind line missing");
-        let top = lines.iter().position(|l| l.contains('╭')).expect("composer top");
+        let top = lines
+            .iter()
+            .position(|l| l.contains('╭'))
+            .expect("composer top");
         assert_eq!(
             top,
             rewind + 1,
@@ -13863,11 +13896,7 @@ mod picker_render_tests {
             };
             let mut lines: Vec<Line> = Vec::new();
             render_block(&mut lines, &block, false, false, &mut ctx);
-            let first: String = lines[0]
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(first, expected);
         }
     }
@@ -13877,7 +13906,10 @@ mod picker_render_tests {
         let s = test_state();
         let lines = render_to_string(render_input_block, &s);
         let text = lines.join("\n");
-        assert!(text.contains("Provider:"), "composer missing provider: {text}");
+        assert!(
+            text.contains("Provider:"),
+            "composer missing provider: {text}"
+        );
         assert!(text.contains("? Commands"), "composer missing hint: {text}");
         assert!(
             !text.contains(" - "),
@@ -13885,12 +13917,18 @@ mod picker_render_tests {
         );
         // The provider row sits INSIDE the box: between the top and
         // bottom borders, not on a separate footer line below it.
-        let top = lines.iter().position(|l| l.contains('╭')).expect("top border");
+        let top = lines
+            .iter()
+            .position(|l| l.contains('╭'))
+            .expect("top border");
         let provider = lines
             .iter()
             .position(|l| l.contains("Provider:"))
             .expect("provider row");
-        let bottom = lines.iter().position(|l| l.contains('╰')).expect("bottom border");
+        let bottom = lines
+            .iter()
+            .position(|l| l.contains('╰'))
+            .expect("bottom border");
         assert!(
             top < provider && provider < bottom,
             "provider row must be inside the composer box: {text}"
@@ -14004,7 +14042,10 @@ mod picker_render_tests {
         assert!(text.contains("coder · running"), "got: {text}");
         swarm_complete(&mut blocks, Some("call-1"), "unknown-agent");
         let text = swarm_text(&blocks[0]);
-        assert!(!text.contains("unknown-agent"), "completion must not invent rows");
+        assert!(
+            !text.contains("unknown-agent"),
+            "completion must not invent rows"
+        );
     }
 
     #[test]
@@ -14143,7 +14184,9 @@ mod picker_render_tests {
         });
         assert_eq!(s.model, "exoseed/auto");
         assert!(
-            !s.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Status(t) if t.contains("routing:"))),
+            !s.blocks
+                .iter()
+                .any(|b| matches!(&b.kind, BlockKind::Status(t) if t.contains("routing:"))),
             "same-model Attempt must not print a routing line"
         );
         // Fallback to the same provider/model (e.g. a new chain
@@ -14201,7 +14244,10 @@ mod picker_render_tests {
         s.tokens_max = 1000;
         s.tokens_used = 500;
         let text = render_to_string(render_input_block, &s).join("\n");
-        assert!(!text.contains("ctx 50%"), "ctx% must hide below 80%: {text}");
+        assert!(
+            !text.contains("ctx 50%"),
+            "ctx% must hide below 80%: {text}"
+        );
         s.tokens_used = 790;
         let text = render_to_string(render_input_block, &s).join("\n");
         assert!(
@@ -14260,11 +14306,20 @@ mod picker_render_tests {
         let s = test_state();
         let lines = render_to_string(render_input_block, &s);
         let text = lines.join("\n");
-        assert!(text.contains('╭') && text.contains('╰'), "composer not bordered: {text}");
+        assert!(
+            text.contains('╭') && text.contains('╰'),
+            "composer not bordered: {text}"
+        );
         // Exactly 4 rows: top border, prompt, provider row, bottom
         // border. A separate footer row would be a fifth.
-        let top = lines.iter().position(|l| l.contains('╭')).expect("top border");
-        let bottom = lines.iter().position(|l| l.contains('╰')).expect("bottom border");
+        let top = lines
+            .iter()
+            .position(|l| l.contains('╭'))
+            .expect("top border");
+        let bottom = lines
+            .iter()
+            .position(|l| l.contains('╰'))
+            .expect("bottom border");
         assert_eq!(bottom - top, 3, "composer must be exactly 4 rows: {text}");
         // Content rows run the full box width: their right border
         // lands under the top border's corner, not one column short.
@@ -14430,9 +14485,7 @@ mod streaming_response_tests {
     #[test]
     fn thinking_block_settles_with_measured_duration() {
         let mut state = TuiState::new("run-thinking".into(), "test-model".into(), 0);
-        state.handle_model_event(ModelEvent::ReasoningDelta {
-            text: "hmm".into(),
-        });
+        state.handle_model_event(ModelEvent::ReasoningDelta { text: "hmm".into() });
         state.handle_model_event(ModelEvent::TextDelta {
             text: "answer".into(),
         });
@@ -14452,9 +14505,7 @@ mod streaming_response_tests {
         // event used to consume `thinking_started_at` while the last
         // block was no longer Thinking, losing the duration.
         let mut state = TuiState::new("run-thinking".into(), "test-model".into(), 0);
-        state.handle_model_event(ModelEvent::ReasoningDelta {
-            text: "hmm".into(),
-        });
+        state.handle_model_event(ModelEvent::ReasoningDelta { text: "hmm".into() });
         state.blocks.push(TranscriptBlock {
             kind: BlockKind::Status("routing: x unavailable".into()),
         });
@@ -14479,7 +14530,10 @@ mod streaming_response_tests {
         state.tokens_used = 500;
         state.turn_estimate = 42;
         assert!(state.begin_turn("hi".into()));
-        assert_eq!(state.turn_estimate, 0, "new turn must not start at the old total");
+        assert_eq!(
+            state.turn_estimate, 0,
+            "new turn must not start at the old total"
+        );
         assert_eq!(state.tokens_used, 500, "session spend stays cumulative");
     }
 
@@ -14523,7 +14577,11 @@ mod streaming_response_tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(oks, vec![None, Some(true)], "parallel call-a must stay running");
+        assert_eq!(
+            oks,
+            vec![None, Some(true)],
+            "parallel call-a must stay running"
+        );
     }
 
     #[test]
@@ -14621,7 +14679,10 @@ mod streaming_response_tests {
         state.show_sidebar = false;
         state.toggle_sidebar();
         assert!(state.show_sidebar);
-        assert!(!state.sidebar_overlay, "wide toggle must not arm the overlay");
+        assert!(
+            !state.sidebar_overlay,
+            "wide toggle must not arm the overlay"
+        );
         assert!(!state.sidebar_overlay_open());
         state.term_width = 100;
         state.toggle_sidebar(); // off
@@ -14663,9 +14724,15 @@ mod streaming_response_tests {
         state.is_inputting = true;
         let spans = composer_prompt_spans(&state, &state.theme, 40);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("second line"), "cursor line must show: {text}");
+        assert!(
+            text.contains("second line"),
+            "cursor line must show: {text}"
+        );
         assert!(text.contains("L2/3"), "multi-line marker missing: {text}");
-        assert!(!text.contains("first line"), "first line must not show: {text}");
+        assert!(
+            !text.contains("first line"),
+            "first line must not show: {text}"
+        );
     }
 
     #[test]
@@ -14687,18 +14754,25 @@ mod streaming_response_tests {
         state.is_inputting = true;
         let spans = composer_prompt_spans(&state, &state.theme, 20);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("0123456789"), "cursor end must be visible: {text}");
-        assert!(!text.contains("abcdefghij"), "window must scroll past the start: {text}");
+        assert!(
+            text.contains("0123456789"),
+            "cursor end must be visible: {text}"
+        );
+        assert!(
+            !text.contains("abcdefghij"),
+            "window must scroll past the start: {text}"
+        );
     }
 
     #[test]
     fn wrap_line_splits_long_status_lines() {
-        let line = Line::from(Span::styled(
-            "x".repeat(100),
-            Style::default(),
-        ));
+        let line = Line::from(Span::styled("x".repeat(100), Style::default()));
         let wrapped = wrap_line(line, 40);
-        assert_eq!(wrapped.len(), 3, "100 cells at width 40 must wrap to 3 lines");
+        assert_eq!(
+            wrapped.len(),
+            3,
+            "100 cells at width 40 must wrap to 3 lines"
+        );
         let joined: String = wrapped
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref().to_string()))
@@ -14947,8 +15021,8 @@ mod slash_dispatch_tests {
     /// resolves locally. The scratch dir is per-test; the live
     /// `PANTHEON_DATA_DIR` is never touched by these paths.
     fn fixture(name: &str) -> (TuiState, Arc<Session>, std::sync::mpsc::Sender<TuiEvent>) {
-        let dir = std::env::temp_dir()
-            .join(format!("pantheon-sweep-tui-{}-{name}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-sweep-tui-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let policy = pantheon_api::capability::Policy::coder_with_memory();
@@ -14998,27 +15072,45 @@ mod slash_dispatch_tests {
     fn bare_approve_and_deny_print_usage_not_unknown_command() {
         let (mut s, sess, tx) = fixture("bare-approve");
         let lines = run(&mut s, &sess, &tx, "/approve");
-        assert!(lines.iter().any(|l| l.contains("usage: /approve")), "{lines:?}");
-        assert!(!lines.iter().any(|l| l.contains("unknown command")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("usage: /approve")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("unknown command")),
+            "{lines:?}"
+        );
         let lines = run(&mut s, &sess, &tx, "/deny");
-        assert!(lines.iter().any(|l| l.contains("usage: /deny")), "{lines:?}");
-        assert!(!lines.iter().any(|l| l.contains("unknown command")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("usage: /deny")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("unknown command")),
+            "{lines:?}"
+        );
     }
 
     #[test]
     fn approvals_and_indexed_decisions_report_empty_list_honestly() {
         let (mut s, sess, tx) = fixture("approvals-empty");
-        sess.supervisor.start_run("test-session").expect("start run");
+        sess.supervisor
+            .start_run("test-session")
+            .expect("start run");
         let lines = run(&mut s, &sess, &tx, "/approvals");
         assert_eq!(lines, vec!["no pending approvals".to_string()]);
         let lines = run(&mut s, &sess, &tx, "/approve 0");
         assert!(
-            lines.iter().any(|l| l.contains("no approval at index 0 (0 pending)")),
+            lines
+                .iter()
+                .any(|l| l.contains("no approval at index 0 (0 pending)")),
             "{lines:?}"
         );
         let lines = run(&mut s, &sess, &tx, "/deny 0");
         assert!(
-            lines.iter().any(|l| l.contains("no approval at index 0 (0 pending)")),
+            lines
+                .iter()
+                .any(|l| l.contains("no approval at index 0 (0 pending)")),
             "{lines:?}"
         );
     }
@@ -15054,7 +15146,9 @@ mod slash_dispatch_tests {
         s.ready = false;
         let lines = run(&mut s, &sess, &tx, "/undo");
         assert!(
-            lines.iter().any(|l| l.contains("wait for the running turn")),
+            lines
+                .iter()
+                .any(|l| l.contains("wait for the running turn")),
             "{lines:?}"
         );
         assert!(
@@ -15067,19 +15161,33 @@ mod slash_dispatch_tests {
     fn tokens_and_set_round_trip_through_dispatch() {
         let (mut s, sess, tx) = fixture("tokens-set");
         let lines = run(&mut s, &sess, &tx, "/tokens 123");
-        assert!(lines.iter().any(|l| l.contains("max tokens: 123")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("max tokens: 123")),
+            "{lines:?}"
+        );
         let lines = run(&mut s, &sess, &tx, "/tokens");
-        assert!(lines.iter().any(|l| l.contains("max tokens: 123")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("max tokens: 123")),
+            "{lines:?}"
+        );
         let lines = run(&mut s, &sess, &tx, "/tokens off");
         assert!(lines.iter().any(|l| l.contains("uncapped")), "{lines:?}");
         let lines = run(&mut s, &sess, &tx, "/set max_turns 3");
         assert!(
-            lines.iter().any(|l| l.contains("max_turns = 3 (this session)")),
+            lines
+                .iter()
+                .any(|l| l.contains("max_turns = 3 (this session)")),
             "{lines:?}"
         );
         let lines = run(&mut s, &sess, &tx, "/set");
-        assert!(lines.iter().any(|l| l.contains("session budget:")), "{lines:?}");
-        assert!(lines.iter().any(|l| l.contains("max_turns = 3")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("session budget:")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("max_turns = 3")),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -15088,15 +15196,21 @@ mod slash_dispatch_tests {
         s.add_user_message("hello".into());
         let lines = run(&mut s, &sess, &tx, "/reset");
         assert!(
-            lines.iter().any(|l| l.contains("transcript and queue cleared")),
+            lines
+                .iter()
+                .any(|l| l.contains("transcript and queue cleared")),
             "{lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.contains("session, title, and ledger history kept")),
+            lines
+                .iter()
+                .any(|l| l.contains("session, title, and ledger history kept")),
             "{lines:?}"
         );
         assert!(
-            !s.blocks.iter().any(|b| matches!(b.kind, BlockKind::UserMessage(_))),
+            !s.blocks
+                .iter()
+                .any(|b| matches!(b.kind, BlockKind::UserMessage(_))),
             "user message survived /reset"
         );
     }
@@ -15104,7 +15218,9 @@ mod slash_dispatch_tests {
     #[test]
     fn status_checkpoints_and_resume_paths_answer() {
         let (mut s, sess, tx) = fixture("status-cp");
-        sess.supervisor.start_run("test-session").expect("start run");
+        sess.supervisor
+            .start_run("test-session")
+            .expect("start run");
         let lines = run(&mut s, &sess, &tx, "/status");
         assert!(
             lines.iter().any(|l| l.contains("run test-session")),
@@ -15122,7 +15238,9 @@ mod slash_dispatch_tests {
         );
         let lines = run(&mut s, &sess, &tx, "/restore nope");
         assert!(
-            lines.iter().any(|l| l.contains("no checkpoint named 'nope'")),
+            lines
+                .iter()
+                .any(|l| l.contains("no checkpoint named 'nope'")),
             "{lines:?}"
         );
         let lines = run(&mut s, &sess, &tx, "/resume");

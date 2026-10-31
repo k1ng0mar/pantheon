@@ -531,9 +531,7 @@ fn swarm_err(e: SwarmError) -> Response {
 fn render_brief(template: &str, task_override: &str) -> Result<String, &'static str> {
     if template.contains("{{task}}") {
         if task_override.is_empty() {
-            return Err(
-                "field \"task\" is required: this team's brief_template contains {{task}}",
-            );
+            return Err("field \"task\" is required: this team's brief_template contains {{task}}");
         }
         Ok(template.replace("{{task}}", task_override))
     } else if task_override.is_empty() {
@@ -979,10 +977,7 @@ mod render_brief_tests {
 
     #[test]
     fn plain_template_and_override_keep_old_behavior() {
-        assert_eq!(
-            render_brief("Do the thing.", "").unwrap(),
-            "Do the thing."
-        );
+        assert_eq!(render_brief("Do the thing.", "").unwrap(), "Do the thing.");
         assert_eq!(render_brief("Do the thing.", "other").unwrap(), "other");
         assert!(render_brief("", "").is_err());
     }

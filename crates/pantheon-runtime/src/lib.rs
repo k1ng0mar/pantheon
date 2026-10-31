@@ -1877,7 +1877,10 @@ mod fork_tests {
         let (fork, _) = sup.fork_run(&src, None).unwrap();
         assert_eq!(
             sup.ledger().queued_messages(&fork).unwrap(),
-            vec!["first follow-up".to_string(), "second follow-up".to_string()],
+            vec![
+                "first follow-up".to_string(),
+                "second follow-up".to_string()
+            ],
             "queued follow-ups are part of the user's intent and move to the fork"
         );
         // The source keeps its own queue: forking copies, it does not drain.

@@ -79,9 +79,7 @@ impl PluginManifest {
         m.enabled_set = serde_yaml::from_str::<serde_yaml::Value>(&text)
             .ok()
             .and_then(|v| v.as_mapping().cloned())
-            .is_some_and(|map| {
-                map.contains_key(serde_yaml::Value::String("enabled".to_string()))
-            });
+            .is_some_and(|map| map.contains_key(serde_yaml::Value::String("enabled".to_string())));
         Ok(m)
     }
     /// Union of both hook spellings, parsed. Unknown names are reported, not fatal.

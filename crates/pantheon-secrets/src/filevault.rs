@@ -327,14 +327,15 @@ mod tests {
     fn failed_set_and_delete_leave_cache_unchanged() {
         let dir = scratch("atomic");
         let vault = open_vault(&dir);
-        vault
-            .set("KEEP", SecretValue::new("keep-value"))
-            .unwrap();
+        vault.set("KEEP", SecretValue::new("keep-value")).unwrap();
         // Block the atomic write: the tmp file path is a directory, so
         // the persist fails while the cache must stay untouched.
         std::fs::create_dir_all(dir.join("secrets.tmp")).unwrap();
         assert!(vault.set("NEW", SecretValue::new("new-value")).is_err());
-        assert!(vault.get("NEW").unwrap().is_none(), "failed set must not cache");
+        assert!(
+            vault.get("NEW").unwrap().is_none(),
+            "failed set must not cache"
+        );
         assert!(
             vault.get("KEEP").unwrap().is_some(),
             "failed set must not disturb other entries"
@@ -346,9 +347,7 @@ mod tests {
         );
         // Unblock: the vault is usable again, nothing stuck half-applied.
         std::fs::remove_dir_all(dir.join("secrets.tmp")).unwrap();
-        vault
-            .set("NEW", SecretValue::new("new-value"))
-            .unwrap();
+        vault.set("NEW", SecretValue::new("new-value")).unwrap();
         assert!(vault.get("NEW").unwrap().is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }

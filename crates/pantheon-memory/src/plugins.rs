@@ -345,13 +345,12 @@ impl StdioBackend {
         if let Ok(path) = std::env::var("PATH") {
             cmd.env("PATH", path);
         }
-        let mut child = cmd.spawn()
-            .map_err(|e| {
-                perr(
-                    "MEM_PLUGIN_SPAWN",
-                    format!("spawning {}: {e}", self.command),
-                )
-            })?;
+        let mut child = cmd.spawn().map_err(|e| {
+            perr(
+                "MEM_PLUGIN_SPAWN",
+                format!("spawning {}: {e}", self.command),
+            )
+        })?;
         {
             let mut stdin = match child.stdin.take() {
                 Some(s) => s,

@@ -37,8 +37,7 @@ fn spawn_plugin(
         location: PluginLocation::User,
         root: dir.to_path_buf(),
     };
-    pantheon_exec::plugin_approval::record_approval(&plugin)
-        .expect("record test plugin approval");
+    pantheon_exec::plugin_approval::record_approval(&plugin).expect("record test plugin approval");
     let mut last_err = None;
     for _ in 0..50 {
         match PluginSupervisor::spawn_verified(&plugin, data_dir, timeout, allowlist) {

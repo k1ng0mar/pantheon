@@ -1387,11 +1387,20 @@ for line in sys.stdin:
         .expect("seed config");
         write_enabled(dir.as_path(), "myserver", true).expect("enable");
         let text = std::fs::read_to_string(config_path(&dir)).expect("config written");
-        assert!(text.contains("# Operator note"), "comment must survive: {text}");
-        assert!(text.contains("[nightly]"), "unrelated section must survive: {text}");
+        assert!(
+            text.contains("# Operator note"),
+            "comment must survive: {text}"
+        );
+        assert!(
+            text.contains("[nightly]"),
+            "unrelated section must survive: {text}"
+        );
         let table = read_server_table(dir.as_path(), "myserver");
         assert_eq!(table.get("enabled"), Some(&toml::Value::Boolean(true)));
-        assert_eq!(table.get("command"), Some(&toml::Value::String("/bin/true".to_string())));
+        assert_eq!(
+            table.get("command"),
+            Some(&toml::Value::String("/bin/true".to_string()))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1434,9 +1443,18 @@ for line in sys.stdin:
         };
         assert_eq!(status, 200, "delete must succeed");
         let text = std::fs::read_to_string(config_path(&dir)).expect("config written");
-        assert!(text.contains("# Operator note"), "comment must survive: {text}");
-        assert!(text.contains("[nightly]"), "unrelated section must survive: {text}");
-        assert!(!text.contains("drop"), "deleted server must be gone: {text}");
+        assert!(
+            text.contains("# Operator note"),
+            "comment must survive: {text}"
+        );
+        assert!(
+            text.contains("[nightly]"),
+            "unrelated section must survive: {text}"
+        );
+        assert!(
+            !text.contains("drop"),
+            "deleted server must be gone: {text}"
+        );
         let table = read_server_table(dir.as_path(), "keep");
         assert_eq!(table.get("enabled"), Some(&toml::Value::Boolean(true)));
         let _ = std::fs::remove_dir_all(&dir);

@@ -68,18 +68,81 @@ const SHORT_LINE: usize = 48;
 /// They are rendered literally, never as markup, and their content
 /// inside an HTML block is not parsed as markdown either.
 const DISALLOWED_TAGS: [&str; 9] = [
-    "title", "textarea", "style", "xmp", "iframe", "noembed", "noframes", "script", "plaintext",
+    "title",
+    "textarea",
+    "style",
+    "xmp",
+    "iframe",
+    "noembed",
+    "noframes",
+    "script",
+    "plaintext",
 ];
 
 /// Block tags for HTML blocks (types 1, 6, 7), GFM 4.6.
 const BLOCK_TAGS: [&str; 62] = [
-    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
-    "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
-    "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
-    "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
-    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search",
-    "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr",
-    "track", "ul",
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
 ];
 
 /// Render markdown `text` to styled lines (no trailing blank line).
@@ -409,10 +472,7 @@ impl<'a> Renderer<'a> {
                     if l.width() == 0 {
                         out.push(Line::default());
                     } else {
-                        let mut spans = vec![Span::styled(
-                            "> ",
-                            Style::default().fg(self.th.dim),
-                        )];
+                        let mut spans = vec![Span::styled("> ", Style::default().fg(self.th.dim))];
                         spans.extend(l.spans);
                         out.push(Line::from(spans));
                     }
@@ -697,10 +757,8 @@ impl<'a> Renderer<'a> {
                     if l.width() == 0 {
                         out.push(Line::default());
                     } else {
-                        let mut spans = vec![Span::styled(
-                            " ".repeat(content_indent),
-                            Style::default(),
-                        )];
+                        let mut spans =
+                            vec![Span::styled(" ".repeat(content_indent), Style::default())];
                         spans.extend(l.spans);
                         out.push(Line::from(spans));
                     }
@@ -713,7 +771,6 @@ impl<'a> Renderer<'a> {
         (out, i)
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Block helpers
@@ -762,10 +819,7 @@ fn wrap_line(line: Line<'static>, width: usize, cont_indent: usize) -> Vec<Line<
         for &(c, style) in cur {
             if cur_style != Some(style) {
                 if !buf.is_empty() {
-                    spans.push(Span::styled(
-                        std::mem::take(&mut buf),
-                        cur_style.unwrap(),
-                    ));
+                    spans.push(Span::styled(std::mem::take(&mut buf), cur_style.unwrap()));
                 }
                 cur_style = Some(style);
             }
@@ -855,7 +909,6 @@ fn remainder_len(cur: &[(char, Style)], cont_indent: usize) -> usize {
         .map(|&(c, _)| char_width(c))
         .sum()
 }
-
 
 fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
@@ -1825,10 +1878,7 @@ impl<'a> Renderer<'a> {
                         sp.style = sp.style.add_modifier(Modifier::BOLD);
                     }
                 }
-                let cell_w: usize = cell_spans
-                    .iter()
-                    .map(|s| s.content.chars().count())
-                    .sum();
+                let cell_w: usize = cell_spans.iter().map(|s| s.content.chars().count()).sum();
                 let pad = widths[c].saturating_sub(cell_w);
                 match col_align[c] {
                     Align::Left => {
@@ -2315,8 +2365,25 @@ fn is_email_local_char(c: char) -> bool {
     c.is_ascii_alphanumeric()
         || matches!(
             c,
-            '.' | '!' | '#' | '$' | '%' | '&' | '\'' | '*' | '+' | '-' | '/' | '=' | '?' | '^'
-                | '_' | '`' | '{' | '|' | '}' | '~'
+            '.' | '!'
+                | '#'
+                | '$'
+                | '%'
+                | '&'
+                | '\''
+                | '*'
+                | '+'
+                | '-'
+                | '/'
+                | '='
+                | '?'
+                | '^'
+                | '_'
+                | '`'
+                | '{'
+                | '|'
+                | '}'
+                | '~'
         )
 }
 
@@ -2397,7 +2464,7 @@ fn try_angle_autolink(text: &str, start: usize) -> Option<(String, usize)> {
 
 /// Scan an inline HTML tag starting at `start` ('<'). Returns the end
 /// index just past '>' if it looks like a tag/comment/PI/declaration/
- /// CDATA, else None. The tag is rendered literally.
+/// CDATA, else None. The tag is rendered literally.
 fn scan_html_tag(text: &str, start: usize) -> Option<usize> {
     let rest = &text[start..];
     if rest.starts_with("<!--") {
@@ -2427,7 +2494,13 @@ fn scan_html_tag(text: &str, start: usize) -> Option<usize> {
     // After the tag name, only whitespace, '/' or '>' may follow;
     // anything else (e.g. '@' in <foo@bar>) is not a tag at all, so
     // the text can still be parsed as an autolink.
-    if i < bytes.len() && !(bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'/' || bytes[i] == b'>') {
+    if i < bytes.len()
+        && !(bytes[i] == b' '
+            || bytes[i] == b'\t'
+            || bytes[i] == b'\n'
+            || bytes[i] == b'/'
+            || bytes[i] == b'>')
+    {
         return None;
     }
     // Attributes / self-closing / close, respecting quoted strings.
@@ -2466,9 +2539,7 @@ fn trim_bare_url(raw: &str) -> usize {
                 let body = &prefix[amp + 1..];
                 if !body.is_empty()
                     && body.len() <= 32
-                    && body
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '#')
+                    && body.chars().all(|c| c.is_ascii_alphanumeric() || c == '#')
                 {
                     break;
                 }
@@ -2597,10 +2668,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
             if let Some((end, inner, is_image)) = parse_link_at(text, start, defs, th) {
                 flush(&mut buf, &mut nodes);
                 if is_image {
-                    let alt: String = inner
-                        .iter()
-                        .flat_map(|n| node_plain_text(n))
-                        .collect();
+                    let alt: String = inner.iter().flat_map(|n| node_plain_text(n)).collect();
                     nodes.push(INode::Image(alt));
                 } else {
                     nodes.push(INode::Link(inner));
@@ -2686,7 +2754,11 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
             }
             let run = j - i;
             let prev = if i == 0 { None } else { Some(chars[i - 1]) };
-            let next = if j < chars.len() { Some(chars[j]) } else { None };
+            let next = if j < chars.len() {
+                Some(chars[j])
+            } else {
+                None
+            };
             let (left, right) = flanking(prev, next);
             let (can_open, can_close) = match c {
                 '*' | '~' => (left, right),
@@ -2729,10 +2801,14 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
             // www.
             if rest_str.starts_with("www.") {
                 let prev_ok = i == 0
-                    || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.');
+                    || !(chars[i - 1].is_alphanumeric()
+                        || chars[i - 1] == '_'
+                        || chars[i - 1] == '.');
                 if prev_ok {
                     let end = rest_str
-                        .find(|ch: char| ch.is_whitespace() || ch == '<' || ch == '"' || ch == '\'' || ch == '`')
+                        .find(|ch: char| {
+                            ch.is_whitespace() || ch == '<' || ch == '"' || ch == '\'' || ch == '`'
+                        })
                         .unwrap_or(rest_str.len());
                     let raw = &rest_str[..end];
                     let trimmed_len = trim_bare_url(raw);
@@ -2740,7 +2816,9 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
                     let domain_part = trimmed.strip_prefix("www.").unwrap_or("");
                     // Domain must contain at least one more dot and be valid.
                     if let Some(dot) = domain_part.find('.') {
-                        let domain = &domain_part[..domain_part.find(|ch: char| ch == '/' || ch == '?' || ch == '#').unwrap_or(domain_part.len())];
+                        let domain = &domain_part[..domain_part
+                            .find(|ch: char| ch == '/' || ch == '?' || ch == '#')
+                            .unwrap_or(domain_part.len())];
                         let _ = dot;
                         if valid_domain(domain) {
                             flush(&mut buf, &mut nodes);
@@ -2760,11 +2838,16 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
                 }
             }
             // Scheme URLs.
-            if rest_str.starts_with("http://") || rest_str.starts_with("https://") || rest_str.starts_with("ftp://") {
+            if rest_str.starts_with("http://")
+                || rest_str.starts_with("https://")
+                || rest_str.starts_with("ftp://")
+            {
                 let prev_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
                 if prev_ok {
                     let end = rest_str
-                        .find(|ch: char| ch.is_whitespace() || ch == '<' || ch == '"' || ch == '\'' || ch == '`')
+                        .find(|ch: char| {
+                            ch.is_whitespace() || ch == '<' || ch == '"' || ch == '\'' || ch == '`'
+                        })
                         .unwrap_or(rest_str.len());
                     let raw = &rest_str[..end];
                     let trimmed_len = trim_bare_url(raw);
@@ -2787,13 +2870,34 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
             // Bare email: scan a word containing '@'.
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '%') {
                 let word_end = rest_str
-                    .find(|ch: char| ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'))
+                    .find(|ch: char| {
+                        ch.is_whitespace()
+                            || matches!(
+                                ch,
+                                '<' | '>'
+                                    | '"'
+                                    | '\''
+                                    | '`'
+                                    | '('
+                                    | ')'
+                                    | '['
+                                    | ']'
+                                    | '{'
+                                    | '}'
+                                    | ','
+                                    | ';'
+                                    | ':'
+                            )
+                    })
                     .unwrap_or(rest_str.len());
                 // Email words may contain ':'? No — keep the simple
                 // scan: if the word contains '@' and validates, and
                 // the previous char is not a word char, link it.
                 let word = &rest_str[..word_end];
-                let prev_ok = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.');
+                let prev_ok = i == 0
+                    || !(chars[i - 1].is_alphanumeric()
+                        || chars[i - 1] == '_'
+                        || chars[i - 1] == '.');
                 if prev_ok && word.contains('@') && valid_bare_email(word) {
                     flush(&mut buf, &mut nodes);
                     nodes.push(INode::Link(vec![INode::Text(word.to_string())]));
@@ -2885,9 +2989,9 @@ fn process_emphasis(mut nodes: Vec<INode>) -> Vec<INode> {
                     continue;
                 }
             }
-            let has_content = nodes[j + 1..i].iter().any(|n| {
-                !matches!(n, INode::Delim { .. } | INode::Empty)
-            });
+            let has_content = nodes[j + 1..i]
+                .iter()
+                .any(|n| !matches!(n, INode::Delim { .. } | INode::Empty));
             if !has_content {
                 continue;
             }
@@ -3051,7 +3155,12 @@ mod tests {
     fn text(lines: &[Line]) -> String {
         lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -3109,7 +3218,10 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(primary, ["https://example.com/a", "https://example.com/b"]);
-        assert_eq!(render("mail <user@example.com> ok"), "mail user@example.com ok");
+        assert_eq!(
+            render("mail <user@example.com> ok"),
+            "mail user@example.com ok"
+        );
     }
 
     #[test]
@@ -3171,7 +3283,12 @@ mod tests {
             }
             let joined = lines
                 .iter()
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
             assert_eq!(joined, input, "wrapped text must not lose words");
@@ -3192,7 +3309,11 @@ mod tests {
         let code = render_markdown_wrapped("```\nlet very_long_line = some_function_call(with_many_arguments, and_more_arguments, even_more);\n```", &theme(), 40);
         assert_eq!(code.len(), 1, "code must not wrap: {code:?}");
         assert!(code[0].width() > 40, "code line must stay long");
-        let table = render_markdown_wrapped("| Name | Cost |\n| --- | --- |\n| averylongname | 12345 |", &theme(), 20);
+        let table = render_markdown_wrapped(
+            "| Name | Cost |\n| --- | --- |\n| averylongname | 12345 |",
+            &theme(),
+            20,
+        );
         assert_eq!(table.len(), 2, "table must not wrap: {table:?}");
         let list = render_markdown_wrapped("- a very long list item that keeps going and going until it must wrap onto another line", &theme(), 40);
         assert!(list.len() > 1, "list must wrap");
@@ -3205,7 +3326,14 @@ mod tests {
         let lines = render_markdown_wrapped(&word, &theme(), 80);
         assert_eq!(lines.len(), 2, "long word must split: {lines:?}");
         assert_eq!(
-            lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<String>(),
+            lines
+                .iter()
+                .map(|l| l
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>())
+                .collect::<String>(),
             word
         );
     }
@@ -3249,7 +3377,10 @@ mod tests {
         // Indented code cannot interrupt a paragraph (the first line
         // is >48 chars so it is not a Pantheon section header).
         let t = render("a long paragraph line that is definitely longer than forty eight characters\n    not code");
-        assert_eq!(t, "a long paragraph line that is definitely longer than forty eight characters\nnot code");
+        assert_eq!(
+            t,
+            "a long paragraph line that is definitely longer than forty eight characters\nnot code"
+        );
     }
 
     #[test]
@@ -3412,7 +3543,11 @@ mod tests {
         assert!(t.contains("A"), "got: {t}");
         assert!(t.contains("x"), "got: {t}");
         assert!(t.contains("y"), "got: {t}");
-        assert!(has_modifier("| **A** | B |\n| --- | --- |\n| *x* | `y` |", "x", Modifier::ITALIC));
+        assert!(has_modifier(
+            "| **A** | B |\n| --- | --- |\n| *x* | `y` |",
+            "x",
+            Modifier::ITALIC
+        ));
     }
 
     // --- GFM 5.1 block quotes ---
@@ -3523,7 +3658,9 @@ mod tests {
     fn emphasis_nesting_and_triple() {
         assert_eq!(render("***foo***"), "foo");
         let s = span_style("***foo***", "foo").unwrap();
-        assert!(s.add_modifier.contains(Modifier::BOLD) && s.add_modifier.contains(Modifier::ITALIC));
+        assert!(
+            s.add_modifier.contains(Modifier::BOLD) && s.add_modifier.contains(Modifier::ITALIC)
+        );
         assert_eq!(render("*foo **bar** baz*"), "foo bar baz");
         assert!(has_modifier("*foo **bar** baz*", "bar", Modifier::BOLD));
         assert!(has_modifier("*foo **bar** baz*", "foo", Modifier::ITALIC));
@@ -3534,7 +3671,10 @@ mod tests {
         assert_eq!(render("*foo**"), "foo*");
         assert!(has_modifier("*foo**", "foo", Modifier::ITALIC));
         assert_eq!(render("*foo**bar*"), "foo**bar");
-        assert_eq!(render("** is not an empty emphasis"), "** is not an empty emphasis");
+        assert_eq!(
+            render("** is not an empty emphasis"),
+            "** is not an empty emphasis"
+        );
     }
 
     // --- GFM 6.5 strikethrough ---
@@ -3562,9 +3702,15 @@ mod tests {
     #[test]
     fn autolink_extension_www_email_and_parens() {
         // Trailing '.' is not part of the link, but stays as text.
-        assert_eq!(render("see www.example.com/path."), "see www.example.com/path.");
+        assert_eq!(
+            render("see www.example.com/path."),
+            "see www.example.com/path."
+        );
         let lines = render_markdown("see www.example.com/path.", &theme());
-        let link = lines[0].spans.iter().find(|sp| sp.content.as_ref() == "www.example.com/path");
+        let link = lines[0]
+            .spans
+            .iter()
+            .find(|sp| sp.content.as_ref() == "www.example.com/path");
         assert!(link.is_some(), "www link span missing");
         assert_eq!(render("mail foo@bar.baz end"), "mail foo@bar.baz end");
         let lines = render_markdown("see https://example.com/a_(b).", &theme());
@@ -3598,12 +3744,4 @@ mod tests {
         );
         eprintln!("large render: {} chars in {:?}", input.len(), elapsed);
     }
-
-
-
-
-
-
-
-
 }

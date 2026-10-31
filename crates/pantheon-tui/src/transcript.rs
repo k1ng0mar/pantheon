@@ -341,10 +341,7 @@ impl ToolCard {
                 body(arg.clone(), Style::default().fg(th.dim));
             }
             for line in self.error.iter().take(10) {
-                body(
-                    format!("✕ {line}"),
-                    Style::default().fg(th.failure),
-                );
+                body(format!("✕ {line}"), Style::default().fg(th.failure));
             }
         }
         out

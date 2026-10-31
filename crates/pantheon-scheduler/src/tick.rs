@@ -794,11 +794,13 @@ mod tick_drain_queue_tests {
     fn two_tickers_straddling_quantum_fire_first_interval_job_once() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("claims.db");
-        let gateway = Arc::new(TickDriver::new(
-            DurableClaimLedger::open(&db).unwrap(),
-        ));
+        let gateway = Arc::new(TickDriver::new(DurableClaimLedger::open(&db).unwrap()));
         let tui = Arc::new(TickDriver::new(DurableClaimLedger::open(&db).unwrap()));
-        let mut job = Job::new("first1", ScheduleKind::Interval { every_ms: 10_000 }, "agent");
+        let mut job = Job::new(
+            "first1",
+            ScheduleKind::Interval { every_ms: 10_000 },
+            "agent",
+        );
         job.overlap = OverlapPolicy::Skip;
         let ran = Arc::new(AtomicUsize::new(0));
 

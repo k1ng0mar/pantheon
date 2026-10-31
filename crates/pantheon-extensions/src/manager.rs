@@ -21,9 +21,7 @@
 //! most once per (plugin, hook, session). The manager owns this, not the
 //! plugin process - required because each fire spawns fresh.
 use crate::hooks::{Hook, HookClass};
-use crate::python_runner::{
-    fire_hook_full, HookDirective, HookInput, PythonPlugin, RunnerConfig,
-};
+use crate::python_runner::{fire_hook_full, HookDirective, HookInput, PythonPlugin, RunnerConfig};
 use pantheon_api::approval::{self, PendingPlugin};
 use pantheon_api::error::{Layer, PantheonError};
 use std::collections::{HashMap, HashSet};
@@ -887,7 +885,10 @@ mod tests {
         );
         approve(&ext, &dir, "demo", "1.0");
         let mgr = approved_mgr(&ext);
-        assert!(mgr.names().is_empty(), "explicit enabled:false must not fire");
+        assert!(
+            mgr.names().is_empty(),
+            "explicit enabled:false must not fire"
+        );
         assert_eq!(mgr.pending().len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -986,7 +987,10 @@ mod tests {
         approve(&ext, &dir, "flaky", "1.0");
         let mgr = approved_mgr(&ext);
         let extra = std::collections::HashMap::new();
-        assert_eq!(mgr.fire(Hook::PreLlmCall, "s1", "test", extra.clone()), None);
+        assert_eq!(
+            mgr.fire(Hook::PreLlmCall, "s1", "test", extra.clone()),
+            None
+        );
         assert_eq!(mgr.streak_count("flaky"), 1);
         // One crash must not consume the once-per-session key: remove
         // the failure condition and the plugin still fires.
@@ -1017,7 +1021,13 @@ mod tests {
         let extra = std::collections::HashMap::new();
         for _ in 0..3 {
             assert_eq!(
-                mgr.fire_transform(Hook::TransformToolResult, "s", "test", extra.clone(), "payload"),
+                mgr.fire_transform(
+                    Hook::TransformToolResult,
+                    "s",
+                    "test",
+                    extra.clone(),
+                    "payload"
+                ),
                 "payload"
             );
         }

@@ -639,10 +639,7 @@ fn send(
     // User-Agents (Cloudflare error 1010, see credential_error) must
     // not block provider requests. Applied last so it wins over any
     // caller-supplied User-Agent.
-    r = r.header(
-        "User-Agent",
-        crate::credential_error::user_agent().as_str(),
-    );
+    r = r.header("User-Agent", crate::credential_error::user_agent().as_str());
     let mut resp = r
         .send(req.body.as_str())
         .map_err(|e| perr("PROVIDER_HTTP", format!("{}: {e}", req.url), true))?;
@@ -675,10 +672,7 @@ fn send(
         // unchanged. The diagnosis is static text, never the body or
         // the URL, so no credential can pass through it.
         if let Some(d) = crate::credential_error::classify(code, &body) {
-            cause.push_str(&format!(
-                " [credential: {} {}]",
-                d.summary, d.remediation
-            ));
+            cause.push_str(&format!(" [credential: {} {}]", d.summary, d.remediation));
         }
         return Err(perr("PROVIDER_HTTP", cause, retryable));
     }
@@ -879,7 +873,8 @@ impl ChatTransport for HttpTransport {
             .iter()
             .any(|(k, _)| k.eq_ignore_ascii_case("accept"))
         {
-            req2.headers.push(("Accept".into(), "text/event-stream".into()));
+            req2.headers
+                .push(("Accept".into(), "text/event-stream".into()));
         }
         let resp = send(&agent, &req2)?;
         let reader = BufReader::new(resp.into_body().into_reader());
@@ -898,7 +893,7 @@ impl ChatTransport for HttpTransport {
         // byte-level reader, not this line loop (listed as a remainder).
         let mut pending = String::new();
         let flush = |pending: &mut String,
-                         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>|
+                     on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>|
          -> Result<bool, PantheonError> {
             if pending.is_empty() {
                 return Ok(false);
@@ -1117,7 +1112,10 @@ mod tests {
         let _g = guard_env_lock();
         let _env = SavedEnv::capture();
         _env.set_proxy("http://127.0.0.1:9");
-        assert!(validate_url("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions").is_ok());
+        assert!(validate_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        )
+        .is_ok());
     }
 
     #[test]

@@ -707,10 +707,7 @@ mod tests {
         // schema round-trip died on a field the user never touched.
         let path = scratch_config("model-fresh");
         set_config_value(&path, "model.provider", "openai").unwrap();
-        assert_eq!(
-            get_config_value(&path, "model.provider").unwrap(),
-            "openai"
-        );
+        assert_eq!(get_config_value(&path, "model.provider").unwrap(), "openai");
         // The sibling stays unset (empty), not invented.
         let cfg: pantheon_api::config::Config =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

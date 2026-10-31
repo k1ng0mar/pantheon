@@ -566,9 +566,7 @@ mod broker_names_warnings_tests {
     #[test]
     fn names_with_warnings_reports_unlistable_vault() {
         let memory = MemoryVault::new();
-        memory
-            .set("LISTED", SecretValue::new("v"))
-            .unwrap();
+        memory.set("LISTED", SecretValue::new("v")).unwrap();
         let broker = SecretsBroker::new()
             .with_vault(Box::new(memory))
             .with_vault(Box::new(UnlistableVault))

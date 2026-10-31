@@ -230,7 +230,10 @@ fn teams_use_unknown_profile_rejected_and_nothing_spawns() {
     // The brief template contains {{task}}, so a task is required
     // before profile resolution runs: supply one so the failure under
     // test is the bad profile, not the missing task.
-    let r = d.post("/api/teams/bogus/use", r#"{"task": "ship it", "judge": false}"#);
+    let r = d.post(
+        "/api/teams/bogus/use",
+        r#"{"task": "ship it", "judge": false}"#,
+    );
     assert_eq!(r.status, 400, "{}", r.body);
     assert!(
         r.body.contains("nope"),
@@ -248,7 +251,10 @@ fn teams_use_rejects_dangling_expert_and_nothing_spawns() {
     // Delete the expert out from under the team: the team file still
     // references it, so `use` must fail closed.
     assert_eq!(d.delete("/api/experts/data-analyst").status, 200);
-    let r = d.post("/api/teams/crew3/use", r#"{"task": "ship it", "judge": false}"#);
+    let r = d.post(
+        "/api/teams/crew3/use",
+        r#"{"task": "ship it", "judge": false}"#,
+    );
     assert_eq!(r.status, 400, "{}", r.body);
     assert!(r.body.contains("data-analyst"), "{}", r.body);
     // Nothing spawned: the orchestrator's first id is still unknown.

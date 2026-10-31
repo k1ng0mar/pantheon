@@ -124,7 +124,10 @@ impl LedgerPoison {
     /// callback after the ledger write failed showed the user output
     /// the ledger never recorded.
     fn is_poisoned(&self) -> bool {
-        self.inner.lock().map(|slot| slot.is_some()).unwrap_or(false)
+        self.inner
+            .lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(false)
     }
 
     /// Take the latched failure, if any.
@@ -682,12 +685,20 @@ pub fn write_cached_tool_result(
     let tmp = parent.join(format!(
         ".tmp-{}-{}",
         std::process::id(),
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("result")
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("result")
     ));
     let payload = serde_json::json!({"translated": translated, "result": result});
-    std::fs::write(&tmp, serde_json::to_vec(&payload).map_err(|e| {
-        operation_err("TOOL_RESULT_CACHE", format!("cannot serialize tool result: {e}"))
-    })?)
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec(&payload).map_err(|e| {
+            operation_err(
+                "TOOL_RESULT_CACHE",
+                format!("cannot serialize tool result: {e}"),
+            )
+        })?,
+    )
     .and_then(|_| std::fs::rename(&tmp, &path))
     .map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -1296,8 +1307,8 @@ fn resolve_delegate_target(
         )
     };
     if let Some(name) = route {
-        let section = section
-            .ok_or_else(|| route_err("no delegation routes are configured".to_string()))?;
+        let section =
+            section.ok_or_else(|| route_err("no delegation routes are configured".to_string()))?;
         let resolved = section.resolve(&name).map_err(route_err)?;
         if let Some(agent) = &agent {
             if agent != &resolved.profile {
@@ -2120,12 +2131,14 @@ fn run_delegate_child_routed(
     // model is the profile's pin when it sets one (absent = the
     // session default, never invented into a name).
     let route_report = route.and_then(|name| {
-        child_session.agent().map(|child_agent| crate::swarm::RouteReport {
-            route: name.to_string(),
-            profile: child_agent.profile().name.clone(),
-            policy: child_agent.policy_preset().to_string(),
-            model: child_agent.profile().model.value.clone(),
-        })
+        child_session
+            .agent()
+            .map(|child_agent| crate::swarm::RouteReport {
+                route: name.to_string(),
+                profile: child_agent.profile().name.clone(),
+                policy: child_agent.policy_preset().to_string(),
+                model: child_agent.profile().model.value.clone(),
+            })
     });
     let child_run = child_session.current_run_id();
     // Decision B (2026-10-01): the delegation budget is owned by the ROOT
@@ -3620,10 +3633,7 @@ impl Session {
     /// `delegation_section` field). Called once at startup from the
     /// loaded config, alongside `set_budget_section`; the blocking
     /// `delegate` tool resolves its `route` argument from it per turn.
-    pub fn set_delegation_section(
-        &self,
-        section: pantheon_api::config::DelegationSection,
-    ) {
+    pub fn set_delegation_section(&self, section: pantheon_api::config::DelegationSection) {
         if let Ok(mut s) = self.delegation_section.lock() {
             *s = Some(section);
         }
@@ -4860,8 +4870,7 @@ impl Session {
                             ) {
                                 Ok(n) => n,
                                 Err(e) => {
-                                    tool_diags
-                                        .push(format!("web_search registration failed: {e}"));
+                                    tool_diags.push(format!("web_search registration failed: {e}"));
                                     0
                                 }
                             }
@@ -4939,11 +4948,12 @@ impl Session {
                         // configured binary path that does not exist,
                         // or an unknown driver id, is a misconfiguration
                         // and is recorded as a diagnostic instead.
-                        let known = cfg.driver.eq_ignore_ascii_case(
-                            crate::computer::CUA_DRIVER_ID,
-                        ) || cfg
+                        let known = cfg
                             .driver
-                            .eq_ignore_ascii_case(crate::computer::TAPP_DRIVER_ID);
+                            .eq_ignore_ascii_case(crate::computer::CUA_DRIVER_ID)
+                            || cfg
+                                .driver
+                                .eq_ignore_ascii_case(crate::computer::TAPP_DRIVER_ID);
                         if cfg.binary.is_some() {
                             tool_diags.push(format!(
                                 "computer-use: configured [computer_use] binary not found for driver '{}'",
@@ -4976,9 +4986,8 @@ impl Session {
                             Some(pantheon_api::capability::Capability::ComputerUse),
                         );
                         for (server, reason) in &report.skipped {
-                            tool_diags.push(format!(
-                                "computer-use: server '{server}' skipped: {reason}"
-                            ));
+                            tool_diags
+                                .push(format!("computer-use: server '{server}' skipped: {reason}"));
                         }
                         if !report.pending_approval.is_empty() {
                             tool_diags.push(format!(
@@ -5637,10 +5646,9 @@ impl Session {
                 "",
             ));
         }
-        let transport: Box<dyn pantheon_providers::ChatTransport> =
-            Box::new(HttpTransport {
-                timeout: self.provider_timeout,
-            });
+        let transport: Box<dyn pantheon_providers::ChatTransport> = Box::new(HttpTransport {
+            timeout: self.provider_timeout,
+        });
         let mut chain = {
             let api_key: SecretValue = self
                 .secrets
@@ -6046,8 +6054,10 @@ impl Session {
     ) -> Option<pantheon_exec::context::WindowBudget> {
         let _ = chain;
         let policy = self.policy_snapshot();
-        let mut candidates: Vec<(String, String)> =
-            vec![(policy.default.provider.clone(), policy.default.model.clone())];
+        let mut candidates: Vec<(String, String)> = vec![(
+            policy.default.provider.clone(),
+            policy.default.model.clone(),
+        )];
         for f in &policy.fallbacks.fallbacks {
             candidates.push((f.provider.clone(), f.model.clone()));
         }
@@ -6568,7 +6578,9 @@ impl Session {
                             let run_ref = run_id;
                             let call_id = tc.id.clone();
                             s.spawn(move || {
-                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref, loop_guard)
+                                self.durable_tool(
+                                    run_ref, &call_id, &name, &args, reg_ref, loop_guard,
+                                )
                             })
                         })
                         .collect();
@@ -6910,7 +6922,9 @@ impl Session {
                             let args = c.args.clone();
                             let run_ref = run_id;
                             s.spawn(move || {
-                                self.durable_tool(run_ref, &call_id, &name, &args, reg_ref, loop_guard)
+                                self.durable_tool(
+                                    run_ref, &call_id, &name, &args, reg_ref, loop_guard,
+                                )
                             })
                         })
                         .collect();
@@ -8030,9 +8044,7 @@ fn load_mgr(data_dir: &std::path::Path, policy: &Policy) -> pantheon_extensions:
     // under a custom PANTHEON_EXT_DIR and silently disabled bundled
     // hooks. The project root is the cwd the session runs in.
     .with_data_dir(data_dir.to_path_buf())
-    .with_project_root(
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-    );
+    .with_project_root(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let dir = std::env::var("PANTHEON_EXT_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| data_dir.join("extensions"));
@@ -8278,11 +8290,7 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
         let mut repaired = Vec::with_capacity(out.len() + interrupted.len());
         for message in out {
             let calls: Vec<String> = if message.role == pantheon_api::message::Role::Assistant {
-                message
-                    .tool_calls
-                    .iter()
-                    .map(|c| c.id.clone())
-                    .collect()
+                message.tool_calls.iter().map(|c| c.id.clone()).collect()
             } else {
                 Vec::new()
             };
@@ -8418,7 +8426,10 @@ pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Tr
                 }
             }
             Event::ToolInterrupted {
-                call_id, tool, args, ..
+                call_id,
+                tool,
+                args,
+                ..
             } => {
                 // Retired by recovery: the call is settled, not running.
                 // `ok: Some(false)` is the only settled marker the
@@ -8506,8 +8517,7 @@ pub fn unfinished_calls(entries: &[pantheon_storage::LedgerEntry]) -> Vec<String
             Event::ToolStarted { call_id, .. } => {
                 started.insert(call_id.clone());
             }
-            Event::ToolCompleted { call_id, .. }
-            | Event::ToolInterrupted { call_id, .. } => {
+            Event::ToolCompleted { call_id, .. } | Event::ToolInterrupted { call_id, .. } => {
                 done.insert(call_id.clone());
             }
             _ => {}
@@ -8572,8 +8582,9 @@ fn done_call_ids(entries: &[pantheon_storage::LedgerEntry]) -> std::collections:
     entries
         .iter()
         .filter_map(|e| match &e.event {
-            Event::ToolCompleted { call_id, .. }
-            | Event::ToolInterrupted { call_id, .. } => Some(call_id.clone()),
+            Event::ToolCompleted { call_id, .. } | Event::ToolInterrupted { call_id, .. } => {
+                Some(call_id.clone())
+            }
             _ => None,
         })
         .collect()
@@ -8980,9 +8991,18 @@ mod delegate_tool_tests {
                 "{\"route\": \"deep\", \"task\": \"do the hard thing\"}",
             )
             .expect("routed delegate");
-        assert!(result.contains("\"route\":\"deep\""), "result reports route: {result}");
-        assert!(result.contains("\"profile\":\"parent\""), "result reports profile: {result}");
-        assert!(result.contains("\"policy\":\"coder\""), "result reports policy: {result}");
+        assert!(
+            result.contains("\"route\":\"deep\""),
+            "result reports route: {result}"
+        );
+        assert!(
+            result.contains("\"profile\":\"parent\""),
+            "result reports profile: {result}"
+        );
+        assert!(
+            result.contains("\"policy\":\"coder\""),
+            "result reports policy: {result}"
+        );
     }
 
     #[test]
@@ -9040,7 +9060,10 @@ mod delegate_tool_tests {
         let result = reg
             .execute("delegate", "{\"task\": \"do the thing\"}")
             .expect("default route delegate");
-        assert!(result.contains("\"route\":\"fast\""), "result reports default route: {result}");
+        assert!(
+            result.contains("\"route\":\"fast\""),
+            "result reports default route: {result}"
+        );
     }
 
     #[test]
@@ -9585,14 +9608,24 @@ mod delegate_tool_tests {
             loop_guard: None,
         };
         let translated = serde_json::json!({"name": "counting", "args": "{}"});
-        let first = adapter.execute_keyed("run-keyed:call_keyed", &translated).unwrap();
-        let second = adapter.execute_keyed("run-keyed:call_keyed", &translated).unwrap();
+        let first = adapter
+            .execute_keyed("run-keyed:call_keyed", &translated)
+            .unwrap();
+        let second = adapter
+            .execute_keyed("run-keyed:call_keyed", &translated)
+            .unwrap();
         assert_eq!(first, second);
         assert_eq!(first.as_str(), Some("done-once"));
-        assert_eq!(runs.load(Ordering::SeqCst), 1, "second call must replay, not run");
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "second call must replay, not run"
+        );
         // A different translated request for the same id is not a replay.
         let other = serde_json::json!({"name": "counting", "args": r#"{"x":1}"#});
-        adapter.execute_keyed("run-keyed:call_keyed", &other).unwrap();
+        adapter
+            .execute_keyed("run-keyed:call_keyed", &other)
+            .unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
@@ -10338,7 +10371,9 @@ mod delegate_tool_tests {
             "recorded args must not carry the secret: {started}"
         );
         let tool_msg = entries.iter().find_map(|e| match &e.event {
-            Event::ToolMessage { message, .. } if message.role == pantheon_api::message::Role::Tool => {
+            Event::ToolMessage { message, .. }
+                if message.role == pantheon_api::message::Role::Tool =>
+            {
                 Some(message.content.clone())
             }
             _ => None,
@@ -10417,10 +10452,7 @@ mod delegate_tool_tests {
                         label: "Go".to_string(),
                         kind: UiActionKind::Tool {
                             tool: "list_dir".to_string(),
-                            fixed_params: serde_json::json!({})
-                                .as_object()
-                                .unwrap()
-                                .clone(),
+                            fixed_params: serde_json::json!({}).as_object().unwrap().clone(),
                         },
                     },
                 }),
@@ -11058,7 +11090,11 @@ mod delegate_tool_tests {
             .iter()
             .filter(|m| m.tool_call_id.as_deref() == Some("call-card-2"))
             .collect();
-        assert_eq!(second.len(), 1, "second card settled exactly once: {messages:?}");
+        assert_eq!(
+            second.len(),
+            1,
+            "second card settled exactly once: {messages:?}"
+        );
         assert!(
             second[0].content.contains("not executed")
                 && !second[0].content.contains("ui published"),
@@ -11347,7 +11383,11 @@ mod delegate_tool_tests {
             },
         ];
         let rebuilt = rebuild_messages(entries);
-        assert_eq!(rebuilt.len(), 2, "assistant row + fabricated result: {rebuilt:?}");
+        assert_eq!(
+            rebuilt.len(),
+            2,
+            "assistant row + fabricated result: {rebuilt:?}"
+        );
         let result = &rebuilt[1];
         assert_eq!(result.role, pantheon_api::message::Role::Tool);
         assert_eq!(result.tool_call_id.as_deref(), Some("call-1"));
@@ -11797,10 +11837,13 @@ mod child_context_retention_tests {
                     }]),
                 },
             ),
-            entry(3, msg_event(Message::tool(
-                "call_delegate_1",
-                "child result: login fixed, tests pass",
-            ))),
+            entry(
+                3,
+                msg_event(Message::tool(
+                    "call_delegate_1",
+                    "child result: login fixed, tests pass",
+                )),
+            ),
             entry(
                 4,
                 Event::AssistantMessage {
@@ -11840,10 +11883,10 @@ mod child_context_retention_tests {
                     call_id: Some("call_delegate_1".to_string()),
                 },
             ),
-            entry(3, msg_event(Message::tool(
-                "call_delegate_1",
-                "child result: done",
-            ))),
+            entry(
+                3,
+                msg_event(Message::tool("call_delegate_1", "child result: done")),
+            ),
             entry(
                 4,
                 Event::AgentCompleted {
@@ -11863,7 +11906,9 @@ mod child_context_retention_tests {
         ];
         let rebuilt = rebuild_messages(entries);
         assert_eq!(rebuilt.len(), 2, "only parent messages + child result");
-        assert!(rebuilt.iter().all(|m| !m.content.contains("delegation to coder finished")));
+        assert!(rebuilt
+            .iter()
+            .all(|m| !m.content.contains("delegation to coder finished")));
         assert_eq!(rebuilt[1].content, "child result: done");
     }
 
@@ -11872,10 +11917,10 @@ mod child_context_retention_tests {
         // Retention is not stale-context pinning: a new parent user
         // message after child completion appears in the rebuild.
         let entries = vec![
-            entry(1, msg_event(Message::tool(
-                "call_delegate_1",
-                "child result: done",
-            ))),
+            entry(
+                1,
+                msg_event(Message::tool("call_delegate_1", "child result: done")),
+            ),
             entry(
                 2,
                 Event::AssistantMessage {
@@ -11971,8 +12016,11 @@ mod tool_registration_diagnostics_tests {
         session.set_computer_config(ComputerToolConfig::default());
         let _ = session.build_tool_registry();
         assert!(
-            !session.tool_diagnostics().iter().any(|d| d.contains("computer-use")
-                && (d.contains("not found") || d.contains("PATH"))),
+            !session
+                .tool_diagnostics()
+                .iter()
+                .any(|d| d.contains("computer-use")
+                    && (d.contains("not found") || d.contains("PATH"))),
             "an uninstalled driver is silent: {:?}",
             session.tool_diagnostics()
         );
@@ -12131,10 +12179,14 @@ mod tool_registration_diagnostics_tests {
                 },
             ];
         }
-        session.switch_model("openai", "gpt-4o-mini").expect("switch");
+        session
+            .switch_model("openai", "gpt-4o-mini")
+            .expect("switch");
         let policy = session.model_policy.lock().expect("policy lock");
         assert_eq!(policy.default.provider, "openai");
-        let title = policy.auxiliary(&AuxiliaryKind::TitleGen).expect("title aux");
+        let title = policy
+            .auxiliary(&AuxiliaryKind::TitleGen)
+            .expect("title aux");
         assert_eq!(
             (title.provider.as_str(), title.model.as_str()),
             ("openai", "gpt-4o-mini"),

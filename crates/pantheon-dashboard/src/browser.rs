@@ -98,8 +98,7 @@ fn on_path(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path)
-        .any(|dir| dir.join(name).is_file())
+    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
 }
 
 fn binary_found(explicit: Option<&std::path::PathBuf>, path_name: &str) -> bool {
@@ -735,7 +734,10 @@ mod tests {
         assert_eq!(body["ready"], false);
         assert_eq!(body["binary_found"], false);
         assert!(
-            body["detail"].as_str().unwrap_or("").contains("gsd-browser"),
+            body["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("gsd-browser"),
             "detail must name the missing binary: {body}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -779,7 +781,10 @@ mod tests {
         assert_eq!(body["ready"], false);
         assert_eq!(body["secret_present"], false);
         assert!(
-            body["detail"].as_str().unwrap_or("").contains("STEEL_API_KEY"),
+            body["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("STEEL_API_KEY"),
             "detail must name the steel key need: {body}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -796,7 +801,10 @@ mod tests {
         assert_eq!(body["ready"], true);
         assert!(body["secret_present"].is_null());
         let detail = body["detail"].as_str().unwrap_or("");
-        assert!(detail.contains("keyless"), "detail must say keyless: {body}");
+        assert!(
+            detail.contains("keyless"),
+            "detail must say keyless: {body}"
+        );
         assert!(
             detail.contains("no API key"),
             "detail must state no API key is needed: {body}"

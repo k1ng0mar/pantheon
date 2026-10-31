@@ -15,8 +15,8 @@ use pantheon_gateway::schedule_delivery::{self, Deliver};
 use pantheon_gateway::scheduler::{ExecuteFn, FireOutcome, SchedulerLoop, TaskOutcome, TickReport};
 use pantheon_scheduler::{
     after_manual_run, expand_template, job_store_path, load_jobs, load_jobs_with_warnings,
-    parse_duration, retention, update_jobs, Job, OverlapPolicy, RunOutcome,
-    ScheduleKind, ScheduleTemplate, ScheduledJob, TemplateSchedule, TemplateStore, TemplateVar,
+    parse_duration, retention, update_jobs, Job, OverlapPolicy, RunOutcome, ScheduleKind,
+    ScheduleTemplate, ScheduledJob, TemplateSchedule, TemplateStore, TemplateVar,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

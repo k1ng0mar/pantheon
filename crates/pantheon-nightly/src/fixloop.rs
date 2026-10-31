@@ -103,8 +103,7 @@ pub(crate) fn record_escalation(data_dir: &Path, esc: &Escalation) -> Result<(),
     }
     let text =
         serde_json::to_string_pretty(&all).map_err(|e| format!("encode escalations: {e}"))?;
-    crate::apply::atomic_write(&path, &text)
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    crate::apply::atomic_write(&path, &text).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Proposal kinds explicitly allowed to reach `Validated` with zero

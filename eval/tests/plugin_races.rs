@@ -121,13 +121,8 @@ fn verify_plugin_returns_canonical_runner_path() {
     // under `bundled/`: record a real approval for the fixture bytes
     // (scope: the dir above `bundled/`, i.e. the link target's parent
     // here) so verification reaches the canonical-path check.
-    pantheon_api::approval::record_approval_for(
-        &tmp.path().join("link"),
-        "t",
-        "0.1.0",
-        &root,
-    )
-    .unwrap();
+    pantheon_api::approval::record_approval_for(&tmp.path().join("link"), "t", "0.1.0", &root)
+        .unwrap();
     let out = pantheon_exec::plugins::verify_plugin(&plugin).unwrap();
     // BEFORE FIX: returned root.join("run.sh") (through the symlink).
     // AFTER: the canonical path the containment check actually proved.
@@ -197,10 +192,11 @@ fn spawn_fails_closed_after_symlink_swap() {
     // Spawn after the swap: must fail closed, never execute evil.sh.
     // `verified` (the good.sh path from verify time) is no longer an
     // input to spawn at all; spawn_verified re-resolves from the manifest.
-    let err = match PluginSupervisor::spawn_verified(&plugin, tmp.path(), Duration::from_secs(5), &[]) {
-        Ok(_) => panic!("swapped bytes must fail closed at spawn"),
-        Err(e) => e,
-    };
+    let err =
+        match PluginSupervisor::spawn_verified(&plugin, tmp.path(), Duration::from_secs(5), &[]) {
+            Ok(_) => panic!("swapped bytes must fail closed at spawn"),
+            Err(e) => e,
+        };
     assert!(
         err.code == "PLUGIN_TAMPERED" || err.code == "PLUGIN_NOT_APPROVED",
         "unexpected code: {}",

@@ -391,8 +391,7 @@ fn check_nightly_state(ctx: &DoctorCtx) -> Vec<Finding> {
                 || cfg.consolidation.as_ref().is_some_and(|s| s.enabled);
             let env_pin = std::env::var("PANTHEON_NIGHTLY_PROVIDER")
                 .is_ok_and(|v| !v.trim().is_empty())
-                || std::env::var("PANTHEON_NIGHTLY_MODEL")
-                    .is_ok_and(|v| !v.trim().is_empty());
+                || std::env::var("PANTHEON_NIGHTLY_MODEL").is_ok_and(|v| !v.trim().is_empty());
             let reason = if on
                 && n.enabled.is_none()
                 && !pantheon_api::config::nightly_model_pin_present(n)
@@ -499,8 +498,7 @@ fn check_gateway_channels(ctx: &DoctorCtx) -> Vec<Finding> {
                             _ => "",
                         };
                         !std_name.is_empty()
-                            && pantheon_secrets::gateway_token(&ctx.data_dir, std_name)
-                                .is_some()
+                            && pantheon_secrets::gateway_token(&ctx.data_dir, std_name).is_some()
                     }
                 };
                 if has_token {
@@ -631,9 +629,7 @@ fn check_model_key(ctx: &DoctorCtx) -> Vec<Finding> {
                     }
                 })
                 .unwrap_or_else(|| format!("PANTHEON_KEY_{}", provider.to_uppercase()));
-            if std::env::var(&fallback_env)
-                .is_ok_and(|v| !v.trim().is_empty())
-            {
+            if std::env::var(&fallback_env).is_ok_and(|v| !v.trim().is_empty()) {
                 return vec![Finding::passed(
                     "providers.model_key",
                     Subsystem::Providers,

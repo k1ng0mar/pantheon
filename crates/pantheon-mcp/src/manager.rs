@@ -563,12 +563,7 @@ fn content_hash(spec: &McpServerSpec) -> Result<String, McpError> {
                             bytes.push(0);
                             bytes.extend_from_slice(&b);
                         }
-                        Err(e) => {
-                            return Err(McpError::Io(format!(
-                                "hash {}: {e}",
-                                p.display()
-                            )))
-                        }
+                        Err(e) => return Err(McpError::Io(format!("hash {}: {e}", p.display()))),
                     }
                 }
             }

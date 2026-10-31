@@ -378,16 +378,16 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     )));
     if let Some(last) = turns.last() {
         lines.push(Line::from(Span::styled(
-            format!("  latest · {}", clip(&last.preview, inner.saturating_sub(12))),
+            format!(
+                "  latest · {}",
+                clip(&last.preview, inner.saturating_sub(12))
+            ),
             body,
         )));
     }
     if !state.checkpoint_names.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!(
-                "Checkpoints: {}",
-                state.checkpoint_names.join(", ")
-            ),
+            format!("Checkpoints: {}", state.checkpoint_names.join(", ")),
             dim,
         )));
     }
@@ -398,14 +398,21 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     // Detail lives here so the transcript card can stay one line;
     // the section is omitted entirely when no tool is running or
     // expanded, rather than showing an empty frame.
-    let selected = state.blocks.iter().rev().find_map(|b| match &b.kind {
-        BlockKind::ToolCall { ok: None, .. } => Some(b),
-        _ => None,
-    }).or_else(|| {
-        state.blocks.iter().rev().find(|b| {
-            matches!(&b.kind, BlockKind::ToolCall { expanded: true, .. })
+    let selected = state
+        .blocks
+        .iter()
+        .rev()
+        .find_map(|b| match &b.kind {
+            BlockKind::ToolCall { ok: None, .. } => Some(b),
+            _ => None,
         })
-    });
+        .or_else(|| {
+            state
+                .blocks
+                .iter()
+                .rev()
+                .find(|b| matches!(&b.kind, BlockKind::ToolCall { expanded: true, .. }))
+        });
     if let Some(block) = selected {
         if let BlockKind::ToolCall {
             name,
@@ -455,11 +462,21 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
             }
             if let Some(e) = error.as_deref().filter(|e| !e.is_empty()) {
                 lines.push(Line::from(Span::styled(
-                    format!("  {}", clip(e.lines().next().unwrap_or(""), inner.saturating_sub(4))),
+                    format!(
+                        "  {}",
+                        clip(e.lines().next().unwrap_or(""), inner.saturating_sub(4))
+                    ),
                     Style::default().fg(th.failure),
                 )));
             }
-            for out in output.iter().rev().take(4).collect::<Vec<_>>().into_iter().rev() {
+            for out in output
+                .iter()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 lines.push(Line::from(Span::styled(
                     format!("  {}", clip(out.trim(), inner.saturating_sub(4))),
                     dim,
@@ -621,7 +638,13 @@ mod tests {
             false,
             vec![],
         ));
-        s.blocks.push(tool_block("read_file", "{\"path\": \"src/main.rs\"}", Some(true), false, vec![]));
+        s.blocks.push(tool_block(
+            "read_file",
+            "{\"path\": \"src/main.rs\"}",
+            Some(true),
+            false,
+            vec![],
+        ));
         let text = view_text(&s);
         assert!(text.contains("Tool"), "tool section missing: {text}");
         assert!(text.contains("Execute · running"), "got: {text}");
@@ -644,7 +667,10 @@ mod tests {
         ));
         let text = view_text(&s);
         assert!(text.contains("Execute · done"), "got: {text}");
-        assert!(text.contains("a.txt"), "expanded tool output missing: {text}");
+        assert!(
+            text.contains("a.txt"),
+            "expanded tool output missing: {text}"
+        );
     }
 
     #[test]

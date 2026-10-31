@@ -654,7 +654,8 @@ mod tests {
         let enablement = ToolEnablement::from_section(&section);
         assert!(!enablement.is_enabled(pantheon_api::config::ToolGroup::CodeIntel));
         // Absent stays on, like every other group.
-        let enablement = ToolEnablement::from_section(&pantheon_api::config::ToolsSection::default());
+        let enablement =
+            ToolEnablement::from_section(&pantheon_api::config::ToolsSection::default());
         assert!(enablement.is_enabled(pantheon_api::config::ToolGroup::CodeIntel));
         // Every flag round-trips, not just code_intel: a future dropped
         // field must fail here instead of silently staying on.

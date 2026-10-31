@@ -485,9 +485,7 @@ fn confine_screenshot_path(
             }
         }
         None => {
-            if norm.is_absolute()
-                || norm.components().any(|c| c == Component::ParentDir)
-            {
+            if norm.is_absolute() || norm.components().any(|c| c == Component::ParentDir) {
                 Err(berr(
                     "BROWSER_BAD_ARGS",
                     format!("screenshot path must be a plain relative file name: {requested}"),
@@ -1173,11 +1171,7 @@ mod tools_tests {
         let secret = "hunter2-secret";
         let failed = redact_secret_error(
             BrowserError::Failed {
-                argv: vec![
-                    "fill-ref".into(),
-                    "@v1:e2".into(),
-                    secret.to_string(),
-                ],
+                argv: vec!["fill-ref".into(), "@v1:e2".into(), secret.to_string()],
                 exit: Some(1),
                 stderr: format!("backend echoed {secret} back"),
             },
@@ -1228,8 +1222,7 @@ mod tools_tests {
         // starts_with check would wrongly pass these.
         assert!(confine_screenshot_path(Some(dir), "/data/screenshots/../escape.png").is_err());
         assert!(
-            confine_screenshot_path(Some(dir), "/data/screenshots/sub/../../escape.png")
-                .is_err()
+            confine_screenshot_path(Some(dir), "/data/screenshots/sub/../../escape.png").is_err()
         );
         // Interior `..` that stays inside normalizes to the file.
         assert_eq!(

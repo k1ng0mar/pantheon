@@ -42,7 +42,10 @@ pub struct McpBootHealth {
 /// or `PANTHEON_MCP_ENABLED=0` yields no specs, so boot never probes
 /// a server the operator switched off.
 fn config_specs(data_dir: &Path) -> Vec<McpServerSpec> {
-    if std::env::var("PANTHEON_MCP_ENABLED").map(|v| v == "0").unwrap_or(false) {
+    if std::env::var("PANTHEON_MCP_ENABLED")
+        .map(|v| v == "0")
+        .unwrap_or(false)
+    {
         return Vec::new();
     }
     let raw = std::fs::read_to_string(data_dir.join("config.toml")).unwrap_or_default();

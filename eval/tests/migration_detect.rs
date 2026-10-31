@@ -527,7 +527,10 @@ fn a_skill_with_broken_frontmatter_is_archived_not_imported() {
         // "no name": assert the reason identifies the missing name
         // field, not one specific phrasing of it.
         Action::Archive { reason } => {
-            assert!(reason.contains("missing field") && reason.contains("name"), "{reason}")
+            assert!(
+                reason.contains("missing field") && reason.contains("name"),
+                "{reason}"
+            )
         }
         other => panic!("expected archive, got {other:?}"),
     }

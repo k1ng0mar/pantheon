@@ -1231,9 +1231,9 @@ impl SwarmOrchestrator {
             .filter(|a| a.status == SwarmAgentStatus::Waiting)
         {
             let task = augment_with_swarm_roster(&record.task, &agent.profile, &roster);
-            let run_id =
-                self.worker
-                    .spawn_agent(&record.id, &agent.name, &agent.profile, &task)?;
+            let run_id = self
+                .worker
+                .spawn_agent(&record.id, &agent.name, &agent.profile, &task)?;
             agent.run_id = run_id;
             agent.status = SwarmAgentStatus::Working;
         }
@@ -1738,7 +1738,7 @@ fn augment_with_swarm_roster(base_task: &str, me: &str, roster: &[String]) -> St
     }
     // Guard: a roster where every entry equals `me` (pure count mode) has
     // no distinct peer profile at all - covered by the empty `peers` case.
-    let _ = () ;
+    let _ = ();
     let mut out = String::from(base_task);
     out.push_str("\n\n## Swarm collaboration\n");
     out.push_str(&format!(

@@ -131,7 +131,10 @@ fn init_driver(app: &App) -> Result<DesktopDriver, Response> {
     // dashboard operator is the consenting party, the driver is the
     // first-party bundled recipe, and its approval still gates the
     // connect. A session policy (agent preset) has no meaning here.
-    if std::env::var("PANTHEON_MCP_ENABLED").map(|v| v == "0").unwrap_or(false) {
+    if std::env::var("PANTHEON_MCP_ENABLED")
+        .map(|v| v == "0")
+        .unwrap_or(false)
+    {
         return Err(err_json(
             503,
             "MCP_DISABLED",

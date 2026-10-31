@@ -505,8 +505,12 @@ mod tests {
     #[test]
     fn apply_memory_lesson_at_memory_tier_by_default() {
         let dir = tempfile::tempdir().unwrap();
-        apply_memory_lesson(dir.path(), &lesson("nly_test2", "mem-key"), TrustTier::Memory)
-            .unwrap();
+        apply_memory_lesson(
+            dir.path(),
+            &lesson("nly_test2", "mem-key"),
+            TrustTier::Memory,
+        )
+        .unwrap();
         assert_eq!(record_trust(dir.path(), "mem-key"), TrustTier::Memory);
     }
 

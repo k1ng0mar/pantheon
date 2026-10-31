@@ -6,7 +6,9 @@
 //! runs via `cargo test -p pantheon-eval`.
 
 use pantheon_api::capability::Capability;
-use pantheon_exec::plugins::{DiscoveredPlugin, EnvVarDecl, PluginLocation, PluginManifest, ToolCapability};
+use pantheon_exec::plugins::{
+    DiscoveredPlugin, EnvVarDecl, PluginLocation, PluginManifest, ToolCapability,
+};
 use pantheon_exec::supervisor::*;
 use std::time::{Duration, Instant};
 
@@ -38,8 +40,7 @@ fn spawn_plugin(
         location: PluginLocation::User,
         root: dir.to_path_buf(),
     };
-    pantheon_exec::plugin_approval::record_approval(&plugin)
-        .expect("record test plugin approval");
+    pantheon_exec::plugin_approval::record_approval(&plugin).expect("record test plugin approval");
     let mut last_err = None;
     for _ in 0..50 {
         match PluginSupervisor::spawn_verified(&plugin, data_dir, timeout, allowlist) {
@@ -222,7 +223,13 @@ fn manifest_env_needs_allowlist_hit() {
         enabled: true,
     };
     let allowlist = vec!["PANTHEON_SUP_TEST_ALLOWED".to_string()];
-    let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_secs(5), &allowlist);
+    let mut sup = spawn_plugin(
+        &dir,
+        &manifest,
+        &data_dir,
+        Duration::from_secs(5),
+        &allowlist,
+    );
     let out = sup.call("ping", serde_json::json!({})).unwrap();
     assert!(
         out.contains("allowed=visible"),

@@ -353,11 +353,17 @@ fn default_on_hook_plugins_define_register() {
 fn verify_bundled_dir_trusts_seeded_and_rejects_tampered_and_hand_dropped() {
     let dd = scratch_data_dir("verify");
     let seeded = seed_bundled_plugins(&dd).expect("seed real registry");
-    assert!(!seeded.is_empty(), "registry must not be empty in this test");
+    assert!(
+        !seeded.is_empty(),
+        "registry must not be empty in this test"
+    );
     // A seeded hook plugin verifies as canonical.
     let hook_dir = dd.join("extensions").join("bundled").join("noisegate");
     assert!(hook_dir.is_dir(), "noisegate should be seeded");
-    assert!(verify_bundled_dir(&hook_dir), "seeded noisegate must verify");
+    assert!(
+        verify_bundled_dir(&hook_dir),
+        "seeded noisegate must verify"
+    );
     // Tampering one file breaks canonical trust.
     let init = hook_dir.join("__init__.py");
     let orig = std::fs::read_to_string(&init).unwrap();

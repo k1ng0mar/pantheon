@@ -803,10 +803,7 @@ pub fn nightly_enabled(section: &NightlySection) -> bool {
 /// off: the mere presence of the table was read as "the new section
 /// decides", even though it decided nothing. An explicit flag or pin
 /// still wins over legacy, always.
-pub fn nightly_enabled_with_legacy(
-    section: &NightlySection,
-    legacy_enabled: bool,
-) -> bool {
+pub fn nightly_enabled_with_legacy(section: &NightlySection, legacy_enabled: bool) -> bool {
     match section.enabled {
         Some(v) => v,
         None if nightly_model_pin_present(section) || nightly_env_pin_present() => true,
@@ -2553,15 +2550,8 @@ pub fn unknown_inner_keys(text: &str) -> Vec<String> {
         matches!(v, toml::Value::Table(t) if t.is_empty())
             || matches!(v, toml::Value::Array(a) if a.is_empty())
     }
-    fn walk(
-        prefix: &str,
-        input: &toml::Value,
-        output: &toml::Value,
-        out: &mut Vec<String>,
-    ) {
-        let (Some(in_table), Some(out_table)) =
-            (input.as_table(), output.as_table())
-        else {
+    fn walk(prefix: &str, input: &toml::Value, output: &toml::Value, out: &mut Vec<String>) {
+        let (Some(in_table), Some(out_table)) = (input.as_table(), output.as_table()) else {
             return;
         };
         for (key, in_value) in in_table {
@@ -2907,7 +2897,10 @@ impl Config {
         // used to read as a deliberate `ask` with no complaint, and
         // deleting the key on a rewrite silently lost `smart` /
         // `allow_all`. Flag it here so doctor and `config set` see it.
-        if let Some(mode) = self.permission_mode.as_deref().filter(|s| !s.trim().is_empty())
+        if let Some(mode) = self
+            .permission_mode
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
         {
             if crate::permission_mode::PermissionMode::parse(mode).is_none() {
                 problems.push(format!(
@@ -3057,9 +3050,7 @@ impl Config {
             // allowed (means "default"), whitespace or an unparseable
             // value is not.
             let host = server.host.trim();
-            if !host.is_empty()
-                && host.contains(char::is_whitespace)
-            {
+            if !host.is_empty() && host.contains(char::is_whitespace) {
                 problems.push(format!(
                     "server.host {:?} contains whitespace and cannot be a bind address",
                     server.host
@@ -3129,7 +3120,11 @@ impl Config {
                     // explicitly-set-but-empty token secret is likewise
                     // not the same as absent (absent falls back to the
                     // platform's standard token).
-                    if let Some(p) = ch.profile.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    if let Some(p) = ch
+                        .profile
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
                     {
                         if !self.agents.contains_key(p) {
                             problems.push(format!(
@@ -3156,7 +3151,11 @@ impl Config {
         // gsd running". Flag it here like the `[stt]`/`[tts]`
         // backend checks above.
         if let Some(b) = &self.browser {
-            if let Some(backend) = b.backend.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            if let Some(backend) = b
+                .backend
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             {
                 if !BROWSER_BACKENDS.contains(&backend.to_ascii_lowercase().as_str()) {
                     problems.push(format!(
@@ -3170,7 +3169,11 @@ impl Config {
         // unregistered with a session-start warning. Flag it here so
         // doctor names the typo instead.
         if let Some(w) = &self.websearch {
-            if let Some(provider) = w.provider.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            if let Some(provider) = w
+                .provider
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             {
                 if !WEBSEARCH_PROVIDERS.contains(&provider.to_ascii_lowercase().as_str()) {
                     problems.push(format!(
@@ -3199,7 +3202,12 @@ impl Config {
         // runtime, so a typo silently shifts every temporal hint.
         // Parse here with the same IANA table the runtime uses.
         if let Some(t) = &self.temporal {
-            if let Some(tz) = t.timezone.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(tz) = t
+                .timezone
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 if tz.parse::<chrono_tz::Tz>().is_err() {
                     problems.push(format!(
                         "temporal.timezone {tz:?} is not a parseable IANA timezone name (e.g. \"Africa/Lagos\")"
@@ -3273,7 +3281,8 @@ impl Config {
                 let normalized = key.trim().trim_start_matches('.');
                 if normalized.is_empty() {
                     problems.push(
-                        "formatters.commands has an empty extension key (dropped at runtime)".into(),
+                        "formatters.commands has an empty extension key (dropped at runtime)"
+                            .into(),
                     );
                     continue;
                 }
@@ -3316,7 +3325,11 @@ impl Config {
                     ));
                 }
             }
-            if let Some(default) = d.default.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            if let Some(default) = d
+                .default
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             {
                 if !d.routes.iter().any(|r| r.name == default) {
                     problems.push(format!(
@@ -3622,9 +3635,8 @@ mod config_budget_delegation_tests {
         )
         .expect("config parses");
         assert_eq!(cfg.model.as_ref().unwrap().timeout_ms, Some(45_000));
-        let cfg: Config =
-            toml::from_str("[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n")
-                .expect("config parses");
+        let cfg: Config = toml::from_str("[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n")
+            .expect("config parses");
         assert_eq!(cfg.model.as_ref().unwrap().timeout_ms, None);
         assert!(toml::from_str::<Config>(
             "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\ntimeout_ms = \"fast\"\n"
@@ -3695,9 +3707,15 @@ mod delegation_section_tests {
         .expect("config parses");
         let section = cfg.delegation.as_ref().expect("[delegation] present");
         assert_eq!(section.routes.len(), 2);
-        assert_eq!(section.resolve("deep").expect("deep resolves").profile, "researcher");
         assert_eq!(
-            section.default_route().expect("default resolves").map(|r| r.name.as_str()),
+            section.resolve("deep").expect("deep resolves").profile,
+            "researcher"
+        );
+        assert_eq!(
+            section
+                .default_route()
+                .expect("default resolves")
+                .map(|r| r.name.as_str()),
             Some("fast")
         );
         let back = toml::to_string(&cfg).expect("config serializes");
@@ -3707,7 +3725,9 @@ mod delegation_section_tests {
 
     #[test]
     fn unknown_route_names_the_valid_routes() {
-        let err = section().resolve("local").expect_err("local is not configured");
+        let err = section()
+            .resolve("local")
+            .expect_err("local is not configured");
         assert!(err.contains("unknown delegation route"));
         assert!(err.contains("fast"));
         assert!(err.contains("deep"));
@@ -4256,10 +4276,8 @@ mod fix_pass4_leaf1_tests {
         if let Some(sec) = cfg.custom_providers.get_mut("mine") {
             sec.base_url = "https://example.com/v1".to_string();
         }
-        cfg.agents.insert(
-            "support".to_string(),
-            AgentIdentity::default(),
-        );
+        cfg.agents
+            .insert("support".to_string(), AgentIdentity::default());
         if let Some(gw) = cfg.gateway.as_mut() {
             if let Some(ch) = gw.channels.get_mut("bot-a") {
                 ch.profile = Some("support".to_string());
@@ -4276,9 +4294,11 @@ mod fix_pass4_leaf1_tests {
         });
         let problems = cfg.validate();
         assert!(
-            !problems.iter().any(|p| p.contains("custom_providers.mine.base_url")
-                || p.contains("gateway.channels")
-                || p.contains("delegation")),
+            !problems
+                .iter()
+                .any(|p| p.contains("custom_providers.mine.base_url")
+                    || p.contains("gateway.channels")
+                    || p.contains("delegation")),
             "declared profiles and routes must not be flagged: {problems:?}"
         );
     }
@@ -4311,17 +4331,11 @@ mod fix_pass4_leaf1_tests {
     #[test]
     fn unknown_inner_keys_flags_section_typos() {
         let text = "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\nprovidr = \"openai\"\n[budget]\nmax_turns = 16\n";
-        assert_eq!(
-            unknown_inner_keys(text),
-            vec!["model.providr".to_string()]
-        );
+        assert_eq!(unknown_inner_keys(text), vec!["model.providr".to_string()]);
         // A valid config flags nothing, including map sections and
         // half-set [model] tables.
         assert!(unknown_inner_keys("[model]\nprovider = \"openai\"\n").is_empty());
-        assert!(unknown_inner_keys(
-            "[agents.coder]\nmodel = \"openai/gpt-4o\"\n"
-        )
-        .is_empty());
+        assert!(unknown_inner_keys("[agents.coder]\nmodel = \"openai/gpt-4o\"\n").is_empty());
         // Unparseable documents report nothing here - the parse error
         // path owns that case.
         assert!(unknown_inner_keys("[model\n").is_empty());
@@ -4539,9 +4553,7 @@ mod config_repair_section_tests {
         let plain: CustomModel = toml::from_str("id = \"m\"").expect("parses");
         assert!(!plain.vision && plain.tools && plain.streaming);
         let seeing: CustomModel =
-            toml::from_str("id = \"m\"\nvision = true\nstreaming = false")
-                .expect("parses");
+            toml::from_str("id = \"m\"\nvision = true\nstreaming = false").expect("parses");
         assert!(seeing.vision && !seeing.streaming && seeing.tools);
     }
-
 }

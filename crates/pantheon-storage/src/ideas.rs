@@ -572,13 +572,8 @@ mod tests {
         assert_eq!(err.code, "IDEA_STATE");
         // Accepted -> Done is the completion transition: the work the
         // accept spawned ran/published through the ideas flow.
-        assert!(store
-            .set_status("i1", IdeaStatus::Done, Some(3))
-            .unwrap());
-        assert_eq!(
-            store.get("i1").unwrap().unwrap().status,
-            IdeaStatus::Done
-        );
+        assert!(store.set_status("i1", IdeaStatus::Done, Some(3)).unwrap());
+        assert_eq!(store.get("i1").unwrap().unwrap().status, IdeaStatus::Done);
         // Done is terminal: nothing leaves it.
         let err = store
             .set_status("i1", IdeaStatus::Accepted, Some(4))
@@ -586,9 +581,7 @@ mod tests {
         assert_eq!(err.code, "IDEA_STATE");
         // Pending -> Done is the direct-launch transition.
         assert!(store.mint(&new_idea("i2")).unwrap());
-        assert!(store
-            .set_status("i2", IdeaStatus::Done, Some(5))
-            .unwrap());
+        assert!(store.set_status("i2", IdeaStatus::Done, Some(5)).unwrap());
         // Dismissed is terminal too.
         assert!(store.mint(&new_idea("i3")).unwrap());
         assert!(store
@@ -599,9 +592,7 @@ mod tests {
             .expect_err("dismissed -> done must fail");
         assert_eq!(err.code, "IDEA_STATE");
         // Re-setting the current status is a no-op, not an error.
-        assert!(store
-            .set_status("i1", IdeaStatus::Done, Some(8))
-            .unwrap());
+        assert!(store.set_status("i1", IdeaStatus::Done, Some(8)).unwrap());
         // Unknown id is still Ok(false), not an error.
         assert!(!store
             .set_status("nope", IdeaStatus::Accepted, None)

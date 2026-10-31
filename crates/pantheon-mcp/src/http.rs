@@ -856,7 +856,10 @@ mod tests {
                 let text = String::from_utf8_lossy(&buf).into_owned();
                 let len = text
                     .lines()
-                    .find_map(|l| l.strip_prefix("Content-Length:").or_else(|| l.strip_prefix("content-length:")))
+                    .find_map(|l| {
+                        l.strip_prefix("Content-Length:")
+                            .or_else(|| l.strip_prefix("content-length:"))
+                    })
                     .and_then(|v| v.trim().parse::<usize>().ok())
                     .unwrap_or(0);
                 let mut body = vec![0u8; len];
@@ -864,7 +867,11 @@ mod tests {
                     let _ = s.read_exact(&mut body);
                 }
                 let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let method = req
+                    .get("method")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let (status, payload): (u16, String) = match method.as_str() {
                     "initialize" => (
                         200,

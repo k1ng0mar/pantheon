@@ -806,10 +806,7 @@ fn reasoning_only_interruption_falls_back_immediately() {
     rate_provider("retry-stream-thoughts-fb2");
     let clock = Arc::new(FakeClock::default());
     let chain = ProviderChain {
-        policy: policy(
-            "retry-stream-thoughts-fb",
-            &["retry-stream-thoughts-fb2"],
-        ),
+        policy: policy("retry-stream-thoughts-fb", &["retry-stream-thoughts-fb2"]),
         transport: ReasoningThenFailStub {
             calls: AtomicUsize::new(0),
         },

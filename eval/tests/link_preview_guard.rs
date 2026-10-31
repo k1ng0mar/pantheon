@@ -149,7 +149,13 @@ fn is_public_ip_matches_the_guard_contract() {
     }
     assert!(is_public_ip(&"::ffff:8.8.8.8".parse::<IpAddr>().unwrap()));
     // Reserved IPv4 ranges are not public hosts.
-    for ip in ["192.0.0.1", "198.18.0.1", "198.19.255.255", "240.0.0.1", "255.255.255.255"] {
+    for ip in [
+        "192.0.0.1",
+        "198.18.0.1",
+        "198.19.255.255",
+        "240.0.0.1",
+        "255.255.255.255",
+    ] {
         assert!(
             !is_public_ip(&ip.parse::<IpAddr>().unwrap()),
             "{ip} must not be treated as public"

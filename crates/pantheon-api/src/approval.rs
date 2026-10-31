@@ -23,9 +23,9 @@
 //! manifest loader passed to [`pending_approvals`]/[`record_approval`]:
 //! each kind knows its own manifest filename and shape.
 use crate::error::{Layer, PantheonError};
+use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use fs2::FileExt as _;
 use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -295,12 +295,9 @@ struct ApprovalWriteGuard {
 /// then an exclusive flock on the sidecar `<store>.lock` file (the
 /// dotenv writer pattern). Blocking: a writer waits its turn.
 fn lock_for_write(path: &Path) -> Result<ApprovalWriteGuard, PantheonError> {
-    let proc = APPROVAL_WRITE_LOCK.lock().map_err(|_| {
-        merr(
-            "APPROVAL_WRITE",
-            "approval write lock poisoned".to_string(),
-        )
-    })?;
+    let proc = APPROVAL_WRITE_LOCK
+        .lock()
+        .map_err(|_| merr("APPROVAL_WRITE", "approval write lock poisoned".to_string()))?;
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");
     let lock_path = PathBuf::from(lock_path);
@@ -315,9 +312,8 @@ fn lock_for_write(path: &Path) -> Result<ApprovalWriteGuard, PantheonError> {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = lock_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    merr("APPROVAL_WRITE", format!("create lock dir: {e}"))
-                })?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| merr("APPROVAL_WRITE", format!("create lock dir: {e}")))?;
             }
             opts.open(&lock_path)
                 .map_err(|e| merr("APPROVAL_WRITE", format!("open lock file: {e}")))?
