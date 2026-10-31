@@ -137,6 +137,13 @@ verify_checksum() {
 if curl -fsSL "${URL}.sha256" -o "$TMPDIR/$ASSET.sha256" 2>/dev/null; then
   if verify_checksum; then
     ok "Checksum verified"
+    # Say what the check actually proves. The .sha256 file comes from the
+    # same origin as the archive, so it detects corruption, never
+    # authorship. Release authentication needs the pinned minisign key,
+    # which is not provisioned yet - `pantheon update` refuses unsigned
+    # releases for that reason.
+    run "Integrity only: the checksum is published alongside the archive; it is not a signature."
+    warn "Release signing is not provisioned yet, so \`pantheon update\` refuses releases until the key is pinned. Install updates by hand, or build from source (see docs/release-signing.md)."
   else
     code=$?
     if [ "$code" -eq 2 ]; then

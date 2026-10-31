@@ -169,7 +169,25 @@ jobs:
           merge-multiple: true
       - name: list assets
         run: ls -la dist/
+      # Make the release's trust state explicit on the release page. The
+      # signing steps above skip when MINISIGN_SECRET_KEY is absent, so an
+      # unsigned release can still be published; that is a documented
+      # stopgap (docs/release-signing.md), but it must not be invisible.
+      # `pantheon update` refuses unsigned releases, so the note tells a
+      # user to install by hand instead of debugging a verify failure.
+      - name: describe signing state
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if compgen -G "dist/*.minisig" > /dev/null; then
+            echo 'status=Signed with minisign; `pantheon update` can verify this release.' >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::This release is UNSIGNED (MINISIGN_SECRET_KEY is not provisioned). pantheon update refuses it; users must install by hand."
+            echo 'status=**UNSIGNED** - no minisign signature is attached because the signing key is not provisioned. `pantheon update` refuses unsigned releases by design; install this release by hand (see docs/release-signing.md).' >> "$GITHUB_OUTPUT"
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+          body: "${{ steps.signing.outputs.status }}"

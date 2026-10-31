@@ -96,7 +96,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 
 **Capability-gated tools.** Every tool declares the capability it needs; the runtime policy (`reader`, `coder`, `coder_memory`) decides per operation. File tools are confined to the workspace root with `O_NOFOLLOW`, and plugin names can't squat builtins. *Trust:* a compromised or confused model can't reach `~/.ssh` because the path boundary isn't in the prompt - it's in the syscall-adjacent layer.
 
-**Durable scheduler claims.** Cron (with a fixed Vixie DOM/DOW interpretation), one-shot, and interval jobs register with validation and claim their ticks through a unified claims table - surviving restarts without double-firing. Per-job timeouts (default 600s), overlap policies (skip/replace/queue), and HMAC-SHA256-verified webhooks. *Trust:* scheduled work is a runtime guarantee, not a process that has to stay alive.
+**Durable scheduler claims.** Cron (with a fixed Vixie DOM/DOW interpretation), one-shot, and interval jobs register with validation and claim their ticks through a unified claims table - surviving restarts without double-firing. Per-job timeouts (default 600s), overlap policies (skip/replace/queue), and durable run history for repair. Webhook triggers were removed; a persisted legacy webhook row is dropped on load with a warning, never executed. *Trust:* scheduled work is a runtime guarantee, not a process that has to stay alive - provided a Pantheon process is running.
 
 **Output caps that ride the wire.** `/tokens N` (or `[budget].max_tokens` in config) caps how many tokens the model may emit per response - session override beats config beats the model's known maximum output (16k fallback when unknown), clamped to what the model actually supports. *Trust:* a runaway model can't dump a novel into your transcript; the cap is enforced in the request body, not the prompt.
 
@@ -112,16 +112,16 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 | Core thesis | Runtime authority over model authority | Self-improving loop (agent authors its own skills) | Personal assistant on every channel | Top coding agent |
 | Durable state | SQLite event ledger; runs resume after crashes | SQLite `state.db` + markdown memories with char caps | Local files / gateway state | Session resume within the CLI |
 | Policy enforcement | Capability gate at execution; approvals pause/resume | Deny globs + hardline blocklist (vendor: "not a security boundary") | Allowlist-based tool config | Per-tool permission prompts |
-| Sandbox | Fail-closed isolation | Documented as not containment | Process-level | Sandboxed tool execution |
-| Cost control | Run budgets enforced by the runtime | Usage summaries per model | Varies | Usage dashboard |
+| Sandbox | Fail-closed when a backend is available; plugins/LSP unsandboxed | Documented as not containment | Process-level | Sandboxed tool execution |
+| Cost control | Turn and tool-call budgets enforced; **no spend cap yet** | Usage summaries per model | Varies | Usage dashboard |
 | Memory | Trust-tiered, provenance-aware, secret-scanned | Self-authored skills + curated memory | Persistent memory files | Project memory files |
 | Messaging | Discord + Telegram gateways (real REST outbound, dead-letter) | Telegram gateway | WhatsApp, Telegram, Discord, Slack, Signal, ... | None (terminal only) |
 | Scheduler | Durable cron/one-shot/interval with claims | Cron jobs | Cron | None built in |
 | MCP | Client (stdio, capability-gated `tools/call`) - **server: planned** | MCP support via skills | MCP support | MCP client |
-| Browser control | **Planned** | Via skills | First-class browser tool | None |
+| Browser control | **Built, not live-verified** (six backends, keyless and cloud) | Via skills | First-class browser tool | None |
 | Model choice | OpenAI, Anthropic, custom endpoints + fallbacks | Configurable providers | Local + cloud providers | Anthropic models |
 
-Hermes/OpenClaw cells summarize their public docs and positioning as of September 2026; details move fast, verify before deciding. The "planned" rows are deliberate: Pantheon claims nothing it hasn't built.
+Hermes/OpenClaw cells summarize their public docs and positioning as of September 2026; details move fast, verify before deciding. Rows marked "planned" are not built; the browser row is built but not live-verified on every backend, which is a different claim and is stated as such.
 
 ## Crate map
 
@@ -139,7 +139,7 @@ Hermes/OpenClaw cells summarize their public docs and positioning as of Septembe
 | `pantheon-memory` | Memory plane: five layers + runtime state, trust tiers |
 | `pantheon-secrets` | Secrets broker: values resolved at execution, never in prompts |
 | `pantheon-storage` | SQLite event-sourced execution ledger |
-| `pantheon-scheduler` | Durable jobs: cron, one-shot, interval, webhooks |
+| `pantheon-scheduler` | Durable jobs: cron, one-shot, interval, claims |
 | `pantheon-gateway` | Discord/Telegram gateways: routing, queues, dead-letter |
 | `pantheon-extensions` | Hooks and plugins: spec, `plugin.yaml` loader, Python/JS runners |
 | `pantheon-migration` | Import flows: detect → plan → approve → apply → validate |

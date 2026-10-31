@@ -40,7 +40,10 @@ The `release` workflow signs each asset with `minisign -S` when
 alongside `<asset>.sha256`. When the secret is absent the signing
 step skips (it does not fail the release) and the release ships
 unsigned - which `pantheon update` then refuses to install. The
-`.minisig` file is a minisign signature over the archive bytes,
+release page says so explicitly ("UNSIGNED" prepended to the release
+body, plus a workflow warning), and `install.sh` prints the same
+limitation, so an unsigned release is visible rather than silent.
+The `.minisig` file is a minisign signature over the archive bytes,
 fetched by the updater from `{asset_url}.minisig`.
 
 ## Verifying a release by hand

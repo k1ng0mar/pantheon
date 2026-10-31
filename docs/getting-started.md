@@ -18,6 +18,8 @@ iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb
 
 That downloads the program and puts it in `~/.local/bin`. Running it again later never wipes your settings.
 
+The installer verifies the published `.sha256` file. That is an integrity check, not a signature: the checksum comes from the same place as the archive, so it catches a corrupt download, not a malicious one. Release signatures are not provisioned yet, which is why `pantheon update` currently refuses every release by design - see [release-signing.md](release-signing.md). Until a signing key is pinned in a release you already trust, update by running the install command again or by building from source.
+
 Want to build it yourself? Clone the repo and run `cargo build --release`. It needs Rust, nothing else.
 
 ## Set up
