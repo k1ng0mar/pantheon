@@ -59,3 +59,31 @@ jobs:
         run: |
           ./target/release/pantheon --version
           ./target/release/pantheon --help > /dev/null
+
+  desktop:
+    name: desktop typecheck + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `desktop/` is excluded from the Cargo workspace, and its own
+      # `desktop/.github/workflows/ci.yml` is inert in this monorepo:
+      # GitHub only reads the workflow directory at the repository root.
+      # Without this job the desktop's TypeScript is never typechecked
+      # and its 137 unit tests never run (M4 in docs/execution-ledger.md).
+      - uses: actions/setup-node@v4
+        with:
+          # Type stripping (needed: the tests import src/*.ts directly) is
+          # on by default from Node 22.18; the tag resolves to latest 22.x.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+        working-directory: desktop
+      # `npm run build` is `tsc --noEmit && vite build`; the build also
+      # writes dist/, which tests/bundle.test.mjs reads.
+      - run: npm run build
+        working-directory: desktop
+      - run: npm test
+        working-directory: desktop
+      - run: npm run test:release
+        working-directory: desktop
