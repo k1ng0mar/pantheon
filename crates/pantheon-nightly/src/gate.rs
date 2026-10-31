@@ -108,8 +108,15 @@ impl EvalRunner for SubprocessEvalRunner {
     }
 }
 
-/// Gate a proposal: run up to `config.max_evals` of its tagged evals.
-/// All must pass; the first failure rejects the proposal.
+/// Gate a proposal: run its tagged evals. All must pass; the first
+/// failure rejects the proposal.
+///
+/// The required set is exact. Duplicate tags collapse (running the same
+/// target twice proves nothing), but a set larger than `config.max_evals`
+/// is **refused**, never truncated: silently dropping a required eval
+/// would validate the proposal against a partial bar. `max_evals` is a
+/// bound on what the gate will run, not permission to run less than the
+/// proposal claims.
 ///
 /// An empty tag list yields [`EvalVerdict::Skipped`], never a vacuous
 /// `Pass`: a proposal that ran zero evals is not a proposal that passed
@@ -121,14 +128,28 @@ pub fn gate(
     runner: &dyn EvalRunner,
     config: &NightlyConfig,
 ) -> EvalVerdict {
-    let tags: Vec<&str> = tags.iter().take(config.max_evals).copied().collect();
-    if tags.is_empty() {
+    let mut required: Vec<&str> = Vec::with_capacity(tags.len());
+    for tag in tags {
+        if !required.contains(tag) {
+            required.push(*tag);
+        }
+    }
+    if required.is_empty() {
         // No evals ran: report that explicitly. Callers must treat
         // `Skipped` as *not validated* unless the proposal kind is
         // allowlisted to skip eval-gating - a vacuous pass here let
         // broken drafts validate green.
         return EvalVerdict::Skipped("no evals tagged".into());
     }
+    if required.len() > config.max_evals {
+        return EvalVerdict::Reject(format!(
+            "proposal '{}' requires {} evals but the gate cap is {}; refusing to validate a partial required set",
+            proposal.id,
+            required.len(),
+            config.max_evals
+        ));
+    }
+    let tags = required;
     let mut passed = Vec::new();
     for tag in tags {
         match runner.run_eval(tag, config.eval_timeout) {

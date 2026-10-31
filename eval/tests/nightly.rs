@@ -757,6 +757,122 @@ fn proposal_with_tags(tags: &[&str]) -> Proposal {
     }
 }
 
+/// Eval runner that records every target it is asked to run.
+#[derive(Default)]
+struct RecordingEval {
+    seen: std::cell::RefCell<Vec<String>>,
+}
+impl EvalRunner for RecordingEval {
+    fn run_eval(&self, target: &str, _timeout: Duration) -> EvalOutcome {
+        self.seen.borrow_mut().push(target.to_string());
+        EvalOutcome::Pass
+    }
+}
+
+/// The required eval set is exact: a proposal carrying more tags than the
+/// gate cap is refused, never silently validated against the first N. The
+/// old `.take(max_evals)` truncation would have run a partial set and
+/// reported `Pass`.
+#[test]
+fn gate_refuses_more_required_evals_than_the_cap() {
+    let h = harness();
+    let p = proposal_with_tags(&["a", "b", "c", "d"]);
+    let mut cfg = config(h.dir.path());
+    cfg.max_evals = 3;
+    let runner = RecordingEval::default();
+    let tags: Vec<&str> = p.eval_tags.iter().map(String::as_str).collect();
+    let verdict = pantheon_nightly::gate(&p, &tags, &runner, &cfg);
+    assert!(
+        matches!(verdict, pantheon_nightly::EvalVerdict::Reject(_)),
+        "an over-cap required set must reject, got {verdict:?}"
+    );
+    assert!(
+        runner.seen.borrow().is_empty(),
+        "no eval may run when the required set cannot be honoured in full"
+    );
+}
+
+/// Duplicate tags collapse to one run; they do not consume the cap or
+/// re-run a target. The required set stays exact and ordered.
+#[test]
+fn gate_collapses_duplicate_tags() {
+    let h = harness();
+    let p = proposal_with_tags(&["dup", "dup"]);
+    let cfg = config(h.dir.path());
+    let runner = RecordingEval::default();
+    let tags: Vec<&str> = p.eval_tags.iter().map(String::as_str).collect();
+    let verdict = pantheon_nightly::gate(&p, &tags, &runner, &cfg);
+    assert!(matches!(verdict, pantheon_nightly::EvalVerdict::Pass(_)));
+    assert_eq!(*runner.seen.borrow(), vec!["dup".to_string()]);
+}
+
+/// A skill/persona proposal with no validation binding is refused by the
+/// queue: it never sits in the approval surface looking gate-validated.
+#[test]
+fn unvalidated_skill_proposal_is_refused_by_the_queue() {
+    let h = harness();
+    let p = proposal_with_tags(&["tools_skills"]);
+    let err = pantheon_nightly::queue_for_approval(h.dir.path(), &p, None).unwrap_err();
+    assert!(
+        err.contains("no validation binding"),
+        "unexpected error: {err}"
+    );
+    assert!(load_pending(h.dir.path()).unwrap().is_empty());
+    assert!(!pantheon_nightly::pending_path(h.dir.path()).exists());
+}
+
+/// Validation is bound to the exact draft and eval set. A queue entry whose
+/// body was edited after validation refuses to apply (fail-closed) and
+/// stays queued for revalidation instead of writing the edited draft.
+#[test]
+fn approval_refuses_draft_edited_after_validation() {
+    let h = harness();
+    let p = proposal_with_tags(&["tools_skills"]);
+    let binding = pantheon_nightly::ValidationBinding::of(&p);
+    assert!(pantheon_nightly::queue_for_approval(h.dir.path(), &p, Some(&binding)).unwrap());
+
+    // Simulate an edit to the queue file between validation and approval.
+    let path = pantheon_nightly::pending_path(h.dir.path());
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut queue: serde_json::Value = serde_json::from_str(&text).unwrap();
+    queue[0]["body"] = serde_json::Value::String("sneaky edited draft".into());
+    std::fs::write(&path, serde_json::to_string_pretty(&queue).unwrap()).unwrap();
+
+    let cfg = config(h.dir.path());
+    let err = decide(h.dir.path(), &cfg, &p.id, true).unwrap_err();
+    assert!(
+        err.contains("changed after validation"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !h.dir
+            .path()
+            .join("skills")
+            .join("fixloop-test")
+            .join("SKILL.md")
+            .exists(),
+        "an unvalidated revision must never be applied"
+    );
+    assert_eq!(load_pending(h.dir.path()).unwrap().len(), 1);
+}
+
+/// A binding computed for a different eval set does not match the proposal:
+/// changing the required evaluations requires revalidation.
+#[test]
+fn queue_refuses_binding_for_a_different_eval_set() {
+    let h = harness();
+    let p = proposal_with_tags(&["tools_skills"]);
+    let mut other = p.clone();
+    other.eval_tags = vec!["exec_skills".into()];
+    let stale = pantheon_nightly::ValidationBinding::of(&other);
+    let err = pantheon_nightly::queue_for_approval(h.dir.path(), &p, Some(&stale)).unwrap_err();
+    assert!(
+        err.contains("changed after validation"),
+        "unexpected error: {err}"
+    );
+    assert!(load_pending(h.dir.path()).unwrap().is_empty());
+}
+
 fn replay_task_with_exec(store: &mut ReplayStore) {
     store
         .save(ReplayTask {
@@ -1049,13 +1165,14 @@ fn approved_persona_reaches_overlay_denied_does_not() {
         body: "keep replies terse".into(),
         provenance_runs: vec!["run_1".into()],
         provenance_turns: Vec::new(),
-        eval_tags: Vec::new(),
+        eval_tags: vec!["persona_gate".into()],
         status: ProposalStatus::ReplayPassed,
     };
     let cfg = config(h.dir.path());
+    let binding = pantheon_nightly::ValidationBinding::of(&persona);
 
     // Approval writes the note to the persona namespace.
-    pantheon_nightly::queue_for_approval(h.dir.path(), &persona).unwrap();
+    pantheon_nightly::queue_for_approval(h.dir.path(), &persona, Some(&binding)).unwrap();
     assert!(decide(h.dir.path(), &cfg, &persona.id, true).unwrap());
     let store = pantheon_memory::MemoryStore::open(&h.dir.path().join("memory.db")).unwrap();
     let notes = pantheon_nightly::approved_notes(&store);
@@ -1068,7 +1185,7 @@ fn approved_persona_reaches_overlay_denied_does_not() {
         id: "nly_persona_other".into(),
         ..persona.clone()
     };
-    pantheon_nightly::queue_for_approval(h.dir.path(), &denied).unwrap();
+    pantheon_nightly::queue_for_approval(h.dir.path(), &denied, Some(&binding)).unwrap();
     assert!(decide(h.dir.path(), &cfg, &denied.id, false).unwrap());
     let notes = pantheon_nightly::approved_notes(&store);
     assert_eq!(notes.len(), 1, "denied persona must not inject");

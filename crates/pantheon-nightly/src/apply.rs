@@ -41,17 +41,75 @@ pub enum ApplyOutcome {
     AwaitingApproval,
 }
 
+/// Validation a proposal earned before it entered the approval queue.
+///
+/// Bound to the exact draft body and the exact required eval set, so a
+/// queue entry that was edited after validation cannot be approved on the
+/// strength of the old validation. The nightly pass is the only writer;
+/// a mismatch means the stored proposal is no longer the one that passed
+/// the gates.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ValidationBinding {
+    /// SHA-256 (lowercase hex) of the validated draft body.
+    pub body_sha256: String,
+    /// The exact eval targets that passed, in gate order.
+    pub eval_tags: Vec<String>,
+}
+
+impl ValidationBinding {
+    /// Bind a proposal that has just passed eval + replay gating.
+    pub fn of(proposal: &Proposal) -> Self {
+        Self {
+            body_sha256: body_sha256(&proposal.body),
+            eval_tags: proposal.eval_tags.clone(),
+        }
+    }
+
+    /// True when `proposal` is the draft and eval set this binding was
+    /// computed from.
+    pub fn matches(&self, proposal: &Proposal) -> bool {
+        !self.body_sha256.is_empty()
+            && self.body_sha256 == body_sha256(&proposal.body)
+            && self.eval_tags == proposal.eval_tags
+    }
+}
+
+fn body_sha256(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// One pending entry: the proposal plus the validation it earned.
+///
+/// The binding is flattened into the proposal object so the on-disk shape
+/// stays "an array of proposals" with one extra optional key; entries
+/// written before bindings existed (and memory lessons, which never pass a
+/// gate) simply carry no `validation`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct QueuedProposal {
+    #[serde(flatten)]
+    proposal: Proposal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validation: Option<ValidationBinding>,
+}
+
 /// Load the pending queue (empty when the file is absent).
 ///
 /// A torn file (unparseable JSON) also loads as empty, with a loud
-/// warning: the queue is written atomically (see [`save_pending`]), so a
+/// warning: the queue is written atomically (see [`save_queue`]), so a
 /// torn file can only predate atomic writes or come from a crash
 /// mid-rename - and a queue that errors forever blocks every later
 /// decision. The loss is reported, not silent.
-pub fn load_pending(data_dir: &Path) -> Result<Vec<Proposal>, String> {
+fn load_queue(data_dir: &Path) -> Result<Vec<QueuedProposal>, String> {
     match std::fs::read_to_string(pending_path(data_dir)) {
         Ok(text) => match serde_json::from_str(&text) {
-            Ok(pending) => Ok(pending),
+            Ok(queue) => Ok(queue),
             Err(e) => {
                 eprintln!(
                     "nightly: pending queue {} is torn ({e}); treating as empty",
@@ -65,34 +123,79 @@ pub fn load_pending(data_dir: &Path) -> Result<Vec<Proposal>, String> {
     }
 }
 
-fn save_pending(data_dir: &Path, pending: &[Proposal]) -> Result<(), String> {
+fn save_queue(data_dir: &Path, queue: &[QueuedProposal]) -> Result<(), String> {
     let path = pending_path(data_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    let text = serde_json::to_string_pretty(pending).map_err(|e| format!("encode pending: {e}"))?;
+    let text = serde_json::to_string_pretty(queue).map_err(|e| format!("encode pending: {e}"))?;
     atomic_write(&path, &text).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Load the pending queue as plain proposals (display path).
+///
+/// Callers that act on an entry must use [`decide`], which re-checks the
+/// validation binding before applying.
+pub fn load_pending(data_dir: &Path) -> Result<Vec<Proposal>, String> {
+    Ok(load_queue(data_dir)?
+        .into_iter()
+        .map(|entry| entry.proposal)
+        .collect())
 }
 
 /// Queue a proposal for human approval. No-op (returns
 /// false) when a proposal with the same id is already queued - the
 /// operator sees one decision per proposal.
-pub fn queue_for_approval(data_dir: &Path, proposal: &Proposal) -> Result<bool, String> {
-    let mut pending = load_pending(data_dir)?;
-    if pending.iter().any(|p| p.id == proposal.id) {
+///
+/// A skill/persona proposal must arrive with the [`ValidationBinding`] it
+/// earned in the fix loop: queueing without one, or with a binding that no
+/// longer matches the draft or its required eval set, is refused. That is
+/// what stops an unvalidated (or post-validation-edited) proposal from
+/// sitting in the queue looking green. Memory lessons never pass a gate, so
+/// they queue without a binding.
+pub fn queue_for_approval(
+    data_dir: &Path,
+    proposal: &Proposal,
+    validation: Option<&ValidationBinding>,
+) -> Result<bool, String> {
+    let mut queue = load_queue(data_dir)?;
+    if queue.iter().any(|entry| entry.proposal.id == proposal.id) {
         return Ok(false);
     }
     let mut p = proposal.clone();
-    // Only skill/persona proposals pass a replay gate before queueing,
-    // so only they may carry ReplayPassed here. A MemoryLesson never
-    // passes replay; stamping it ReplayPassed mislabelled a merely
-    // queued lesson as gate-validated. It keeps its incoming status
-    // (Proposed) in the queue.
-    if !matches!(p.kind, ProposalKind::MemoryLesson { .. }) {
+    let validation = if matches!(p.kind, ProposalKind::MemoryLesson { .. }) {
+        // Memory lessons are gated by their promotion rule, not eval+replay.
+        None
+    } else {
+        let binding = validation.ok_or_else(|| {
+            format!(
+                "proposal '{}' has no validation binding; a skill/persona proposal must pass its gates before it is queued",
+                p.id
+            )
+        })?;
+        if binding.eval_tags.is_empty() {
+            return Err(format!(
+                "proposal '{}' carries an empty validated eval set; refusing to queue an untested proposal",
+                p.id
+            ));
+        }
+        if !binding.matches(&p) {
+            return Err(format!(
+                "proposal '{}' changed after validation; refusing to queue it - re-run the nightly pass",
+                p.id
+            ));
+        }
+        // Only skill/persona proposals pass a replay gate before
+        // queueing, so only they may carry ReplayPassed here. A
+        // MemoryLesson keeps its incoming status (Proposed) in the queue.
         p.status = ProposalStatus::ReplayPassed;
-    }
-    pending.push(p);
-    save_pending(data_dir, &pending)?;
+        Some(binding.clone())
+    };
+    queue.push(QueuedProposal {
+        proposal: p,
+        validation,
+    });
+    save_queue(data_dir, &queue)?;
     Ok(true)
 }
 
@@ -107,14 +210,35 @@ pub fn decide(
     id: &str,
     approve: bool,
 ) -> Result<bool, String> {
-    let mut pending = load_pending(data_dir)?;
-    let pos = pending.iter().position(|p| p.id == id);
+    let mut queue = load_queue(data_dir)?;
+    let pos = queue.iter().position(|entry| entry.proposal.id == id);
     let Some(pos) = pos else { return Ok(false) };
     let at = now_ms();
     if approve {
+        // Re-check the validation binding before applying: the queue file
+        // is human-editable, so a stored proposal is only trustworthy when
+        // it is still the exact draft + eval set that passed the gates.
+        // A mismatch refuses (fail-closed) rather than applying an
+        // unvalidated revision.
+        let entry = queue[pos].clone();
+        let proposal = entry.proposal.clone();
+        if !matches!(proposal.kind, ProposalKind::MemoryLesson { .. }) {
+            match &entry.validation {
+                Some(binding) if binding.matches(&proposal) => {}
+                Some(_) => {
+                    return Err(format!(
+                        "proposal '{id}' changed after validation; refusing to apply it - re-run the nightly pass to revalidate"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "proposal '{id}' carries no validation binding; refusing to apply an unvalidated skill/persona"
+                    ))
+                }
+            }
+        }
         // Apply BEFORE dequeuing: if application fails the proposal stays
         // in the queue for retry and the failure is audited.
-        let proposal = pending[pos].clone();
         if let Err(e) = apply_approved(data_dir, &proposal, config.memory_trust) {
             crate::audit::audit(
                 data_dir,
@@ -126,9 +250,8 @@ pub fn decide(
             )?;
             return Err(e);
         }
-        let mut proposal = pending.remove(pos);
-        proposal.status = ProposalStatus::Approved;
-        save_pending(data_dir, &pending)?;
+        queue.remove(pos);
+        save_queue(data_dir, &queue)?;
         crate::audit::audit(
             data_dir,
             &crate::audit::NightlyEvent::ApprovalDecided {
@@ -146,13 +269,12 @@ pub fn decide(
             },
         )?;
     } else {
-        let mut proposal = pending.remove(pos);
-        proposal.status = ProposalStatus::Denied;
-        save_pending(data_dir, &pending)?;
+        queue.remove(pos);
+        save_queue(data_dir, &queue)?;
         crate::audit::audit(
             data_dir,
             &crate::audit::NightlyEvent::ApprovalDecided {
-                id: proposal.id.clone(),
+                id: id.to_string(),
                 approved: false,
                 at_ms: at,
             },
@@ -285,7 +407,7 @@ pub fn apply_memory_lesson(
     Ok(())
 }
 
-/// Route a validated proposal to its destination.
+/// Route a proposal to its destination.
 ///
 /// Memory lessons no longer auto-apply: an unattended nightly pass
 /// surfaces a proposed lesson with its evidence (provenance runs +
@@ -293,12 +415,16 @@ pub fn apply_memory_lesson(
 /// skill/persona proposals. The operator grants or denies; only a grant
 /// writes the durable record. This is the trust/permission model -
 /// frequency + recency can *propose* a lesson, they cannot *durable* one.
+///
+/// This entry point carries no validation binding, so it can only queue
+/// memory lessons: a skill/persona proposal routed here is refused rather
+/// than queued as if it had passed the gates. Gate-validated proposals go
+/// through [`queue_for_approval`] with the binding from the fix loop.
 pub fn route(data_dir: &Path, proposal: &Proposal) -> Result<ApplyOutcome, String> {
-    // All proposal kinds (memory lesson, skill, persona) queue for human
-    // approval. `apply_memory_lesson` is still exposed for the explicit
-    // operator path (`nightly approve <id>`), but the unattended route
-    // never calls it directly.
-    queue_for_approval(data_dir, proposal)?;
+    // All proposal kinds queue for human approval. `apply_memory_lesson`
+    // is still exposed for the explicit operator path (`nightly approve
+    // <id>`), but the unattended route never calls it directly.
+    queue_for_approval(data_dir, proposal, None)?;
     Ok(ApplyOutcome::AwaitingApproval)
 }
 
@@ -363,10 +489,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path();
         let proposal = lesson("nly_test", "trust-key");
-        assert!(queue_for_approval(data_dir, &proposal).unwrap());
-        let mut config = NightlyConfig::default();
-        config.data_dir = data_dir.to_path_buf();
-        config.memory_trust = TrustTier::User;
+        assert!(queue_for_approval(data_dir, &proposal, None).unwrap());
+        let config = NightlyConfig {
+            data_dir: data_dir.to_path_buf(),
+            memory_trust: TrustTier::User,
+            ..NightlyConfig::default()
+        };
         assert!(decide(data_dir, &config, "nly_test", true).unwrap());
         assert_eq!(record_trust(data_dir, "trust-key"), TrustTier::User);
     }

@@ -59,7 +59,7 @@ mod state;
 
 pub use apply::{
     apply_memory_lesson, apply_skill_or_persona, decide, load_pending, pending_path,
-    queue_for_approval, route, ApplyOutcome,
+    queue_for_approval, route, ApplyOutcome, ValidationBinding,
 };
 pub use audit::{audit, audit_path, last_run_summary, read_events, NightlyEvent};
 pub use fixloop::{
@@ -350,7 +350,7 @@ pub fn run_pass(
                     // is written or queued.
                     p.status = ProposalStatus::Proposed;
                 } else {
-                    match queue_for_approval(&config.data_dir, &p) {
+                    match queue_for_approval(&config.data_dir, &p, None) {
                         Ok(_) => {
                             pending += 1;
                             // MemoryLessons are queued as Proposed (they
@@ -401,7 +401,11 @@ pub fn run_pass(
                     finished.push(p);
                     continue;
                 }
-                match queue_for_approval(&config.data_dir, &p) {
+                // Bind the queue entry to the exact draft + eval set that
+                // just passed both gates: editing the stored proposal
+                // afterwards invalidates the binding and blocks approval.
+                let validation = crate::apply::ValidationBinding::of(&p);
+                match queue_for_approval(&config.data_dir, &p, Some(&validation)) {
                     Ok(_) => {
                         pending += 1;
                         // The queued copy is stored as ReplayPassed; the
