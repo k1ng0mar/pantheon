@@ -1570,6 +1570,102 @@ mod gateway_multi_agent_tests {
         }
     }
 
+    /// Scratch sink whose only surface is `telegram`, with its outbound
+    /// queue exposed so a test can read what the user would receive.
+    fn sink_with_allow(
+        allow: Option<HashSet<String>>,
+    ) -> (
+        RuntimeSink,
+        Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>,
+        PathBuf,
+    ) {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-gw-allow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        let queues = HashMap::from([("telegram".to_string(), queue.clone())]);
+        let sink = RuntimeSink::new(dir.clone(), Policy::coder(), queues, allow);
+        (sink, queue, dir)
+    }
+
+    /// S4 regression: a sender not on the allowlist never reaches the
+    /// runtime. The refusal is answered on the same conversation, and no
+    /// run is opened for the thread (the sink returns before `open_session`,
+    /// so there is no model call to make either).
+    #[test]
+    fn non_allowlisted_sender_is_refused_before_the_runtime() {
+        let (sink, queue, dir) = sink_with_allow(Some(HashSet::from(["123".to_string()])));
+        sink.on_message("telegram", "thread-1", Some("999"), "rm -rf /");
+        let sent = queue.lock().unwrap();
+        assert_eq!(sent.len(), 1, "exactly one refusal reply");
+        assert!(
+            sent[0].text.contains("not authorized"),
+            "unexpected reply: {}",
+            sent[0].text
+        );
+        drop(sent);
+        assert!(
+            sink.threads.lock().unwrap().is_empty(),
+            "a refused sender must not open a run"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bridge that strips sender identity is refused whenever an
+    /// allowlist is active: "unknown" is not "trusted".
+    #[test]
+    fn missing_sender_identity_is_refused_when_allowlist_is_active() {
+        let (sink, queue, dir) = sink_with_allow(Some(HashSet::from(["123".to_string()])));
+        sink.on_message("telegram", "thread-1", None, "hello");
+        let sent = queue.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].text.contains("not authorized"));
+        drop(sent);
+        assert!(sink.threads.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Approval callbacks are gated identically: a non-allowlisted sender
+    /// gets no grant/deny path, so a leaked thread id is not enough to
+    /// approve a parked run.
+    #[test]
+    fn non_allowlisted_sender_cannot_decide_an_approval() {
+        let (sink, queue, dir) = sink_with_allow(Some(HashSet::from(["123".to_string()])));
+        sink.on_approval(
+            "telegram",
+            "thread-1",
+            Some("999"),
+            None,
+            "shell.exec",
+            true,
+        );
+        let sent = queue.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].text.contains("not authorized"));
+        drop(sent);
+        assert!(
+            sink.threads.lock().unwrap().is_empty(),
+            "no run may be created or resolved for a refused sender"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No allowlist (local testing / a trusted single-user install) keeps
+    /// the historical behaviour: the check is inert, not a silent deny.
+    #[test]
+    fn absent_allowlist_allows_any_sender() {
+        let (sink, _queue, dir) = sink_with_allow(None);
+        assert!(sink.allowed(Some("999")));
+        assert!(sink.allowed(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn cursor_files_keep_legacy_names() {
         let dir = Path::new("/tmp/state");

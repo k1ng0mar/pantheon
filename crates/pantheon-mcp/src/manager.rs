@@ -308,7 +308,7 @@ pub struct McpReport {
 ///
 /// Deterministic precedence in [`resolve_tool_capability`]:
 /// per-tool override > per-server override > built-in per-tool
-/// classification > built-in server fallback > [`Capability::NetworkOutbound`].
+/// classification > built-in server fallback > [`Capability::McpUnclassified`].
 #[derive(Debug, Clone, Default)]
 pub struct McpCapabilityOverrides {
     /// Server name -> capability for all tools of that server.
@@ -331,13 +331,16 @@ impl McpCapabilityOverrides {
 /// Precedence is deterministic: caller per-tool override, then caller
 /// per-server override, then built-in per-tool classification (REA, only
 /// for its audited server version),
-/// then built-in server fallback (REA's restrictive fallback), then the
-/// [`Capability::NetworkOutbound`] default for all other servers.
+/// then built-in server fallback (REA's restrictive fallback), then
+/// [`Capability::McpUnclassified`] for every other server's tools.
 ///
 /// Fail-closed properties:
 /// * Unknown tools (no per-tool entry anywhere) fall to the server
-///   fallback or the default — never to a *more* permissive capability
-///   than the server's own classification.
+///   fallback or [`Capability::McpUnclassified`], which default policies
+///   park for approval — never to a *more* permissive capability than the
+///   server's own classification. The old `NetworkOutbound` default was
+///   allowed by the coder policy, so an unclassified destructive tool ran
+///   with server approval as the only gate.
 /// * Malformed override keys cannot match: lookup uses exact
 ///   `(server, tool)` tuple equality against the handshake pair.
 /// * A resolution failure is impossible by construction (every path
@@ -384,8 +387,12 @@ pub fn resolve_tool_capability_for_version(
         // New tools in the audited version also fail closed.
         return crate::rea::rea_server_capability();
     }
-    // 4. Default for all other servers (backwards compatible).
-    Capability::NetworkOutbound
+    // 4. Default for all other servers: unclassified tools park on
+    // approval. A server/tool the operator has not classified (and that
+    // has no built-in inventory entry) gets no benefit of the doubt: the
+    // old `NetworkOutbound` default was allowed by the coder policy, so
+    // a destructive third-party tool ran unless an override existed.
+    Capability::McpUnclassified
 }
 
 /// Sanitize one name segment for the `mcp_<server>_<tool>` namespace:
@@ -933,7 +940,8 @@ impl McpManager {
     /// group - today, the CUA driver behind the ComputerUse group.
     ///
     /// `capability` overrides the projected tools' capability (default
-    /// [`Capability::NetworkOutbound`]). The CUA driver passes
+    /// [`Capability::McpUnclassified`], which the default policies park
+    /// for human approval). The CUA driver passes
     /// [`Capability::ComputerUse`]: desktop control is an inward
     /// capability and must park for human approval under the default
     /// policy, not ride the outward network treatment.
@@ -1299,21 +1307,19 @@ impl McpManager {
                     ns = format!("mcp_{san_server}_{}_{n}", sanitize_segment(&def.name));
                     n += 1;
                 }
-                // The projected capability is `NetworkOutbound` by default
-                // (deliberate: an MCP tool is third-party code whose
-                // effects Pantheon's taxonomy cannot see inside of. The
-                // trust decision is the explicit per-server approval
-                // (name + version + content hash); `NetworkOutbound` is
-                // the honest "talks to the outside world" mapping, which
-                // the default policies allow for approved servers. A
-                // `Other("mcp...")` token would deny every MCP tool under
-                // `Policy::coder()`, silently.) A caller may override the
-                // capability per server or per tool (see
-                // [`McpCapabilityOverrides`]): the CUA driver projects as
-                // `ComputerUse`, the inward desktop-control capability,
-                // which parks for human approval by default. Built-in
-                // classifications (e.g. REA's static-vs-tracing split)
-                // apply underneath caller overrides.
+                // The projected capability is `McpUnclassified` by default:
+                // an MCP tool is third-party code whose effects Pantheon's
+                // taxonomy cannot see inside, and the server approval
+                // (name + version + content hash) is a trust decision about
+                // *which* server, not about what each of its tools does.
+                // `McpUnclassified` is parked by the default policies, so an
+                // unclassified tool stops for a human instead of riding an
+                // allowed capability. A caller may override the capability
+                // per server or per tool (see [`McpCapabilityOverrides`]):
+                // the CUA driver projects as `ComputerUse`, the inward
+                // desktop-control capability, which parks for human
+                // approval by default. Built-in classifications (e.g. REA's
+                // static-vs-tracing split) apply underneath caller overrides.
                 //
                 // `name`/`def.name` are the authoritative handshake pair;
                 // the lookup never splits the namespaced `mcp_<s>_<t>`
@@ -2067,16 +2073,22 @@ mod capability_resolution_tests {
     }
 
     #[test]
-    fn default_is_network_outbound_for_unknown_servers() {
-        // Backwards compatibility: servers with no overrides keep the
-        // long-standing default.
+    fn unclassified_tools_park_for_approval() {
+        // No override and no built-in inventory entry: the tool must not
+        // ride an allowed capability. `McpUnclassified` is parked by the
+        // coder policy, so the run stops for a human before a
+        // third-party tool it never classified can write/send/delete.
         assert_eq!(
             resolve_tool_capability(&empty(), "github", "get_issue"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
         );
         assert_eq!(
             resolve_tool_capability(&empty(), "anything", "whatever"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
+        );
+        assert_eq!(
+            pantheon_api::capability::Policy::coder().check(&Capability::McpUnclassified),
+            pantheon_api::capability::Decision::Approval
         );
     }
 
@@ -2088,10 +2100,10 @@ mod capability_resolution_tests {
             resolve_tool_capability(&o, "cua", "click"),
             Capability::ComputerUse
         );
-        // Other servers unaffected.
+        // Other servers keep the unclassified default (parked).
         assert_eq!(
             resolve_tool_capability(&o, "github", "get_issue"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
         );
     }
 
@@ -2188,16 +2200,16 @@ mod capability_resolution_tests {
         // cannot accidentally inherit another entry's capability.
         assert_eq!(
             resolve_tool_capability(&empty(), "rea2", "goto_address"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
         );
         assert_eq!(
             resolve_tool_capability(&empty(), "myrea", "trace_call_path"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
         );
         // A server literally named "rea::x" is a different server.
         assert_eq!(
             resolve_tool_capability(&empty(), "rea::x", "goto_address"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
         );
     }
 
@@ -2209,7 +2221,7 @@ mod capability_resolution_tests {
         );
         assert_eq!(
             resolve_tool_capability(&empty(), "", "goto_address"),
-            Capability::NetworkOutbound
+            Capability::McpUnclassified
         );
     }
 }

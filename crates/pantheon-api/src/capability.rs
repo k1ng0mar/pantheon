@@ -75,6 +75,16 @@ pub enum Capability {
     /// toggleable this way - there is no agent path to put an arbitrary
     /// command on the spawn line (the supply-chain boundary).
     McpEnable,
+    /// A tool projected from an MCP server that has no explicit
+    /// classification (no per-tool/per-server override, no built-in
+    /// inventory entry). Split from [`Capability::NetworkOutbound`]
+    /// because the old default let any unclassified third-party tool -
+    /// including one that deletes, writes, or sends - ride an allowed
+    /// capability under the coder policy, leaving server approval as the
+    /// only gate. Default policies mark this Approval, so the run parks
+    /// for a human before an unclassified tool runs. Operators classify a
+    /// server or tool once via `McpCapabilityOverrides` to allow it.
+    McpUnclassified,
     Other(String),
 }
 
@@ -122,6 +132,7 @@ impl Capability {
             Capability::AgentMessage => "agent.message".to_string(),
             Capability::PluginEnable => "plugin.enable".to_string(),
             Capability::McpEnable => "mcp.enable".to_string(),
+            Capability::McpUnclassified => "mcp.unclassified".to_string(),
             // Space is percent-encoded, not collapsed to '.': without
             // this `Other("a b")` and `Other("a.b")` produced the same
             // token. '%' is escaped first so a literal "%20" in a name
@@ -159,6 +170,7 @@ impl Capability {
             "agent.message" => Capability::AgentMessage,
             "plugin.enable" => Capability::PluginEnable,
             "mcp.enable" => Capability::McpEnable,
+            "mcp.unclassified" => Capability::McpUnclassified,
             // Strip the "other." prefix once: `Other("a.b").token()` is
             // "other.a.b", so parsing it must yield the same capability,
             // not `Other("other.a.b")`. Decode the token escaping above.
@@ -223,6 +235,10 @@ impl Policy {
             .approval(Capability::BinaryTrace)
             .approval(Capability::PluginEnable)
             .approval(Capability::McpEnable)
+            // Unclassified MCP tools park: the old NetworkOutbound default
+            // let an unknown third-party tool (delete/write/send) run on an
+            // allowed capability with only server approval as the gate.
+            .approval(Capability::McpUnclassified)
             // Cloudflare CLI: reads ride ShellExecute; anything that
             // creates/modifies infra or can destroy it (DNS, WAF, access
             // policy, tokens) parks for a human. Classification lives in

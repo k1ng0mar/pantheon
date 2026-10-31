@@ -123,6 +123,7 @@ impl SandboxLevel {
             | Capability::MemoryConfirm
             | Capability::PluginEnable
             | Capability::McpEnable
+            | Capability::McpUnclassified
             | Capability::Other(_) => SandboxLevel::VeryHigh,
         }
     }
