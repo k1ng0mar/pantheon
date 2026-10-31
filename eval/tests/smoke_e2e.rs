@@ -35,7 +35,7 @@ use pantheon_api::error::PantheonError;
 use pantheon_api::events::Event;
 use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy};
 use pantheon_api::permission_mode::PermissionMode;
-use pantheon_runtime::session::Session;
+use pantheon_runtime::session::{write_cached_tool_result, Session};
 use pantheon_runtime::Supervisor;
 use pantheon_secrets::SecretsBroker;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -188,6 +188,23 @@ fn tool_provider(final_text: &str) -> Handler {
             single_shot_text("Smoke Title")
         } else if idx == 0 {
             let args = serde_json::json!({"command": "echo smoke-tool-ran"}).to_string();
+            sse_tool("shell", &args)
+        } else {
+            sse_text(&final_text)
+        }
+    })
+}
+
+/// Like [`tool_provider`], but the first turn's shell call runs
+/// `command`, so a crash test can observe the side effect on disk.
+fn tool_provider_command(command: &str, final_text: &str) -> Handler {
+    let command = command.to_string();
+    let final_text = final_text.to_string();
+    Arc::new(move |_m, _p, _h, _b, idx| {
+        if idx == usize::MAX {
+            single_shot_text("Smoke Title")
+        } else if idx == 0 {
+            let args = serde_json::json!({ "command": command }).to_string();
             sse_tool("shell", &args)
         } else {
             sse_text(&final_text)
@@ -399,6 +416,272 @@ fn smoke_fake_provider_tool_deny_never_executes() {
 }
 
 // ---------------------------------------------------------------------------
+// (b2) Crash injection: a granted-but-unsettled call across a real restart.
+//
+// The S6 duplicate-execution tests. "Crash" means the whole Session object
+// is dropped without finishing the run; "restart" is a NEW Session on the
+// same data dir, which replays the durable ledger — no synthetic events
+// stand in for the state that survives. The invariant under test is the
+// real side effect (a file append), not just ledger bookkeeping:
+//
+// - grant durable, execution never began            -> resume runs EXACTLY once
+// - grant + ToolStarted durable, execution never began -> exactly once
+// - grant + ToolStarted durable, RESULT cached, no settlement
+//                                                    -> replays, runs ZERO times
+//
+// What no test can inject is a kill INSIDE the tool's own execution (side
+// effect committed, cache not yet written): that window is closed only by
+// making the side effect itself transactional with the cache, which is out
+// of the runtime's hands. It is documented, not papered over.
+// ---------------------------------------------------------------------------
+
+/// ToolStarted rows in a run's replay.
+fn count_tool_started(entries: &[pantheon_storage::LedgerEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|e| matches!(&e.event, Event::ToolStarted { .. }))
+        .count()
+}
+
+/// ToolCompleted rows in a run's replay.
+fn count_tool_completed(entries: &[pantheon_storage::LedgerEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|e| matches!(&e.event, Event::ToolCompleted { .. }))
+        .count()
+}
+
+/// Lines appended to the side-effect file (0 when it never ran).
+fn effect_lines(path: &Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
+/// Split a parked approval scope (`call_id:tool:args`) into its parts.
+/// Call ids and tool names carry no ':'; args may.
+fn scope_parts(scope: &str) -> (String, String, String) {
+    let mut parts = scope.splitn(3, ':');
+    let call_id = parts.next().expect("scope id").to_string();
+    let tool = parts.next().expect("scope tool").to_string();
+    let args = parts.next().expect("scope args").to_string();
+    (call_id, tool, args)
+}
+
+#[test]
+fn smoke_fake_provider_crash_after_grant_executes_exactly_once_after_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let effect = dir.path().join("effect-grant.txt");
+    let server = start_server(tool_provider_command(
+        &format!("echo crashed >> {}", effect.display()),
+        "resumed after crash",
+    ));
+    let run = pantheon_runtime::new_run_id();
+
+    // Process 1: the call parks on approval, the operator grants it, and
+    // the process dies before the call runs. The grant is durable; the
+    // execution never existed.
+    {
+        let session = fake_session(dir.path(), server.port, approval_policy());
+        let parked = session
+            .chat(&run, "run the crash command")
+            .expect("parked turn");
+        let (_cap, scope) = awaiting(&parked);
+        assert!(
+            !has_tool_started(&replay(&session.supervisor, &run), "shell"),
+            "a parked call must not have executed"
+        );
+        session.supervisor.grant(&run, &scope).expect("grant");
+        assert_eq!(
+            session
+                .supervisor
+                .ledger_status(&run)
+                .expect("status")
+                .as_deref(),
+            Some("running"),
+            "a granted run is durable state running, awaiting its resume"
+        );
+        // CRASH: the session drops here without resuming the run.
+    }
+    assert_eq!(
+        effect_lines(&effect),
+        0,
+        "nothing must have executed before the crash"
+    );
+
+    // Process 2: a fresh session on the same data dir resumes the run.
+    let session = fake_session(dir.path(), server.port, approval_policy());
+    let resumed = session.chat(&run, "continue").expect("resumed turn");
+    assert_eq!(answered(&resumed), "resumed after crash");
+    let entries = replay(&session.supervisor, &run);
+    assert_eq!(
+        count_tool_started(&entries),
+        1,
+        "exactly one execution attempt across both processes"
+    );
+    assert_eq!(
+        count_tool_completed(&entries),
+        1,
+        "the granted call settles exactly once"
+    );
+    assert_eq!(
+        effect_lines(&effect),
+        1,
+        "the side effect must run exactly once: not lost, not doubled"
+    );
+
+    // Process 3: replaying a SETTLED grant must never re-execute it.
+    drop(session);
+    let session = fake_session(dir.path(), server.port, approval_policy());
+    let again = session.chat(&run, "one more").expect("continued run");
+    assert_eq!(answered(&again), "resumed after crash");
+    assert_eq!(
+        effect_lines(&effect),
+        1,
+        "a settled grant must never re-execute on a later restart"
+    );
+}
+
+#[test]
+fn smoke_fake_provider_crash_after_grant_and_start_still_executes_exactly_once() {
+    // Crash point: grant AND ToolStarted are durable, but the process
+    // died before the tool ran — a recovery attempt that itself was
+    // killed. Recovery must run the call exactly once: dropping it
+    // strands the model with a dangling tool_call, running it twice
+    // duplicates the side effect.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let effect = dir.path().join("effect-started.txt");
+    let server = start_server(tool_provider_command(
+        &format!("echo started >> {}", effect.display()),
+        "resumed mid-call",
+    ));
+    let run = pantheon_runtime::new_run_id();
+
+    {
+        let session = fake_session(dir.path(), server.port, approval_policy());
+        let parked = session
+            .chat(&run, "run the crash command")
+            .expect("parked turn");
+        let (_cap, scope) = awaiting(&parked);
+        session.supervisor.grant(&run, &scope).expect("grant");
+        let (call_id, tool, args) = scope_parts(&scope);
+        session
+            .supervisor
+            .emit(Event::ToolStarted {
+                run_id: run.clone(),
+                call_id,
+                tool,
+                args,
+                provenance: pantheon_api::provenance::Provenance::system("crash test"),
+            })
+            .expect("seed ToolStarted");
+        // CRASH: started but never executed, never settled.
+    }
+    assert_eq!(
+        effect_lines(&effect),
+        0,
+        "the seeded attempt must not have executed"
+    );
+
+    let session = fake_session(dir.path(), server.port, approval_policy());
+    let resumed = session.chat(&run, "continue").expect("resumed turn");
+    assert_eq!(answered(&resumed), "resumed mid-call");
+    let entries = replay(&session.supervisor, &run);
+    assert_eq!(
+        count_tool_started(&entries),
+        2,
+        "the killed attempt plus the recovery attempt both mark the start"
+    );
+    assert_eq!(
+        count_tool_completed(&entries),
+        1,
+        "one settlement across both processes"
+    );
+    assert_eq!(
+        effect_lines(&effect),
+        1,
+        "exactly one real execution despite two ToolStarted rows"
+    );
+}
+
+#[test]
+fn smoke_fake_provider_crash_after_cached_result_replays_without_reexecuting() {
+    // The duplicate window itself: the tool-result cache is written
+    // atomically INSIDE the call, before the operation store persists
+    // `raw_result`. A crash between those two steps leaves grant +
+    // ToolStarted in the ledger and the result durable on disk, with no
+    // settlement anywhere. The resume must replay that result — the
+    // side effect must NOT run a second time.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let effect = dir.path().join("effect-cached.txt");
+    let server = start_server(tool_provider_command(
+        &format!("echo cached >> {}", effect.display()),
+        "settled from cache",
+    ));
+    let run = pantheon_runtime::new_run_id();
+
+    {
+        let session = fake_session(dir.path(), server.port, approval_policy());
+        let parked = session
+            .chat(&run, "run the crash command")
+            .expect("parked turn");
+        let (_cap, scope) = awaiting(&parked);
+        session.supervisor.grant(&run, &scope).expect("grant");
+        let (call_id, tool, args) = scope_parts(&scope);
+        session
+            .supervisor
+            .emit(Event::ToolStarted {
+                run_id: run.clone(),
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                args: args.clone(),
+                provenance: pantheon_api::provenance::Provenance::system("crash test"),
+            })
+            .expect("seed ToolStarted");
+        // The crashed attempt finished executing: its result is in the
+        // crash-safe cache, seeded through the real writer so these are
+        // exactly the bytes a killed process leaves behind. Only the
+        // settlement (ToolMessage/ToolCompleted) never happened.
+        write_cached_tool_result(
+            dir.path(),
+            &format!("{run}:{call_id}"),
+            &serde_json::json!({ "name": tool, "args": args }),
+            &serde_json::json!("pre-crash side effect result"),
+        )
+        .expect("seed result cache");
+        // CRASH.
+    }
+    assert_eq!(
+        effect_lines(&effect),
+        0,
+        "in this test the pre-crash execution is durable state, not a disk write"
+    );
+
+    // Process 2: resume must replay, never re-run.
+    let session = fake_session(dir.path(), server.port, approval_policy());
+    let resumed = session.chat(&run, "continue").expect("resumed turn");
+    assert_eq!(answered(&resumed), "settled from cache");
+    let entries = replay(&session.supervisor, &run);
+    assert_eq!(
+        count_tool_completed(&entries),
+        1,
+        "the call settles exactly once after the replay"
+    );
+    let results = tool_message_texts(&entries);
+    assert!(
+        results
+            .iter()
+            .any(|t| t.contains("pre-crash side effect result")),
+        "the resumed transcript must carry the replayed pre-crash result: {results:?}"
+    );
+    assert_eq!(
+        effect_lines(&effect),
+        0,
+        "replay only: the tool must not execute a second time"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // (c) Delegate / swarm spawn
 // ---------------------------------------------------------------------------
 
@@ -591,9 +874,8 @@ fn smoke_dashboard_approve_then_tool_use_cycle() {
         .supervisor
         .acquire_lease(&run)
         .expect("acquire lease");
-    let guard =
-        pantheon_runtime::RunLeaseGuard::try_new(session.supervisor.clone(), run.clone())
-            .expect("lease guard");
+    let guard = pantheon_runtime::RunLeaseGuard::try_new(session.supervisor.clone(), run.clone())
+        .expect("lease guard");
     let granted = dash.post(
         &format!("/api/approvals/{}/grant", pct_encode(&scope)),
         "{}",
@@ -1066,4 +1348,3 @@ fn smoke_search_tinyfish_is_recommended_default_with_x_api_key() {
     assert_eq!(hits[0].title, "Smoke Hit");
     assert_eq!(hits[0].url, "https://example.com/smoke");
 }
-

@@ -657,7 +657,13 @@ fn read_cached_tool_result(
     cached.get("result").cloned()
 }
 
-fn write_cached_tool_result(
+/// Persist one tool result for crash-safe replay (atomic temp file +
+/// rename). Exported so behavioral tests can seed the exact durable
+/// state a process killed between this write and the settlement leaves
+/// behind: the real write happens inside `execute_keyed`, mid-call,
+/// where a test cannot reach. Production callers reach this through
+/// `RegistryToolAdapter::execute_keyed`.
+pub fn write_cached_tool_result(
     data_dir: &std::path::Path,
     operation_id: &str,
     translated: &serde_json::Value,
