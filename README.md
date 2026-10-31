@@ -121,7 +121,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 | Browser control | **Built, not live-verified** (six backends, keyless and cloud) | Via skills | First-class browser tool | None |
 | Model choice | OpenAI, Anthropic, custom endpoints + fallbacks | Configurable providers | Local + cloud providers | Anthropic models |
 
-Hermes/OpenClaw cells summarize their public docs and positioning as of September 2026; details move fast, verify before deciding. Rows marked "planned" are not built; the browser row is built but not live-verified on every backend, which is a different claim and is stated as such.
+Hermes/OpenClaw cells summarize their public docs and positioning as of September 2026; details move fast, verify before deciding. This is an unsourced snapshot: the competitor cells carry no per-row citation, so treat them as a starting point for your own comparison rather than a sourced claim. Rows marked "planned" are not built; the browser row is built but not live-verified on every backend, which is a different claim and is stated as such.
 
 ## Crate map
 

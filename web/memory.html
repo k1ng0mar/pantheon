@@ -9,6 +9,12 @@
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
+  <!-- Third-party fonts are a documented exception for this static site (D8):
+       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
+       assets/fonts/, so the app itself never requests a font CDN. This site
+       also loads the Tailwind CDN script. The home page's Privacy section
+       tells visitors that this site loads them and the app does not. Keep the
+       claims in sync if the site ever self-hosts. -->
   <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

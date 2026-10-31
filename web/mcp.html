@@ -9,6 +9,12 @@
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
+  <!-- Third-party fonts are a documented exception for this static site (D8):
+       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
+       assets/fonts/, so the app itself never requests a font CDN. This site
+       also loads the Tailwind CDN script. The home page's Privacy section
+       tells visitors that this site loads them and the app does not. Keep the
+       claims in sync if the site ever self-hosts. -->
   <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -197,7 +203,7 @@ pantheon mcp approve github
 <li><code>pantheon mcp enable|disable &lt;name&gt;</code> - toggle a declared server (config-defined servers are toggled in <code>config.toml</code>).</li>
 <li>Inside the TUI: <code>/mcp reload</code> re-reads config + declarations and hands the new specs to the launcher without dropping your session.</li>
 </ul>
-<p class="my-3 leading-relaxed">The dashboard&#x27;s MCP page shows the same merged view with live health. A server that keeps failing backs off (1s, doubling, capped at 5 minutes) instead of hammering retries; a server that dies mid-call gets one reconnect and one retry, then the error goes to the model like any other tool failure.</p>
+<p class="my-3 leading-relaxed">The dashboard&#x27;s MCP page shows the same merged view with live health. A server that keeps failing backs off (2s, doubling, capped at 5 minutes) instead of hammering retries; a server that dies mid-call gets one reconnect and one retry, then the error goes to the model like any other tool failure.</p>
 </main>
 
   <footer class="border-t mt-16" style="border-color: var(--rule-soft);">

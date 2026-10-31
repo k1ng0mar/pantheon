@@ -10,6 +10,9 @@
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
+  <!-- Third-party fonts on this static marketing page (D8): the app self-hosts
+       its faces (crates/pantheon-dashboard/assets/fonts/). The Privacy section
+       below states the difference to visitors. -->
   <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -143,6 +146,13 @@
     <p class="text-grey mt-6 max-w-2xl leading-relaxed reveal">
       Everything lives on your computer. There is no account, no cloud,
       nothing uploaded.
+    </p>
+    <p class="text-grey mt-4 max-w-2xl leading-relaxed reveal">
+      That is the app. This marketing site is separate: it loads its
+      typefaces from Google Fonts and Fontshare and its styling script from
+      the Tailwind CDN, so those providers see your IP address when you
+      browse here. The app itself self-hosts its fonts and never loads them
+      from a CDN.
     </p>
   </section>
 

@@ -9,6 +9,12 @@
   <meta property="og:type" content="website">
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
+  <!-- Third-party fonts are a documented exception for this static site (D8):
+       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
+       assets/fonts/, so the app itself never requests a font CDN. This site
+       also loads the Tailwind CDN script. The home page's Privacy section
+       tells visitors that this site loads them and the app does not. Keep the
+       claims in sync if the site ever self-hosts. -->
   <link rel="preconnect" href="https://api.fontshare.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -180,6 +186,7 @@ curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh
 iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
 </code></pre>
 <p class="my-3 leading-relaxed">That downloads the program and puts it in <code>~/.local/bin</code>. Running it again later never wipes your settings.</p>
+<p class="my-3 leading-relaxed">The installer verifies the published <code>.sha256</code> file. That is an integrity check, not a signature: the checksum comes from the same place as the archive, so it catches a corrupt download, not a malicious one. Release signatures are not provisioned yet, which is why <code>pantheon update</code> currently refuses every release by design - see <a href="https://github.com/k1ng0mar/pantheon/blob/master/docs/release-signing.md">release-signing.md</a>. Until a signing key is pinned in a release you already trust, update by running the install command again or by building from source.</p>
 <p class="my-3 leading-relaxed">Want to build it yourself? Clone the repo and run <code>cargo build --release</code>. It needs Rust, nothing else.</p>
 <h2 id="set-up" class="text-xl font-bold tracking-tight mt-10 mb-3">Set up</h2>
 <pre><code>
