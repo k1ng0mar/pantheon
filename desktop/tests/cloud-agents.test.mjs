@@ -21,16 +21,25 @@ test('the Cloud section lists connected providers only, then setup', () => {
   assert.deepEqual(cloudItems([], 'local').map(item => item.id), [SETUP_CHOICE]);
 });
 
-test('only Claude Code relays, Codex and OpenCode run in the cloud', () => {
-  for (const id of ['claude', 'glm', 'mimo', 'codex', 'opencode']) assert.equal(harnessRefusal(id, id), '');
-  assert.match(harnessRefusal('kimi', 'Kimi'), /^Kimi can’t run on a cloud machine yet\. Choose Claude Code, GLM, MiMo, Codex or OpenCode\.$/);
+// The desktop is Pantheon-only (39af97a made the app Pantheon-only): a cloud
+// machine installs and runs Pantheon's own binary, never a third-party CLI
+// harness. Only the Pantheon provider is accepted; every other id is refused
+// with the one-line reason.
+test('only the Pantheon runtime runs in the cloud', () => {
+  assert.equal(harnessRefusal('pantheon', 'Pantheon'), '');
+  for (const id of ['claude', 'glm', 'mimo', 'codex', 'opencode', 'kimi']) {
+    assert.equal(harnessRefusal(id, id), `${id} can’t run on a cloud machine yet.`);
+  }
+  assert.equal(harnessRefusal('codex', 'Codex'), 'Codex can’t run on a cloud machine yet.');
 });
 
 test('stages read as short phrases; busy ones spin', () => {
-  assert.equal(stageText('installing', null, 'codex'), 'Installing Codex');
-  assert.equal(stageText('installing', null, 'glm'), 'Installing Claude Code');
-  assert.equal(stageText('error', 'E2B refused the key', 'claude'), 'Error: E2B refused the key');
-  assert.equal(stageText('reconnecting', null, 'claude'), 'Reconnecting…');
+  // Every harness installs Pantheon itself on the cloud machine, so the
+  // installing text no longer varies by harness.
+  assert.equal(stageText('installing', null, 'pantheon'), 'Installing Pantheon');
+  assert.equal(stageText('installing', null, 'claude'), 'Installing Pantheon');
+  assert.equal(stageText('error', 'E2B refused the key', 'pantheon'), 'Error: E2B refused the key');
+  assert.equal(stageText('reconnecting', null, 'pantheon'), 'Reconnecting…');
   assert.equal(busyStage('uploading'), true);
   assert.equal(busyStage('ready'), false);
   assert.equal(busyStage('error'), false);
