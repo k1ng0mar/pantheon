@@ -85,7 +85,15 @@ fn web_search_uses_default_max_results_when_arg_missing() {
     let mut reg = ToolRegistry::new();
     register_search_tools(&mut reg, Arc::new(Probe), 7).unwrap();
     let out = reg.execute("web_search", r#"{"query": "x"}"#).unwrap();
-    assert_eq!(out, "[]");
+    // An empty result set returns a single note object, not a silent
+    // `[]`: the model must be able to tell "searched, found nothing"
+    // from "the call produced no output". The provider's max_results
+    // assertion above is what this test is really about - the note
+    // shape is the empty-result contract.
+    assert_eq!(
+        out, r#"[{"note":"no results found for this query"}]"#,
+        "an empty result set must say so explicitly"
+    );
 }
 
 #[test]

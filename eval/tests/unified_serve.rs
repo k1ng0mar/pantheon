@@ -15,6 +15,10 @@ use pantheon_runtime::agui_serve::{AguiMount, AguiServeConfig};
 struct Resp {
     status: u16,
     body: String,
+    /// The `Set-Cookie` value, when the response carries one: the
+    /// session-mint path is what header-less clients (EventSource,
+    /// downloads, WebSockets) authenticate with.
+    set_cookie: Option<String>,
 }
 
 fn raw_request(
@@ -48,6 +52,7 @@ fn raw_request(
         .parse()
         .unwrap_or(0);
     let mut len: usize = 0;
+    let mut set_cookie: Option<String> = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line).expect("header");
@@ -59,6 +64,11 @@ fn raw_request(
             len = rest.trim().parse().unwrap_or(0);
         } else if let Some(rest) = line.strip_prefix("Content-Length:") {
             len = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = line
+            .strip_prefix("set-cookie:")
+            .or_else(|| line.strip_prefix("Set-Cookie:"))
+        {
+            set_cookie = Some(rest.trim().to_string());
         }
     }
     let mut body = String::new();
@@ -67,7 +77,11 @@ fn raw_request(
         reader.read_exact(&mut buf).expect("body");
         body = String::from_utf8_lossy(&buf).into_owned();
     }
-    Resp { status, body }
+    Resp {
+        status,
+        body,
+        set_cookie,
+    }
 }
 
 fn boot() -> (u16, String, tempfile::TempDir) {
@@ -135,6 +149,9 @@ fn unified_listener_serves_dashboard_and_api_behind_one_token() {
     // Dashboard API routes need the token.
     let r = raw_request(port, "GET", "/api/overview", &none, None);
     assert_eq!(r.status, 401, "API without token must be 401");
+    // A token in the query string no longer authenticates: URLs leak
+    // into logs, history, and referers. The header is the one browser
+    // path, the session cookie the one for header-less clients.
     let r = raw_request(
         port,
         "GET",
@@ -142,15 +159,44 @@ fn unified_listener_serves_dashboard_and_api_behind_one_token() {
         &none,
         None,
     );
-    assert_eq!(r.status, 200, "API with ?token= must pass: {}", r.body);
+    assert_eq!(
+        r.status, 401,
+        "a query-string token must be rejected, never honored"
+    );
     let r = raw_request(
         port,
         "GET",
         "/api/overview",
-        &[("x-pantheon-token".into(), token)],
+        &[("x-pantheon-token".into(), token.clone())],
         None,
     );
     assert_eq!(r.status, 200, "API with header token must pass");
+
+    // Header-less clients mint a session cookie from the token once
+    // (POST /api/session) and then authenticate with the cookie alone.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/session",
+        &[("x-pantheon-token".into(), token.clone())],
+        Some("{}"),
+    );
+    assert_eq!(r.status, 200, "session mint: {}", r.body);
+    let cookie = r
+        .set_cookie
+        .expect("mint must Set-Cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let r = raw_request(
+        port,
+        "GET",
+        "/api/overview",
+        &[("cookie".into(), cookie)],
+        None,
+    );
+    assert_eq!(r.status, 200, "cookie alone must pass: {}", r.body);
 }
 
 #[test]
@@ -192,8 +238,9 @@ fn unified_agui_health_rpc_and_stream_behind_one_token() {
         .unwrap_or("")
         .contains("method not found"));
 
-    // ?token= on /agui/stream (EventSource cannot set headers) passes
-    // auth; the missing ?run= then produces the handler's 400.
+    // ?token= no longer passes auth on /agui/stream (the pre-fix
+    // exception): a token in a URL leaks. The 401 proves the route is
+    // reached and rejected, not silently honored.
     let r = raw_request(
         port,
         "GET",
@@ -201,6 +248,36 @@ fn unified_agui_health_rpc_and_stream_behind_one_token() {
         &none,
         None,
     );
-    assert_eq!(r.status, 400);
+    assert_eq!(
+        r.status, 401,
+        "a query-string token must be rejected on /agui/stream"
+    );
+
+    // The header-less EventSource path: mint the session cookie once,
+    // then GET with the cookie and the missing ?run= - the handler
+    // runs and reports its own 400.
+    let r = raw_request(
+        port,
+        "POST",
+        "/api/session",
+        &[("x-pantheon-token".into(), token.clone())],
+        Some("{}"),
+    );
+    assert_eq!(r.status, 200, "session mint: {}", r.body);
+    let cookie = r
+        .set_cookie
+        .expect("mint must Set-Cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let r = raw_request(
+        port,
+        "GET",
+        "/agui/stream?run=",
+        &[("cookie".into(), cookie)],
+        None,
+    );
+    assert_eq!(r.status, 400, "cookie must pass auth: {}", r.body);
     assert!(r.body.contains("missing ?run="), "body: {}", r.body);
 }

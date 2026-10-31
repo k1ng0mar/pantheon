@@ -206,7 +206,7 @@ fn overlap_replace_supersedes_inflight_run() {
 }
 
 #[test]
-fn overlap_queue_runs_once_more_after_inflight() {
+fn overlap_queue_same_occurrence_drains_once_not_twice() {
     let driver = driver();
     let mut job = every_minute("queued");
     job.overlap = OverlapPolicy::Queue;
@@ -230,15 +230,24 @@ fn overlap_queue_runs_once_more_after_inflight() {
     }
     released.store(true, Ordering::SeqCst);
 
-    // One Fired decision, two runs: the initial plus the drained queue.
+    // One fire per occurrence, ever: the queued tick observed the very
+    // occurrence the natural fire already claimed, so the drain is
+    // consumed as a duplicate. The natural fire's single completion
+    // arrives and then the channel closes - no second run, no second
+    // completion.
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         RunOutcome::Completed
     );
-    wait_for(&runs, 2);
     assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        RunOutcome::Completed
+        rx.recv_timeout(Duration::from_secs(5)).unwrap_err(),
+        mpsc::RecvTimeoutError::Disconnected,
+        "the drain must not fire a second run for the same occurrence"
+    );
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "the job must have executed exactly once"
     );
 }
 

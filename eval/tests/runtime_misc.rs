@@ -101,18 +101,33 @@ fn nightly_re_disabling_updates_in_place() {
     );
 }
 
-/// Fail-open: a missing or corrupt disable file reads as empty, so a
-/// broken list can never brick the registry build - and a later record
-/// replaces the corrupt file.
+/// A corrupt disable file reads as empty, so a broken list can never
+/// brick the registry build - but it is NOT overwritten by a later
+/// record. The corrupt list is the containment record for tools the
+/// nightly pass disabled; writing a fresh list over it would silently
+/// discard that history and re-enable a contained dangerous tool. The
+/// write is refused instead, and the corruption surfaces as a
+/// diagnostic at registry build (see the runtime's own diagnostic test).
 #[test]
-fn nightly_corrupt_file_reads_as_empty() {
+fn nightly_corrupt_file_reads_as_empty_and_refuses_overwrite() {
     let dd = tempfile::tempdir().unwrap();
     let path = disabled_tools_path(dd.path());
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "not json {{{").unwrap();
     assert!(load_disabled_tools(dd.path()).is_empty());
-    record_disabled_tool(dd.path(), "t", "r").unwrap();
-    assert_eq!(load_disabled_tools(dd.path()), vec!["t".to_string()]);
+    let err = record_disabled_tool(dd.path(), "t", "r")
+        .expect_err("a corrupt disable list must not be overwritten");
+    assert!(
+        err.contains("corrupt"),
+        "the refusal must name the corruption: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "not json {{{",
+        "the corrupt file must be left exactly as it was"
+    );
+    // Still empty (not a partial list), and the next load is unchanged.
+    assert!(load_disabled_tools(dd.path()).is_empty());
 }
 
 // ---------------------------------------------------------------------------

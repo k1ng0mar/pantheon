@@ -116,7 +116,13 @@ fn fallback_engagement_renders_error_card() {
         },
         "the card must name the now-active fallback model"
     );
-    assert_eq!(s.model, "deepseek-chat", "fallback model becomes active");
+    // `state.model` stays in `provider/model` form through a fallback:
+    // a bare model id here lost the provider, and the input row then
+    // rendered the model in the provider slot.
+    assert_eq!(
+        s.model, "deepseek/deepseek-chat",
+        "fallback model becomes active, keeping its provider"
+    );
     // The Attempt for the fallback model must not print the old
     // "routing:" status line on top of the card.
     s.handle_model_event(attempt("deepseek", "deepseek-chat", 1));

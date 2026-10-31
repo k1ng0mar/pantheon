@@ -75,7 +75,7 @@ fn builtin_toggles_gate_registration() {
 }
 
 #[test]
-fn all_groups_off_registry_has_no_gated_tools_but_keeps_session_search() {
+fn all_groups_off_registry_has_no_gated_tools() {
     let s = gating_session("all-off");
     s.set_tool_enablement(ToolEnablement::none());
     let (reg, _counts) = s.build_tool_registry();
@@ -108,12 +108,29 @@ fn all_groups_off_registry_has_no_gated_tools_but_keeps_session_search() {
         !n.iter().any(|t| t.starts_with("mcp_")),
         "mcp projections registered while Plugins is off: {n:?}"
     );
-    // Session search is default-on and hidden from the Tools screen: no
-    // toggle exists, so it is always present.
+    // Session search rides the Memory group (it is recall of past
+    // conversations), so it is gone when every group is off. It used to
+    // be registered unconditionally, which meant a `[tools] memory =
+    // false` operator still got a recall tool in the registry.
     assert!(
-        n.iter().any(|t| t == "session_search"),
-        "session_search must always be registered, got: {n:?}"
+        !n.iter().any(|t| t == "session_search"),
+        "session_search must not be registered while Memory is off: {n:?}"
     );
+    let _ = std::fs::remove_dir_all(s.supervisor.data_dir());
+}
+
+/// Session search has no toggle of its own: it is registered by default
+/// and rides the Memory group, so the default build still carries it.
+#[test]
+fn session_search_is_registered_by_default() {
+    let s = gating_session("search-default");
+    let (reg, counts) = s.build_tool_registry();
+    assert!(
+        reg.names().iter().any(|t| t == "session_search"),
+        "session_search must be registered by default: {:?}",
+        reg.names()
+    );
+    assert!(counts.session_search > 0);
     let _ = std::fs::remove_dir_all(s.supervisor.data_dir());
 }
 
