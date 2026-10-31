@@ -298,6 +298,12 @@ fn atomic_write_dotenv_file(path: &Path, text: &str) -> std::io::Result<()> {
 /// an already-set variable. Missing/unreadable file = no-op. Like every
 /// dotenv loader, the last occurrence of a key wins.
 ///
+/// Security-boundary keys (see `is_security_boundary_env_key`) are
+/// still honored here - the operator decision is logged-only - but the
+/// loader announces each one: the file has more writers than the
+/// operator (migration carry, the dashboard env endpoint), so a planted
+/// line must not flip a gate without a trace.
+///
 /// Also reaps stale `<target>.tmp.<pid>` files left by writers that died
 /// mid-write (see [`sweep_stale_dotenv_temps`]): this runs at every CLI
 /// startup, so leaked temps do not accumulate across kill -9 rounds.
@@ -309,9 +315,36 @@ pub fn load_dotenv(data_dir: &Path) {
     // Reversed + set-if-absent = last occurrence wins, exports still win.
     for (key, value) in parse_dotenv(&text).into_iter().rev() {
         if std::env::var_os(&key).is_none() {
+            if is_security_boundary_env_key(&key) {
+                eprintln!(
+                    "pantheon: {}/.env is setting {key} - a security-boundary opt-in \
+                     (isolation/SSRF gate). Honored, but anyone who can write this \
+                     file can flip it for every future launch; prefer exporting it \
+                     in the shell that starts pantheon.",
+                    data_dir.display()
+                );
+            }
             std::env::set_var(&key, &value);
         }
     }
+}
+
+/// Keys whose value gates a security boundary rather than configuring
+/// the process: the sandbox direct-fallback opt-in (S1) and the SSRF
+/// loopback/LAN gate for provider URLs. Loading them from
+/// `<data_dir>/.env` still works (logged-only decision), but the loader
+/// flags each one - the file is data-dir state, writable by more than
+/// the operator, not the shell environment.
+const SECURITY_BOUNDARY_ENV_KEYS: &[&str] = &[
+    "PANTHEON_SANDBOX_FALLBACK",
+    "PANTHEON_ALLOW_LOOPBACK_PROVIDERS",
+];
+
+/// Whether `key` is one of [`SECURITY_BOUNDARY_ENV_KEYS`] (exact match:
+/// dotenv keys are case-sensitive, like the environment lookups they
+/// feed).
+fn is_security_boundary_env_key(key: &str) -> bool {
+    SECURITY_BOUNDARY_ENV_KEYS.contains(&key)
 }
 
 /// Insert or replace `KEY=value` in `<data_dir>/.env`, preserving every
@@ -564,6 +597,37 @@ mod dotenv_durability_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// S1 (logged-only): security-boundary keys carried in
+    /// `<data_dir>/.env` are classified (so the loader can announce
+    /// them) and STILL honored - the operator decision removed no
+    /// pathway, it added a trace. Nobody in this test binary reads the
+    /// sandbox var; the old value is restored anyway.
+    #[test]
+    fn security_boundary_env_keys_are_classified_and_still_honored() {
+        assert!(is_security_boundary_env_key("PANTHEON_SANDBOX_FALLBACK"));
+        assert!(is_security_boundary_env_key(
+            "PANTHEON_ALLOW_LOOPBACK_PROVIDERS"
+        ));
+        assert!(!is_security_boundary_env_key("PANTHEON_API_KEY"));
+        assert!(!is_security_boundary_env_key("PANTHEON_SANDBOX_FALLBACK_2"));
+
+        let dir = scratch_dir("boundary");
+        std::fs::write(dir.join(".env"), "PANTHEON_SANDBOX_FALLBACK=allow\n").unwrap();
+        let saved = std::env::var_os("PANTHEON_SANDBOX_FALLBACK");
+        std::env::remove_var("PANTHEON_SANDBOX_FALLBACK");
+        load_dotenv(&dir);
+        assert_eq!(
+            std::env::var("PANTHEON_SANDBOX_FALLBACK").ok().as_deref(),
+            Some("allow"),
+            "logged-only decision: the file-carried value must still be applied"
+        );
+        match saved {
+            Some(v) => std::env::set_var("PANTHEON_SANDBOX_FALLBACK", v),
+            None => std::env::remove_var("PANTHEON_SANDBOX_FALLBACK"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Item 2c: values with comment markers, quotes, and edge whitespace
@@ -839,14 +903,21 @@ mod dotenv_durability_tests {
         let dir = scratch_dir("validate");
         for bad_key in ["", "HAS SPACE", "has-dash", "key=value"] {
             let err = upsert_dotenv_file(&dir, ".env", bad_key, "v").unwrap_err();
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "key {bad_key:?}");
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "key {bad_key:?}"
+            );
         }
         for bad_value in ["line1\nline2", "line1\rline2"] {
             let err = upsert_dotenv_file(&dir, ".env", "GOOD_KEY", bad_value).unwrap_err();
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         }
         // Rejected writes left nothing behind.
-        assert!(!dir.join(".env").exists(), "no file may be created by a rejected upsert");
+        assert!(
+            !dir.join(".env").exists(),
+            "no file may be created by a rejected upsert"
+        );
         // Valid upserts still round-trip.
         upsert_dotenv_file(&dir, ".env", "GOOD_KEY", "fine value").unwrap();
         assert_eq!(

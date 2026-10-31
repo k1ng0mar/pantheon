@@ -31,7 +31,7 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::SandboxProfile;
@@ -374,6 +374,17 @@ pub fn build_sandboxed_checked(
         // as a plain one. The fallback loses the namespace boundary, never
         // the env boundary: the child still does not inherit host secrets,
         // and the profile's rlimits still apply.
+        //
+        // One choke point, every caller: the shell tool reports the
+        // degraded run in its tool result, but the MCP client and the
+        // Python plugin runner discard the `sandboxed` flag - so an
+        // unsandboxed spawn is announced on stderr here, never silent.
+        let origin = if profile.allow_direct_fallback {
+            "SandboxProfile::allow_direct_fallback"
+        } else {
+            "PANTHEON_SANDBOX_FALLBACK"
+        };
+        eprintln!("{}", degraded_spawn_msg(program, origin));
         let mut cmd = direct_command(program, args, cwd);
         scrub_child_env(&mut cmd);
         #[cfg(unix)]
@@ -662,13 +673,57 @@ fn wrapper_initializes(profile: &SandboxProfile, cwd: &str) -> bool {
 /// Whether the direct-spawn fallback is opted in: either the profile's
 /// `allow_direct_fallback` or `PANTHEON_SANDBOX_FALLBACK=allow` in the
 /// environment (a deployment-level override that needs no profile change).
+///
+/// The env-var origin is logged once per process the first time it opts
+/// in: trading away namespace isolation is a legitimate deployment
+/// choice (a host whose wrapper cannot initialize), but it must never be
+/// invisible. The profile flag is silent because it is explicit in code.
 fn direct_fallback_allowed(profile: &SandboxProfile) -> bool {
     if profile.allow_direct_fallback {
         return true;
     }
-    std::env::var("PANTHEON_SANDBOX_FALLBACK")
-        .map(|v| v.eq_ignore_ascii_case("allow"))
-        .unwrap_or(false)
+    env_fallback_allows(&std::env::var("PANTHEON_SANDBOX_FALLBACK").ok())
+}
+
+/// The env-var half of [`direct_fallback_allowed`], split out so the
+/// opt-in and its once-per-process announcement are testable without
+/// mutating the real environment (the sandbox tests share a process).
+fn env_fallback_allows(value: &Option<String>) -> bool {
+    match value.as_deref() {
+        Some(v) if v.eq_ignore_ascii_case("allow") => {
+            if let Some(msg) = env_fallback_warn_msg() {
+                eprintln!("pantheon: {msg}");
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Message announcing the env-var fallback opt-in, returned exactly once
+/// per process (`None` on every later consult). Split from the print so
+/// the once-semantics are unit-testable without capturing stderr.
+static ENV_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn env_fallback_warn_msg() -> Option<String> {
+    if ENV_FALLBACK_WARNED.swap(true, Ordering::SeqCst) {
+        return None;
+    }
+    Some(
+        "PANTHEON_SANDBOX_FALLBACK=allow is set: commands whose sandbox wrapper \
+         is unavailable will run WITHOUT namespace isolation (env scrub and rlimits \
+         still apply). Deployment-level opt-in; remove it to restore fail-closed."
+            .to_string(),
+    )
+}
+
+/// The stderr line for one degraded (direct-fallback) spawn. Every
+/// caller funnels through here, so the line names the program and the
+/// exact origin that authorized it.
+fn degraded_spawn_msg(program: &str, origin: &str) -> String {
+    format!(
+        "pantheon: {program} spawning WITHOUT namespace isolation (direct sandbox fallback via {origin})"
+    )
 }
 
 /// Cap on captured child output (stdout + stderr combined), in bytes.
@@ -952,6 +1007,63 @@ mod sandbox_escape_tests {
     /// Serializes tests that mutate process-global state (the
     /// `PANTHEON_SANDBOX_PATH` lookup hook, sentinel env vars).
     static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// S1 (logged-only): the `PANTHEON_SANDBOX_FALLBACK=allow` opt-in
+    /// must announce itself exactly once per process. This module never
+    /// sets the real env var (other tests rely on the fail-closed
+    /// default), which is why the env half is a pure function here.
+    #[test]
+    fn env_var_fallback_opt_in_is_flagged_once() {
+        // Shares ENV_FALLBACK_WARNED with the once-primitive test below.
+        let _guard = ENV_GUARD.lock().unwrap();
+        assert!(!env_fallback_allows(&None));
+        assert!(!env_fallback_allows(&Some("deny".to_string())));
+        ENV_FALLBACK_WARNED.store(false, Ordering::SeqCst);
+        assert!(
+            env_fallback_allows(&Some("allow".to_string())),
+            "the documented opt-in value must still opt in (logged-only, not removed)"
+        );
+        assert!(
+            ENV_FALLBACK_WARNED.load(Ordering::SeqCst),
+            "the env-var opt-in must arm its once-per-process warning"
+        );
+        // Later consults keep opting in but never re-announce.
+        assert!(env_fallback_allows(&Some("ALLOW".to_string())));
+        assert!(
+            env_fallback_warn_msg().is_none(),
+            "the announcement must fire exactly once per process"
+        );
+        ENV_FALLBACK_WARNED.store(false, Ordering::SeqCst);
+    }
+
+    /// The once-message primitive itself: first consult returns the
+    /// announcement, every later one is silent.
+    #[test]
+    fn env_fallback_warning_message_is_once_per_process() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        ENV_FALLBACK_WARNED.store(false, Ordering::SeqCst);
+        assert!(env_fallback_warn_msg().is_some());
+        assert!(env_fallback_warn_msg().is_none());
+        ENV_FALLBACK_WARNED.store(false, Ordering::SeqCst);
+    }
+
+    /// One choke point for every degraded spawn: the MCP client and the
+    /// plugin runner discard the `sandboxed` flag, so the stderr line is
+    /// their record. It must name both the program and the origin that
+    /// authorized running it unsandboxed.
+    #[test]
+    fn degraded_spawn_message_names_program_and_origin() {
+        let msg = degraded_spawn_msg("python3", "PANTHEON_SANDBOX_FALLBACK");
+        assert!(msg.contains("python3"), "{msg}");
+        assert!(msg.contains("WITHOUT namespace isolation"), "{msg}");
+        assert!(msg.contains("PANTHEON_SANDBOX_FALLBACK"), "{msg}");
+        let profile_origin =
+            degraded_spawn_msg("mcp-server", "SandboxProfile::allow_direct_fallback");
+        assert!(
+            profile_origin.contains("SandboxProfile::allow_direct_fallback"),
+            "{profile_origin}"
+        );
+    }
 
     /// Skip guard for the tests that need a real `IsolatedProcess` run.
     /// Delegates to the shared probe so this crate and its callers agree
