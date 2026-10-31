@@ -106,6 +106,19 @@ async function download(path, filename) {
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+/* Scheme allowlist for URLs that become href attributes. esc() makes a
+   URL attribute-safe, but it cannot stop `javascript:alert(1)` - that
+   payload needs no metacharacters and executes on click. Mirrors the
+   server's guard_url (link-preview: http/https only) and renderMd's
+   https?-only link rules; anything else degrades to "#" - never a live
+   link. `<img src>` is deliberately NOT routed through this: image
+   contexts never execute script (javascript:/data: SVG in <img> is
+   inert), and og:image may be protocol-relative, which this would
+   reject. */
+function safeUrl(u) {
+  const s = String(u == null ? "" : u).trim();
+  return /^https?:\/\//i.test(s) ? esc(s) : "#";
+}
 /* Minimal safe markdown subset for inspector message bodies (D-11):
    escape first, then restore a small set of constructs - no raw HTML
    ever passes through. Covers fenced/inline code, headings, bold,
@@ -151,7 +164,7 @@ function renderMd(text) {
 }
 /* Rich link card from GET /api/link-preview (D-11). */
 function linkCardHtml(p) {
-  return '<a class="link-card" href="' + esc(p.url) + '" target="_blank" rel="noopener">' +
+  return '<a class="link-card" href="' + safeUrl(p.url) + '" target="_blank" rel="noopener">' +
     (p.image ? '<img class="link-card-img" src="' + esc(p.image) + '" alt="" loading="lazy">' : "") +
     '<span class="link-card-body"><span class="link-card-title">' + esc(p.title || p.url) + "</span>" +
     (p.description ? '<span class="link-card-desc">' + esc(p.description) + "</span>" : "") +
@@ -941,7 +954,7 @@ function renderUiNode(node, ctx) {
       return '<div class="ui-code"><div class="ui-title mono">' + esc(node.language || "code") + '</div><pre>' + esc(node.code || "") + "</pre></div>";
     case "refs": {
       var refs = (node.items || []).map(function (r) {
-        return '<div class="ui-ref"><a href="' + esc(r.url || "#") + '" target="_blank" rel="noopener">' + esc(r.title || r.url || "") + "</a>" +
+        return '<div class="ui-ref"><a href="' + safeUrl(r.url) + '" target="_blank" rel="noopener">' + esc(r.title || r.url || "") + "</a>" +
           (r.note ? '<div class="text-faint">' + esc(r.note) + "</div>" : "") + "</div>";
       }).join("");
       return '<div class="ui-refs">' + refs + "</div>";
