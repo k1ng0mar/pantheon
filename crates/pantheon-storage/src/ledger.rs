@@ -1,5 +1,10 @@
 //! Event-sourced execution ledger. Every run persists its events to SQLite;
-//! ``pantheon logs run_X`` replays them. History is append-only.
+//! ``pantheon logs run_X`` replays them. During normal operation history is
+//! append-only (events are never updated in place); retention pruning
+//! ([`Ledger::prune_events_before`]) and explicit run deletion
+//! ([`Ledger::delete_run`]) are the only paths that remove rows. Events carry
+//! no hash chain and no format version, so this is a local audit trail, not
+//! tamper-evident evidence against someone with write access to the file.
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::events::Event;
 use pantheon_api::logging::now_ms;

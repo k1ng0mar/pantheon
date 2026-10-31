@@ -25,7 +25,7 @@ Every agent harness eventually rediscovers this. The ones that don't are demos.
 **Runtime authority over model authority.** The model reasons; the runtime decides what happens. Pantheon sits between the model and the world and enforces three separations:
 
 - **Policy is enforced at execution, not at prompt time.** The model never sees a policy it can argue with. Tool calls pass a capability gate in the runtime: allow, deny, or pause for human approval. A jailbroken system prompt changes nothing - the gate isn't in the prompt.
-- **The SQLite event ledger is the source of truth.** Every turn, tool call, approval, and failure is appended to a local, WAL-mode SQLite database. Sessions survive crashes, restarts, and provider outages because the agent's state is the ledger, not the context window. Rewind in the UI never rewrites history - the ledger is append-only.
+- **The SQLite event ledger is the source of truth.** Every turn, tool call, approval, and failure is appended to a local, WAL-mode SQLite database. Sessions survive crashes, restarts, and provider outages because the agent's state is the ledger, not the context window. Rewind in the UI never rewrites history; the ledger only appends, with retention pruning and explicit run deletion as the sole removals.
 - **Memory is provenance-aware, not a suggestion box.** Every memory carries its trust tier and origin. External tiers are clamped to Untrusted; writes are scanned for secret patterns before they land. Memory provides context; it never grants authority.
 
 Pantheon is written in Rust, runs as a single binary, and keeps its state in your home directory. No database server. No sidecar. No cloud account required.
@@ -86,7 +86,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 
 ## Mechanisms - and what each one buys you
 
-**The ledger.** Every lifecycle event - turn started, tool called, approval requested, cost stamped - is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: log lines are scrubbed, and blocked-command errors carry a digest and rule name, never raw text. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction.
+**The ledger.** Every lifecycle event - turn started, tool called, approval requested, cost stamped - is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: log lines are scrubbed, and blocked-command errors carry a digest and rule name, never raw text. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction. Two qualifications keep the claim honest: retention (`prune_events_before*`) and explicit run deletion (`delete_run`) remove rows, so "append-only" describes normal operation, not an absolute; and events carry no hash chain and no format version, so the ledger is an audit trail you control, **not tamper-evident** evidence against someone with write access to the file.
 
 **Approvals as first-class control.** The capability decision isn't binary: allow, deny, or *ask a human*. Approvals pause the run and resume it - settling the whole batch, not just one call - from the TUI, the web UI, or the messaging gateways. *Trust:* you can hand an agent real capabilities (shell, network, memory writes) and keep a human veto on the dangerous ones, without babysitting every step.
 
