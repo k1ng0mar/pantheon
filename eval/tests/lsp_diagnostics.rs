@@ -2,7 +2,7 @@
 //! publishDiagnostics flattening, the diagnostics cache, and language
 //! / server resolution.
 use pantheon_exec::lsp::{language_for, path_uri, resolve_workspace_root, server_for, LspClient};
-use pantheon_exec::sandbox::SandboxLevel;
+use pantheon_exec::sandbox::{ExecutionBoundary, SandboxLevel};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -273,6 +273,37 @@ fn lsp_spawn_refuses_unisolated_when_the_wrapper_is_unavailable() {
     assert_eq!(
         e.code, "SANDBOX_UNAVAILABLE",
         "expected the fail-closed refusal, got: {e:?}"
+    );
+}
+
+/// Pins the *shipped default*, which the refusal test above cannot: that
+/// test passes `Some(...)` explicitly, so it would keep passing if
+/// `LspOptions::sandbox_profile` ever became `None` - or `SandboxLevel::Low`,
+/// whose `InProcess` boundary needs no wrapper, so `needs_wrapper` is false
+/// and the gate would never refuse. Either drift would silently restore
+/// the raw spawn while every existing assertion stayed green. So assert
+/// the default itself: a declared level that is not `InProcess`, with no
+/// direct fallback baked in.
+#[test]
+fn lsp_default_profile_is_a_declared_non_in_process_level() {
+    let opts = pantheon_tools::lsp_tools::LspOptions::default();
+    let profile = opts
+        .sandbox_profile
+        .as_ref()
+        .expect("the default must declare a level, not opt out with None");
+    assert_eq!(
+        profile.level,
+        SandboxLevel::High,
+        "LSP should run at the same level as the shell tool"
+    );
+    assert_ne!(
+        profile.boundary,
+        ExecutionBoundary::InProcess,
+        "an InProcess boundary needs no wrapper, so the fail-closed gate would never refuse"
+    );
+    assert!(
+        !profile.allow_direct_fallback,
+        "the default must fail closed; opting into a degraded spawn is an operator decision"
     );
 }
 
