@@ -14,6 +14,7 @@ use pantheon_api::capability::Capability;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
 use pantheon_exec::lsp::{language_for, path_uri, resolve_workspace_root, server_for, LspClient};
+use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,6 +29,21 @@ pub struct LspOptions {
     pub root_uri: Option<String>,
     /// Handshake + diagnostics wait timeout.
     pub timeout: Duration,
+    /// Sandbox level the language server runs at.
+    ///
+    /// `None` is the caller-gated exception and spawns un-isolated; the
+    /// default is [`SandboxLevel::High`], the level the shell tool runs
+    /// at, because `lsp.open` is model-triggered process execution just
+    /// like the shell. With a declared level the spawn goes through
+    /// `build_sandboxed_checked`: it refuses (`SANDBOX_UNAVAILABLE`) when
+    /// the boundary's wrapper cannot initialize instead of starting the
+    /// server un-isolated, and an opted-in direct fallback is announced
+    /// on stderr rather than being silent.
+    ///
+    /// Declared here rather than read from config because the command
+    /// table (`server_for`) is in-tree: the policy question is *how
+    /// isolated*, never *which binary*.
+    pub sandbox_profile: Option<SandboxProfile>,
 }
 
 /// Register the LSP diagnostics toolset on a registry. The shared client
@@ -42,6 +58,7 @@ impl Default for LspOptions {
         Self {
             root_uri: None,
             timeout: Duration::from_secs(20),
+            sandbox_profile: Some(SandboxLevel::High.profile()),
         }
     }
 }
@@ -52,6 +69,8 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
         path_uri(&cwd)
     }));
     let timeout = opts.timeout;
+    // Cloned into each tool closure: `ensure` borrows it for the spawn.
+    let profile = opts.sandbox_profile;
     let server: Arc<Mutex<Option<Arc<LspClient>>>> = Arc::new(Mutex::new(None));
     // Tracks the root the live server was initialized against. A language
     // server only fully analyzes files that belong to its own workspace,
@@ -71,6 +90,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
         target_root: Option<&str>,
         default_root_uri: &str,
         timeout: Duration,
+        profile: Option<&SandboxProfile>,
     ) -> Result<Arc<LspClient>, PantheonError> {
         let want_root = target_root.unwrap_or(default_root_uri).to_string();
         let mut g = server.lock().unwrap_or_else(|p| p.into_inner());
@@ -95,7 +115,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 )
             })?;
             *g = Some(LspClient::start(
-                &program, &args, lang, &want_root, timeout,
+                &program, &args, lang, &want_root, timeout, profile,
             )?);
             *rg = Some(want_root);
         }
@@ -127,6 +147,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
     let l1 = last_lang.clone();
     let a1 = active_root.clone();
     let d1 = default_root_uri.clone();
+    let p1 = profile.clone();
     reg.register(
         mk(
             "lsp.open",
@@ -167,7 +188,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 Some(explicit) => Some(path_uri(Path::new(explicit))),
                 None => Some(path_uri(&resolve_workspace_root(&cpath))),
             };
-            let client = ensure(&s1, &a1, &lang, target_root.as_deref(), &d1, timeout)?;
+            let client = ensure(&s1, &a1, &lang, target_root.as_deref(), &d1, timeout, p1.as_ref())?;
             let text = std::fs::read_to_string(&cpath).map_err(|e| {
                 err(
                     "LSP_READ",
@@ -202,6 +223,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
     let l2 = last_lang.clone();
     let a2 = active_root.clone();
     let d2 = default_root_uri.clone();
+    let p2 = profile.clone();
     reg.register(
         mk(
             "lsp.diagnostics",
@@ -221,7 +243,7 @@ pub fn register_lsp_with(reg: &mut ToolRegistry, opts: LspOptions) {
                 .map(|s| s.to_string())
                 .or_else(|| l2.lock().unwrap_or_else(|p| p.into_inner()).clone())
                 .ok_or_else(|| err("LSP_NO_LANG", "no language in scope; pass 'language'".to_string(), "pass 'language' explicitly"))?;
-            let client = ensure(&s2, &a2, &lang, None, &d2, timeout)?;
+            let client = ensure(&s2, &a2, &lang, None, &d2, timeout, p2.as_ref())?;
             let maybe_uri = v.get("path").and_then(|x| x.as_str()).map(|p| path_uri(Path::new(p)));
             let out: Vec<_> = match maybe_uri {
                 Some(uri) => client.diagnostics(&uri).into_iter().collect(),

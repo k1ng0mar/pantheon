@@ -112,7 +112,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 | Core thesis | Runtime authority over model authority | Self-improving loop (agent authors its own skills) | Personal assistant on every channel | Top coding agent |
 | Durable state | SQLite event ledger; runs resume after crashes | SQLite `state.db` + markdown memories with char caps | Local files / gateway state | Session resume within the CLI |
 | Policy enforcement | Capability gate at execution; approvals pause/resume | Deny globs + hardline blocklist (vendor: "not a security boundary") | Allowlist-based tool config | Per-tool permission prompts |
-| Sandbox | Fail-closed when a backend is available; plugins/LSP unsandboxed | Documented as not containment | Process-level | Sandboxed tool execution |
+| Sandbox | Fail-closed when a backend is available; LSP and plugin spawns go through the sandbox gate | Documented as not containment | Process-level | Sandboxed tool execution |
 | Cost control | Turn and tool-call budgets enforced; **no spend cap yet** | Usage summaries per model | Varies | Usage dashboard |
 | Memory | Trust-tiered, provenance-aware, secret-scanned | Self-authored skills + curated memory | Persistent memory files | Project memory files |
 | Messaging | Discord + Telegram gateways (real REST outbound, dead-letter) | Telegram gateway | WhatsApp, Telegram, Discord, Slack, Signal, ... | None (terminal only) |

@@ -2,8 +2,51 @@
 //! publishDiagnostics flattening, the diagnostics cache, and language
 //! / server resolution.
 use pantheon_exec::lsp::{language_for, path_uri, resolve_workspace_root, server_for, LspClient};
+use pantheon_exec::sandbox::SandboxLevel;
 use std::path::PathBuf;
 use std::time::Duration;
+
+/// Env mutation is process-global and tests run on threads: serialize
+/// every test that touches PATH / PANTHEON_SANDBOX_FALLBACK, because the
+/// fail-closed test below clears PATH and a concurrent spawn would then
+/// fail for the wrong reason.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Restores PATH and PANTHEON_SANDBOX_FALLBACK on drop, so a panicking
+/// test cannot poison the rest of the suite.
+struct EnvGuard {
+    path: Option<std::ffi::OsString>,
+    fallback: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    /// Empty PATH: `which` cannot resolve anything, so `find_binary`
+    /// cannot see `bwrap` / `unshare` and every sandbox wrapper reads as
+    /// "missing". This makes the refusal assertion below independent of
+    /// whether the host can actually initialize a wrapper.
+    fn break_wrapper_lookup() -> Self {
+        let guard = Self {
+            path: std::env::var_os("PATH"),
+            fallback: std::env::var_os("PANTHEON_SANDBOX_FALLBACK"),
+        };
+        std::env::set_var("PATH", "");
+        std::env::remove_var("PANTHEON_SANDBOX_FALLBACK");
+        guard
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match self.path.take() {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        match self.fallback.take() {
+            Some(v) => std::env::set_var("PANTHEON_SANDBOX_FALLBACK", v),
+            None => std::env::remove_var("PANTHEON_SANDBOX_FALLBACK"),
+        }
+    }
+}
 
 fn tempdir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
@@ -134,18 +177,27 @@ fn resolve_workspace_root_finds_nearest_manifest() {
 
 #[test]
 fn mock_server_diagnostics_flow() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let d = tempdir();
     let server = write_mock_server(&d);
 
     // Start the client against the mock server. The mock answers the
     // initialize handshake and keeps reading frames, so start() should
     // complete.
+    //
+    // `None` declares the caller-gated exception on purpose: this test
+    // pins the JSON-RPC wire path and the diagnostics cache, i.e. the
+    // engine, not the sandbox policy. The production default is a
+    // declared level (see `LspOptions::sandbox_profile`) and its
+    // fail-closed contract is pinned by
+    // `lsp_spawn_refuses_unisolated_when_the_wrapper_is_unavailable`.
     let client = LspClient::start(
         "python3",
         &[server.to_string_lossy().to_string()],
         "mock-lsp",
         "file:///tmp/lsp_test",
         Duration::from_secs(5),
+        None,
     )
     .expect("client should start against the mock server");
 
@@ -185,6 +237,45 @@ fn mock_server_diagnostics_flow() {
     client.shutdown();
 }
 
+/// S3: a language server must never be started un-isolated.
+///
+/// With a declared level and no wrapper able to initialize (PATH is
+/// cleared, so `find_binary` cannot see `bwrap` or `unshare`), `start`
+/// must refuse with `SANDBOX_UNAVAILABLE` instead of falling back to the
+/// raw `Command::new(program)` spawn this function used to do. That is
+/// the same gate the shell tool, the MCP client and the Python plugin
+/// runner go through.
+///
+/// Deliberately host-independent: the refusal follows from the *build*
+/// (`sandboxed == false`, because no wrapper binary is visible), not from
+/// whether this particular machine can initialize a wrapper - so it
+/// fails on a healthy bwrap host too. Mutation check: routing the spawn
+/// back to a plain `Command` makes the error code `LSP_SPAWN` instead,
+/// which this assertion rejects.
+#[test]
+fn lsp_spawn_refuses_unisolated_when_the_wrapper_is_unavailable() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = EnvGuard::break_wrapper_lookup();
+
+    let profile = SandboxLevel::High.profile();
+    let e = LspClient::start(
+        "sh",
+        &["-c".into(), "echo unreachable".into()],
+        "mock-lsp",
+        "file:///tmp",
+        Duration::from_secs(5),
+        Some(&profile),
+    )
+    // `.err()` rather than `expect_err`: the Ok type (`Arc<LspClient>`)
+    // carries no Debug, and the refusal is what is under test.
+    .err()
+    .expect("a language server must never start un-isolated");
+    assert_eq!(
+        e.code, "SANDBOX_UNAVAILABLE",
+        "expected the fail-closed refusal, got: {e:?}"
+    );
+}
+
 /// Proves the cross-project re-rooting fix end to end through the *tool
 /// layer* (not just the resolver): register the LSP tools, open a file in
 /// project A (a scratch Rust crate with a real type error), then open a
@@ -193,6 +284,7 @@ fn mock_server_diagnostics_flow() {
 /// rust-analyzer; skips cleanly when it is not on PATH.
 #[test]
 fn lsp_tool_reroots_across_projects() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Needs rust-analyzer to actually prove the re-root; skip the honest
     // way if the binary is absent rather than fabricate a pass.
     // The binary existing is not the same as it running: a rustup shim
@@ -257,7 +349,19 @@ fn lsp_tool_reroots_across_projects() {
         .output();
 
     let mut reg = pantheon_tools::tools::ToolRegistry::new();
-    pantheon_tools::lsp_tools::register_lsp(&mut reg);
+    // This exercises the *re-rooting* behaviour of the engine, so declare
+    // the caller-gated exception rather than inherit whatever the host can
+    // sandbox: the production default is `SandboxLevel::High`, which
+    // refuses on a host whose wrapper cannot initialize (this one does).
+    // The fail-closed contract itself is pinned by
+    // `lsp_spawn_refuses_unisolated_when_the_wrapper_is_unavailable`.
+    pantheon_tools::lsp_tools::register_lsp_with(
+        &mut reg,
+        pantheon_tools::lsp_tools::LspOptions {
+            sandbox_profile: None,
+            ..Default::default()
+        },
+    );
 
     // Open a file in project A. The resolver walks up from a/src/main.rs to
     // a/ (nearest Cargo.toml), roots the server there, and gets A's error.

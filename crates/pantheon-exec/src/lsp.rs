@@ -14,6 +14,7 @@
 //! notifications into cache entries. Anything richer (completion,
 //! references, code actions) is out of scope here; this is the
 //! diagnostics-only path that unblocks "did my edit break the build".
+use crate::sandbox::{build_sandboxed_checked, SandboxProfile};
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,19 +75,59 @@ pub struct LspClient {
     server_alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Working directory for a sandboxed language-server spawn: the path the
+/// `root_uri` names when it is an existing absolute directory, otherwise
+/// the process cwd. The namespace wrappers `--chdir` into this, so it has
+/// to be absolute; falling back to the process cwd keeps a synthetic root
+/// (a URI whose directory was never created) from failing the spawn.
+fn cwd_for_root(root_uri: &str) -> String {
+    let path = root_uri.strip_prefix("file://").unwrap_or("");
+    let p = Path::new(path);
+    if p.is_absolute() && p.is_dir() {
+        return p.to_string_lossy().into_owned();
+    }
+    std::env::current_dir()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/".to_string())
+}
+
 impl LspClient {
     /// Start a language server and run the `initialize`/`initialized`
     /// handshake. Fails hard when the server cannot start or does not
     /// answer the handshake within `timeout`.
+    ///
+    /// `profile` is the sandbox level the server runs at, and it is the
+    /// whole point of the argument: an LSP server is model-triggered
+    /// process execution, so it must not be the one spawn left outside
+    /// the sandbox. `Some(profile)` routes through
+    /// [`build_sandboxed_checked`], which refuses (`SANDBOX_UNAVAILABLE`)
+    /// when the boundary's wrapper cannot initialize and the direct
+    /// fallback is not opted in, and announces an opted-in degraded spawn
+    /// on stderr - the same gate the shell tool, the MCP client and the
+    /// Python plugin runner use. `None` is the caller-gated exception and
+    /// inherits the process cwd exactly as this function always did.
     pub fn start(
         program: &str,
         args: &[String],
         server_name: &str,
         root_uri: &str,
         timeout: Duration,
+        profile: Option<&SandboxProfile>,
     ) -> Result<Arc<Self>, PantheonError> {
-        let mut child = Command::new(program)
-            .args(args)
+        let mut cmd = match profile {
+            Some(profile) => {
+                let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+                let (cmd, _sandboxed) =
+                    build_sandboxed_checked(profile, program, &argv, &cwd_for_root(root_uri))?;
+                cmd
+            }
+            None => {
+                let mut cmd = Command::new(program);
+                cmd.args(args);
+                cmd
+            }
+        };
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
