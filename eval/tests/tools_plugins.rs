@@ -1,7 +1,9 @@
 //! Behavioral / integration tests moved out of the crate per the test-hygiene policy.
 //! Run with `cargo test -p pantheon-eval`.
 use pantheon_api::capability::Capability;
-use pantheon_exec::plugins::{DiscoveredPlugin, PluginLocation, PluginManifest, ToolCapability};
+use pantheon_exec::plugins::{
+    DiscoveredPlugin, PluginLocation, PluginManifest, PluginSandbox, ToolCapability,
+};
 use pantheon_exec::supervisor::PluginSupervisor;
 use pantheon_tools::plugin_tools::register_plugin_tools;
 use pantheon_tools::tools::ToolRegistry;
@@ -94,6 +96,10 @@ fn registry_wires_plugin_tool() {
         env_vars: vec![],
         runner: "run.sh".into(),
         enabled: true,
+        sandbox: PluginSandbox {
+            allow_direct_fallback: true,
+            ..PluginSandbox::default()
+        },
     };
     let sup = Arc::new(Mutex::new(spawn_plugin(
         &dir,
@@ -134,6 +140,10 @@ fn register_plugin_tools_rejects_squat() {
         env_vars: vec![],
         runner: "run.sh".into(),
         enabled: true,
+        sandbox: PluginSandbox {
+            allow_direct_fallback: true,
+            ..PluginSandbox::default()
+        },
     };
 
     // For the full registration path we need an Arc<Mutex<PluginSupervisor>>

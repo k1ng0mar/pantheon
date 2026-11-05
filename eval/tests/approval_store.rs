@@ -127,7 +127,7 @@ fn store_survives_reopen() {
 
 // --- exec adapter: DiscoveredPlugin mapping onto the shared store ---
 
-use pantheon_exec::plugins::{discover_plugins, DiscoveredPlugin, PluginLocation};
+use pantheon_exec::plugins::{discover_plugins, DiscoveredPlugin, PluginLocation, PluginSandbox};
 
 fn write_exec_plugin(dir: &Path, name: &str) {
     let p = dir.join(name);
@@ -142,6 +142,7 @@ fn write_exec_plugin(dir: &Path, name: &str) {
         env_vars: vec![],
         runner: "run.sh".into(),
         enabled: false,
+        sandbox: PluginSandbox::default(),
     };
     std::fs::write(
         p.join("manifest.yaml"),

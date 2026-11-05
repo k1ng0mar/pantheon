@@ -16,7 +16,7 @@
 
 use pantheon_api::capability::Capability;
 use pantheon_exec::plugins::{
-    DiscoveredPlugin, EnvVarDecl, PluginLocation, PluginManifest, ToolCapability,
+    DiscoveredPlugin, EnvVarDecl, PluginLocation, PluginManifest, PluginSandbox, ToolCapability,
 };
 use pantheon_exec::supervisor::PluginSupervisor;
 use pantheon_extensions::hooks::Hook;
@@ -48,6 +48,7 @@ fn tool_manifest(name: &str) -> PluginManifest {
         env_vars: Vec::<EnvVarDecl>::new(),
         runner: "run.sh".into(),
         enabled: true,
+        sandbox: PluginSandbox::default(),
     }
 }
 
