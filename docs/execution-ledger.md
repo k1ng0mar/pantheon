@@ -147,3 +147,13 @@ deleted.
 | T3 | Plaintext store migration helper | IMPLEMENTED, live migration UNVERIFIED | `crates/pantheon-secrets/src/migration.rs` backup plus migrate plus reopen verify, plaintext left in place |
 | T4 | Branch cleanup | TESTED | Local branches now exactly `main` (13e5014) plus `chloe/all-merged` (d5a5981); `pantheon-only` and `master` deleted after reachability check; stash and backup tag preserved; remotes untouched |
 | T5 | File sanitation | IMPLEMENTED (generated only) | Removed `__pycache__` under bundled plugins; disposition report in `.nyx-work/consolidated-report.md`; docs hierarchy move deferred |
+
+## 2026-11-05 baseline re-run (rewritten hashes)
+
+| Check | Result |
+|---|---|
+| Head | `73e650ee` on `chloe/all-merged`, `main` at `f9a07665` |
+| `cargo fmt --all --check` | exit 0 |
+| `cargo clippy --workspace --all-targets` | exit 0, warnings only, after fixing test manifest initializers for the new `sandbox` field |
+| `cargo test --workspace --all-targets --no-fail-fast` | 2547 passed, 1 failed. The one failure is `oauth::tests::redaction_registered_on_handout` which reproduces on clean HEAD as well (double redaction under parallel test threads), isolated run passes. Recorded as pre-existing flake, not a Phase 1 regression. |
+| Targeted suites | supervisor 2 passed, grants 3 passed, extensions sandbox docs 3 passed |
