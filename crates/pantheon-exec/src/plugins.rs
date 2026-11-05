@@ -47,6 +47,44 @@ pub enum PluginLocation {
     Project,
 }
 
+/// Sandbox declaration for a tool plugin. Bound into approval by the
+/// directory hash, so changing it requires re-approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSandbox {
+    /// Required sandbox level: `high` or `very_high`. Default `high`.
+    #[serde(default = "default_sandbox_level")]
+    pub level: String,
+    /// Whether the plugin may use the network. Default false.
+    #[serde(default)]
+    pub network: bool,
+    /// Writable paths. Only `plugin_work` is accepted in Phase 1.
+    #[serde(default = "default_writable_paths")]
+    pub writable_paths: Vec<String>,
+    /// Per plugin opt in to direct spawn when the wrapper is unavailable.
+    /// Default false. Never enabled globally by default.
+    #[serde(default)]
+    pub allow_direct_fallback: bool,
+}
+
+impl Default for PluginSandbox {
+    fn default() -> Self {
+        Self {
+            level: default_sandbox_level(),
+            network: false,
+            writable_paths: default_writable_paths(),
+            allow_direct_fallback: false,
+        }
+    }
+}
+
+fn default_sandbox_level() -> String {
+    "high".to_string()
+}
+
+fn default_writable_paths() -> Vec<String> {
+    vec!["plugin_work".to_string()]
+}
+
 /// A plugin manifest. Describes the plugin, its tools, and what it needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -78,6 +116,9 @@ pub struct PluginManifest {
     /// Whether the plugin is enabled by default after install.
     #[serde(default)]
     pub enabled: bool,
+    /// Sandbox declaration. Defaults to high, network denied, work dir only.
+    #[serde(default)]
+    pub sandbox: PluginSandbox,
 }
 
 fn default_runner() -> String {
@@ -102,8 +143,28 @@ pub fn parse_manifest(text: &str) -> Result<PluginManifest, PantheonError> {
             ));
         }
     }
-    serde_yaml::from_str::<PluginManifest>(text)
-        .map_err(|e| merr("PLUGIN_MANIFEST_PARSE", e.to_string()))
+    let manifest: PluginManifest =
+        serde_yaml::from_str(text).map_err(|e| merr("PLUGIN_MANIFEST_PARSE", e.to_string()))?;
+    if manifest.sandbox.level != "high" && manifest.sandbox.level != "very_high" {
+        return Err(merr(
+            "PLUGIN_MANIFEST_SANDBOX",
+            format!(
+                "sandbox level '{}' is not supported; use high or very_high",
+                manifest.sandbox.level
+            ),
+        ));
+    }
+    for path in &manifest.sandbox.writable_paths {
+        if path != "plugin_work" {
+            return Err(merr(
+                "PLUGIN_MANIFEST_SANDBOX",
+                format!(
+                    "writable path '{path}' is not allowed; only plugin_work is accepted in Phase 1"
+                ),
+            ));
+        }
+    }
+    Ok(manifest)
 }
 
 /// A tool the plugin exposes, plus the capability gate it needs.
@@ -379,6 +440,7 @@ fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugi
                 .collect(),
             runner,
             enabled: extra.enabled,
+            sandbox: PluginSandbox::default(),
         },
         location: loc,
         root: path.to_path_buf(),
@@ -811,6 +873,7 @@ pub fn install_catalog(
         env_vars: vec![],
         runner: "run.sh".into(),
         enabled: true,
+        sandbox: PluginSandbox::default(),
     };
     let yaml = serde_yaml::to_string(&manifest)
         .map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("{e}")))?;

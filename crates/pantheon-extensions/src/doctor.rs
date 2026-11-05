@@ -134,8 +134,10 @@ pub fn doctor(dir: &Path) -> DoctorReport {
                         "info",
                         "USES_NET_OR_EXEC",
                         format!(
-                            "__init__.py mentions '{pat}': plugins are NOT sandboxed and run \
-                             with your full privileges - approve only what you trust"
+                            "__init__.py mentions '{pat}': hook plugins run behind the capability \
+                             gate and the VeryHigh sandbox whenever a policy is configured (direct \
+                             spawn only when no policy is configured); tool plugins run with your \
+                             full privileges and no namespace sandbox. Approve only what you trust"
                         ),
                     ));
                 }

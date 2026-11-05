@@ -13,11 +13,11 @@
 //! - A **plugin** (tool or hook) is code Pantheon itself runs on the
 //!   operator's machine. The runtime loads its manifest and executes it:
 //!   tool plugins as spawned runner processes whose tools sit behind the
-//!   capability gate, hook plugins as per-fire child processes with a
-//!   scrubbed environment (PATH only). Either way the code lives on the
-//!   operator's side of the trust boundary, running with the operator's
-//!   user privileges - Pantheon does **not** sandbox plugins. Enabling a
-//!   plugin is consent to run its code.
+//!   capability gate, with full user privileges and no namespace sandbox;
+//!   hook plugins as per-fire child processes with a scrubbed environment,
+//!   sandboxed at the VeryHigh level whenever a capability policy is
+//!   configured and spawned directly only when no policy is configured.
+//!   Enabling a plugin is consent to run its code under that gate.
 //!
 //! - An **MCP server** is an out-of-process **integration**. Pantheon
 //!   spawns or connects to a server and speaks the MCP protocol to it;

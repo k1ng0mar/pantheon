@@ -2,11 +2,14 @@
 //! subprocess runner (fail-open per hook, fail-closed on gates), the manager,
 //! the skill doctor, and third-party plugin approval.
 //!
-//! Security posture: plugins are third-party code. Secrets are scrubbed from
-//! the child environment, but a plugin otherwise runs with the operator's full
-//! user privileges - it is NOT sandboxed. Enabling a third-party plugin
-//! requires explicit operator approval (see [`pantheon_api::approval`]);
-//! approval is informed consent to those privileges.
+//! Security posture: plugins are third-party code. Secrets are scrubbed from the
+//! child environment. When a capability policy is configured, hook spawns go
+//! through the capability gate and the VeryHigh sandbox (`build_sandboxed_checked`
+//! in `python_runner`), and refuse to run un-isolated when the boundary's
+//! wrapper cannot initialize unless the direct fallback is explicitly opted in.
+//! When no policy is configured (standalone and test use only), the runner
+//! spawns directly. Approval remains informed consent to run third-party code
+//! under that gate (see [`pantheon_api::approval`]).
 //!
 //! The approval store itself lives in `pantheon-api` (shared with
 //! `pantheon-exec`'s tool plugins). The wrappers below only supply this

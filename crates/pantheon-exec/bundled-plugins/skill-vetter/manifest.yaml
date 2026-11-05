@@ -15,3 +15,8 @@ capabilities:
           description: Absolute local path to a plugin/skill directory, file, or archive - or an http(s) URL pointing at one.
 runner: run.sh
 enabled: false
+sandbox:
+  level: high
+  network: true
+  writable_paths: [plugin_work]
+  allow_direct_fallback: false

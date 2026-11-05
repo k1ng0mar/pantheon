@@ -18,8 +18,10 @@ pub mod env;
 pub mod error;
 pub mod filevault;
 pub mod gateway_tokens;
+pub mod grants;
 pub mod keychain;
 pub mod logins;
+pub mod migration;
 pub mod oauth;
 pub mod redaction;
 pub mod secure_forms;
@@ -35,6 +37,7 @@ pub use gateway_tokens::{
     delete_gateway_token, gateway_token, gateway_token_broker, mask_token, set_gateway_token,
     DISCORD_TOKEN_NAME, GATEWAY_SECRETS_FILE, TELEGRAM_TOKEN_NAME,
 };
+pub use grants::{intersect_grants, CredentialGrant, CredentialPurpose, ScopedBroker};
 pub use keychain::KeychainVault;
 pub use logins::{LoginCredential, LoginStore, LOGINS_FILE, LOGINS_META_FILE, MASKED};
 pub use redaction::RedactionRegistry;

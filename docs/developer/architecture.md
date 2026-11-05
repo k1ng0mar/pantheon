@@ -58,7 +58,7 @@ Transport adapters only: OpenAI-compatible and Anthropic behind one `ModelTurn` 
 
 ## Surfaces
 
-Terminal app, terminal commands, web (`serve`), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default (gates fail closed); foreign plugin formats load through a compat adapter in `pantheon-migration` that only maps real matches. Plugins are not sandboxed: secrets are scrubbed from their environment, but they run with the operator's full user privileges, so enabling a third-party plugin requires explicit recorded approval.
+Terminal app, terminal commands, web (`serve`), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default (gates fail closed); foreign plugin formats load through a compat adapter in `pantheon-migration` that only maps real matches. Tool plugins run with the operator's full user privileges behind a scrubbed environment and no namespace sandbox. Hook plugins run behind the capability policy at the VeryHigh sandbox level whenever a policy is configured, and spawn directly only when no policy is configured. Either way secrets are scrubbed from the child environment, and enabling a third-party plugin requires explicit recorded approval.
 
 ## Migration
 

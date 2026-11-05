@@ -92,3 +92,8 @@ capabilities:
           description: Absolute path to the .pptx file.
 runner: run.sh
 enabled: false
+sandbox:
+  level: high
+  network: false
+  writable_paths: [plugin_work]
+  allow_direct_fallback: false

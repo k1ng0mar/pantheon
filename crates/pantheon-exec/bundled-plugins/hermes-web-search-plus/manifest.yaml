@@ -68,3 +68,8 @@ env_vars:
     required: false
 runner: run.py
 enabled: false
+sandbox:
+  level: high
+  network: true
+  writable_paths: [plugin_work]
+  allow_direct_fallback: false

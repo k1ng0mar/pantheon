@@ -250,6 +250,10 @@ pub fn build_sandboxed(
                 cmd.arg("--tmpfs").arg("/tmp");
                 cmd.arg("--tmpfs").arg("/var/tmp");
 
+                for writable in &profile.writable_paths {
+                    cmd.arg("--bind").arg(writable).arg(writable);
+                }
+
                 if profile.drop_capabilities {
                     cmd.arg("--unshare-user-try");
                     cmd.arg("--unshare-pid");
@@ -301,11 +305,11 @@ pub fn build_sandboxed(
                     .arg("--proc")
                     .arg("/proc")
                     .arg("--tmpfs")
-                    .arg("/tmp")
-                    .arg("--chdir")
-                    .arg(cwd)
-                    .arg("--")
-                    .arg(program);
+                    .arg("/tmp");
+                for writable in &profile.writable_paths {
+                    cmd.arg("--bind").arg(writable).arg(writable);
+                }
+                cmd.arg("--chdir").arg(cwd).arg("--").arg(program);
                 cmd.args(args);
                 cmd
             } else {
@@ -681,6 +685,9 @@ fn wrapper_initializes(profile: &SandboxProfile, cwd: &str) -> bool {
 fn direct_fallback_allowed(profile: &SandboxProfile) -> bool {
     if profile.allow_direct_fallback {
         return true;
+    }
+    if !profile.allow_env_fallback {
+        return false;
     }
     env_fallback_allows(&std::env::var("PANTHEON_SANDBOX_FALLBACK").ok())
 }

@@ -28,7 +28,10 @@ Pantheon sends your code one JSON line, your code answers with one JSON line. An
 
 ## Security: approval and privileges
 
-Pantheon does **not** sandbox plugins. Secrets (API keys, tokens) are scrubbed from a plugin's environment, but a plugin otherwise runs with **your full user privileges**: it can read and write your files, access the network, and execute commands as you. Gate hooks fail closed (a crash denies the action), but that is a fail-safe, not isolation.
+Tool plugins and hook plugins do not have the same isolation, so Pantheon does not make one blanket sandbox claim for both.
+
+- **Tool plugins** (spawned runner processes in `pantheon-exec`) run sandboxed at the manifest level (`high` by default, `very_high` opt in) through immutable content addressed staging plus `build_sandboxed_checked`. Filesystem is read only except the per plugin work directory under the data dir plugin work folder, network is denied unless the manifest declares it, and the child fails closed with `PLUGIN_SANDBOX_UNAVAILABLE` when the wrapper cannot initialize. Same uid ptrace outside the sandbox is not prevented, and non Linux hosts have no namespace backend yet, so the spawn refuses there unless the manifest explicitly opts into direct fallback.
+- **Hook plugins** (per-fire child processes in `pantheon-extensions`) run behind the capability policy when one is configured, which is the production path. `PluginEnable` maps to the VeryHigh sandbox level, the runner builds the child through `build_sandboxed_checked`, and a boundary whose wrapper cannot initialize refuses the spawn instead of running un-isolated, unless the direct fallback is explicitly opted in. Their environment is scrubbed to `PATH` plus `PANTHEON_DATA_DIR` when configured. When no policy is configured (standalone and test use only), the hook runner spawns directly, as before.
 
 Because of that, a third-party plugin never runs until you explicitly approve it:
 
@@ -59,7 +62,7 @@ enabled = true
 
 Both extend what the agent can do, and they are trusted completely differently - the approval UI surfaces this on purpose:
 
-- A **plugin** is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it (tool plugins as spawned runner processes behind the capability gate, hook plugins as per-fire child processes with a scrubbed environment). Either way it runs with your user privileges, unsandboxed. Enabling a plugin is consent to run its code.
+- A **plugin** is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it. Tool plugins run as spawned runner processes behind the capability gate with full user privileges and no namespace sandbox. Hook plugins run as per-fire child processes with a scrubbed environment, sandboxed at the VeryHigh level whenever a capability policy is configured and spawned directly only when no policy is configured. See the security section above for which kind gets which isolation.
 - An **MCP server** is an out-of-process integration: Pantheon speaks the MCP protocol to it but never executes its code - the server may run on another machine entirely. Trust there is in the endpoint and its configuration, not in shipped code.
 
 ## Manage and debug

@@ -57,8 +57,11 @@ wins over the manifest's own `enabled` flag.
 
 ## Trust
 
-A plugin is code Pantheon runs on the operator's machine with the
-operator's user privileges - Pantheon does **not** sandbox plugins.
-Bundled plugins are first-party (shipped in this repo, reviewed
-in-tree), so they skip the third-party approval store, but they do
-not skip enablement: enabling one is consent to run its code.
+A plugin is code Pantheon runs on the operator's machine. Tool
+plugins run with the operator's user privileges and no namespace
+sandbox. Hook plugins run behind the capability policy at the
+VeryHigh sandbox level whenever a policy is configured, and spawn
+directly only when no policy is configured. Bundled plugins are
+first-party (shipped in this repo, reviewed in-tree), so they skip
+the third-party approval store, but they do not skip enablement:
+enabling one is consent to run its code under that gate.

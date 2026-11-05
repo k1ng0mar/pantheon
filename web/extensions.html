@@ -197,7 +197,11 @@ provides_hooks:
 <li>Nothing bypasses your permissions. A plugin&#x27;s tools need capabilities like any built-in tool.</li>
 </ul>
 <h2 id="security-approval-and-privileges" class="text-xl font-bold tracking-tight mt-10 mb-3">Security: approval and privileges</h2>
-<p class="my-3 leading-relaxed">Pantheon does <strong>not</strong> sandbox plugins. Secrets (API keys, tokens) are scrubbed from a plugin&#x27;s environment, but a plugin otherwise runs with <strong>your full user privileges</strong>: it can read and write your files, access the network, and execute commands as you. Gate hooks fail closed (a crash denies the action), but that is a fail-safe, not isolation.</p>
+<p class="my-3 leading-relaxed">Tool plugins and hook plugins do not have the same isolation, so Pantheon does not make one blanket sandbox claim for both.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>Tool plugins</strong> (spawned runner processes in <code>pantheon-exec</code>) run sandboxed at the manifest level (<code>high</code> by default, <code>very_high</code> opt in) through immutable content addressed staging plus <code>build_sandboxed_checked</code>. Filesystem is read only except the per plugin work directory under the data dir plugin work folder, network is denied unless the manifest declares it, and the child fails closed with <code>PLUGIN_SANDBOX_UNAVAILABLE</code> when the wrapper cannot initialize. Same uid ptrace outside the sandbox is not prevented, and non Linux hosts have no namespace backend yet, so the spawn refuses there unless the manifest explicitly opts into direct fallback.</li>
+<li><strong>Hook plugins</strong> (per-fire child processes in <code>pantheon-extensions</code>) run behind the capability policy when one is configured, which is the production path. <code>PluginEnable</code> maps to the VeryHigh sandbox level, the runner builds the child through <code>build_sandboxed_checked</code>, and a boundary whose wrapper cannot initialize refuses the spawn instead of running un-isolated, unless the direct fallback is explicitly opted in. Their environment is scrubbed to <code>PATH</code> plus <code>PANTHEON_DATA_DIR</code> when configured. When no policy is configured (standalone and test use only), the hook runner spawns directly, as before.</li>
+</ul>
 <p class="my-3 leading-relaxed">Because of that, a third-party plugin never runs until you explicitly approve it:</p>
 <pre><code>
 pantheon extensions approve my-plugin
@@ -220,7 +224,7 @@ enabled = true
 <h2 id="plugins-vs-mcps-the-trust-distinction" class="text-xl font-bold tracking-tight mt-10 mb-3">Plugins vs MCPs: the trust distinction</h2>
 <p class="my-3 leading-relaxed">Both extend what the agent can do, and they are trusted completely differently - the approval UI surfaces this on purpose:</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li>A <strong>plugin</strong> is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it (tool plugins as spawned runner processes behind the capability gate, hook plugins as per-fire child processes with a scrubbed environment). Either way it runs with your user privileges, unsandboxed. Enabling a plugin is consent to run its code.</li>
+<li>A <strong>plugin</strong> is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it. Tool plugins run as spawned runner processes behind the capability gate with full user privileges and no namespace sandbox. Hook plugins run as per-fire child processes with a scrubbed environment, sandboxed at the VeryHigh level whenever a capability policy is configured and spawned directly only when no policy is configured. See the security section above for which kind gets which isolation.</li>
 <li>An <strong>MCP server</strong> is an out-of-process integration: Pantheon speaks the MCP protocol to it but never executes its code - the server may run on another machine entirely. Trust there is in the endpoint and its configuration, not in shipped code.</li>
 </ul>
 <h2 id="manage-and-debug" class="text-xl font-bold tracking-tight mt-10 mb-3">Manage and debug</h2>

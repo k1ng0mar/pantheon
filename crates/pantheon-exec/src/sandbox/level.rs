@@ -69,8 +69,15 @@ pub struct SandboxProfile {
     /// host instead of failing. Default is `false` - the runner fails
     /// closed. The `PANTHEON_SANDBOX_FALLBACK=allow` environment variable
     /// enables the same fallback at run time without touching profiles.
+    /// Tool plugins set `allow_env_fallback` to false so only the manifest
+    /// flag can opt in, never the global env var.
     #[serde(default)]
     pub allow_direct_fallback: bool,
+    /// Whether the global `PANTHEON_SANDBOX_FALLBACK` env var may opt in
+    /// for this profile. Default true for existing callers. Tool plugins
+    /// set false so fallback is per plugin manifest only.
+    #[serde(default = "default_allow_env_fallback")]
+    pub allow_env_fallback: bool,
     /// Apply a seccomp syscall filter in the child before exec.
     ///
     /// Namespaces (bwrap) decide what the child can *see*; seccomp decides
@@ -103,6 +110,10 @@ pub struct SandboxProfile {
     pub writable_paths: Vec<String>,
 }
 
+fn default_allow_env_fallback() -> bool {
+    true
+}
+
 /// Execution limits for a level.
 pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
     match level {
@@ -119,6 +130,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             landlock: false,
             writable_paths: Vec::new(),
             allow_direct_fallback: false,
+            allow_env_fallback: true,
         },
         SandboxLevel::Medium => SandboxProfile {
             level,
@@ -133,6 +145,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             landlock: false,
             writable_paths: Vec::new(),
             allow_direct_fallback: false,
+            allow_env_fallback: true,
         },
         SandboxLevel::High => SandboxProfile {
             level,
@@ -147,6 +160,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             landlock: false,
             writable_paths: Vec::new(),
             allow_direct_fallback: false,
+            allow_env_fallback: true,
         },
         SandboxLevel::VeryHigh => SandboxProfile {
             level,
@@ -166,6 +180,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             landlock: true,
             writable_paths: Vec::new(),
             allow_direct_fallback: false,
+            allow_env_fallback: true,
         },
     }
 }

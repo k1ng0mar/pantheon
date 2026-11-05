@@ -39,3 +39,8 @@ capabilities:
           description: Arguments after `cf`. The host parks the run for explicit approval of the exact argv.
           items:
             type: string
+sandbox:
+  level: high
+  network: true
+  writable_paths: [plugin_work]
+  allow_direct_fallback: false

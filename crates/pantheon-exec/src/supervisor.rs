@@ -25,6 +25,7 @@ use crate::plugins::{DiscoveredPlugin, PluginManifest};
 use crate::{compact_output, CompactionPolicy};
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -291,37 +292,43 @@ impl PluginSupervisor {
     /// child execs that, so nothing under the plugin dir is re-resolved or
     /// re-read between verification and execve.
     fn spawn_inner(
-        runner: &Path,
+        _runner: &Path,
         runner_bytes: &[u8],
         manifest: &PluginManifest,
         data_dir: &Path,
         timeout: Duration,
         env_allowlist: &[String],
     ) -> Result<Self, PantheonError> {
-        let sealed = Self::seal_runner_bytes(runner_bytes, data_dir)?;
-        let mut cmd = Self::exec_command(runner, &sealed);
-        Self::configure_command(&mut cmd, manifest, data_dir, env_allowlist);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                cmd.pre_exec(|| {
-                    // Become session leader: own process group == our pid.
-                    if libc::setsid() < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
+        let staged = Self::stage_runner_bytes(runner_bytes, data_dir)?;
+        let work_dir = Self::plugin_work_dir(data_dir, &manifest.name)?;
+        let level = match manifest.sandbox.level.as_str() {
+            "very_high" => crate::sandbox::SandboxLevel::VeryHigh,
+            _ => crate::sandbox::SandboxLevel::High,
+        };
+        let mut profile = crate::sandbox::profile_for(level);
+        profile.network = manifest.sandbox.network;
+        profile.writable_paths = vec![work_dir.to_string_lossy().to_string()];
+        profile.allow_direct_fallback = manifest.sandbox.allow_direct_fallback;
+        profile.allow_env_fallback = false;
+        let (mut cmd, _sandboxed) = crate::sandbox::build_sandboxed_checked(
+            &profile,
+            &staged.to_string_lossy(),
+            &[],
+            &work_dir.to_string_lossy(),
+        )
+        .map_err(|e| merr("PLUGIN_SANDBOX_UNAVAILABLE", e.cause))?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(&work_dir);
+        // Env: PATH from host, allowlisted manifest vars, then plugin vars.
+        // configure_command does env_clear; sandbox scrub already cleared,
+        // but keep the explicit allowlist here so fallback direct spawn
+        // (no sandbox scrub) is still filtered.
+        Self::configure_command(&mut cmd, manifest, &work_dir, env_allowlist);
         let mut child = cmd
             .spawn()
-            .map_err(|e| merr("PLUGIN_SPAWN", format!("spawn {}: {e}", runner.display())))?;
-        // The sealed file served its purpose once the child exists: on
-        // Linux the child execs the sealed fd directly (O_TMPFILE files
-        // never had a name at all), and the named fallback path is swept
-        // by sealed_dir() on the next seal - so drop our copy here.
-        drop(sealed);
+            .map_err(|e| merr("PLUGIN_SPAWN", format!("spawn {}: {e}", staged.display())))?;
         let pgid = child.id() as i32;
         // Refuse to supervise PID 1 or our own process, defensively.
         if pgid <= 1 || pgid == std::process::id() as i32 {
@@ -354,6 +361,7 @@ impl PluginSupervisor {
 
     /// Write `bytes` to a private file and return it for exec. See
     /// [`SealedRunner`] for the platform story.
+    #[allow(dead_code)]
     fn seal_runner_bytes(bytes: &[u8], data_dir: &Path) -> Result<SealedRunner, PantheonError> {
         let dir = Self::sealed_dir(data_dir)?;
         #[cfg(target_os = "linux")]
@@ -412,8 +420,67 @@ impl PluginSupervisor {
         Ok(dir)
     }
 
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn stage_runner_bytes(bytes: &[u8], data_dir: &Path) -> Result<PathBuf, PantheonError> {
+        let dir = Self::sealed_dir(data_dir)?;
+        let hex = Self::sha256_hex(bytes);
+        let staged = dir.join(&hex);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o555);
+        }
+        match opts.open(&staged) {
+            Ok(mut f) => {
+                use std::io::Write as _;
+                f.write_all(bytes)
+                    .map_err(|e| merr("PLUGIN_SPAWN", format!("write staged runner: {e}")))?;
+                f.sync_all()
+                    .map_err(|e| merr("PLUGIN_SPAWN", format!("fsync staged runner: {e}")))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(merr("PLUGIN_SPAWN", format!("stage runner: {e}"))),
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o555))
+                .map_err(|e| merr("PLUGIN_SPAWN", format!("chmod staged runner: {e}")))?;
+        }
+        let on_disk = std::fs::read(&staged)
+            .map_err(|e| merr("PLUGIN_SPAWN", format!("read staged runner: {e}")))?;
+        if Self::sha256_hex(&on_disk) != hex || on_disk != bytes {
+            return Err(merr(
+                "PLUGIN_TAMPERED",
+                "staged runner hash mismatch; refusing to exec".to_string(),
+            ));
+        }
+        Ok(staged)
+    }
+
+    fn plugin_work_dir(data_dir: &Path, name: &str) -> Result<PathBuf, PantheonError> {
+        let dir = data_dir.join("plugin-work").join(name);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| merr("PLUGIN_SPAWN", format!("create plugin work dir: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| merr("PLUGIN_SPAWN", format!("chmod plugin work dir: {e}")))?;
+        }
+        Ok(dir)
+    }
+
     /// Linux: write `bytes` to an unnamed O_TMPFILE inode in `dir`.
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     fn seal_tmpfile(dir: &Path, bytes: &[u8]) -> Result<std::fs::File, PantheonError> {
         use std::ffi::CString;
         use std::os::unix::io::FromRawFd;
@@ -461,6 +528,7 @@ impl PluginSupervisor {
     }
 
     /// Fallback: 0700 file with an unguessable random name, created O_EXCL.
+    #[allow(dead_code)]
     fn seal_named_file(
         dir: &Path,
         bytes: &[u8],
@@ -513,6 +581,7 @@ impl PluginSupervisor {
     /// rename swap, symlink swap, or in-place rewrite between the check
     /// and execve cannot affect what executes.
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     fn exec_command(runner: &Path, sealed: &SealedRunner) -> Command {
         use std::os::unix::io::AsRawFd;
         use std::os::unix::process::CommandExt;
@@ -531,6 +600,7 @@ impl PluginSupervisor {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(dead_code)]
     fn exec_command(runner: &Path, sealed: &SealedRunner) -> Command {
         // Best effort only: fd-exec is a Linux facility. Exec the sealed
         // private path - the plugin dir itself is never re-resolved - but
@@ -846,6 +916,7 @@ mod tests {
                 env_vars: Vec::new(),
                 runner: "runner.sh".to_string(),
                 enabled: true,
+                sandbox: crate::plugins::PluginSandbox::default(),
             },
             location: PluginLocation::User,
             root: root.to_path_buf(),
@@ -957,6 +1028,7 @@ mod tests {
                             "PLUGIN_NOT_APPROVED",
                             "PLUGIN_UNSAFE_RUNNER",
                             "PLUGIN_NO_SHEBANG",
+                            "PLUGIN_SANDBOX_UNAVAILABLE",
                             "PLUGIN_SPAWN"
                         ]
                         .contains(&e.code.as_str()),
@@ -980,9 +1052,13 @@ mod tests {
             refused > 0,
             "expected some fail-closed refusals under churn (executed_ok={executed_ok})"
         );
+        // On hosts without an isolation wrapper every spawn refuses with
+        // SANDBOX_UNAVAILABLE, so zero successes is the expected fail-closed
+        // outcome there, not a scheduling artifact.
+        let sandbox_refusals = refused > 0 && executed_ok == 0;
         assert!(
-            executed_ok > 0,
-            "expected some successful spawns under churn"
+            executed_ok > 0 || sandbox_refusals,
+            "expected some successful spawns or all sandbox refusals under churn"
         );
     }
 
