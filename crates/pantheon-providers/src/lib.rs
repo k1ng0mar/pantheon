@@ -2,54 +2,85 @@
 //! (failure-only, runtime-controlled), auxiliary models for scoped
 //! capabilities. NO routing - locked decision.
 
-pub mod answer_line;
-pub mod anthropic;
+pub mod adapters;
+pub mod auxiliary;
 pub mod catalog;
 pub mod chain;
-pub mod compress;
-pub mod credential_error;
-pub mod distill;
-pub mod embeddings;
-pub mod error_kind;
-pub mod gemini;
 pub mod http;
-pub mod judge;
 pub mod model_event;
-pub mod openai;
-pub mod sigv4;
-pub mod title;
-pub mod verify;
+pub mod small;
 pub mod video;
-pub mod vision;
 pub mod voice;
 pub mod voice_local;
 
 use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy};
 
 pub use crate::catalog::{ApiMode, ModelCost, ModelMeta, ProviderMeta};
-pub use crate::chain::ProviderChain;
-pub use crate::compress::CompressionClient;
-pub use crate::distill::{DistillClient, DISTILL_TIMEOUT_SECS};
-pub use crate::error_kind::{
-    classify_provider_error, display_message, retry_after_secs_from_cause, short_snippet,
-    ProviderErrorKind,
+pub mod embeddings {
+    pub use crate::small::embeddings::*;
+}
+pub mod error_kind {
+    pub use crate::small::error_kind::*;
+}
+pub mod credential_error {
+    pub use crate::small::credential_error::*;
+}
+pub mod sigv4 {
+    pub use crate::small::sigv4::*;
+}
+pub mod anthropic {
+    pub use crate::adapters::anthropic::*;
+}
+pub mod openai {
+    pub use crate::adapters::openai::*;
+}
+pub mod gemini {
+    pub use crate::adapters::gemini::*;
+}
+pub mod judge {
+    pub use crate::auxiliary::judge::*;
+}
+pub mod vision {
+    pub use crate::auxiliary::vision::*;
+}
+pub mod compress {
+    pub use crate::auxiliary::compress::*;
+}
+pub mod title {
+    pub use crate::auxiliary::title::*;
+}
+pub mod verify {
+    pub use crate::auxiliary::verify::*;
+}
+pub(crate) mod answer_line {
+    pub(crate) use crate::auxiliary::answer_line::non_empty_unfenced_lines;
+}
+pub mod distill {
+    pub use crate::auxiliary::distill::*;
+}
+pub use crate::auxiliary::compress::CompressionClient;
+pub use crate::auxiliary::distill::{DistillClient, DISTILL_TIMEOUT_SECS};
+pub use crate::auxiliary::judge::{parse_answer, prompt_for, JudgeClient};
+pub use crate::auxiliary::title::{TitleGenClient, TITLEGEN_TIMEOUT_SECS};
+pub use crate::auxiliary::verify::{parse_verdict, VerifyClient, VerifyRequest, VerifyVerdict};
+pub use crate::auxiliary::vision::{
+    bound_description, pinned_vision_target, prompt_for as vision_prompt_for, VisionClient,
+    VisionRequest, VisionResult, VISION_DESC_MAX_CHARS, VISION_MAX_TOKENS, VISION_TIMEOUT_SECS,
 };
+pub use crate::chain::ProviderChain;
 pub use crate::http::{
     auth_header_pair, http_agent, http_timeout, parse_retry_after, retry_after_secs, ChatTransport,
     HttpTransport, ResolvedModel, ToolChoice, TurnOptions, WireRequest, MAX_RETRY_AFTER_SECS,
 };
-pub use crate::judge::{parse_answer, prompt_for, JudgeClient};
-pub use crate::title::{TitleGenClient, TITLEGEN_TIMEOUT_SECS};
-pub use crate::verify::{parse_verdict, VerifyClient, VerifyRequest, VerifyVerdict};
+pub use crate::small::error_kind::{
+    classify_provider_error, display_message, retry_after_secs_from_cause, short_snippet,
+    ProviderErrorKind,
+};
 pub use crate::video::{
     bound_summary, extract_frames, native_request_body, parse_native_response,
     prompt_for as video_prompt_for, synthesis_prompt, VideoClient, VideoFrame, VideoRequest,
     VideoSummary, MAX_FRAMES, MAX_VIDEO_BYTES, VIDEO_MAX_TOKENS, VIDEO_SUMMARY_MAX_CHARS,
     VIDEO_TIMEOUT_SECS,
-};
-pub use crate::vision::{
-    bound_description, pinned_vision_target, prompt_for as vision_prompt_for, VisionClient,
-    VisionRequest, VisionResult, VISION_DESC_MAX_CHARS, VISION_MAX_TOKENS, VISION_TIMEOUT_SECS,
 };
 pub use crate::voice::{
     open_stt, open_tts, stt_backends, stt_from_config, stt_providers, tts_backends,
