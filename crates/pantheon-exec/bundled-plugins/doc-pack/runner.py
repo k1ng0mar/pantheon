@@ -82,8 +82,14 @@ class DocPackError(Exception):
         self.cause = cause
 
 
+def _work_dir():
+    d = os.environ.get("PANTHEON_DATA_DIR", "").strip()
+    return os.path.realpath(d) if d else None
+
 def resolve_out_path(path):
-    """Absolute, parent-creating output path. Relative paths are refused."""
+    """Output path confined to the plugin work dir. Absolute paths outside
+    the work dir are refused so the sandbox read only root cannot be
+    bypassed and the real data dir is never a writable workspace."""
     if not isinstance(path, str) or not path:
         raise DocPackError("DOC_PACK_BAD_ARGS", "path must be a non-empty string")
     path = os.path.expanduser(path)
@@ -92,6 +98,15 @@ def resolve_out_path(path):
             "DOC_PACK_BAD_PATH",
             "path must be absolute, got %r" % path,
         )
+    work = _work_dir()
+    if work:
+        real = os.path.realpath(path)
+        if real != work and not real.startswith(work + os.sep):
+            raise DocPackError(
+                "DOC_PACK_BAD_PATH",
+                "path must be inside the plugin work directory %s, got %r" % (work, path),
+            )
+        path = real
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -107,6 +122,15 @@ def resolve_in_path(path):
             "DOC_PACK_BAD_PATH",
             "path must be absolute, got %r" % path,
         )
+    work = _work_dir()
+    if work:
+        real = os.path.realpath(path)
+        if real != work and not real.startswith(work + os.sep):
+            raise DocPackError(
+                "DOC_PACK_BAD_PATH",
+                "path must be inside the plugin work directory %s, got %r" % (work, path),
+            )
+        path = real
     if not os.path.isfile(path):
         raise DocPackError("DOC_PACK_IO", "file not found: %s" % path)
     return path
