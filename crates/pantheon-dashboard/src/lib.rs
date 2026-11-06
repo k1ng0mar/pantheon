@@ -522,6 +522,7 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("POST", "ideas", id, "feedback", "") => ideas::feedback(app, id, req),
         // Swarm: multi-agent fan-out through real subprocess turns.
         ("POST", "swarm", "", "", "") => swarm::create(app, req),
+        ("GET", "swarm", "", "", "") => swarm::list(app, req),
         ("GET", "swarm", "status", "", "") => swarm::status(app, req),
         ("GET", "swarm", "transcript", "", "") => swarm::transcript(app, req),
         ("POST", "swarm", id, "retry", "") => swarm::retry(app, id, req),

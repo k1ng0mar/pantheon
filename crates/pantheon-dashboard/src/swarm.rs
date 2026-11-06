@@ -526,6 +526,16 @@ fn swarm_id_param(req: &Request) -> Result<&str, Response> {
         .ok_or_else(|| bad_json("query param \"swarm\" (or \"id\") is required"))
 }
 
+/// `GET /api/swarm`: list all persisted swarms, newest first.
+pub fn list(app: &App, _req: &Request) -> Response {
+    let manifests = pantheon_runtime::swarm_persist::load_all_manifests(&app.data_dir);
+    let items: Vec<serde_json::Value> = manifests
+        .into_iter()
+        .map(|m| serde_json::json!({"swarm_id": m.swarm_id, "id": m.swarm_id, "created_ms": m.created_ms}))
+        .collect();
+    json_ok(serde_json::json!({"swarms": items}))
+}
+
 /// `GET /api/swarm/status?swarm=<swarm_id>`: refresh agent states (and run
 /// the judge when everyone settles), then return the status view.
 pub fn status(app: &App, req: &Request) -> Response {
