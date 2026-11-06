@@ -157,3 +157,11 @@ deleted.
 | `cargo clippy --workspace --all-targets` | exit 0, warnings only, after fixing test manifest initializers for the new `sandbox` field |
 | `cargo test --workspace --all-targets --no-fail-fast` | 2547 passed, 1 failed. The one failure is `oauth::tests::redaction_registered_on_handout` which reproduces on clean HEAD as well (double redaction under parallel test threads), isolated run passes. Recorded as pre-existing flake, not a Phase 1 regression. |
 | Targeted suites | supervisor 2 passed, grants 3 passed, extensions sandbox docs 3 passed |
+
+## M0 merged 2026-11-06
+
+| Item | Evidence |
+|---|---|
+| Merge | `main` fast-forwarded from `f9a0766` to `a60d6a6` which equals former `chloe/all-merged` head after sole author normalization. Merge was fast-forward, no merge commit, tree identical to audited branch. |
+| Baseline on merged tree | fmt exit 0, diff check exit 0. Full suite baseline 2547 passed, 1 pre-existing oauth redaction flake recorded 2026-11-05. |
+| Sole author | `git log main` 586 commits all `Umar Saidu <k1ng0mar@users.noreply.github.com>`. |
