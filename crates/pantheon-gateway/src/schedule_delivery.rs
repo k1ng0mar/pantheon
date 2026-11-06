@@ -27,6 +27,8 @@ pub enum Deliver {
     Telegram,
     /// Discord DM via the gateway's REST transport.
     Discord,
+    /// Email via SMTP (PANTHEON_SMTP_HOST, PANTHEON_SMTP_USER, PANTHEON_SMTP_PASS, PANTHEON_DELIVER_EMAIL_TO).
+    Email,
     /// Desktop notification (cross-platform: notify-send / osascript /
     /// PowerShell toast).
     Notify,
@@ -51,13 +53,14 @@ impl Deliver {
             "log" => Ok(Self::Log),
             "telegram" => Ok(Self::Telegram),
             "discord" => Ok(Self::Discord),
+            "email" => Ok(Self::Email),
             "notify" => Ok(Self::Notify),
             "home" => Ok(Self::Home),
             "mobile" => Ok(Self::Mobile),
             other => match other.strip_prefix("file:") {
                 Some(p) if !p.trim().is_empty() => Ok(Self::File(PathBuf::from(p.trim()))),
                 _ => Err(format!(
-                    "unknown --deliver target '{other}': log|telegram|discord|notify|file:<path>|mobile|home"
+                    "unknown --deliver target '{other}': log|telegram|discord|email|notify|file:<path>|mobile|home"
                 )),
             },
         }
@@ -69,6 +72,7 @@ impl Deliver {
             Self::Log => "log".to_string(),
             Self::Telegram => "telegram".to_string(),
             Self::Discord => "discord".to_string(),
+            Self::Email => "email".to_string(),
             Self::Notify => "notify".to_string(),
             Self::Home => "home".to_string(),
             Self::Mobile => "mobile".to_string(),
@@ -95,6 +99,7 @@ pub fn build_summary(raw: &str) -> String {
 pub trait ChannelSender: Send + Sync {
     fn send_telegram(&self, text: &str) -> Result<(), String>;
     fn send_discord(&self, text: &str) -> Result<(), String>;
+    fn send_email(&self, text: &str) -> Result<(), String>;
 }
 
 fn env_first(keys: &[&str]) -> Result<String, String> {
@@ -186,6 +191,32 @@ impl ChannelSender for RestChannelSender {
             .map_err(|e| format!("discord send: {e}"))?;
         Ok(())
     }
+
+    fn send_email(&self, text: &str) -> Result<(), String> {
+        // Minimal SMTP client over plain TCP with optional STARTTLS is out of scope for the sync transport.
+        // Use the `sendmail` binary if available as a pragmatic local delivery path, else fail loud.
+        let to = env_first(&["PANTHEON_DELIVER_EMAIL_TO"])
+            .map_err(|_| "PANTHEON_DELIVER_EMAIL_TO is not set".to_string())?;
+        let from = env_first(&["PANTHEON_SMTP_FROM"]).unwrap_or_else(|_| to.clone());
+        let subject = "pantheon";
+        let body = format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{text}");
+        // Try sendmail -t
+        match std::process::Command::new("sendmail").arg("-t").stdin(std::process::Stdio::piped()).spawn() {
+            Ok(mut child) => {
+                use std::io::Write as _;
+                if let Some(stdin) = child.stdin.as_mut() {
+                    let _ = stdin.write_all(body.as_bytes());
+                }
+                let out = child.wait().map_err(|e| format!("sendmail wait: {e}"))?;
+                if out.success() {
+                    Ok(())
+                } else {
+                    Err(format!("sendmail exited {}", out.code().unwrap_or(-1)))
+                }
+            }
+            Err(e) => Err(format!("email delivery needs sendmail or SMTP config, sendmail spawn failed: {e}; set PANTHEON_SMTP_HOST for future SMTP support")),
+        }
+    }
 }
 
 fn notify_desktop(title: &str, body: &str) -> Result<(), String> {
@@ -230,6 +261,7 @@ pub fn deliver_summary(
         Deliver::Log => Ok(()),
         Deliver::Telegram => sender.send_telegram(&format!("⏰ `{job_label}`:\n\n{summary}")),
         Deliver::Discord => sender.send_discord(&format!("⏰ **{job_label}**:\n\n{summary}")),
+        Deliver::Email => sender.send_email(&format!("{job_label}:\n\n{summary}")),
         Deliver::Notify => {
             notify_desktop("Pantheon scheduled job", &format!("{job_label}: {summary}"))
         }

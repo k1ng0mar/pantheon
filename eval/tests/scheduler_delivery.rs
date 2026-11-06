@@ -40,6 +40,17 @@ impl ChannelSender for MockSender {
             .push(("telegram".into(), text.into()));
         Ok(())
     }
+    fn send_email(&self, text: &str) -> Result<(), String> {
+        if self.fail {
+            return Err("email down".into());
+        }
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("email".into(), text.into()));
+        Ok(())
+    }
+
     fn send_discord(&self, text: &str) -> Result<(), String> {
         if self.fail {
             return Err("discord down".into());
