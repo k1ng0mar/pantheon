@@ -710,6 +710,7 @@ pub fn upsert_custom_row(
             api_mode: match api_mode {
                 Mode::OpenAi => "openai".into(),
                 Mode::Anthropic => "anthropic".into(),
+                Mode::Gemini => "gemini".into(),
             },
             key_env: Some(key_env.to_string()),
             // Preserve whatever the operator has already named on this
@@ -776,6 +777,76 @@ pub fn init_env_and_catalog(data_dir: &std::path::Path) {
     crate::dotenv::load_dotenv(data_dir);
     if let Ok(cfg) = Config::load(data_dir) {
         register_custom_providers(&cfg);
+        register_plugin_providers(data_dir, &cfg);
+    }
+}
+
+/// Register providers declared in plugin manifests. A plugin with a
+/// provider block registers an OpenAI compatible endpoint without
+/// recompiling Pantheon. Bundled plugins skip approval, third party
+/// plugins need approval recorded in the approval store.
+pub fn register_plugin_providers(data_dir: &std::path::Path, cfg: &Config) {
+    let project_root = std::env::current_dir().unwrap_or_else(|_| data_dir.to_path_buf());
+    let discovered = pantheon_exec::plugins::discover_plugins(data_dir, &project_root);
+    for plugin in &discovered {
+        let Some(reg) = &plugin.manifest.provider else {
+            continue;
+        };
+        if reg.id.trim().is_empty() || reg.base_url.trim().is_empty() {
+            continue;
+        }
+        // Bundled plugins are first party, third party need approval.
+        let approved = pantheon_exec::plugin_approval::is_canonical_bundled(plugin)
+            || pantheon_exec::plugin_approval::is_approved(plugin);
+        if !approved {
+            continue;
+        }
+        let api_mode = match reg.api_mode.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => pantheon_providers::catalog::ApiMode::Anthropic,
+            "gemini" => pantheon_providers::catalog::ApiMode::Gemini,
+            _ => pantheon_providers::catalog::ApiMode::OpenAi,
+        };
+        let models: Vec<pantheon_providers::catalog::ModelMeta> = reg
+            .models
+            .iter()
+            .filter(|m| !m.model.trim().is_empty())
+            .map(|m| {
+                let mut meta = pantheon_providers::catalog::model_meta(&reg.id, m.model.trim());
+                if let Some(c) = m.context_limit {
+                    meta.context_limit = Some(c);
+                }
+                meta
+            })
+            .collect();
+        let label = if reg.label.trim().is_empty() {
+            reg.id.clone()
+        } else {
+            reg.label.clone()
+        };
+        pantheon_providers::catalog::register_custom_provider(
+            pantheon_providers::catalog::ProviderMeta {
+                id: reg.id.clone(),
+                label,
+                base_url: reg.base_url.trim().trim_end_matches('/').to_string(),
+                api_mode,
+                base_env: String::new(),
+                key_env: reg.key_env.clone(),
+                key_header: "Authorization".into(),
+                models,
+                prominent: true,
+                recommended: false,
+                dev: false,
+                tag: "plugin".into(),
+                auth_command: None,
+                auth_refresh_ms: None,
+                reserved: false,
+                allowed_params: vec![],
+                oauth_apps: vec![],
+                sigv4: false,
+                reasoning_map: Default::default(),
+            },
+        );
+        let _ = cfg;
     }
 }
 

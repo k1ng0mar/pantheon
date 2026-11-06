@@ -691,6 +691,9 @@ pub fn fetch_models(
                     .header("x-api-key", first)
                     .header("anthropic-version", ANTHROPIC_VERSION);
             }
+            pantheon_providers::catalog::ApiMode::Gemini => {
+                req = req.header("x-goog-api-key", first);
+            }
             pantheon_providers::catalog::ApiMode::OpenAi => {
                 let header = pantheon_providers::catalog::key_header_for(provider_id);
                 if header == "Authorization" {

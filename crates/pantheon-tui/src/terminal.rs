@@ -1957,6 +1957,7 @@ timeout_ms = 5000
                 let mode = match p.api_mode {
                     pantheon_providers::catalog::ApiMode::OpenAi => "OpenAI",
                     pantheon_providers::catalog::ApiMode::Anthropic => "Anthropic",
+                    pantheon_providers::catalog::ApiMode::Gemini => "Gemini",
                 };
                 let tag = if p.prominent { "*" } else { " " };
                 let label = if p.models.is_empty() {

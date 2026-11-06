@@ -123,6 +123,9 @@ pub fn fetch_live_models_keyed(
             ApiMode::OpenAi => {
                 req = req.header("Authorization", format!("Bearer {key}").as_str());
             }
+            ApiMode::Gemini => {
+                req = req.header("x-goog-api-key", key);
+            }
         }
     }
     let resp = req.call().map_err(|e| match e {
