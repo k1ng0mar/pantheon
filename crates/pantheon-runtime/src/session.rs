@@ -1044,6 +1044,8 @@ struct DelegateContext<'a> {
     /// Without this the child gets a fresh empty manager even when
     /// the parent has approved servers and the Plugins group on.
     parent_mcp: &'a McpToolConfig,
+    parent_grants: Option<&'a [String]>,
+    route_credentials: &'a [String],
 }
 
 fn build_delegate_session(
@@ -1068,7 +1070,28 @@ fn build_delegate_session(
     // resolves secrets independently from the platform
     // stores, and the child should not inherit a snapshot
     // of the parent's resolution state.
-    let child_secrets = SecretsBroker::from_system_env();
+    let child_secrets = {
+        let base = SecretsBroker::from_system_env();
+        // Effective grants: route declaration intersected with parent grants
+        // when the parent is already restricted. Root parents (None) are
+        // unrestricted, so the route declaration alone bounds the child.
+        // Empty route declaration preserves legacy unrestricted behavior.
+        if ctx.route_credentials.is_empty() {
+            base
+        } else {
+            let effective: std::collections::HashSet<String> = ctx
+                .route_credentials
+                .iter()
+                .filter(|name| {
+                    ctx.parent_grants
+                        .map(|grants| grants.iter().any(|g| g == *name))
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect();
+            base.with_allowed_names(effective)
+        }
+    };
     // The profile's model/provider pin applies to the child session's
     // default: a profile pinned to a cheap model must actually run on
     // it, not silently inherit the parent's (possibly switched) model.
@@ -1100,6 +1123,7 @@ fn build_delegate_session(
         child_model_policy,
         child_secrets,
     )?;
+    child_session.credential_grants = ctx.route_credentials.to_vec();
     child_session.with_agent(child)?;
     // Tool enablement travels with the delegation: the Tools screen is
     // the user's answer to "what may this agent use", and a child that
@@ -1629,6 +1653,7 @@ struct SessionSpawner {
     /// The parent run this spawner belongs to: the cap key the root-owned
     /// delegation budget resolves from.
     run_id: String,
+    credential_grants: Vec<String>,
     /// Threaded child registry: `spawn_handle` returns immediately and the
     /// child runs on its own thread (`Session: Send`).
     registry: pantheon_agent::SubagentRegistry,
@@ -1706,6 +1731,7 @@ impl SessionSpawner {
                 .map(|m| m.clone())
                 .unwrap_or_default(),
             run_id: run_id.to_string(),
+            credential_grants: session.credential_grants.clone(),
             registry: pantheon_agent::SubagentRegistry::new(caps),
             supervisor: session.supervisor.clone(),
             drive_child,
@@ -1747,6 +1773,12 @@ impl pantheon_agent::SubagentSpawner for SessionSpawner {
                 parent_mode,
                 parent_permission_mode,
                 parent_mcp: &self.mcp,
+                parent_grants: if self.credential_grants.is_empty() {
+                    None
+                } else {
+                    Some(&self.credential_grants)
+                },
+                route_credentials: &[],
             },
             DelegatePolicy {
                 max_delegate_depth: self.max_delegate_depth,
@@ -2115,6 +2147,8 @@ fn run_delegate_child_routed(
             parent_mode,
             parent_permission_mode,
             parent_mcp: &driver.mcp,
+            parent_grants: None,
+            route_credentials: &[],
         },
         DelegatePolicy {
             max_delegate_depth: driver.max_delegate_depth,
@@ -2435,6 +2469,10 @@ pub struct Session {
     /// the API key is resolved through `SecretsBroker::inject` at the
     /// execution boundary and never lives in memory as a plain String.
     pub secrets: SecretsBroker,
+    /// Effective credential grants for this session. Empty means unrestricted
+    /// root session. Delegated children carry the intersection computed at
+    /// spawn, and grandchildren intersect again, never widen.
+    pub credential_grants: Vec<String>,
     /// Run budget (turns, tool calls, token cap, delegate depth).
     /// Interior-mutable so `/set` and `/tokens` can retune it live: the
     /// loop snapshots it when a turn starts, so a turn already in flight
@@ -2818,6 +2856,7 @@ impl Session {
             policy,
             model_policy: Mutex::new(model_policy),
             secrets,
+            credential_grants: Vec::new(),
             budget: Mutex::new(Budget::default()),
             budget_max_tokens: Mutex::new(None),
             goal: Mutex::new(None),
@@ -9696,6 +9735,8 @@ mod delegate_tool_tests {
                 parent_mode: AgentMode::default(),
                 parent_permission_mode: PermissionMode::default(),
                 parent_mcp: &mcp,
+                parent_grants: None,
+                route_credentials: &[],
             },
             mk_policy(),
         )
@@ -9728,6 +9769,8 @@ mod delegate_tool_tests {
                 parent_mode: AgentMode::default(),
                 parent_permission_mode: PermissionMode::default(),
                 parent_mcp: &mcp,
+                parent_grants: None,
+                route_credentials: &[],
             },
             mk_policy(),
         )

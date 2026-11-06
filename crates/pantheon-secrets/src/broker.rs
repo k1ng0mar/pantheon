@@ -40,6 +40,8 @@ pub struct SecretsBroker {
     /// Shared by `Arc`, so clones register into the same registry instead
     /// of silently splitting it.
     redaction: Arc<RedactionRegistry>,
+    /// When Some, only these names resolve. Used for delegated child grants.
+    allowed_names: Option<std::collections::HashSet<String>>,
 }
 
 impl Default for SecretsBroker {
@@ -49,6 +51,7 @@ impl Default for SecretsBroker {
             env: EnvVault::default(),
             plugin_env_allowlist: Vec::new(),
             redaction: RedactionRegistry::for_scope("default"),
+            allowed_names: None,
         }
     }
 }
@@ -64,6 +67,7 @@ impl Clone for SecretsBroker {
             env: self.env.clone(),
             plugin_env_allowlist: self.plugin_env_allowlist.clone(),
             redaction: Arc::clone(&self.redaction),
+            allowed_names: self.allowed_names.clone(),
         }
     }
 }
@@ -91,6 +95,7 @@ impl SecretsBroker {
             env: EnvVault::system(),
             plugin_env_allowlist: Vec::new(),
             redaction: RedactionRegistry::for_scope("default"),
+            allowed_names: None,
         }
     }
 
@@ -160,6 +165,7 @@ impl SecretsBroker {
             env: EnvVault::system(),
             plugin_env_allowlist: Vec::new(),
             redaction: RedactionRegistry::for_scope("default"),
+            allowed_names: None,
         })
     }
 
@@ -201,6 +207,13 @@ impl SecretsBroker {
         self
     }
 
+    /// Restrict resolution to exactly these names (delegated child grants).
+    /// Names outside the set refuse instead of falling through to env.
+    pub fn with_allowed_names(mut self, names: std::collections::HashSet<String>) -> Self {
+        self.allowed_names = Some(names);
+        self
+    }
+
     /// Scope the redaction registry to `scope` (a data dir or profile home),
     /// so multiplexed scopes never cross-scrub: scrubbing scope B's output
     /// with scope A's values would confirm to B that those bytes exist.
@@ -234,6 +247,13 @@ impl SecretsBroker {
     /// failing the run. Any other error (tampered encrypted vault, bad
     /// request) propagates immediately.
     pub fn resolve(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
+        if let Some(allowed) = &self.allowed_names {
+            if !allowed.contains(name) {
+                return Err(SecretsError::Unsupported(format!(
+                    "SECRET_NOT_GRANTED: {name} is not granted to this run"
+                )));
+            }
+        }
         crate::error::validate_name(name)?;
         for vault in &self.durable {
             match vault.get(name) {
@@ -257,6 +277,11 @@ impl SecretsBroker {
     /// can appear in any tool result, so a later echo is scrubbed before it
     /// reaches the model. Registration never fails the injection.
     pub fn inject(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
+        if let Some(allowed) = &self.allowed_names {
+            if !allowed.contains(name) {
+                return Ok(None);
+            }
+        }
         let result = self.resolve(name);
         if let Ok(Some(ref value)) = result {
             if !value.is_empty() {
