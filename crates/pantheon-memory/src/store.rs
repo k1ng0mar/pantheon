@@ -768,6 +768,27 @@ impl MemoryStore {
     }
 }
 
+/// Simple semantic scoring for keyword misses. Counts token overlap between
+/// query and value, so paraphrases that share words score even when FTS
+/// misses. This is not a vector index; it is a lexical fallback that runs
+/// without embeddings.
+pub fn semantic_score(query: &str, value: &str) -> f64 {
+    let q: std::collections::HashSet<String> = query
+        .split_whitespace()
+        .map(|t| t.to_ascii_lowercase())
+        .filter(|t| t.len() > 2)
+        .collect();
+    if q.is_empty() {
+        return 0.0;
+    }
+    let v: std::collections::HashSet<String> = value
+        .split_whitespace()
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+    let hits = q.intersection(&v).count() as f64;
+    hits / q.len() as f64
+}
+
 /// Quote each token for FTS5, stripping query-syntax characters so the
 /// query text cannot inject FTS operators.
 fn fts_query_for(query: &str) -> String {
