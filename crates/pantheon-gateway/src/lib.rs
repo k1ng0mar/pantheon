@@ -8,74 +8,56 @@
 //! task-id + signed-URL references (never embedded payloads).
 use serde::{Deserialize, Serialize};
 
-pub mod channel;
-pub mod channel_voice;
-pub mod daemon;
-pub mod dedup;
-pub mod delivery;
-pub mod discord;
-pub mod discord_gateway;
-pub mod genui;
-pub mod http;
-pub mod live_voice;
-pub mod mcp_boot;
-pub mod notify;
-pub mod realtime_voice;
-pub mod rendezvous;
-pub mod schedule_delivery;
-pub mod scheduler;
-pub mod service;
-pub mod sse;
-pub mod stream;
-pub mod telegram;
-pub mod voice;
-pub mod watchdog;
+pub mod channels;
+pub mod runtime;
+pub mod server;
+pub mod voice_group;
 
-pub use channel::{
+pub use channels::channel::{
     chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
     ChannelEvent, MemoryChannel, ThreadRunMap,
 };
-pub use channel_voice::{
-    ext_for_filename, ext_for_mime, VoiceOutcome, VoicePipes, VoiceSlot, MAX_VOICE_BYTES,
-    STT_EMPTY, STT_FAILED, STT_NOT_CONFIGURED, STT_UNAVAILABLE, VOICE_TRANSCRIPT_PREFIX,
-};
-pub use daemon::{
-    poll_telegram_once, route_event, route_event_with_hook, route_outbound, ChannelDaemon,
-    EventSink, PreDispatchHook, UpdateCursor, MAX_SEND_ATTEMPTS,
-};
-pub use dedup::{dedup_key, DedupWindow};
-pub use delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
-pub use discord::{
+pub use channels::delivery::{backoff_ms, plan_delivery, DeliveryOutcome, Outbox};
+pub use channels::discord::{
     parse_event as parse_discord_event, DiscordChannel, DiscordRestTransport, DiscordTransport,
     DISCORD_CONTENT_LIMIT,
 };
-pub use genui::{valid_task_id, GenUiRef, GenUiSigner, SignedUrl};
-pub use live_voice::{
-    is_speech, pcm_rms, wav_to_pcm_16k, wav_wrap, LiveTurnDriver, LiveVoiceConfig, TurnOutcome,
-    LIVE_TRANSCRIPT_PREFIX, LIVE_VOICE_PATH, SAMPLE_RATE,
-};
-pub use notify::{
-    command_for, desktop_notify, detect_notifier, escape_applescript, escape_powershell, Notifier,
-};
-pub use rendezvous::{
-    is_running as gateway_singleton_running, try_acquire as gateway_try_acquire,
-    AcquireOutcome as GatewayAcquireOutcome, GatewayLock,
-};
-pub use schedule_delivery::{
+pub use channels::schedule_delivery::{
     build_summary, deliver_best_effort, deliver_summary, deliver_to_home_session,
     routes_via_home_session, ChannelSender, Deliver, RestChannelSender,
 };
-pub use sse::{parse_last_event_id, SseEncoder};
-pub use stream::{frame_for_event, frames_for_entries, UiFrame, UiFrameKind};
-pub use telegram::{
+pub use channels::telegram::{
     parse_event as parse_telegram_event, TelegramChannel, TelegramRestTransport, TelegramTransport,
     TELEGRAM_MESSAGE_LIMIT,
 };
-pub use voice::{
+pub use runtime::daemon::{
+    poll_telegram_once, route_event, route_event_with_hook, route_outbound, ChannelDaemon,
+    EventSink, PreDispatchHook, UpdateCursor, MAX_SEND_ATTEMPTS,
+};
+pub use runtime::dedup::{dedup_key, DedupWindow};
+pub use runtime::watchdog::{GatewayHeartbeat, GatewayWatchdog, WatchdogAction, HANG_BUDGET};
+pub use server::genui::{valid_task_id, GenUiRef, GenUiSigner, SignedUrl};
+pub use server::notify::{
+    command_for, desktop_notify, detect_notifier, escape_applescript, escape_powershell, Notifier,
+};
+pub use server::rendezvous::{
+    is_running as gateway_singleton_running, try_acquire as gateway_try_acquire,
+    AcquireOutcome as GatewayAcquireOutcome, GatewayLock,
+};
+pub use server::sse::{parse_last_event_id, SseEncoder};
+pub use server::stream::{frame_for_event, frames_for_entries, UiFrame, UiFrameKind};
+pub use voice_group::channel_voice::{
+    ext_for_filename, ext_for_mime, VoiceOutcome, VoicePipes, VoiceSlot, MAX_VOICE_BYTES,
+    STT_EMPTY, STT_FAILED, STT_NOT_CONFIGURED, STT_UNAVAILABLE, VOICE_TRANSCRIPT_PREFIX,
+};
+pub use voice_group::live_voice::{
+    is_speech, pcm_rms, wav_to_pcm_16k, wav_wrap, LiveTurnDriver, LiveVoiceConfig, TurnOutcome,
+    LIVE_TRANSCRIPT_PREFIX, LIVE_VOICE_PATH, SAMPLE_RATE,
+};
+pub use voice_group::voice::{
     content_type_for, SpeakBody, TranscribeBody, VoiceEdge, VoiceHttp, DEFAULT_REQUEST_TIMEOUT,
     MAX_AUDIO_BYTES, MAX_TEXT_CHARS, SPEAK_PATH, TRANSCRIBE_PATH,
 };
-pub use watchdog::{GatewayHeartbeat, GatewayWatchdog, WatchdogAction, HANG_BUDGET};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identity {
@@ -141,11 +123,11 @@ impl OutboundMessage {
     }
 }
 
-pub use scheduler::{
+pub use runtime::scheduler::{
     queue_summary, rel_time, ExecuteFn, FireOutcome, OutcomeSink, ScheduledJob, SchedulerLoop,
     TaskOutcome, TickReport,
 };
-pub use service::{
+pub use runtime::service::{
     channels_disabled_note, cron_line, detect as detect_service_mechanism,
     install as install_service, manual_cron_line, merge_crontab, read_channel_env,
     read_channel_tokens, render_launchd_plist, render_systemd_unit, render_task_xml,
