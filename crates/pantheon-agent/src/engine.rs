@@ -86,6 +86,9 @@ pub trait ModelTurn {
 pub struct Budget {
     pub max_turns: u32,
     pub max_tool_calls: u32,
+    /// Spend cap in US cents. None means no cap yet. When set, the run stops
+    /// with BudgetExhausted cap max_cost_cents instead of spending unboundedly.
+    pub max_cost_cents: Option<u32>,
     /// Per-request OUTPUT cap for chat requests (not a run budget - input
     /// tokens are never counted). Precedence: `/tokens N` > the
     /// `[budget].max_tokens` config value > the session model's known
@@ -137,6 +140,7 @@ impl Default for Budget {
         Self {
             max_turns: 16,
             max_tool_calls: 32,
+            max_cost_cents: None,
             max_tokens: None,
             max_delegate_depth: 2,
             allow_child_spawn: true,

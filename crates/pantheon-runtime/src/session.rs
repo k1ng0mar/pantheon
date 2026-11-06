@@ -5837,6 +5837,7 @@ impl Session {
         // from the ledger's completed calls so a resumed or continued run
         // does not get a fresh budget every `chat_turn`.
         let mut tool_calls_used: u32 = completed_tool_calls(&entries);
+        let mut cost_used_cents: u32 = 0;
         // Consecutive tool failures, NOT reset per turn: a model that
         // fails the same call, gets the error, and retries it in the next
         // turn is exactly the pathology this cap exists to stop. A
@@ -5860,6 +5861,7 @@ impl Session {
                 denied: denied_scopes.clone(),
             },
             &mut tool_calls_used,
+            &mut cost_used_cents,
             &mut tool_failures,
             &mut failure_warned,
             &watchdog,
@@ -6346,6 +6348,7 @@ impl Session {
         reg: &ToolRegistry,
         approvals: &Approvals,
         tool_calls_used: &mut u32,
+        cost_used_cents: &mut u32,
         tool_failures: &mut u32,
         failure_warned: &mut bool,
 
@@ -6769,6 +6772,14 @@ impl Session {
                 tokens,
                 cost_cents,
             } => {
+                *cost_used_cents = cost_used_cents.saturating_add(cost_cents);
+                if let Some(cap) = loop_.budget.max_cost_cents {
+                    if *cost_used_cents > cap {
+                        return Ok(LoopOutcome::BudgetExhausted {
+                            cap: "max_cost_cents",
+                        });
+                    }
+                }
                 let t = text.clone();
                 let msg = Message::assistant(&text);
                 messages.push(msg.clone());
@@ -6779,7 +6790,7 @@ impl Session {
                 Ok(LoopOutcome::Answered {
                     text: t,
                     total_tokens: tokens,
-                    total_cost_cents: cost_cents,
+                    total_cost_cents: *cost_used_cents,
                 })
             }
             pantheon_agent::TurnOutcome::Tools { calls, text, .. } => {
@@ -7062,6 +7073,7 @@ impl Session {
                         denied: denied_scopes.clone(),
                     },
                     tool_calls_used,
+                    cost_used_cents,
                     tool_failures,
                     failure_warned,
                     watchdog,

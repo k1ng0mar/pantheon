@@ -167,6 +167,7 @@ pub fn resolve_budget_section(s: &BudgetSection) -> pantheon_agent::Budget {
         // nudge patch); the default pairs with the default cap. The
         // predicate suppresses the warning when warn_at >= cap.
         warn_consecutive_tool_failures: 3,
+        max_cost_cents: s.max_cost_cents.filter(|&v| v > 0),
     }
 }
 

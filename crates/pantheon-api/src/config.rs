@@ -967,6 +967,10 @@ pub struct BudgetSection {
     /// unset and falls back to the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_delegations: Option<u32>,
+    /// Spend cap in US cents per run. Absent means no cap yet. When set,
+    /// the run stops with BudgetExhausted instead of spending unboundedly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_cents: Option<u32>,
 }
 
 impl BudgetSection {

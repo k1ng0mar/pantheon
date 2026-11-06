@@ -431,6 +431,7 @@ fn investigate_real(input: &InvestigateInput) -> HealVerdict {
         allow_child_spawn: false,
 
         warn_consecutive_tool_failures: 3,
+        max_cost_cents: None,
     });
 
     let history_line = match input.stats {

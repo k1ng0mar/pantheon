@@ -248,6 +248,7 @@ fn budget_for(cfg: Option<&Config>) -> pantheon_agent::Budget {
             allow_child_spawn: true,
 
             warn_consecutive_tool_failures: 3,
+            max_cost_cents: None,
         },
     }
 }
