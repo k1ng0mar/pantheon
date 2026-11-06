@@ -19,35 +19,49 @@ use pantheon_api::logging::now_ms;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-mod apply;
-mod carry;
-pub mod compat;
-mod index;
-mod providers;
-pub mod session_import;
+pub mod migration;
 
-pub use compat::{
+pub(crate) mod apply {
+    pub(crate) use crate::migration::apply::*;
+}
+pub(crate) mod carry {
+    pub(crate) use crate::migration::carry::*;
+}
+pub mod compat {
+    pub use crate::migration::compat::*;
+}
+pub(crate) mod index {
+    pub(crate) use crate::migration::index::*;
+}
+pub(crate) mod providers {
+    pub(crate) use crate::migration::providers::*;
+}
+pub mod session_import {
+    pub use crate::migration::session_import::*;
+}
+
+pub use migration::compat::{
     detect_kind, entry_file, inspect, map_hook, read_manifest, render_plugin_yaml, CompatKind,
     CompatReport, CredentialRequirement, HookMap,
 };
 
-pub use apply::{
+pub use migration::apply::{
     apply, apply_with, apply_with_budgets, backup, backup_with_budgets, validate, ApplyReport,
     ApplyStatus, BackupManifest, BudgetUsage, StageBudgets, Staged, StagedItem, ValidateReport,
     ValidateStatus,
 };
-pub use carry::{
+pub use migration::carry::{
     classify_credential, credential_manifest, looks_secret, pantheon_env_path, parse_env_names,
     parse_env_values, parse_hermes_mcp, parse_mcp_json, read_dotenv, read_mcp_declarations,
     server_readiness, transcript_format, write_credential_manifest, write_mcp_declaration,
     write_session_import_with_budget, CredentialManifest, CredentialMapping, CredentialTarget,
     EnvEntry, McpDeclaration, McpServer, SessionImport,
 };
-pub use index::{
+pub use migration::index::{
     ensure_sessions_indexed, index_quarantine, parse_transcript, quarantine_dir, ImportedChunk,
     IndexReport,
 };
-pub use providers::{
+pub use migration::providers::{
     catalog_key_envs, merge_into_config, merge_into_live_config, parse_hermes_providers,
     provider_sidecar_path, read_providers, reconcile_key, reconcile_keys, render_custom_providers,
     summarise, write_provider_sidecar, CustomProvider, KeyMatch, KeyReport,
