@@ -201,6 +201,9 @@ pub struct SkillMeta {
     /// that are pure instructions.
     #[serde(default)]
     pub exec: Vec<SkillExec>,
+    /// Skill names this skill depends on. Empty means no dependencies.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 /// Name of the agent tool that runs skill-declared executables. Shared
@@ -410,6 +413,8 @@ struct SkillMetaRaw {
     origin: String,
     #[serde(default)]
     exec: Vec<SkillExecRaw>,
+    #[serde(default)]
+    dependencies: Vec<String>,
 }
 
 impl SkillExec {
@@ -712,6 +717,7 @@ pub fn parse_skill(raw: &str, path: &Path) -> Result<Skill, PantheonError> {
         description: raw_meta.description,
         origin: raw_meta.origin,
         exec,
+        dependencies: raw_meta.dependencies.clone(),
     };
     if meta.origin.is_empty() {
         meta.origin = "user".into();
@@ -1337,6 +1343,7 @@ pub fn import_skill_from_clawhub(
             description: String::new(),
             origin: "openclaw".to_string(),
             exec: Vec::new(),
+            dependencies: Vec::new(),
         },
         path: dest_dir.join("SKILL.md"),
         dir: dest_dir.clone(),
