@@ -766,6 +766,16 @@ pub fn aux_vision_request(
             pantheon_api::model::ReasoningLevel::Off,
             &TurnOptions::default(),
         ),
+        ApiMode::Gemini => crate::gemini::request(
+            &wire.base,
+            &wire.key,
+            model,
+            &messages,
+            &[],
+            false,
+            wire.max_tokens,
+            &TurnOptions::default(),
+        ),
         ApiMode::Anthropic => anthropic::request(
             &wire.base,
             &wire.key,
@@ -790,6 +800,11 @@ pub fn aux_complete(
     match wire.api_mode {
         ApiMode::OpenAi => openai::complete(transport, req, &NoopModelSink),
         ApiMode::Anthropic => anthropic::complete(transport, req, &NoopModelSink),
+        ApiMode::Gemini => Err(perr(
+            "PROVIDER_NOT_IMPLEMENTED",
+            "native Gemini aux is not wired yet".to_string(),
+            false,
+        )),
     }
 }
 

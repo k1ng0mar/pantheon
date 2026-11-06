@@ -762,6 +762,7 @@ impl VideoClient {
             .unwrap_or(ApiMode::OpenAi)
         {
             ApiMode::OpenAi => self.describe_native_openai(req, &bytes, &key),
+            ApiMode::Gemini => self.describe_native_openai(req, &bytes, &key),
             ApiMode::Anthropic => Err(verr(
                 "VIDEO_NATIVE_UNSUPPORTED",
                 format!(

@@ -462,6 +462,16 @@ impl<T: ChatTransport> ProviderChain<T> {
                         opts,
                     )
                 }
+                ApiMode::Gemini => crate::gemini::request(
+                    &base,
+                    one_key,
+                    &model.model,
+                    messages,
+                    &self.tools,
+                    stream,
+                    max_tokens,
+                    opts,
+                ),
                 ApiMode::Anthropic => anthropic::request(
                     &base,
                     one_key,
@@ -519,6 +529,14 @@ impl<T: ChatTransport> ProviderChain<T> {
                         anthropic::complete(&self.transport, req, sink)
                     }
                 }
+                ApiMode::Gemini => Err(PantheonError::new(
+                    "PROVIDER_NOT_IMPLEMENTED",
+                    Layer::Provider,
+                    false,
+                    "native Gemini streaming is not wired yet; use the OpenAI compatible google provider".to_string(),
+                    "use the google provider in openai mode for now",
+                    "",
+                )),
             };
 
             match &mut result {

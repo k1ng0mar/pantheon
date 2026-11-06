@@ -11,6 +11,7 @@ pub mod credential_error;
 pub mod distill;
 pub mod embeddings;
 pub mod error_kind;
+pub mod gemini;
 pub mod http;
 pub mod judge;
 pub mod model_event;

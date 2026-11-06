@@ -18,6 +18,9 @@ pub enum ApiMode {
     /// Anthropic Messages shape (`/messages`).
     #[serde(rename = "anthropic")]
     Anthropic,
+    /// Native Gemini generateContent shape.
+    #[serde(rename = "gemini")]
+    Gemini,
 }
 
 /// List prices in USD per million tokens. `None` = unknown / free / local.
