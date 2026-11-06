@@ -1918,6 +1918,9 @@ timeout_ms = 5000
         "backup" => {
             crate::backup::cmd_backup(&args);
         }
+        "secrets" => {
+            crate::secrets::cmd_secrets(&args);
+        }
         "uninstall" => {
             crate::uninstall::cmd_uninstall(&args);
         }

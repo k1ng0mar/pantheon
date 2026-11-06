@@ -9,7 +9,8 @@
 //! shell access from reading secret files directly; filesystem
 //! confinement is the separate half of the boundary.
 
-use crate::{SecretVault, SecretsBroker, SecretsError};
+use crate::SecretVault;
+use crate::{SecretsBroker, SecretsError};
 
 /// Why a child run needs a credential.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -68,6 +68,7 @@ mod acp;
 mod agui;
 mod args;
 mod backup;
+mod secrets;
 
 pub mod config;
 mod config_schema;
