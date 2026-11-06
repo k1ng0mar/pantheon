@@ -185,6 +185,7 @@ pub fn request(
             ("Content-Type".into(), "application/json".into()),
         ],
         body: body.to_string(),
+        cancel: opts.cancel.clone(),
         use_sigv4: crate::catalog::provider(provider_id)
             .map(|p| p.sigv4)
             .unwrap_or(false),
@@ -742,6 +743,7 @@ mod stream_truncation_tests {
             headers: vec![],
             body: "{}".into(),
             use_sigv4: false,
+            cancel: None,
         }
     }
 

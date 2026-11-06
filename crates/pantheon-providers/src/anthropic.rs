@@ -287,6 +287,7 @@ pub fn request(
         ],
         body: body.to_string(),
         use_sigv4: false,
+        cancel: opts.cancel.clone(),
     }
 }
 
@@ -755,6 +756,7 @@ mod stream_truncation_tests {
             headers: vec![],
             body: "{}".into(),
             use_sigv4: false,
+            cancel: None,
         }
     }
 

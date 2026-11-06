@@ -800,6 +800,7 @@ impl VideoClient {
             ],
             body,
             use_sigv4: false,
+            cancel: None,
         };
         let raw = self.transport.post(&request).map_err(|e| {
             verr(
@@ -858,6 +859,7 @@ impl VideoClient {
             ],
             body,
             use_sigv4: false,
+            cancel: None,
         };
         let raw = self.transport.post(&request).map_err(|e| {
             verr(

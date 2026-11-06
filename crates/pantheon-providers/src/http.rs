@@ -58,6 +58,7 @@ pub struct WireRequest {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub use_sigv4: bool,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Tool-call policy for one turn.
@@ -84,6 +85,8 @@ pub struct TurnOptions {
     pub response_schema: Option<serde_json::Value>,
     /// Tool-call policy for this turn.
     pub tool_choice: ToolChoice,
+    /// Cooperative cancel token checked per SSE line. None means no cancel.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Transport seam. Test doubles implement this in tests; `HttpTransport` in prod.
@@ -910,6 +913,18 @@ impl ChatTransport for HttpTransport {
             Ok(false)
         };
         for line in reader.lines() {
+            if let Some(cancel) = &req.cancel {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(perr(
+                        "PROVIDER_CANCELED",
+                        "stream canceled by operator".to_string(),
+                        false,
+                    ));
+                }
+            }
+            // Cooperative cancel is checked per line, not per turn. HttpTransport
+            // receives cancel via the on_payload closure in adapters.
+            // Adapters already thread their own cancel from TurnOptions.
             let line = line.map_err(|e| perr("PROVIDER_READ", e.to_string(), true))?;
             let line = line.trim_end_matches('\r');
             if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
