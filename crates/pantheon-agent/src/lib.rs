@@ -25,13 +25,23 @@
 //! going through the agent crate. Re-exported here so
 //! `pantheon_agent::agent_profile::...` paths keep resolving.
 pub use pantheon_api::agent_profile;
-pub mod capability;
-pub mod engine;
-pub mod subagent;
-pub mod tool;
+pub mod core;
 
-pub use engine::{
+pub mod capability {
+    pub use crate::core::capability::*;
+}
+pub mod engine {
+    pub use crate::core::engine::*;
+}
+pub mod subagent {
+    pub use crate::core::subagent::*;
+}
+pub mod tool {
+    pub use crate::core::tool::*;
+}
+
+pub use core::engine::{
     AgentLoop, Budget, LoopOutcome, ModelTurn, SubagentSpawner, SwarmCtx, ToolCall, TurnOutcome,
 };
-pub use subagent::{SubagentCaps, SubagentHandle, SubagentRegistry, SubagentStatus};
-pub use tool::{gate, EventSink, GateOutcome, ToolRunner};
+pub use core::subagent::{SubagentCaps, SubagentHandle, SubagentRegistry, SubagentStatus};
+pub use core::tool::{gate, EventSink, GateOutcome, ToolRunner};
