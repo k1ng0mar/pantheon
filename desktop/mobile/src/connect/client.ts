@@ -368,6 +368,8 @@ async function startTask(deviceId: string, params: StartParams): Promise<string>
 }
 
 const sendMessage = (deviceId: string, sessionId: string, text: string) => call<{ queued: boolean }>(deviceId, 'task.send', { sessionId, text });
+const retryRun = (deviceId: string, sessionId: string) => call<object>(deviceId, 'task.retry', { sessionId });
+const uploadAttachment = (deviceId: string, sessionId: string, name: string, data: string) => call<{ path: string }>(deviceId, 'task.attach', { sessionId, name, data });
 const stopTask = (deviceId: string, sessionId: string) => call<object>(deviceId, 'task.stop', { sessionId });
 const steerTask = (deviceId: string, sessionId: string, text: string) => call<object>(deviceId, 'task.steer', { sessionId, text });
 const configureTask = (deviceId: string, params: ConfigureParams) => call<object>(deviceId, 'task.configure', params);
@@ -387,5 +389,5 @@ export const connect = {
   refreshDevices, setTrusted, revokeDevice,
   watch, unwatch, loadMessages,
   listTasks, listProviders, listModels, startTask,
-  sendMessage, stopTask, steerTask, configureTask, respondApproval, respondInput,
+  sendMessage, retryRun, uploadAttachment, stopTask, steerTask, configureTask, respondApproval, respondInput,
 };
