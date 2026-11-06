@@ -13,26 +13,44 @@
 //! default. The projection helpers below map a server's advertised
 //! tools through a [`Policy`](pantheon_api::capability::Policy).
 
-pub mod bundled;
-pub mod client;
-pub mod framed;
-pub mod http;
-pub mod manager;
-pub mod oauth;
-pub mod rea;
-pub mod rea_audit;
+pub mod transports;
 
-pub use bundled::{
+pub mod bundled {
+    pub use crate::transports::bundled::*;
+}
+pub mod client {
+    pub use crate::transports::client::*;
+}
+pub mod framed {
+    pub use crate::transports::framed::*;
+}
+pub mod http {
+    pub use crate::transports::http::*;
+}
+pub mod manager {
+    pub use crate::transports::manager::*;
+}
+pub mod oauth {
+    pub use crate::transports::oauth::*;
+}
+pub mod rea {
+    pub use crate::transports::rea::*;
+}
+pub mod rea_audit {
+    pub use crate::transports::rea_audit::*;
+}
+
+pub use transports::bundled::{
     bundled_catalog, find_bundled, is_bundled, is_bundled_enabled, set_bundled_enabled,
     BundledError, BundledMcpServer,
 };
 
-pub use client::{
+pub use transports::client::{
     CapabilityGate, McpClient, McpError, McpServerConfig, McpToolDef, DEFAULT_MAX_MESSAGE_BYTES,
     DEFAULT_REQUEST_TIMEOUT, MCP_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS,
 };
-pub use http::{HttpMcpClient, HttpTransport};
-pub use manager::{
+pub use transports::http::{HttpMcpClient, HttpTransport};
+pub use transports::manager::{
     namespaced_tool_name, sanitize_segment, EnvResolver, McpAuth, McpManager, McpReport,
     McpServerSpec, McpTransport, PendingMcpServer, ServerHealth, ServerStatus,
 };
