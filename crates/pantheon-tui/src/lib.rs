@@ -94,6 +94,7 @@ pub mod nightly_cli;
 pub mod nightly_repair;
 pub mod notify;
 mod oauth;
+mod ollama;
 mod pipeline;
 pub mod plugin_remote;
 mod plugin_toggle;
