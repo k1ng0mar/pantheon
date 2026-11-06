@@ -529,14 +529,13 @@ impl<T: ChatTransport> ProviderChain<T> {
                         anthropic::complete(&self.transport, req, sink)
                     }
                 }
-                ApiMode::Gemini => Err(PantheonError::new(
-                    "PROVIDER_NOT_IMPLEMENTED",
-                    Layer::Provider,
-                    false,
-                    "native Gemini streaming is not wired yet; use the OpenAI compatible google provider".to_string(),
-                    "use the google provider in openai mode for now",
-                    "",
-                )),
+                ApiMode::Gemini => {
+                    if stream {
+                        crate::gemini::stream(&self.transport, req, &tracked_sink)
+                    } else {
+                        crate::gemini::complete(&self.transport, req, sink)
+                    }
+                }
             };
 
             match &mut result {
