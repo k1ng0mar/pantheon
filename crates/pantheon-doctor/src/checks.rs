@@ -728,12 +728,48 @@ fn check_ledger(ctx: &DoctorCtx) -> Vec<Finding> {
     match pantheon_storage::Ledger::open(&path) {
         Ok(ledger) => {
             let seq = ledger.max_seq().unwrap_or(-1);
-            vec![Finding::passed(
-                "memory.ledger",
-                Subsystem::Memory,
-                format!("ledger opens (max seq {seq})"),
-            )
-            .with_details(format!("path: {}", path.display()))]
+            let integrity = match ledger.integrity_check() {
+                Ok(rows) if rows.iter().all(|r| r == "ok") => None,
+                Ok(rows) => Some(format!("integrity_check failed: {}", rows.join("; "))),
+                Err(e) => Some(format!("integrity_check error: {}", e.cause)),
+            };
+            let stuck = ledger.stuck_runs().unwrap_or_default();
+            let mut findings = vec![];
+            if let Some(msg) = integrity {
+                findings.push(Finding::failed(
+                    "memory.ledger.integrity",
+                    Subsystem::Memory,
+                    Severity::Critical,
+                    msg,
+                    "ledger is damaged; run history and approvals are unreliable",
+                    "restore from a pantheon backup",
+                ));
+            } else {
+                findings.push(
+                    Finding::passed(
+                        "memory.ledger",
+                        Subsystem::Memory,
+                        format!("ledger opens and integrity_check ok (max seq {seq})"),
+                    )
+                    .with_details(format!("path: {}", path.display())),
+                );
+            }
+            if !stuck.is_empty() {
+                findings.push(Finding::failed(
+                    "memory.ledger.stuck",
+                    Subsystem::Memory,
+                    Severity::Warning,
+                    format!("{} stuck or awaiting approval runs", stuck.len()),
+                    "runs may need operator attention",
+                    "check pantheon logs or settle stuck runs via the dashboard",
+                ));
+            }
+            if let Ok(meta) = std::fs::metadata(&path) {
+                let free = None::<u64>;
+                let _ = free;
+                let _ = meta.len();
+            }
+            findings
         }
         Err(e) => vec![Finding::failed(
             "memory.ledger",
