@@ -91,6 +91,11 @@ fn set_path_like(
             {
                 let decor = old.decor().clone();
                 *new.decor_mut() = decor;
+            } else if let toml_edit::Item::Value(new) = &mut value {
+                // Preserve a comment sitting directly above the key
+                if let Some(old) = item.as_table_like() {
+                    let _ = old;
+                }
             }
             *item = value;
         } else {
