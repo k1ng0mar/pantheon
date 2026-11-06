@@ -9,26 +9,12 @@
 //! tools and their register helpers) lives in `pantheon-tools` - capability ≠
 //! tool, and `pantheon-tools` depends *on* this crate (Tools → Exec).
 
-pub mod bundled_skills;
-pub mod cloudflare;
-pub mod codegraph;
-pub mod confine;
-pub mod context;
-pub mod danger;
-pub mod gitundo;
-pub mod http;
-pub mod lsp;
 pub mod plugin_approval;
 pub mod plugins;
-pub mod prestate;
-pub mod process;
-pub mod safewrite;
 pub mod sandbox;
-pub mod skill_exec;
-pub mod skills;
-pub mod skills_scan;
-pub mod supervisor;
-pub mod worktree;
+pub mod sandbox_group;
+pub mod skills_group;
+pub mod tools_group;
 
 // Re-exported at the crate root: these were `pantheon_sandbox::...` paths
 // before the sandbox merged into exec.

@@ -548,7 +548,7 @@ pub fn set_enabled(plugin: &DiscoveredPlugin, enabled: bool) -> Result<(), Panth
 /// supervisor should spawn - never the raw manifest-joined path. Spawning
 /// the raw path would reopen a symlink race: the containment check above
 /// ran against the canonical target, so the raw path must not be used for
-/// exec. Callers that spawn via [`crate::supervisor::PluginSupervisor`]
+/// exec. Callers that spawn via [`crate::sandbox_group::supervisor::PluginSupervisor`]
 /// should prefer `spawn_verified`, which re-hashes immediately before
 /// spawn and fails closed on mismatch. Does NOT execute anything - that
 /// happens in the supervisor.
@@ -789,7 +789,7 @@ pub fn catalog_names() -> Vec<String> {
 /// before it touches the filesystem, and the plugins root is canonicalized
 /// so a symlinked root cannot redirect the install. Extracted for testing.
 fn plugin_install_dir(data_dir: &Path, name: &str) -> Result<PathBuf, PantheonError> {
-    if !crate::skills::valid_slug(name) {
+    if !crate::skills_group::skills::valid_slug(name) {
         return Err(merr(
             "PLUGIN_BAD_NAME",
             format!("plugin name {name:?}: names must match [a-zA-Z0-9_-]{{1,64}}"),
@@ -1149,7 +1149,7 @@ fn seed_bundled_plugin(
     data_dir: &Path,
     entry: &BundledPlugin,
 ) -> Result<Option<String>, PantheonError> {
-    if !crate::skills::valid_slug(entry.dir_name) {
+    if !crate::skills_group::skills::valid_slug(entry.dir_name) {
         return Err(merr(
             "PLUGIN_SEED_NAME",
             format!(
@@ -1368,7 +1368,7 @@ fn write_plugin_enabled(
     version: &str,
     enabled: bool,
 ) -> Result<(), PantheonError> {
-    if !crate::skills::valid_slug(name) {
+    if !crate::skills_group::skills::valid_slug(name) {
         return Err(merr(
             "PLUGIN_BAD_NAME",
             format!("plugin name {name:?} is not a valid slug"),
