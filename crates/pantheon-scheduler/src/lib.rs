@@ -11,22 +11,38 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub mod cron;
-pub mod durable;
-pub mod repair_budget;
-pub mod retention;
-pub mod run_history;
-pub mod templates;
-pub mod tick;
+pub mod jobs;
 
-pub use cron::{normalize_cron_expr, CronError, CronSchedule};
-pub use durable::DurableClaimLedger;
-pub use run_history::{run_history_path, JobRunStats, RunHistory};
-pub use templates::{
+pub mod cron {
+    pub use crate::jobs::cron::*;
+}
+pub mod durable {
+    pub use crate::jobs::durable::*;
+}
+pub mod repair_budget {
+    pub use crate::jobs::repair_budget::*;
+}
+pub mod retention {
+    pub use crate::jobs::retention::*;
+}
+pub mod run_history {
+    pub use crate::jobs::run_history::*;
+}
+pub mod templates {
+    pub use crate::jobs::templates::*;
+}
+pub mod tick {
+    pub use crate::jobs::tick::*;
+}
+
+pub use jobs::cron::{normalize_cron_expr, CronError, CronSchedule};
+pub use jobs::durable::DurableClaimLedger;
+pub use jobs::run_history::{run_history_path, JobRunStats, RunHistory};
+pub use jobs::templates::{
     apply_defaults, builtin_templates, expand_template, is_reserved_var, render_prompt,
     ScheduleTemplate, TemplateSchedule, TemplateStore, TemplateVar,
 };
-pub use tick::{occurrence_key, ClaimLedger, PausedCheck, RunOutcome, TickDecision, TickDriver};
+pub use jobs::tick::{occurrence_key, ClaimLedger, PausedCheck, RunOutcome, TickDecision, TickDriver};
 
 /// Default ceiling for one job run: 10 minutes. A run that outlives it is
 /// abandoned (the tick stops waiting; Rust cannot kill the thread, so the
