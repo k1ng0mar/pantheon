@@ -6192,6 +6192,7 @@ impl Session {
                         rows: report.rows,
                         chars_before: report.chars_before,
                         chars_after: report.chars_after,
+                        summary: report.summary.clone(),
                     })?;
                     pantheon_api::logging::warn(
                         "agent",
@@ -11288,6 +11289,8 @@ mod delegate_tool_tests {
                 id: 1,
                 run_id: "r".to_string(),
                 seq: 1,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 1,
                 event: Event::UiContent {
                     run_id: "r".to_string(),
@@ -11300,6 +11303,8 @@ mod delegate_tool_tests {
                 id: 2,
                 run_id: "r".to_string(),
                 seq: 2,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 2,
                 event: Event::UiUpdated {
                     run_id: "r".to_string(),
@@ -11313,6 +11318,8 @@ mod delegate_tool_tests {
                 id: 3,
                 run_id: "r".to_string(),
                 seq: 3,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 3,
                 event: Event::UiUpdated {
                     run_id: "r".to_string(),
@@ -11352,6 +11359,8 @@ mod delegate_tool_tests {
                 id: 1,
                 run_id: "r".to_string(),
                 seq: 1,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 1,
                 event: Event::ToolStarted {
                     run_id: "r".to_string(),
@@ -11365,6 +11374,8 @@ mod delegate_tool_tests {
                 id: 2,
                 run_id: "r".to_string(),
                 seq: 2,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 2,
                 event: Event::ToolInterrupted {
                     run_id: "r".to_string(),
@@ -11419,6 +11430,8 @@ mod delegate_tool_tests {
                 id: 1,
                 run_id: "r".to_string(),
                 seq: 1,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 1,
                 event: Event::AssistantMessage {
                     run_id: "r".to_string(),
@@ -11429,6 +11442,8 @@ mod delegate_tool_tests {
                 id: 2,
                 run_id: "r".to_string(),
                 seq: 2,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 2,
                 event: Event::ToolStarted {
                     run_id: "r".to_string(),
@@ -11442,6 +11457,8 @@ mod delegate_tool_tests {
                 id: 3,
                 run_id: "r".to_string(),
                 seq: 3,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 3,
                 event: Event::ToolInterrupted {
                     run_id: "r".to_string(),
@@ -11474,6 +11491,8 @@ mod delegate_tool_tests {
                 id: 4,
                 run_id: "r".to_string(),
                 seq: 4,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 4,
                 event: Event::ToolMessage {
                     run_id: "r".to_string(),
@@ -11487,6 +11506,8 @@ mod delegate_tool_tests {
                 id: 1,
                 run_id: "r".to_string(),
                 seq: 1,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 1,
                 event: Event::AssistantMessage {
                     run_id: "r".to_string(),
@@ -11501,6 +11522,8 @@ mod delegate_tool_tests {
                 id: 3,
                 run_id: "r".to_string(),
                 seq: 3,
+                run_seq: 1,
+                version: 1,
                 ts_ms: 3,
                 event: Event::ToolInterrupted {
                     run_id: "r".to_string(),
@@ -11872,6 +11895,8 @@ mod child_context_retention_tests {
             id: seq,
             run_id: "parent-run".to_string(),
             seq,
+            run_seq: 1,
+            version: 1,
             ts_ms: 0,
             event,
         }

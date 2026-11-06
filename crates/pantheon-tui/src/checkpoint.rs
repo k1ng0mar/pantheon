@@ -269,6 +269,8 @@ mod tests {
             id: seq,
             run_id: "r".to_string(),
             seq,
+            run_seq: seq,
+            version: 1,
             ts_ms: seq * 1000,
             event,
         }

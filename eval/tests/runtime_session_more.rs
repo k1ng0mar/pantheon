@@ -15,6 +15,8 @@ fn entry(id: i64, event: Event) -> pantheon_storage::LedgerEntry {
         id,
         run_id: "r".into(),
         seq: id,
+        run_seq: id,
+        version: 1,
         ts_ms: 0,
         event,
     }

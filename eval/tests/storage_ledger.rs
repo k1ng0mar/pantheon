@@ -126,6 +126,7 @@ fn context_compressed_round_trips_and_explains() {
             rows: 4,
             chars_before: 20_000,
             chars_after: 400,
+            summary: "test summary".into(),
         })
         .unwrap();
     let entries = ledger.replay("r1").unwrap();
@@ -381,6 +382,7 @@ fn run_metrics_count_each_outcome_separately() {
         rows: 4,
         chars_before: 100,
         chars_after: 20,
+        summary: "test summary".into(),
     })
     .unwrap();
 

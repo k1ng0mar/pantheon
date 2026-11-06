@@ -228,6 +228,9 @@ pub struct CompressionReport {
     pub chars_before: u32,
     /// Summary row size in chars.
     pub chars_after: u32,
+    /// The summary text persisted in the ledger event so resumed turns
+    /// do not re-pay the compression call.
+    pub summary: String,
 }
 
 /// Render rows `range` as role-tagged text for the compression model,
@@ -385,6 +388,7 @@ pub fn compress_oldest(
             rows: (range.end - range.start) as u32,
             chars_before,
             chars_after,
+            summary: summary.to_string(),
         },
     )))
 }

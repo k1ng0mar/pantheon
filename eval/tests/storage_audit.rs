@@ -8,6 +8,8 @@ fn entry(id: i64, event: Event) -> LedgerEntry {
         id,
         run_id: "run_audit".into(),
         seq: id,
+        run_seq: id,
+        version: 1,
         ts_ms: 0,
         event,
     }

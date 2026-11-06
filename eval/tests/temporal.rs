@@ -32,6 +32,8 @@ fn entry(ts_ms: i64, event: Event) -> LedgerEntry {
         id: 1,
         run_id: "run-1".to_string(),
         seq: 1,
+        run_seq: 1,
+        version: 1,
         ts_ms,
         event,
     }

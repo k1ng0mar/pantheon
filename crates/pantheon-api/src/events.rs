@@ -429,6 +429,9 @@ pub enum Event {
         chars_before: u32,
         /// Summary row size in chars.
         chars_after: u32,
+        /// Summary text persisted so resumed turns reuse it.
+        #[serde(default)]
+        summary: String,
     },
     /// The title-gen auxiliary (or the deterministic fallback) named this
     /// conversation from its first user prompt. The latest `SessionTitled`
@@ -866,6 +869,7 @@ impl Event {
                 rows,
                 chars_before,
                 chars_after,
+                summary,
             } => Event::ContextCompressed {
                 run_id: run_id.to_string(),
                 model,
@@ -873,6 +877,7 @@ impl Event {
                 rows,
                 chars_before,
                 chars_after,
+                summary,
             },
             Event::SessionTitled {
                 run_id: _,

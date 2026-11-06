@@ -263,6 +263,8 @@ mod tests {
             id: seq,
             run_id: "child-1".to_string(),
             seq,
+            run_seq: seq,
+            version: 1,
             ts_ms: seq * 1000,
             event,
         }
