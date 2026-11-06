@@ -13,22 +13,5 @@
 //! (process/fs engines); `pantheon-exec` itself no longer knows about the
 //! registry - that is what keeps `capability → tools → exec` acyclic.
 
-pub mod builtins;
-pub mod code_mode;
-pub mod codegraph_tools;
-pub mod format;
-pub mod gitundo_tools;
-pub mod lsp_tools;
-pub mod memory_tools;
-pub mod oauth_tools;
-pub mod plugin_tools;
-pub mod pty_tools;
-pub mod safewrite_tools;
-pub mod session_search_tools;
-pub mod skill_tools;
-pub mod todo_tools;
 pub mod tools;
-pub mod ui_tool;
-pub mod vault_tools;
-pub mod verdict_tool;
-pub mod worktree_tools;
+pub mod tools_group;
