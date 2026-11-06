@@ -1049,6 +1049,14 @@ pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(
                 crate::ollama::MIN_RAM_GIB
             ));
         }
+        // Verified tool call gate: reachable hardware plus a live
+        // tool call shape before a local provider can be the default.
+        let model_name = choice.model.clone();
+        if !crate::ollama::verified_tool_call(&base, &model_name) {
+            return Err(format!(
+                "local provider not verified: model {model_name} did not return a tool call on {base}"
+            ));
+        }
     }
     if let Some(keys) = &choice.raw_keys {
         super::dotenv::persist_dotenv_value(data_dir, &choice.key_env, keys.trim())

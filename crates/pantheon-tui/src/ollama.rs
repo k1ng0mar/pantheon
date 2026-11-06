@@ -107,3 +107,63 @@ mod tests {
         assert!(!r.ready);
     }
 }
+
+/// Check if a live model on this endpoint can make a tool call.
+/// Sends one tiny chat completion with a required tool definition and
+/// expects the model to return a function call. This is the caller
+/// live check mentioned in the module docs. Returns true when a
+/// tool call shape comes back.
+pub fn verified_tool_call(base_url: &str, model: &str) -> bool {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "call the ping tool"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "ping",
+                "description": "test tool",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }],
+        "tool_choice": "required",
+        "max_tokens": 50
+    });
+    let out = match std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "10",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            &body.to_string(),
+            &url,
+        ])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return false,
+    };
+    let v: serde_json::Value = match serde_json::from_slice(&out) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    v.get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|t| t.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod test_verified {
+    use super::verified_tool_call;
+    #[test]
+    fn unreachable_tool_call_is_false() {
+        assert!(!verified_tool_call("http://127.0.0.1:1", "any"));
+    }
+}
