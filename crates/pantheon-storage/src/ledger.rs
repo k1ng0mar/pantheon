@@ -62,6 +62,8 @@ pub struct LedgerEntry {
     pub id: i64,
     pub run_id: String,
     pub seq: i64,
+    pub run_seq: i64,
+    pub version: i64,
     pub ts_ms: i64,
     pub event: Event,
 }
@@ -220,6 +222,8 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
   seq INTEGER NOT NULL,
+  run_seq INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
   ts_ms INTEGER NOT NULL,
   event_json TEXT NOT NULL
 );
@@ -340,6 +344,8 @@ fn migrate(conn: &Connection) -> Result<(), PantheonError> {
     // Written once at fork creation; never updated (a fork-of-a-fork
     // points at its direct parent only, giving a clean chain, not a tree).
     add("ALTER TABLE runs ADD COLUMN forked_from TEXT")?;
+    add("ALTER TABLE events ADD COLUMN run_seq INTEGER NOT NULL DEFAULT 0")?;
+    add("ALTER TABLE events ADD COLUMN version INTEGER NOT NULL DEFAULT 1")?;
     Ok(())
 }
 
@@ -544,7 +550,7 @@ impl Ledger {
             .map_err(|e| err("LEDGER_UPDATE", e.to_string()))?;
         }
         conn.execute(
-            "INSERT INTO events (run_id, seq, ts_ms, event_json) VALUES (?1, (SELECT COALESCE(MAX(seq),0)+1 FROM events), ?2, ?3)",
+            "INSERT INTO events (run_id, seq, run_seq, version, ts_ms, event_json) VALUES (?1, (SELECT COALESCE(MAX(seq),0)+1 FROM events), (SELECT COALESCE(MAX(run_seq),0)+1 FROM events WHERE run_id=?1), 1, ?2, ?3)",
             params![run_id, ts, json],
         )
         .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
@@ -552,10 +558,12 @@ impl Ledger {
         // The rowid and the global `seq` coincide only while no event row is
         // ever deleted; the stored seq is the authority, so read it back
         // rather than assuming they match.
-        let seq: i64 = conn
-            .query_row("SELECT seq FROM events WHERE id = ?1", params![id], |r| {
-                r.get(0)
-            })
+        let (seq, run_seq, version): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT seq, run_seq, version FROM events WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
         conn.commit()
             .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
@@ -563,6 +571,8 @@ impl Ledger {
             id,
             run_id,
             seq,
+            run_seq,
+            version,
             ts_ms: ts,
             event: event.clone(),
         })
@@ -606,15 +616,15 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, run_id, seq, ts_ms, event_json FROM events WHERE run_id = ?1 ORDER BY id",
+                "SELECT id, run_id, seq, run_seq, version, ts_ms, event_json FROM events WHERE run_id = ?1 ORDER BY run_seq, id",
             )
             .map_err(|e| err("LEDGER_REPLAY", e.to_string()))?;
         let rows = stmt
             .query_map(params![run_id], |row| {
-                let json: String = row.get(4)?;
+                let json: String = row.get(6)?;
                 let event: Event = serde_json::from_str(&json).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        4,
+                        6,
                         rusqlite::types::Type::Text,
                         e.into(),
                     )
@@ -623,7 +633,9 @@ impl Ledger {
                     id: row.get(0)?,
                     run_id: row.get(1)?,
                     seq: row.get(2)?,
-                    ts_ms: row.get(3)?,
+                    run_seq: row.get(3)?,
+                    version: row.get(4)?,
+                    ts_ms: row.get(5)?,
                     event,
                 })
             })
@@ -651,17 +663,17 @@ impl Ledger {
             .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, run_id, seq, ts_ms, event_json FROM events \
+                "SELECT id, run_id, seq, run_seq, version, ts_ms, event_json FROM events \
                  WHERE ts_ms >= ?1 AND ts_ms < ?2 AND event_json LIKE '%\"UsageRecorded\"%' \
                  ORDER BY ts_ms, id",
             )
             .map_err(|e| err("LEDGER_USAGE", e.to_string()))?;
         let rows = stmt
             .query_map(params![from_ms, to_ms], |row| {
-                let json: String = row.get(4)?;
+                let json: String = row.get(6)?;
                 let event: Event = serde_json::from_str(&json).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        4,
+                        6,
                         rusqlite::types::Type::Text,
                         e.into(),
                     )
@@ -670,7 +682,9 @@ impl Ledger {
                     id: row.get(0)?,
                     run_id: row.get(1)?,
                     seq: row.get(2)?,
-                    ts_ms: row.get(3)?,
+                    run_seq: row.get(3)?,
+                    version: row.get(4)?,
+                    ts_ms: row.get(5)?,
                     event,
                 })
             })
