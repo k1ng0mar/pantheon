@@ -20,6 +20,64 @@ pub mod tools_group;
 // before the sandbox merged into exec.
 pub use sandbox::{Enforcement, ExecutionBoundary, SandboxLevel, SandboxProfile};
 
+// Crate-root shims for modules moved into groups by the exec merge.
+// External paths (`pantheon_exec::confine::...` etc.) keep working; same
+// pattern as the providers merge.
+
+pub mod confine {
+    pub use crate::sandbox_group::confine::*;
+}
+pub mod danger {
+    pub use crate::sandbox_group::danger::*;
+}
+pub mod supervisor {
+    pub use crate::sandbox_group::supervisor::*;
+}
+pub mod safewrite {
+    pub use crate::sandbox_group::safewrite::*;
+}
+pub mod prestate {
+    pub use crate::sandbox_group::prestate::*;
+}
+
+pub mod skills {
+    pub use crate::skills_group::skills::*;
+}
+pub mod skills_scan {
+    pub use crate::skills_group::skills_scan::*;
+}
+pub mod bundled_skills {
+    pub use crate::skills_group::bundled_skills::*;
+}
+pub mod skill_exec {
+    pub use crate::skills_group::skill_exec::*;
+}
+
+pub mod cloudflare {
+    pub use crate::tools_group::cloudflare::*;
+}
+pub mod http {
+    pub use crate::tools_group::http::*;
+}
+pub mod lsp {
+    pub use crate::tools_group::lsp::*;
+}
+pub mod codegraph {
+    pub use crate::tools_group::codegraph::*;
+}
+pub mod gitundo {
+    pub use crate::tools_group::gitundo::*;
+}
+pub mod worktree {
+    pub use crate::tools_group::worktree::*;
+}
+pub mod process {
+    pub use crate::tools_group::process::*;
+}
+pub mod context {
+    pub use crate::tools_group::context::*;
+}
+
 use serde::{Deserialize, Serialize};
 
 /// Compaction policy for one tool's output.
