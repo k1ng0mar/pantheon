@@ -2036,6 +2036,47 @@ impl Ledger {
         Ok(m)
     }
 
+    /// Global fold over every run in the ledger. This is the metrics
+    /// endpoint the health surface reads. It reuses the per run fold by
+    /// replaying each run id once.
+    pub fn global_metrics(&self) -> Result<RunMetrics, PantheonError> {
+        let ids: Vec<String> = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT run_id FROM events")
+                .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| err("LEDGER_QUERY", e.to_string()))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| err("LEDGER_QUERY", e.to_string()))?);
+            }
+            out
+        };
+        let mut total = RunMetrics::default();
+        for id in ids {
+            if let Ok(m) = self.metrics(&id) {
+                total.runs_started += m.runs_started;
+                total.runs_completed += m.runs_completed;
+                total.runs_failed += m.runs_failed;
+                total.runs_canceled += m.runs_canceled;
+                total.tool_calls += m.tool_calls;
+                total.model_turns += m.model_turns;
+                total.approvals_requested += m.approvals_requested;
+                total.approvals_granted += m.approvals_granted;
+                total.approvals_denied += m.approvals_denied;
+                total.agents_spawned += m.agents_spawned;
+                total.context_trims += m.context_trims;
+                total.context_compressions += m.context_compressions;
+            }
+        }
+        Ok(total)
+    }
+
     pub fn render_run_log(&self, run_id: &str) -> Result<String, PantheonError> {
         let entries = self.replay(run_id)?;
         if entries.is_empty() {
