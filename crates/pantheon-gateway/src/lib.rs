@@ -13,6 +13,78 @@ pub mod runtime;
 pub mod server;
 pub mod voice_group;
 
+// Crate-root shims for modules moved into groups by the gateway merge.
+// External paths (`pantheon_gateway::http::...`, `pantheon_gateway::voice::...`,
+// `pantheon_gateway::live_voice::...`) keep working; same pattern as the exec
+// and providers merges.
+
+pub mod http {
+    pub use crate::server::http::*;
+}
+pub mod live_voice {
+    pub use crate::voice_group::live_voice::*;
+}
+pub mod voice {
+    pub use crate::voice_group::voice::*;
+}
+pub mod daemon {
+    pub use crate::runtime::daemon::*;
+}
+pub mod schedule_delivery {
+    pub use crate::channels::schedule_delivery::*;
+}
+pub mod service {
+    pub use crate::runtime::service::*;
+}
+pub mod channel {
+    pub use crate::channels::channel::*;
+}
+pub mod channel_voice {
+    pub use crate::voice_group::channel_voice::*;
+}
+pub mod dedup {
+    pub use crate::runtime::dedup::*;
+}
+pub mod delivery {
+    pub use crate::channels::delivery::*;
+}
+pub mod discord {
+    pub use crate::channels::discord::*;
+}
+pub mod discord_gateway {
+    pub use crate::channels::discord_gateway::*;
+}
+pub mod genui {
+    pub use crate::server::genui::*;
+}
+pub mod mcp_boot {
+    pub use crate::server::mcp_boot::*;
+}
+pub mod notify {
+    pub use crate::server::notify::*;
+}
+pub mod realtime_voice {
+    pub use crate::voice_group::realtime_voice::*;
+}
+pub mod rendezvous {
+    pub use crate::server::rendezvous::*;
+}
+pub mod scheduler {
+    pub use crate::runtime::scheduler::*;
+}
+pub mod sse {
+    pub use crate::server::sse::*;
+}
+pub mod stream {
+    pub use crate::server::stream::*;
+}
+pub mod telegram {
+    pub use crate::channels::telegram::*;
+}
+pub mod watchdog {
+    pub use crate::runtime::watchdog::*;
+}
+
 pub use channels::channel::{
     chunk_text, fanout, format_text, ApprovalButtons, Channel, ChannelEnvelope, ChannelError,
     ChannelEvent, MemoryChannel, ThreadRunMap,
