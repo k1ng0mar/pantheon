@@ -1964,6 +1964,10 @@ pub struct DelegationRoute {
     /// The `[agents.<name>]` profile the routed child runs as.
     #[serde(default)]
     pub profile: String,
+    /// Credential names this route may grant to its child. Empty means
+    /// legacy unrestricted behavior for backward compat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<String>,
 }
 
 /// `[delegation]`: curated routes for the `delegate` tool, plus an
@@ -3686,11 +3690,13 @@ mod delegation_section_tests {
                     name: "fast".into(),
                     description: "Cheap and quick: lookups, summaries, simple edits.".into(),
                     profile: "coder".into(),
+                    credentials: vec![],
                 },
                 DelegationRoute {
                     name: "deep".into(),
                     description: "Slow and careful: hard debugging and design work.".into(),
                     profile: "researcher".into(),
+                    credentials: vec![],
                 },
             ],
             default: Some("fast".into()),
@@ -3740,6 +3746,7 @@ mod delegation_section_tests {
             name: "fast".into(),
             description: "A second fast.".into(),
             profile: "other".into(),
+            credentials: vec![],
         });
         let err = section.resolve("fast").expect_err("duplicate fast");
         assert!(err.contains("more than once"));

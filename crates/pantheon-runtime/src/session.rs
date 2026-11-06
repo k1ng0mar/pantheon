@@ -1239,6 +1239,7 @@ struct DelegateDriver {
     /// The parent run this turn belongs to: the cap key, and the run id
     /// the spawn/completion events are recorded under.
     run_id: String,
+    credential_grants: Vec<String>,
     /// How the child session is driven to its terminal outcome.
     /// Never `None`: the indirection exists only to keep this testable.
     drive_child: Arc<DriveChild>,
@@ -1296,6 +1297,7 @@ impl DelegateDriver {
                 .unwrap_or_default(),
             supervisor: session.supervisor.clone(),
             run_id: run_id.to_string(),
+            credential_grants: session.credential_grants.clone(),
             drive_child: Arc::new(|s: &Session, run: &str, task: &str| s.chat(run, task)),
         }))
     }
@@ -2135,6 +2137,15 @@ fn run_delegate_child_routed(
         .lock()
         .map(|m| *m)
         .unwrap_or_default();
+    let route_credentials: Vec<String> = route
+        .and_then(|name| {
+            driver
+                .delegation_section
+                .as_ref()
+                .and_then(|s| s.resolve(name).ok())
+                .map(|r| r.credentials.clone())
+        })
+        .unwrap_or_default();
     let child_session = build_delegate_session(
         &driver.agent,
         &driver.model_policy,
@@ -2147,8 +2158,12 @@ fn run_delegate_child_routed(
             parent_mode,
             parent_permission_mode,
             parent_mcp: &driver.mcp,
-            parent_grants: None,
-            route_credentials: &[],
+            parent_grants: if driver.credential_grants.is_empty() {
+                None
+            } else {
+                Some(&driver.credential_grants)
+            },
+            route_credentials: &route_credentials,
         },
         DelegatePolicy {
             max_delegate_depth: driver.max_delegate_depth,
@@ -8983,11 +8998,13 @@ mod delegate_tool_tests {
                     name: "fast".into(),
                     description: "Cheap and quick.".into(),
                     profile: "child".into(),
+                    credentials: vec![],
                 },
                 pantheon_api::config::DelegationRoute {
                     name: "deep".into(),
                     description: "Slow and careful.".into(),
                     profile: "parent".into(),
+                    credentials: vec![],
                 },
             ],
             default: Some("fast".into()),
