@@ -16,9 +16,12 @@
 //! turn loop over the same policy, budget, and run identity. Do not add
 //! provider or network behavior here; keep it deterministic.
 //!
-//! Known gap: `Session::drive` builds its `AgentLoop` with `judge: None`
-//! and never consults a judge, so a configured `[judge]` section is
-//! validated by `doctor` and then never asked anything.
+//! The judge is host-side, not loop-side: `pantheon-runtime::Session` builds
+//! its `AgentLoop` with `judge: None`, then resolves the `[judge]` auxiliary
+//! itself (`Session::build_judge`) and drives approval verdicts through
+//! `AgentLoop::consult_gate_advisory` in `PermissionMode::Smart`. Keeping the
+//! client out of the loop is deliberate - this crate stays deterministic and
+//! provider-free.
 //!
 //! Agent profiles (`[agents.*]` config tables) live at the API layer:
 //! they are config-document types, and the runtime consumes them without

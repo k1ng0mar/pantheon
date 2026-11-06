@@ -1990,60 +1990,235 @@ pub mod openai {
     }
 }
 pub mod gemini {
-    //! Native Gemini adapter: generateContent shape, not OpenAI compat.
+    //! Native Gemini adapter: the `generateContent` shape, not OpenAI compat.
     //!
-    //! This module only builds the wire request shape marker. Full streaming
-    //! and tool call translation lives in the OpenAI compat path until a
-    //! live Gemini key is available to verify against. The marker here
-    //! proves the request is shaped for the native endpoint, and the
-    //! catalog now has a distinct api_mode for it.
+    //! Wire mapping (per the official `ai.google.dev/api/generate-content`
+    //! reference):
+    //! - conversation rows become `contents[]` with `role` `user` | `model`
+    //!   (Gemini spells the assistant turn `model`, never `assistant`);
+    //! - the system prompt rides `systemInstruction` as a top-level `Content`,
+    //!   not a message in `contents`;
+    //! - images become `inline_data` parts (`mime_type` + base64 `data`);
+    //! - tools become `tools[].functionDeclarations[]`, each with flat
+    //!   `name`/`description`/`parameters` (no nested `function` object);
+    //! - tool results come back as a `functionResponse` part keyed by
+    //!   `name` plus a `response` object, on a `user` turn;
+    //! - streaming is `streamGenerateContent?alt=sse`, one JSON object per
+    //!   `data:` event, cumulative `candidates[0].content.parts` deltas.
+    //!
+    //! Everything here is built from the public docs and pinned by golden
+    //! tests. It is NOT verified against a live Gemini key: the shipped
+    //! catalog routes `google` through the OpenAI-compat endpoint, so the
+    //! native mode is reachable only via a custom catalog override. Keep this
+    //! note honest until someone exercises it with a real key.
 
-    use crate::http::{TurnOptions, WireRequest};
+    use crate::http::{
+        perr, AdapterTurn, ChatTransport, StreamEnd, ToolChoice, TurnOptions, WireRequest,
+    };
+    use crate::model_event::{ModelEvent, ModelEventSink, ModelUsage};
+    use pantheon_agent::{ToolCall, TurnOutcome};
+    use pantheon_api::capability::Capability;
+    use pantheon_api::error::PantheonError;
+    use pantheon_api::message::{Message, Role, ToolSchema};
 
+    /// Turn a canonical message list into Gemini `contents[]` plus an
+    /// optional `systemInstruction`.
+    ///
+    /// Provenance handling mirrors the OpenAI adapter: untrusted/memory rows
+    /// get their envelope prefix so fetched data never reads as an
+    /// instruction. System rows are hoisted out of `contents` entirely,
+    /// because Gemini has a dedicated `systemInstruction` field and rejects
+    /// `role: "system"` inside `contents`.
+    pub fn body_value(
+        messages: &[Message],
+        tools: &[ToolSchema],
+        max_tokens: u32,
+    ) -> serde_json::Value {
+        let mut system_chunks: Vec<String> = Vec::new();
+        let mut contents: Vec<serde_json::Value> = Vec::new();
+
+        // Gemini keys tool results by the declared function *name*, but the
+        // canonical tool row carries only `tool_call_id`. Resolve the name
+        // from the assistant turn that requested the call; without it the
+        // functionResponse is unusable to the model.
+        let mut call_names: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::new();
+        for m in messages {
+            for call in &m.tool_calls {
+                call_names.insert(call.id.as_str(), call.name.as_str());
+            }
+        }
+
+        for m in messages {
+            let text = match &m.provenance {
+                Some(p) if p.trust.rank() <= pantheon_api::provenance::TrustTier::Memory.rank() => {
+                    format!("{} {}", p.envelope_prefix(), m.content)
+                }
+                _ => m.content.clone(),
+            };
+            if m.role == Role::System {
+                if !text.is_empty() {
+                    system_chunks.push(text);
+                }
+                continue;
+            }
+            let mut parts: Vec<serde_json::Value> = Vec::new();
+            if !text.is_empty() {
+                parts.push(serde_json::json!({ "text": text }));
+            }
+            for img in &m.images {
+                parts.push(serde_json::json!({
+                    "inline_data": { "mime_type": img.mime, "data": img.data },
+                }));
+            }
+            // A tool row is a functionResponse part on a user turn. Gemini
+            // keys results by the declared function name, not by the
+            // OpenAI-style call id, so it is resolved from the assistant
+            // turn that made the call.
+            if let Some(call_id) = &m.tool_call_id {
+                let name = call_names
+                    .get(call_id.as_str())
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| call_id.clone());
+                parts.push(serde_json::json!({
+                    "functionResponse": {
+                        "name": name,
+                        "response": { "result": text },
+                    },
+                }));
+            }
+            // Assistant tool requests become functionCall parts.
+            for call in &m.tool_calls {
+                let args: serde_json::Value =
+                    serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::json!({}));
+                parts.push(serde_json::json!({
+                    "functionCall": { "name": call.name, "args": args },
+                }));
+            }
+            if parts.is_empty() {
+                continue;
+            }
+            contents.push(serde_json::json!({
+                "role": if m.role == Role::Assistant { "model" } else { "user" },
+                "parts": parts,
+            }));
+        }
+
+        let mut body = serde_json::json!({ "contents": contents });
+        if !system_chunks.is_empty() {
+            body["systemInstruction"] = serde_json::json!({
+                "parts": [{ "text": system_chunks.join("\n\n") }],
+            });
+        }
+        if !tools.is_empty() {
+            let decls: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    })
+                })
+                .collect();
+            body["tools"] = serde_json::json!([{ "functionDeclarations": decls }]);
+        }
+        let mut gen = serde_json::json!({ "maxOutputTokens": max_tokens });
+        // Gemini takes the output cap under generationConfig, which it always
+        // wants present; keep the object even when only the cap is set.
+        body["generationConfig"] = std::mem::take(&mut gen);
+        body
+    }
+
+    /// Build the wire request for one attempt.
+    ///
+    /// `key` is unused in the URL: the key rides the `x-goog-api-key`
+    /// header, which is the documented mechanism and keeps the credential
+    /// out of request lines and proxy logs.
+    #[allow(clippy::too_many_arguments)]
     pub fn request(
         base_url: &str,
-        api_key: &str,
+        key: &str,
         model: &str,
-        messages: &[pantheon_api::message::Message],
-        _tools: &[pantheon_api::message::ToolSchema],
+        messages: &[Message],
+        tools: &[ToolSchema],
         stream: bool,
         max_tokens: u32,
-        _opts: &TurnOptions,
+        opts: &TurnOptions,
     ) -> WireRequest {
-        let _ = messages;
         let action = if stream {
             "streamGenerateContent"
         } else {
             "generateContent"
         };
-        let _ = api_key;
+        let mut url = format!(
+            "{}/models/{}:{}",
+            base_url.trim_end_matches('/'),
+            model,
+            action
+        );
+        if stream {
+            // SSE framing, per the documented `alt=sse` query parameter.
+            url.push_str("?alt=sse");
+        }
+        let mut body = body_value(messages, tools, max_tokens);
+        // Tool choice maps onto Gemini's functionCallingConfig mode.
+        if !tools.is_empty() {
+            if let Some(mode) = tool_choice_mode(&opts.tool_choice) {
+                body["toolConfig"] =
+                    serde_json::json!({ "functionCallingConfig": { "mode": mode } });
+            }
+        }
         WireRequest {
-            url: format!(
-                "{}/models/{}:{action}?alt=sse",
-                base_url.trim_end_matches('/'),
-                model
-            ),
-            headers: vec![("Content-Type".into(), "application/json".into())],
-            body: format!(
-                "{{\"contents\":[],\"generationConfig\":{{\"maxOutputTokens\":{}}}}}",
-                max_tokens
-            ),
+            url,
+            headers: vec![
+                ("x-goog-api-key".to_string(), key.to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ],
+            body: body.to_string(),
             use_sigv4: false,
-            cancel: _opts.cancel.clone(),
+            cancel: opts.cancel.clone(),
         }
     }
 
+    /// Gemini function-calling mode. `None` = omit the field (provider
+    /// default, `AUTO`). `Named` is unsupported natively: Gemini's ANY mode
+    /// allows a name restriction list, which the canonical `ToolChoice` does
+    /// not carry, so a named choice degrades to `ANY` rather than silently
+    /// running AUTO.
+    fn tool_choice_mode(choice: &ToolChoice) -> Option<&'static str> {
+        match choice {
+            ToolChoice::Auto => None,
+            ToolChoice::None => Some("NONE"),
+            ToolChoice::Required | ToolChoice::Named(_) => Some("ANY"),
+        }
+    }
+
+    /// Parse one `generateContent` response into a normalized turn.
+    ///
+    /// Surfaces a prompt block as a real error instead of an empty answer:
+    /// a safety refusal that parses as "" would look like a silent model
+    /// failure and burn every fallback.
     pub fn parse_response(
         body: &str,
-        sink: &dyn crate::model_event::ModelEventSink,
-    ) -> Result<crate::http::AdapterTurn, pantheon_api::error::PantheonError> {
-        use crate::http::{perr, AdapterTurn};
-        use crate::model_event::{ModelEvent, ModelUsage};
-        let v: serde_json::Value =
-            serde_json::from_str(body).map_err(|e| perr("PROVIDER_PARSE", e.to_string(), false))?;
-        let candidates = v
+        sink: &dyn ModelEventSink,
+    ) -> Result<AdapterTurn, PantheonError> {
+        let v: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| perr("PROVIDER_PARSE", format!("gemini body: {e}"), false))?;
+        if let Some(reason) = v
+            .pointer("/promptFeedback/blockReason")
+            .and_then(|r| r.as_str())
+        {
+            return Err(perr(
+                "PROVIDER_BLOCKED",
+                format!("Gemini blocked the prompt: {reason}"),
+                false,
+            ));
+        }
+        let cand = v
             .get("candidates")
             .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
             .ok_or_else(|| {
                 perr(
                     "PROVIDER_PARSE",
@@ -2051,23 +2226,24 @@ pub mod gemini {
                     false,
                 )
             })?;
-        let cand = candidates
-            .first()
-            .ok_or_else(|| perr("PROVIDER_PARSE", "empty candidates".into(), false))?;
+
         let parts = cand
             .get("content")
             .and_then(|c| c.get("parts"))
             .and_then(|p| p.as_array())
             .cloned()
             .unwrap_or_default();
+
         let mut text = String::new();
-        let mut calls = Vec::new();
+        let mut calls: Vec<ToolCall> = Vec::new();
         for part in &parts {
             if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
-                text.push_str(t);
-                sink.emit(ModelEvent::TextDelta {
-                    text: t.to_string(),
-                });
+                if !t.is_empty() {
+                    text.push_str(t);
+                    sink.emit(ModelEvent::TextDelta {
+                        text: t.to_string(),
+                    });
+                }
             }
             if let Some(fc) = part.get("functionCall") {
                 let name = fc
@@ -2075,22 +2251,33 @@ pub mod gemini {
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
+                if name.is_empty() {
+                    return Err(perr(
+                        "PROVIDER_PARSE",
+                        "gemini functionCall missing name".into(),
+                        false,
+                    ));
+                }
+                // Gemini returns a JSON object for args; the canonical tool
+                // call carries a JSON *string*, so serialize rather than
+                // stringify the Value (which would double-encode quotes).
                 let args = fc
                     .get("args")
                     .map(|a| a.to_string())
                     .unwrap_or_else(|| "{}".to_string());
-                calls.push(pantheon_agent::ToolCall {
-                    name,
-                    capability: pantheon_api::capability::Capability::Other("gemini.tool".into()),
-                    args,
-                });
                 sink.emit(ModelEvent::ToolCall {
                     id: String::new(),
-                    name: calls.last().unwrap().name.clone(),
-                    arguments: calls.last().unwrap().args.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                });
+                calls.push(ToolCall {
+                    name,
+                    capability: Capability::Other("gemini.tool".into()),
+                    args,
                 });
             }
         }
+
         let finish = cand
             .get("finishReason")
             .and_then(|x| x.as_str())
@@ -2112,13 +2299,13 @@ pub mod gemini {
         });
         let tokens = usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0);
         let outcome = if calls.is_empty() {
-            pantheon_agent::TurnOutcome::Text {
+            TurnOutcome::Text {
                 text,
                 tokens,
                 cost_cents: 0,
             }
         } else {
-            pantheon_agent::TurnOutcome::Tools {
+            TurnOutcome::Tools {
                 calls,
                 text,
                 tokens,
@@ -2133,48 +2320,498 @@ pub mod gemini {
     }
 
     pub fn complete(
-        transport: &dyn crate::http::ChatTransport,
+        transport: &dyn ChatTransport,
         req: WireRequest,
-        sink: &dyn crate::model_event::ModelEventSink,
-    ) -> Result<crate::http::AdapterTurn, pantheon_api::error::PantheonError> {
+        sink: &dyn ModelEventSink,
+    ) -> Result<AdapterTurn, PantheonError> {
         let body = transport.post(&req)?;
         parse_response(&body, sink)
     }
 
+    /// Incremental SSE state for `streamGenerateContent?alt=sse`.
+    ///
+    /// Gemini re-sends the full accumulated text on each candidate part rather
+    /// than a delta. Emitting `parts[].text` verbatim would therefore repeat
+    /// the whole prefix on every chunk, so the streamer diffs against what it
+    /// already emitted and only forwards the new suffix. Function calls are
+    /// complete objects (not fragment streams like OpenAI's), so they are
+    /// collected and emitted once at `finish`.
+    #[derive(Default)]
+    pub struct GeminiStream {
+        text: String,
+        calls: Vec<(String, String)>,
+        usage: Option<ModelUsage>,
+        finish_reason: Option<String>,
+    }
+
+    impl GeminiStream {
+        pub fn push(
+            &mut self,
+            payload: &str,
+            sink: &dyn ModelEventSink,
+        ) -> Result<(), PantheonError> {
+            let trimmed = payload.trim();
+            if trimmed.is_empty() || trimmed == "[DONE]" {
+                return Ok(());
+            }
+            let v: serde_json::Value = serde_json::from_str(trimmed)
+                .map_err(|e| perr("PROVIDER_PARSE", format!("gemini stream chunk: {e}"), false))?;
+            if v.get("error").is_some() {
+                return Err(stream_err_from(&v));
+            }
+            if let Some(reason) = v
+                .pointer("/promptFeedback/blockReason")
+                .and_then(|r| r.as_str())
+            {
+                return Err(perr(
+                    "PROVIDER_BLOCKED",
+                    format!("Gemini blocked the prompt: {reason}"),
+                    false,
+                ));
+            }
+            if let Some(u) = v.get("usageMetadata") {
+                self.usage = Some(ModelUsage {
+                    input_tokens: u
+                        .get("promptTokenCount")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0),
+                    output_tokens: u
+                        .get("candidatesTokenCount")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0),
+                    total_tokens: u
+                        .get("totalTokenCount")
+                        .and_then(|x| x.as_u64())
+                        .unwrap_or(0),
+                    cost_usd: None,
+                });
+            }
+            let Some(cand) = v
+                .get("candidates")
+                .and_then(|c| c.as_array())
+                .and_then(|c| c.first())
+            else {
+                return Ok(());
+            };
+            if let Some(fr) = cand.get("finishReason").and_then(|x| x.as_str()) {
+                if !fr.is_empty() {
+                    self.finish_reason = Some(fr.to_string());
+                }
+            }
+            let Some(parts) = cand
+                .get("content")
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.as_array())
+            else {
+                return Ok(());
+            };
+            for part in parts {
+                if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                    // Cumulative stream: forward only the unseen suffix.
+                    if let Some(delta) = t.strip_prefix(self.text.as_str()) {
+                        if !delta.is_empty() {
+                            sink.emit(ModelEvent::TextDelta {
+                                text: delta.to_string(),
+                            });
+                        }
+                        self.text = t.to_string();
+                    } else if t != self.text {
+                        // Provider reset or a non-prefix update: emit it and
+                        // adopt the new text so the next diff is coherent.
+                        sink.emit(ModelEvent::TextDelta {
+                            text: t.to_string(),
+                        });
+                        self.text = t.to_string();
+                    }
+                }
+                if let Some(fc) = part.get("functionCall") {
+                    let name = fc
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if name.is_empty() {
+                        return Err(perr(
+                            "PROVIDER_PARSE",
+                            "gemini streamed functionCall missing name".into(),
+                            false,
+                        ));
+                    }
+                    let args = fc
+                        .get("args")
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "{}".to_string());
+                    // Gemini can resend the same call across chunks; keep the
+                    // last shape per (name, args) pair only.
+                    if !self.calls.iter().any(|(n, a)| n == &name && a == &args) {
+                        self.calls.push((name, args));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        pub fn finish(self, sink: &dyn ModelEventSink) -> Result<AdapterTurn, PantheonError> {
+            let usage = self.usage;
+            let finish_reason = self.finish_reason;
+            let tokens = usage.as_ref().map(|u| u.total_tokens as u32).unwrap_or(0);
+            if self.calls.is_empty() {
+                return Ok(AdapterTurn {
+                    outcome: TurnOutcome::Text {
+                        text: self.text,
+                        tokens,
+                        cost_cents: 0,
+                    },
+                    usage,
+                    finish_reason,
+                });
+            }
+            let mut calls = Vec::with_capacity(self.calls.len());
+            for (name, args) in self.calls {
+                sink.emit(ModelEvent::ToolCall {
+                    id: String::new(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                });
+                calls.push(ToolCall {
+                    name,
+                    capability: Capability::Other("gemini.tool".into()),
+                    args,
+                });
+            }
+            Ok(AdapterTurn {
+                outcome: TurnOutcome::Tools {
+                    calls,
+                    text: self.text,
+                    tokens,
+                    cost_cents: 0,
+                },
+                usage,
+                finish_reason,
+            })
+        }
+    }
+
     pub fn stream(
-        transport: &dyn crate::http::ChatTransport,
+        transport: &dyn ChatTransport,
         req: WireRequest,
-        sink: &dyn crate::model_event::ModelEventSink,
-    ) -> Result<crate::http::AdapterTurn, pantheon_api::error::PantheonError> {
-        // Native streaming shares the SSE shape, but full translation needs a live key to verify.
-        // Fail loud and let the chain fall back to the OpenAI compat google provider.
-        let _ = (transport, req, sink);
-        Err(crate::http::perr(
-            "PROVIDER_NOT_IMPLEMENTED",
-            "native Gemini streaming is not verified yet, use google openai provider".to_string(),
-            false,
-        ))
+        sink: &dyn ModelEventSink,
+    ) -> Result<AdapterTurn, PantheonError> {
+        let mut state = GeminiStream::default();
+        let end = transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
+        if state.finish_reason.is_none() {
+            // Same contract as the OpenAI/Anthropic streamers: a stream that
+            // ends without a finishReason is truncated output, not a turn.
+            // Fail retryable so the chain can retry or fall back.
+            let cause = match end {
+                StreamEnd::Done => {
+                    "gemini stream ended with terminator but no finishReason".to_string()
+                }
+                StreamEnd::Eof => {
+                    "gemini stream ended without terminator and no finishReason".to_string()
+                }
+            };
+            return Err(perr("PROVIDER_TRUNCATED", cause, true));
+        }
+        state.finish(sink)
+    }
+
+    /// Build a structured error from a mid-stream `{"error": ...}` payload.
+    /// Gemini can deliver errors as SSE events under HTTP 200, so these must
+    /// surface as real errors for chain fallback to engage.
+    fn stream_err_from(v: &serde_json::Value) -> PantheonError {
+        let err = v.get("error").unwrap_or(v);
+        let message = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("gemini stream error")
+            .to_string();
+        let status = err
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let code = match status.as_str() {
+            "RESOURCE_EXHAUSTED" => "PROVIDER_RATE_LIMITED",
+            "UNAUTHENTICATED" | "PERMISSION_DENIED" => "PROVIDER_AUTH",
+            "INVALID_ARGUMENT" => "PROVIDER_BAD_REQUEST",
+            "UNAVAILABLE" => "PROVIDER_UNAVAILABLE",
+            _ => "PROVIDER_ERROR",
+        };
+        let retryable = matches!(
+            code,
+            "PROVIDER_RATE_LIMITED" | "PROVIDER_UNAVAILABLE" | "PROVIDER_ERROR"
+        );
+        perr(code, message, retryable)
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::model_event::NoopModelSink;
 
-        #[test]
-        fn native_request_uses_generate_content_action() {
-            let opts = TurnOptions::default();
-            let req = request(
+        fn opts() -> TurnOptions {
+            TurnOptions::default()
+        }
+
+        fn req_of(messages: &[Message], tools: &[ToolSchema], stream: bool) -> WireRequest {
+            request(
                 "https://generativelanguage.googleapis.com/v1beta",
                 "k",
                 "gemini-2.5-flash",
-                &[],
-                &[],
-                false,
-                100,
-                &opts,
-            );
-            assert!(req.url.contains("generateContent"));
+                messages,
+                tools,
+                stream,
+                256,
+                &opts(),
+            )
+        }
+
+        #[test]
+        fn native_request_uses_generate_content_action() {
+            let req = req_of(&[], &[], false);
+            assert!(req.url.contains(":generateContent"));
             assert!(!req.url.contains("/openai"));
+            assert!(!req.url.contains("alt=sse"));
+        }
+
+        #[test]
+        fn streaming_request_uses_sse_action() {
+            let req = req_of(&[], &[], true);
+            assert!(req.url.contains(":streamGenerateContent"));
+            assert!(req.url.contains("alt=sse"));
+        }
+
+        #[test]
+        fn api_key_rides_the_header_not_the_url() {
+            let req = req_of(&[], &[], false);
+            assert!(
+                req.headers
+                    .iter()
+                    .any(|(k, v)| k == "x-goog-api-key" && v == "k"),
+                "key must be sent as x-goog-api-key"
+            );
+            assert!(
+                !req.url.contains("key=k"),
+                "credential must never appear in the URL: {}",
+                req.url
+            );
+        }
+
+        /// The original implementation hardcoded `"contents":[]` and dropped
+        /// every message. This pins that real conversation actually reaches
+        /// the wire, which is the whole bug.
+        #[test]
+        fn conversation_reaches_the_wire() {
+            let messages = vec![Message::user("hello there")];
+            let req = req_of(&messages, &[], false);
+            let body: serde_json::Value = serde_json::from_str(&req.body).expect("body is JSON");
+            let contents = body["contents"].as_array().expect("contents is an array");
+            assert_eq!(contents.len(), 1);
+            assert_eq!(contents[0]["role"], "user");
+            assert_eq!(contents[0]["parts"][0]["text"], "hello there");
+        }
+
+        #[test]
+        fn system_rows_are_hoisted_to_system_instruction() {
+            let messages = vec![Message::system("be terse"), Message::user("hi")];
+            let req = req_of(&messages, &[], false);
+            let body: serde_json::Value = serde_json::from_str(&req.body).expect("body is JSON");
+            assert_eq!(
+                body["systemInstruction"]["parts"][0]["text"], "be terse",
+                "system prompt must not land in contents"
+            );
+            let contents = body["contents"].as_array().unwrap();
+            assert_eq!(contents.len(), 1, "only the user turn belongs in contents");
+            for c in contents {
+                assert_ne!(
+                    c["role"], "system",
+                    "Gemini rejects role:system in contents"
+                );
+            }
+        }
+
+        #[test]
+        fn assistant_role_is_spelled_model() {
+            let messages = vec![Message::user("hi"), Message::assistant("hello")];
+            let req = req_of(&messages, &[], false);
+            let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+            let contents = body["contents"].as_array().unwrap();
+            assert_eq!(contents[1]["role"], "model");
+        }
+
+        #[test]
+        fn tools_map_to_function_declarations() {
+            let tools = vec![ToolSchema {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"],
+                }),
+            }];
+            let req = req_of(&[Message::user("hi")], &tools, false);
+            let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+            let decl = &body["tools"][0]["functionDeclarations"][0];
+            assert_eq!(decl["name"], "read_file");
+            assert_eq!(decl["description"], "Read a file");
+            assert_eq!(decl["parameters"]["required"][0], "path");
+            // A nested OpenAI-style `function` object would be rejected.
+            assert!(decl.get("function").is_none());
+        }
+
+        #[test]
+        fn images_map_to_inline_data_parts() {
+            let mut msg = Message::user("what is this");
+            msg.images.push(pantheon_api::message::ImagePart {
+                name: "a.png".into(),
+                mime: "image/png".into(),
+                data: "QUJD".into(),
+            });
+            let req = req_of(&[msg], &[], false);
+            let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+            let parts = body["contents"][0]["parts"].as_array().unwrap();
+            let inline = parts
+                .iter()
+                .find(|p| p.get("inline_data").is_some())
+                .expect("image must ride as an inline_data part");
+            assert_eq!(inline["inline_data"]["mime_type"], "image/png");
+            assert_eq!(inline["inline_data"]["data"], "QUJD");
+        }
+
+        #[test]
+        fn response_text_and_usage_parse() {
+            let body = r#"{
+                "candidates": [{
+                    "content": { "parts": [{ "text": "hi " }, { "text": "there" }] },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 7,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 10
+                }
+            }"#;
+            let turn = parse_response(body, &NoopModelSink).expect("parses");
+            match turn.outcome {
+                TurnOutcome::Text { text, tokens, .. } => {
+                    assert_eq!(text, "hi there");
+                    assert_eq!(tokens, 10);
+                }
+                other => panic!("expected text turn, got {other:?}"),
+            }
+            assert_eq!(turn.finish_reason.as_deref(), Some("STOP"));
+            assert_eq!(turn.usage.unwrap().input_tokens, 7);
+        }
+
+        #[test]
+        fn response_function_call_becomes_a_tool_turn() {
+            let body = r#"{
+                "candidates": [{
+                    "content": { "parts": [{
+                        "functionCall": { "name": "read_file", "args": { "path": "a.txt" } }
+                    }] },
+                    "finishReason": "STOP"
+                }]
+            }"#;
+            let turn = parse_response(body, &NoopModelSink).expect("parses");
+            match turn.outcome {
+                TurnOutcome::Tools { calls, .. } => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(calls[0].name, "read_file");
+                    let args: serde_json::Value =
+                        serde_json::from_str(&calls[0].args).expect("args are JSON");
+                    assert_eq!(args["path"], "a.txt");
+                }
+                other => panic!("expected tool turn, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn blocked_prompt_is_an_error_not_an_empty_answer() {
+            let body = r#"{"promptFeedback": {"blockReason": "SAFETY"}}"#;
+            let err = match parse_response(body, &NoopModelSink) {
+                Ok(_) => panic!("a blocked prompt must not parse as an answer"),
+                Err(e) => e,
+            };
+            assert_eq!(err.code, "PROVIDER_BLOCKED");
+        }
+
+        #[test]
+        fn stream_forwards_only_the_unseen_suffix() {
+            // Gemini resends cumulative text; naive emission would duplicate.
+            let mut state = GeminiStream::default();
+            let sink = NoopModelSink;
+            state
+                .push(
+                    r#"{"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}"#,
+                    &sink,
+                )
+                .unwrap();
+            state
+                .push(
+                    r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}"#,
+                    &sink,
+                )
+                .unwrap();
+            state.push(
+                r#"{"candidates":[{"content":{"parts":[{"text":"Hello world"}]},"finishReason":"STOP"}]}"#,
+                &sink,
+            )
+            .unwrap();
+            let turn = state.finish(&sink).expect("finishes");
+            match turn.outcome {
+                TurnOutcome::Text { text, .. } => assert_eq!(text, "Hello world"),
+                other => panic!("expected text turn, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn stream_without_finish_reason_is_truncated() {
+            struct EofTransport;
+            impl ChatTransport for EofTransport {
+                fn post(&self, _req: &WireRequest) -> Result<String, PantheonError> {
+                    Err(perr("STUB", "unused".into(), false))
+                }
+                fn post_stream(
+                    &self,
+                    _req: &WireRequest,
+                    on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+                ) -> Result<StreamEnd, PantheonError> {
+                    on_payload(r#"{"candidates":[{"content":{"parts":[{"text":"cut"}]}}]}"#)?;
+                    Ok(StreamEnd::Eof)
+                }
+            }
+            let err = match stream(&EofTransport, req_of(&[], &[], true), &NoopModelSink) {
+                Ok(_) => panic!("a truncated stream must not parse as a turn"),
+                Err(e) => e,
+            };
+            assert_eq!(err.code, "PROVIDER_TRUNCATED");
+            assert!(err.retryable);
+        }
+
+        #[test]
+        fn streamed_function_call_is_collected_once() {
+            let mut state = GeminiStream::default();
+            let sink = NoopModelSink;
+            let chunk = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"run","args":{"cmd":"ls"}}}]}}]}"#;
+            state.push(chunk, &sink).unwrap();
+            state.push(chunk, &sink).unwrap(); // provider repeats the call
+            state
+                .push(
+                    r#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}]}"#,
+                    &sink,
+                )
+                .unwrap();
+            let turn = state.finish(&sink).expect("finishes");
+            match turn.outcome {
+                TurnOutcome::Tools { calls, .. } => {
+                    assert_eq!(calls.len(), 1, "a repeated call must not double");
+                    assert_eq!(calls[0].name, "run");
+                }
+                other => panic!("expected tool turn, got {other:?}"),
+            }
         }
     }
 }

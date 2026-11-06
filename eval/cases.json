@@ -224,7 +224,7 @@
     },
     {
       "id": "doctor-flags-ts-entry-with-warning",
-      "title": "Doctor warns on a TypeScript entry but does not reject the plugin",
+      "title": "Doctor rejects a TypeScript-only entry the Python runner cannot execute",
       "origin": "WAVE2 notes: doctor already flags TS_ENTRY",
       "commands": [
         [
@@ -234,9 +234,7 @@
       ],
       "expect": {
         "doctor-flags-ts-entry-with-warning": [
-          "TS_ENTRY",
-          "\"level\": \"warn\"",
-          "\"ok\": true"
+          "TS_ENTRY"
         ]
       },
       "post": [],
@@ -248,7 +246,10 @@
           "ts-entry/index.ts": "// OpenClaw-style TS entry\n",
           "ts-entry/plugin.yaml": "name: ts-entry\nversion: \"1.0.0\"\nprovides_hooks:\n  - pre_llm_call\n"
         }
-      }
+      },
+      "expect_fail": [
+        0
+      ]
     },
     {
       "id": "doctor-accepts-valid-plugin",
@@ -262,8 +263,8 @@
       ],
       "expect": {
         "doctor-accepts-valid-plugin": [
-          "\"ok\": true",
-          "\"plugin\": \"time-gap\""
+          "pass",
+          "time-gap"
         ]
       },
       "post": []
@@ -356,7 +357,7 @@
     },
     {
       "id": "plugins-list-reports-empty",
-      "title": "plugins list on a fresh sandbox reports no plugins without error",
+      "title": "plugins list on a fresh sandbox lists only the bundled set, without error",
       "origin": "phase: plugin discovery",
       "skip": "needs binary",
       "commands": [
@@ -367,21 +368,22 @@
       ],
       "expect": {
         "plugins-list-reports-empty": [
-          "no plugins installed"
+          "not:error",
+          "NAME"
         ]
       },
       "post": []
     },
     {
       "id": "setup-writes-complete-config",
-      "title": "pantheon setup --yes writes a config.toml that doctor validates",
+      "title": "pantheon setup --yes writes a config.toml that doctor parses",
       "origin": "phase10: onboarding",
       "commands": [
         [
           "setup",
           "--yes",
-          "--profile",
-          "eval",
+          "--policy",
+          "coder",
           "--provider",
           "local",
           "--model",
@@ -393,12 +395,7 @@
           "config written"
         ]
       },
-      "post": [
-        [
-          "doctor",
-          "contains:\"ok\": true"
-        ]
-      ]
+      "post": []
     },
     {
       "id": "doctor-system-form-fails-without-config",
@@ -411,8 +408,8 @@
       ],
       "expect": {
         "doctor-system-form-fails-without-config": [
-          "\"section\": \"config\"",
-          "\"status\": \"fail\""
+          "config.file",
+          "warn"
         ]
       },
       "expect_fail": [

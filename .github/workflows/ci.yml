@@ -50,7 +50,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Reads the pinned channel from rust-toolchain.toml, like the check
+      # job. `@stable` here meant the release smoke test ran on a different
+      # compiler than the artifacts actually ship with.
+      - uses: dtolnay/rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --workspace
       # The installer promises a working binary. Prove the artifact runs,
@@ -59,6 +62,51 @@ jobs:
         run: |
           ./target/release/pantheon --version
           ./target/release/pantheon --help > /dev/null
+
+  cross-platform:
+    name: cross-platform tests
+    # Platform branches (pantheon-helper's tasklist/sc, sandbox path
+    # handling, dotenv permissions, oauth, self-update) are compiled on
+    # Windows and macOS by the release matrix but have never been *tested*
+    # there. This job runs the crates that actually branch on platform.
+    #
+    # `continue-on-error` is deliberate for the first pass: these paths have
+    # never executed anywhere but Linux, so treating the first red as a
+    # merge blocker would freeze every PR on pre-existing breakage. Flip it
+    # to false once this job has been green for a full week; the tracking
+    # issue is in docs/developer/ci.md.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: test the platform-branching crates
+        run: cargo test -p pantheon-helper -p pantheon-exec -p pantheon-api
+
+  eval:
+    name: eval harness (real CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      # The harness drives the real binary, so it needs a build. Debug is
+      # enough and much faster than release.
+      - name: build the CLI
+        run: cargo build -p pantheon-tui --bin pantheon
+      # eval/run.py is a stdlib-only regression suite over the shipped CLI.
+      # It was never wired into CI, so its 22 cases - including the run
+      # lifecycle, audit, memory and send paths - ran nowhere by default,
+      # and 12 of them skipped permanently for want of a binary.
+      - name: run eval cases
+        env:
+          PANTHEON_BIN: target/debug/pantheon
+        run: python3 eval/run.py
 
   desktop:
     name: desktop typecheck + unit tests

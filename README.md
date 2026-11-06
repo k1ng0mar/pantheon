@@ -143,7 +143,13 @@ Hermes/OpenClaw cells summarize their public docs and positioning as of Septembe
 | `pantheon-gateway` | Discord/Telegram gateways: routing, queues, dead-letter |
 | `pantheon-extensions` | Hooks and plugins: spec, `plugin.yaml` loader, Python/JS runners |
 | `pantheon-migration` | Import flows: detect → plan → approve → apply → validate |
-| `pantheon-providers` | Provider adapters: OpenAI, Anthropic, custom endpoints, fallbacks |
+| `pantheon-providers` | Provider adapters: OpenAI, Anthropic, Gemini, custom endpoints, fallbacks |
+| `pantheon-doctor` | Structured diagnostics engine behind `pantheon doctor` and `GET /api/health` |
+| `pantheon-helper` | Detached self-update handoff binary: verify, swap, restart |
+| `pantheon-nightly` | Nightly self-improvement pass: proposals, memory consolidation, repair |
+| `pantheon-release-verify` | Offline minisign verification for release archives |
+| `pantheon-dashboard` | Web dashboard: runs, swarm, session factory, health |
+| `pantheon-eval` | Behavioral/integration test suite (`cargo test -p pantheon-eval`) |
 
 ## Configuration
 

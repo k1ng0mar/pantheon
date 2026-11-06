@@ -188,3 +188,91 @@ fn reindexing_a_chunk_does_not_duplicate_fts_rows() {
         "re-index must stay idempotent under the transaction"
     );
 }
+
+// ---------------------------------------------------------------- rebuild
+
+/// The repair path used to recreate an empty FTS table, leaving every
+/// previously indexed run silently unsearchable. These pin that the rebuild
+/// restores the actual contents from the durable chunk store.
+#[test]
+fn recreate_restores_searchable_contents() {
+    let (s, dir) = file_search();
+    let db = dir.path().join("ledger.db");
+    s.index(&chunk(
+        "run_1",
+        "c1",
+        1,
+        "the pantry stocks alkaline batteries",
+    ))
+    .unwrap();
+    s.index(&chunk(
+        "run_1",
+        "c2",
+        2,
+        "debugging the websocket handshake",
+    ))
+    .unwrap();
+    drop(s);
+
+    let restored = recreate_search_index(&db).expect("rebuild");
+    assert_eq!(restored, 2, "both indexed chunks must be restored");
+
+    let reopened = SessionSearch::open(&db).expect("reopen");
+    let hits = reopened.search("websocket", 10).expect("search works");
+    assert_eq!(hits.len(), 1, "a restored index must still answer queries");
+    assert_eq!(hits[0].chunk.chunk_id, "c2");
+}
+
+#[test]
+fn recreate_on_an_empty_store_is_harmless() {
+    let (s, dir) = file_search();
+    let db = dir.path().join("ledger.db");
+    drop(s);
+    let restored = recreate_search_index(&db).expect("rebuild");
+    assert_eq!(restored, 0);
+    assert!(search_index_health(&db).expect("health probe"));
+}
+
+/// Rebuild must be repeatable: it drops and recreates, so running it twice
+/// cannot double-count rows or leak duplicates into results.
+#[test]
+fn recreate_is_idempotent() {
+    let (s, dir) = file_search();
+    let db = dir.path().join("ledger.db");
+    s.index(&chunk("run_1", "c1", 1, "alpha beta gamma"))
+        .unwrap();
+    drop(s);
+
+    assert_eq!(recreate_search_index(&db).expect("first"), 1);
+    assert_eq!(recreate_search_index(&db).expect("second"), 1);
+
+    let reopened = SessionSearch::open(&db).expect("reopen");
+    let hits = reopened.search("alpha", 10).expect("search");
+    assert_eq!(hits.len(), 1, "a repeat rebuild must not duplicate hits");
+}
+
+/// Retention prunes chunks from both tables; a rebuild must not resurrect
+/// pruned text, or repair would silently undo the retention policy.
+#[test]
+fn recreate_does_not_resurrect_pruned_chunks() {
+    let (s, dir) = file_search();
+    let db = dir.path().join("ledger.db");
+    // Distinct timestamps: `prune_before` is a strict `<` cutoff, so equal
+    // timestamps would make the test prune nothing and pass vacuously.
+    let mut old = chunk("run_1", "old", 1, "ancient secret phrase");
+    old.ts_ms = 1_000;
+    let mut new = chunk("run_1", "new", 2, "recent ordinary phrase");
+    new.ts_ms = 9_000;
+    s.index(&old).unwrap();
+    s.index(&new).unwrap();
+    assert_eq!(s.prune_before(5_000).expect("prune"), 1);
+    drop(s);
+
+    recreate_search_index(&db).expect("rebuild");
+    let reopened = SessionSearch::open(&db).expect("reopen");
+    assert!(
+        reopened.search("ancient", 10).expect("search").is_empty(),
+        "pruned text must stay pruned after a rebuild"
+    );
+    assert_eq!(reopened.search("recent", 10).expect("search").len(), 1);
+}

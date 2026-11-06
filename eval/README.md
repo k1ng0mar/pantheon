@@ -22,7 +22,11 @@ python3 eval/run.py --cargo-tests  # gate on `cargo test --workspace` first
 Exit code is 0 only when every non-skipped case passes - wire it into CI
 or a pre-merge hook as the feature gate.
 
-## Current cases (10)
+## Current cases (22)
+
+The authoritative list is `eval/cases.json`; the table below is a summary
+and drifts when cases are added. `python3 eval/run.py --list` prints the
+live set with per-case skip reasons.
 
 | Case | Origin |
 |---|---|

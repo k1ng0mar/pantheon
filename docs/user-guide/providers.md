@@ -31,7 +31,7 @@ provider = "anthropic"
 model    = "claude-sonnet-4-5"
 ```
 
-Backups kick in only when the main model fails, in order. You can also pin small models for specific jobs (`[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`). Leave one unset and it just uses the main model, except embeddings, which default to a local one.
+Backups kick in only when the main model fails, in order. You can also pin small models for specific jobs (`[judge]`, `[compression]`, `[title_gen]`, `[embeddings]`, `[search_synthesis]`, `[vision]`, `[scheduled]`, `[mcp_synthesis]`). Leave one unset and it just uses the main model, except embeddings, which default to a local one. Note that `[search_synthesis]` and `[mcp_synthesis]` have no consumers yet, so pinning them currently changes nothing.
 
 ## Cloud providers (templated endpoints)
 

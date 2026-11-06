@@ -207,16 +207,33 @@ impl Dispatcher {
     /// Covers the protocol-level failures the spec requires to be answers,
     /// not crashes: a line that is not JSON gets a parse-error response with
     /// id `null`; a non-request or wrong-version object gets an
-    /// invalid-request response. Batch arrays are rejected for now - the
-    /// runtime answers one command per line.
+    /// invalid-request response.
+    ///
+    /// Batch arrays follow JSON-RPC 2.0 (§6): each element is dispatched in
+    /// order and its responses concatenated. An empty array is an invalid
+    /// request; a batch in which every element is a notification produces no
+    /// response at all, so the caller must not assume one reply per line.
     pub fn handle_line(&self, line: &str) -> Vec<Response> {
         let value: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => return vec![Response::err(Id::Null, RpcError::parse_error())],
         };
-        if value.is_array() {
+        let Some(items) = value.as_array() else {
+            return self.handle_value(value);
+        };
+        // §6: an empty batch is an invalid request, not a no-op.
+        if items.is_empty() {
             return vec![Response::err(Id::Null, RpcError::invalid_request())];
         }
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            out.extend(self.handle_value(item.clone()));
+        }
+        out
+    }
+
+    /// Dispatch one already-parsed JSON value into zero or one response.
+    fn handle_value(&self, value: Value) -> Vec<Response> {
         let req: Request = match serde_json::from_value(value) {
             Ok(r) => r,
             Err(_) => return vec![Response::err(Id::Null, RpcError::invalid_request())],
@@ -254,5 +271,95 @@ impl MethodHandler for MethodList {
             .collect();
         names.sort();
         Ok(Value::Array(names.into_iter().map(Value::String).collect()))
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    fn d() -> Dispatcher {
+        Dispatcher::with_builtins()
+    }
+
+    /// Batch arrays used to be rejected wholesale. They are part of JSON-RPC
+    /// 2.0 (§6) and clients send them, so they must dispatch element-wise.
+    #[test]
+    fn batch_dispatches_every_element_in_order() {
+        let line = r#"[
+            {"jsonrpc":"2.0","id":1,"method":"system.ping"},
+            {"jsonrpc":"2.0","id":2,"method":"system.ping"}
+        ]"#;
+        let out = d().handle_line(line);
+        assert_eq!(out.len(), 2, "one response per request");
+        assert_eq!(out[0].id, Id::Number(1));
+        assert_eq!(out[1].id, Id::Number(2));
+        assert!(out.iter().all(|r| r.is_success()));
+    }
+
+    /// §6: an empty array is an invalid request, not a silent success.
+    #[test]
+    fn empty_batch_is_invalid_request() {
+        let out = d().handle_line("[]");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].error.as_ref().unwrap().code, INVALID_REQUEST_CODE);
+    }
+
+    /// A batch of notifications must produce no responses at all. A server
+    /// that wrote a `null` reply here would corrupt the client's stream.
+    #[test]
+    fn notification_only_batch_answers_nothing() {
+        let line = r#"[
+            {"jsonrpc":"2.0","id":null,"method":"system.ping"},
+            {"jsonrpc":"2.0","id":null,"method":"system.ping"}
+        ]"#;
+        assert!(d().handle_line(line).is_empty());
+    }
+
+    /// Mixed batches answer only the calls that carry an id.
+    #[test]
+    fn mixed_batch_answers_only_requests() {
+        let line = r#"[
+            {"jsonrpc":"2.0","id":null,"method":"system.ping"},
+            {"jsonrpc":"2.0","id":7,"method":"system.ping"}
+        ]"#;
+        let out = d().handle_line(line);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, Id::Number(7));
+    }
+
+    /// One bad element must not poison its siblings: §6 has servers answer
+    /// per-element, and an unknown method is a normal error response.
+    #[test]
+    fn unknown_method_in_batch_fails_only_its_element() {
+        let line = r#"[
+            {"jsonrpc":"2.0","id":1,"method":"system.ping"},
+            {"jsonrpc":"2.0","id":2,"method":"no.such.method"}
+        ]"#;
+        let out = d().handle_line(line);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].is_success());
+        assert_eq!(
+            out[1].error.as_ref().unwrap().code,
+            METHOD_NOT_FOUND_CODE,
+            "a bad element must answer method-not-found, not fail the batch"
+        );
+    }
+
+    /// A single (non-array) request keeps behaving exactly as before.
+    #[test]
+    fn single_object_still_answers_one_response() {
+        let out = d().handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"system.ping"}"#);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_success());
+    }
+
+    /// Malformed JSON is still a parse error with a null id.
+    #[test]
+    fn malformed_json_is_still_a_parse_error() {
+        let out = d().handle_line("{not json");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].error.as_ref().unwrap().code, PARSE_ERROR_CODE);
+        assert_eq!(out[0].id, Id::Null);
     }
 }

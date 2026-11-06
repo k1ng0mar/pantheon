@@ -463,16 +463,16 @@ fn is_unique_local_v6(ip: std::net::Ipv6Addr) -> bool {
 /// `Bearer <key>`; any other configured name (e.g. Xiaomi MiMo's
 /// `api-key`) sends the raw key. One place so chat, embeddings, and
 /// voice can't drift on auth shape.
-pub fn auth_header_pair(key_header: &str, api_key: &str) -> (String, String) {
+pub fn auth_header_pair(key_header: &str, key: &str) -> (String, String) {
     let name = if key_header.trim().is_empty() {
         "Authorization".to_string()
     } else {
         key_header.trim().to_string()
     };
     let value = if name.eq_ignore_ascii_case("authorization") {
-        format!("Bearer {api_key}")
+        format!("Bearer {key}")
     } else {
-        api_key.to_string()
+        key.to_string()
     };
     (name, value)
 }
@@ -800,11 +800,11 @@ pub fn aux_complete(
     match wire.api_mode {
         ApiMode::OpenAi => openai::complete(transport, req, &NoopModelSink),
         ApiMode::Anthropic => anthropic::complete(transport, req, &NoopModelSink),
-        ApiMode::Gemini => Err(perr(
-            "PROVIDER_NOT_IMPLEMENTED",
-            "native Gemini aux is not wired yet".to_string(),
-            false,
-        )),
+        // Native Gemini speaks a different wire shape, but its adapter's
+        // `complete` normalizes back into the same AdapterTurn, so aux turns
+        // (title, judge, compression, vision) work on a native Gemini pin
+        // instead of failing the whole call.
+        ApiMode::Gemini => crate::gemini::complete(transport, req, &NoopModelSink),
     }
 }
 
@@ -977,6 +977,51 @@ impl ChatTransport for HttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original defect: every aux turn on a native Gemini pin failed with
+    /// `PROVIDER_NOT_IMPLEMENTED`, taking title generation, compression and
+    /// the judge down with it. This pins that the Gemini arm now dispatches
+    /// into the real adapter instead of erroring out.
+    #[test]
+    fn aux_complete_dispatches_native_gemini() {
+        struct StubTransport;
+        impl ChatTransport for StubTransport {
+            fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
+                // The adapter must have built a real generateContent body,
+                // not the empty-contents placeholder.
+                let body: serde_json::Value = serde_json::from_str(&req.body)
+                    .map_err(|e| perr("STUB", e.to_string(), false))?;
+                assert_ne!(
+                    body["contents"],
+                    serde_json::json!([]),
+                    "aux request must carry the prompt, not empty contents"
+                );
+                Ok(r#"{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#.to_string())
+            }
+            fn post_stream(
+                &self,
+                _req: &WireRequest,
+                _on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
+            ) -> Result<StreamEnd, PantheonError> {
+                Err(perr("STUB", "aux never streams".into(), false))
+            }
+        }
+
+        let wire = AuxWire {
+            base: "https://generativelanguage.googleapis.com/v1beta".into(),
+            key: "k".into(),
+            key_header: "x-goog-api-key".into(),
+            api_mode: ApiMode::Gemini,
+            max_tokens: 64,
+            provider_id: "gemini".into(),
+        };
+        let req = aux_request(&wire, "gemini-2.5-flash", "say ok".to_string());
+        let turn = aux_complete(&StubTransport, &wire, req).expect("aux must succeed");
+        match turn.outcome {
+            pantheon_agent::TurnOutcome::Text { text, .. } => assert_eq!(text, "ok"),
+            other => panic!("expected a text turn, got {other:?}"),
+        }
+    }
 
     #[test]
     fn retryable_status_covers_408_and_5xx_not_other_4xx() {

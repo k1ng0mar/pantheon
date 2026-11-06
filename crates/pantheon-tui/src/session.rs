@@ -12322,22 +12322,23 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/doctor" {
-        #[allow(deprecated)]
-        let rep = crate::doctor::run_system_doctor(&crate::terminal::data_dir());
-        for c in &rep.checks {
-            let glyph = match c.status.as_str() {
-                "ok" => "\u{2713}",
+        let (healthy, findings) =
+            crate::doctor::actionable_findings(&crate::terminal::data_dir(), false);
+        if findings.is_empty() {
+            state.add_status("\u{2713} all checks passed".into());
+        }
+        for c in &findings {
+            let glyph = match c.status {
                 "warn" => "\u{26a0}",
-                "fail" => "\u{2717}",
-                _ => "?",
+                _ => "\u{2717}",
             };
             let mut line = format!("{glyph} {}: {}", c.section, c.detail);
-            if !c.fix.is_empty() && c.status != "ok" {
+            if !c.fix.is_empty() {
                 line.push_str(&format!(" (fix: {})", c.fix));
             }
             state.add_status(line);
         }
-        state.add_status(if rep.ok {
+        state.add_status(if healthy {
             "doctor: healthy".into()
         } else {
             "doctor: issues found (see fixes above)".into()

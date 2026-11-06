@@ -61,7 +61,7 @@ target_percent = 50   # summary size as % of the absorbed transcript chars (1-10
 
 Higher keeps more detail (less aggressive), lower compresses harder. `0` and values over `100` are config errors. The default `12` preserves the historic summary budget.
 
-Note: `[extraction]`, `[rerank]`, `[planner]`, `[vision]`, `[search_synthesis]`, `[mcp_synthesis]`, and `[judge]` have no features using them yet. They exist so you can pin models ahead of time. (`[judge]` is validated by `doctor` but the production agent loop is built with `judge: None`, so it currently changes nothing - the engine supports it, installation into the runtime loop is still open.) Everything else is wired: `[compression]`/`[title_gen]` run in the session, `[embeddings]` powers semantic recall, `[scheduled]` sets the model for background runs, `[verify]` checks delegated results, and `[reflect]`/`[consolidation]`/`[repair]` serve the nightly pass (`[repair]` is the only slot the fix loop uses to revise drafts; `[reflect]` still handles pre-pass proposal refinement and replay transcript scoring).
+Note: `[extraction]`, `[rerank]`, `[planner]`, `[search_synthesis]`, and `[mcp_synthesis]` have no features using them yet. They exist so you can pin models ahead of time. `[vision]`, `[video]` and `[judge]` **are** wired: vision and video run host-side passes over attached media, and `[judge]` adjudicates approval-gated tool calls in `PermissionMode::Smart` (an unreachable judge parks the call for a human rather than running it). Everything else is wired: `[compression]`/`[title_gen]` run in the session, `[embeddings]` powers semantic recall, `[scheduled]` sets the model for background runs, `[verify]` checks delegated results, and `[reflect]`/`[consolidation]`/`[repair]` serve the nightly pass (`[repair]` is the only slot the fix loop uses to revise drafts; `[reflect]` still handles pre-pass proposal refinement and replay transcript scoring).
 
 `[verify]` is the exception to the "leave a section out and it uses your main model" rule: **absent `[verify]` means no verification happens at all** (off by default, no `auto` entry). Pin a section and every delegated subagent's claimed result is adversarially checked by that model before the parent accepts it:
 
@@ -203,9 +203,13 @@ soul_file    = "agents/zeus/SOUL.md"
 
 > **Removed keys.** Older configs may carry a top-level `profile = "..."` label or a
 > `[tools]` table. Both were inert - `profile` never selected an agent (that is
-> what `agent` does), and `[tools]` never gated tool registration (registration
-> is unconditional). They were removed; old files still load, the keys are
-> simply ignored. There is no replacement to configure.
+> what `agent` does), and `profile` never selected an agent (that is
+> what `agent` does) and was removed; old files still load and the key is
+> ignored.
+>
+> `[tools]` is **not** removed and **not** inert: it gates tool-group
+> registration (absent means every group enabled; the runtime registers only
+> the enabled groups). It is documented below.
 
 ## Delegation routes
 

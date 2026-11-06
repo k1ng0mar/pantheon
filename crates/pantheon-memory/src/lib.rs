@@ -11,18 +11,30 @@ use pantheon_api::capability::{Capability, Decision, Policy};
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 
-pub mod backend;
-pub mod http_backend;
-pub mod markdown;
-pub mod plugins;
-mod secret_scan;
-pub mod store;
-pub use backend::{
+pub mod plane;
+
+pub mod backend {
+    pub use crate::plane::backend::*;
+}
+pub mod http_backend {
+    pub use crate::plane::http_backend::*;
+}
+pub mod markdown {
+    pub use crate::plane::markdown::*;
+}
+pub mod plugins {
+    pub use crate::plane::plugins::*;
+}
+pub(crate) use crate::plane::secret_scan;
+pub mod store {
+    pub use crate::plane::store::*;
+}
+pub use plane::backend::{
     load_selection, load_selection_result, open_selected, save_selection, selection_path,
     sync_selection_from_config, BackendInfo, BackendRegistry, BackendSelection,
 };
-pub use plugins::{load_dir as load_memory_plugins, MemoryPluginManifest, StdioBackend};
-pub use store::{
+pub use plane::plugins::{load_dir as load_memory_plugins, MemoryPluginManifest, StdioBackend};
+pub use plane::store::{
     damage_fts_for_test, fts_health, rebuild_fts, LayerBudgets, MemoryConfig, MemoryStore, Recalled,
 };
 

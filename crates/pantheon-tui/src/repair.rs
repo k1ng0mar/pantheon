@@ -583,12 +583,11 @@ fn stranded_runs() -> Fixer {
 
 // ---------------------------------------------------------------- search
 
-/// The FTS5 sidecar is a derived index over the ledger, and nothing in the repo
-/// rebuilds it. A partial write, a restored ledger, or a schema change leaves
-/// it permanently wrong: search silently returns nothing and no command can
-/// fix it. That is a real gap, and the honest report is that a full re-index
-/// is not implemented - not a fix that recreates an empty table and calls the
-/// problem solved.
+/// The FTS5 sidecar is a derived index over the ledger. A partial write, a
+/// restored ledger, or a schema change can leave it permanently wrong:
+/// search silently returns nothing and no command can fix it. The chunk
+/// table keeps the indexed text, so the repair rebuilds the FTS contents
+/// from it rather than leaving an empty table behind.
 fn search_index() -> Fixer {
     Fixer {
         check: "search-index",
@@ -609,12 +608,11 @@ fn search_index() -> Fixer {
         repair: |dd| {
             let path = dd.join("ledger.db");
             let backup = backup_file(&path, "ledger.db")?;
-            pantheon_storage::recreate_search_index(&path)
+            let restored = pantheon_storage::recreate_search_index(&path)
                 .map_err(|e| format!("recreate failed: {}", e.cause))?;
             Ok(format!(
-                "recreated the FTS index as an empty table. A full re-index of existing \
-                 runs is NOT implemented, so previously indexed runs are not searchable \
-                 until they are re-indexed. Backup: {}",
+                "rebuilt the FTS index and restored {restored} indexed chunk(s) \
+                 from the chunk store. Backup: {}",
                 backup.display()
             ))
         },

@@ -12,24 +12,23 @@ Pantheon-specific CLI surface:
 
 ## Setup
 
-```
-pantheon cloudflare setup
-```
+There is no `pantheon cloudflare` command and no `[cloudflare]` config
+section: Cloudflare is reached entirely through the three channels above,
+so there is nothing Pantheon-specific to configure. In particular:
 
-The setup walks the chain and does what it is allowed to:
+- **cf CLI** — install it yourself (`npm install -g cf`, Node 22+) and
+export `CLOUDFLARE_API_TOKEN`. Pantheon classifies `cf` invocations by
+capability (`cloudflare.write` / `cloudflare.destroy` park for approval)
+and scrubs everything else from the child environment.
+- **cf-ops plugin** — bundled but disabled by default; enable it with
+`pantheon extensions approve cf-ops` (or the `/plugins` screen).
+- **Cloudflare skills** — import them explicitly through the skills path
+(`pantheon skills import <source>`); nothing is cloned automatically.
 
-1. Detects node, npm, and the cf CLI. Offers `npm install -g cf` after a
-   confirm. Node 22+ required.
-2. Checks `CLOUDFLARE_API_TOKEN` in the environment. Never reads or
-   prints the value.
-3. Offers to import Cloudflare's official skills from
-   github.com/cloudflare/skills into the data dir (shallow clone through
-   the existing skills-import path).
-4. Writes the `[cloudflare]` config section.
-
-`pantheon cloudflare status` reports what is present, authenticated, and
-enabled without changing anything. `pantheon doctor` carries a
-cloudflare section with a fix hint per gap.
+`pantheon doctor` does **not** carry a Cloudflare section. The closest
+signal it reports is `security.exec_sandbox`, which tells you whether the
+sandboxed shell the `cf` CLI runs under is available; a missing
+`CLOUDFLARE_API_TOKEN` is reported by `cf` itself, not by the doctor.
 
 ## Authentication and the token path
 
@@ -39,17 +38,15 @@ API token is the automation path and the one Pantheon wires.
 
 The token reaches a `cf` child process through one sanctioned path:
 
-1. `[cloudflare].enabled = true` in config.toml (the operator's
-   declaration; the default section is disabled and injects nothing).
-2. The runtime resolves `api_token_secret` (default
-   `CLOUDFLARE_API_TOKEN`) through the secrets broker at call time.
-3. The shell tool's env hook injects it only for `cf` commands, past the
+1. `CLOUDFLARE_API_TOKEN` is exported in the operator's environment (or
+   provided as a vault secret under that name). There is no
+   `[cloudflare].enabled` switch — the credential is present or it is not.
+2. The shell tool's env hook injects it only for `cf` commands, past the
    sandbox's env scrub, into the child's environment.
 
-The token never appears in the ledger, logs, or tool output. Putting it
-in the command text (`env CLOUDFLARE_API_TOKEN=x cf ...`) defeats the
-redaction layer and lands it in the transcript; the plugin runner
-rejects that shape.
+The token never appears in the ledger, logs, or tool output. Passing it
+inline as an `env` prefix on the command defeats the redaction layer and
+lands it in the transcript; the plugin runner rejects that shape.
 
 ## Capability classification
 

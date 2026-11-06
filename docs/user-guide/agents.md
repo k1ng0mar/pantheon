@@ -44,7 +44,8 @@ Every spawned child gets a self-contained briefing: its own identity, its person
 Optionally, add a `[verify]` section to your config and each child's claimed result is checked by a separate adversarial model before you see it: the verifier assumes the goal was *not* achieved and must be convinced otherwise. A falsified claim fails the delegation outright; an inconclusive one is marked unverified, never accepted as complete. Verification is opt-in - without `[verify]` there is no verifier and results arrive with no verification mark. See [Configuration](../reference/configuration.md) for the section shape.
 
 ```sh
-pantheon swarm status [<id>] | list   # see past collaborations; this command never starts new work
+pantheon swarm status [<id>] | list   # see past collaborations (read-only)
+pantheon swarm <N> "<task>"            # spawn N collaborating agents for a task
 ```
 
 ## See also

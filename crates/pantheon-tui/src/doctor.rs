@@ -6,11 +6,11 @@
 //! surface: argument parsing, the plugin-dir form, progress wiring,
 //! and exit codes.
 //!
-//! The legacy [`Check`]/[`SystemReport`] types below are a deprecated
-//! compatibility shim for the bare-`pantheon` repair path in
-//! [`crate::entry`]; new code should use `pantheon_doctor` directly.
+//! The unattended path (bare `pantheon` repair, in-session `/doctor`) uses
+//! [`actionable_findings`], which returns only the findings a human has to
+//! act on; everything else goes through `pantheon_doctor` directly.
 
-use pantheon_doctor::finding::{OverallHealth, Subsystem};
+use pantheon_doctor::finding::Subsystem;
 use pantheon_doctor::registry::DoctorCtx;
 use std::path::Path;
 
@@ -165,37 +165,30 @@ pub fn render_plugin_doctor_human(rep: &pantheon_extensions::doctor::DoctorRepor
 }
 
 // ---------------------------------------------------------------------------
-// Deprecated compatibility shim for `crate::entry`'s repair path.
+// Unattended system check for the bare-`pantheon` entry and `/doctor`.
 // ---------------------------------------------------------------------------
 
-/// Legacy check shape. Deprecated: use `pantheon_doctor::Finding`.
-#[derive(Debug, Clone)]
-pub struct Check {
+/// One failed-or-warning finding, flattened for the two surfaces that print
+/// a short human list instead of the full report: the bare-`pantheon` repair
+/// path (config does not parse) and the in-session `/doctor` command.
+pub struct ActionableFinding {
+    /// Subsystem id, e.g. `config`.
     pub section: String,
-    pub status: String, // "ok" | "warn" | "fail"
+    /// `"warn"` or `"fail"`; passes and skips are never returned.
+    pub status: &'static str,
     pub detail: String,
     pub fix: String,
 }
 
-/// Legacy report shape. Deprecated: use `pantheon_doctor::DiagnosticReport`.
-#[derive(Debug, Clone)]
-pub struct SystemReport {
-    pub ok: bool,
-    pub checks: Vec<Check>,
-}
-
-/// Deprecated: runs the new engine and adapts the report to the legacy
-/// shape. Kept for the bare-`pantheon` repair path; the CLI uses the
-/// engine directly.
-#[deprecated(note = "use pantheon_doctor::Registry instead")]
-pub fn run_system_doctor(data_dir: &Path) -> SystemReport {
-    #[allow(deprecated)]
-    run_system_doctor_opts(data_dir, false)
-}
-
-/// Deprecated: see [`run_system_doctor`].
-#[deprecated(note = "use pantheon_doctor::Registry instead")]
-pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
+/// Run the core doctor registry and return only the findings a human has to
+/// act on, plus overall health.
+///
+/// This replaces the deprecated `run_system_doctor`/`run_system_doctor_opts`
+/// pair, which adapted every finding into a legacy `Check` list that callers
+/// then filtered anyway. Callers that need the full report (including
+/// passes, timings and the JSON schema) should call
+/// [`pantheon_doctor::Registry`] directly, as `pantheon doctor` does.
+pub fn actionable_findings(data_dir: &Path, ping: bool) -> (bool, Vec<ActionableFinding>) {
     let ext_dir = match std::env::var("PANTHEON_EXT_DIR") {
         Ok(d) if !d.trim().is_empty() => Path::new(&d).to_path_buf(),
         _ => data_dir.join("extensions"),
@@ -203,28 +196,31 @@ pub fn run_system_doctor_opts(data_dir: &Path, ping: bool) -> SystemReport {
     let mut ctx = DoctorCtx::new(data_dir.to_path_buf(), ext_dir);
     ctx.ping_provider = ping;
     let report = pantheon_doctor::Registry::core().run(&ctx, None);
-    let checks = report
+    let findings = report
         .findings
         .iter()
-        .map(|f| Check {
-            section: f.subsystem.id().to_string(),
-            status: match f.status {
-                pantheon_doctor::CheckStatus::Passed => "ok".to_string(),
-                pantheon_doctor::CheckStatus::Skipped
-                | pantheon_doctor::CheckStatus::NotApplicable => "ok".to_string(),
-                pantheon_doctor::CheckStatus::Failed => match f.severity {
-                    pantheon_doctor::Severity::Warning => "warn".to_string(),
-                    _ => "fail".to_string(),
+        .filter_map(|f| match f.status {
+            // Passes and skips are not actionable. A `NotApplicable` check
+            // (e.g. a unix-only permission check on Windows) must not read
+            // as a problem the user can fix.
+            pantheon_doctor::CheckStatus::Passed
+            | pantheon_doctor::CheckStatus::Skipped
+            | pantheon_doctor::CheckStatus::NotApplicable => None,
+            pantheon_doctor::CheckStatus::Failed => Some(ActionableFinding {
+                section: f.subsystem.id().to_string(),
+                status: match f.severity {
+                    pantheon_doctor::Severity::Warning => "warn",
+                    _ => "fail",
                 },
-            },
-            detail: f.summary.clone(),
-            fix: f.remediation.clone(),
+                detail: f.summary.clone(),
+                fix: f.remediation.clone(),
+            }),
         })
         .collect();
-    SystemReport {
-        ok: report.overall == OverallHealth::Healthy,
-        checks,
-    }
+    (
+        report.overall == pantheon_doctor::OverallHealth::Healthy,
+        findings,
+    )
 }
 
 #[cfg(test)]
@@ -251,25 +247,28 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn legacy_shim_preserves_tristate_mapping() {
-        // entry.rs and the /doctor slash command still consume the
-        // legacy shape: failed+warning findings must surface as "warn",
-        // failed+error/critical as "fail".
-        let dir = std::env::temp_dir().join("pantheon-doctor-shim-test");
+    fn actionable_findings_warns_and_fails_only() {
+        // An unparseable config is a critical finding: it must come back as
+        // "fail" and carry its remediation, and healthy checks must not be
+        // returned at all.
+        let dir = std::env::temp_dir().join("pantheon-doctor-actionable-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
-        // Unparseable config => config.file is critical => "fail".
         std::fs::write(dir.join("config.toml"), "[[[not toml").expect("seed");
-        let report = run_system_doctor(&dir);
-        assert!(!report.ok);
-        let file = report
-            .checks
+        let (ok, findings) = actionable_findings(&dir, false);
+        assert!(!ok, "a broken config must not report healthy");
+        let file = findings
             .iter()
             .find(|c| c.detail.contains("does not parse"))
-            .expect("config.file finding");
+            .expect("config.file finding is actionable");
         assert_eq!(file.status, "fail");
         assert_eq!(file.section, "config");
+        assert!(
+            findings
+                .iter()
+                .all(|c| c.status == "warn" || c.status == "fail"),
+            "passing checks must not be returned as actionable"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

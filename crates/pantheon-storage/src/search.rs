@@ -568,12 +568,16 @@ pub fn search_index_health(db: &std::path::Path) -> Result<bool, PantheonError> 
     }
 }
 
-/// Drop and recreate the FTS5 sidecar as an empty table.
+/// Drop and recreate the FTS5 sidecar, then repopulate it from the chunk
+/// store.
 ///
-/// This restores the *ability to search*; it does not restore the *contents*.
-/// Re-deriving rows from the ledger is not implemented, so previously indexed
-/// runs are not searchable until they are re-indexed. Callers must say so.
-pub fn recreate_search_index(db: &std::path::Path) -> Result<(), PantheonError> {
+/// The FTS table is a derived index, but `session_chunks` is the durable
+/// record of what was indexed: it survives an FTS drop, so the contents are
+/// recoverable without replaying the ledger. Returns the number of chunks
+/// restored. Previously this returned an empty table and told the user a
+/// re-index was "not implemented", which left every previously indexed run
+/// silently unsearchable.
+pub fn recreate_search_index(db: &std::path::Path) -> Result<usize, PantheonError> {
     let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
     conn.execute_batch("DROP TABLE IF EXISTS session_fts;")
         .map_err(|e| err("SEARCH_FTS_DROP", e.to_string()))?;
@@ -584,5 +588,15 @@ pub fn recreate_search_index(db: &std::path::Path) -> Result<(), PantheonError> 
         );",
     )
     .map_err(|e| err("SEARCH_FTS_CREATE", e.to_string()))?;
-    Ok(())
+    // Rebuild from the durable chunk rows. `session_chunks` holds the same
+    // (already truncation-bounded) text the FTS rows carry, so this is a
+    // faithful restore rather than a re-derivation from the ledger.
+    let restored = conn
+        .execute(
+            "INSERT INTO session_fts (chunk_id, text, kind, run_id)
+             SELECT chunk_id, text, kind, run_id FROM session_chunks",
+            [],
+        )
+        .map_err(|e| err("SEARCH_FTS_BACKFILL", e.to_string()))?;
+    Ok(restored)
 }

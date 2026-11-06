@@ -148,7 +148,7 @@ def resolve(arg: str, sandbox: Path) -> str:
     return arg.replace("<TMP>", str(sandbox))
 
 
-def assertion_ok(assertion: str, stdout: str) -> bool:
+def assertion_ok(assertion: str, stdout: str, sandbox: Path | None = None) -> bool:
     negated = assertion.startswith("not:")
     a = assertion[4:] if negated else assertion
     if a == "ANY":
@@ -158,9 +158,10 @@ def assertion_ok(assertion: str, stdout: str) -> bool:
     elif a.startswith("contains:"):
         ok = a[len("contains:"):] in stdout
     elif a.startswith("exists:"):
-        ok = Path(resolve(a[len("exists:"):], Path("/"))).exists() or Path(
-            resolve(a[len("exists:"):], Path(os.environ.get("PANTHEON_EVAL_TMP", "/tmp")))
-        ).exists()
+        # Resolve against the case sandbox for the bare relative form, so a
+        # probe cannot match a stray path in the repo checkout.
+        rel = a[len("exists:"):]
+        ok = Path(resolve(rel, sandbox) if sandbox is not None else rel).exists()
     else:
         ok = a in stdout  # bare string behaves as contains
     return not ok if negated else ok
@@ -224,7 +225,7 @@ def run_case(case, bin_path, py3):
 
             key = case["id"] if i == 0 else f"{case['id']}__{i}"
             for assertion in case.get("expect", {}).get(key, []):
-                if not assertion_ok(assertion, stdout):
+                if not assertion_ok(assertion, stdout, sandbox):
                     failures.append(f"cmd {i} stdout missing {assertion!r}")
 
         for post in case.get("post", []):
@@ -237,7 +238,7 @@ def run_case(case, bin_path, py3):
                         failures.append(f"post _audit_check: {detail}")
                 else:  # _compact
                     out = compact_output(Path(resolve(argv[1], sandbox)).read_text())
-                    if not assertion_ok(assertion, out):
+                    if not assertion_ok(assertion, out, sandbox):
                         failures.append(f"post _compact: stdout missing {assertion!r}")
                 continue
             if assertion.startswith("exists:"):
@@ -250,7 +251,7 @@ def run_case(case, bin_path, py3):
             )
             if code != 0:
                 failures.append(f"post {argv} exited {code}: {stderr.strip()[:200]}")
-            if not assertion_ok(assertion, stdout):
+            if not assertion_ok(assertion, stdout, sandbox):
                 failures.append(f"post {argv}: stdout missing {assertion!r}")
 
         if failures:
@@ -279,10 +280,28 @@ def check_verbs(cases: list) -> list:
     exe = str(ROOT / "target" / "debug" / "pantheon")
     if not os.path.exists(exe):
         return []  # binary not built yet; the cases will skip anyway
-    out = subprocess.run(
-        [exe, "--help"], capture_output=True, text=True, timeout=60
-    ).stdout
-    known = set(re.findall(r"^  ([a-z][a-z0-9_]*)[ \[]", out, re.M))
+    known = set()
+    # Authoritative source: the router's own verb table. Help text is a
+    # rendering of it and cannot be parsed reliably - `pantheon --help`
+    # advertises only the public namespaces plus a truncated
+    # "Legacy top-level spellings (mcp, worktree, runs, ...)" sentence, so a
+    # help-derived set reported working legacy verbs (`send`, `audit`,
+    # `reset`, `hook`, `swarm`, `plugins`) as removed.
+    surface = ROOT / "crates" / "pantheon-tui" / "src" / "cli_surface.rs"
+    if surface.exists():
+        text = surface.read_text(encoding="utf-8")
+        for const in ("ALL_VERBS", "PUBLIC_VERBS", "LEGACY_VERBS"):
+            m = re.search(
+                rf"pub const {const}: &\[&str\] = &\[(.*?)\];", text, re.S
+            )
+            if m:
+                known.update(re.findall(r'"([a-z][a-z0-9_]*)"', m.group(1)))
+    if not known:
+        # Fall back to the advertised help lines if the source moved.
+        out = subprocess.run(
+            [exe, "--help"], capture_output=True, text=True, timeout=60
+        ).stdout
+        known = set(re.findall(r"^  ([a-z][a-z0-9_]*)[ \[]", out, re.M))
     if not known:
         return []  # could not parse; do not invent a failure
     stale = set()
@@ -293,8 +312,8 @@ def check_verbs(cases: list) -> list:
             # A leading underscore marks a harness helper (`_break_config`,
             # `_audit_check`, `_compact`), not a verb, so it is exempt. Testing
             # the convention instead of an allowlist means a new helper does
-            # not trip the guard.
-            if not argv or argv[0].startswith("_"):
+            # not trip the guard. Flag-only argv (`--help`, `-V`) is not a verb.
+            if not argv or argv[0].startswith("_") or argv[0].startswith("-"):
                 continue
             if argv[0] not in known:
                 stale.add(f"{c.get('id')}: {argv[0]}")

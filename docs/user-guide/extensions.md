@@ -77,7 +77,7 @@ pantheon doctor <plugin_dir>        # preflight check: manifest, hooks, files
 
 When something does not work, check in this order: `doctor` (usually a typo in the manifest), `extensions` (did it load?), then run the hook by hand (`echo '{"hook":"pre_llm_call",...}' | python3 __init__.py`).
 
-A note on MCP servers: `pantheon mcp list` shows declared MCP servers and whether each could load, but agents cannot reach MCP servers yet. No launcher exists yet either.
+A note on MCP servers: `pantheon mcp` is a full surface — `list`, `add`, `remove`, `enable`, `disable`, `approve`, `status`, `health`, `login`/`logout`/`auth`, and `resources`/`templates`/`prompts` for inspection. Agents reach declared servers through the capability-gated `tools/call` path, with per-server approval, health reporting and backoff; see [MCP](mcp.md).
 
 ## See also
 

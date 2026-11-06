@@ -1,6 +1,14 @@
 # Terminal reference
 
-Every `pantheon` command, its flags, and its exit codes. If it is not listed here, it does not exist; a typo exits with code 2 and a suggestion.
+Every `pantheon` command, its flags, and its exit codes. The public
+surface is organised into the namespaces below; every historic top-level
+spelling (`runs`, `send`, `audit`, `mcp`, `worktree`, ...) still dispatches
+as an alias. A typo exits with code 2 and a suggestion.
+
+> This page covers the verbs most scripts use. `pantheon --help` lists the
+> full namespace set (`session`, `agent`, `tools`, `workspace`, `tasks`,
+> `desktop`, `serve`, `config`, `setup`, `doctor`, `maintenance`), and
+> `pantheon <namespace> --help` lists that namespace's subcommands.
 
 ## Conventions
 
@@ -89,7 +97,8 @@ pantheon schedule <task> [--every 30m | --cron "*/5 * * * *"] [--agent N] [--mod
                [--timeout 10m] [--overlap skip|replace|queue]
 pantheon schedule list|pause|resume|cancel|run <id>
 pantheon schedule tick [--watch]      # fire due jobs now; --watch keeps looping
-pantheon swarm status [<id>] | list   # past agent collaborations; never starts new work
+pantheon swarm status [<id>] | list   # query recorded collaborations (read-only)
+pantheon swarm <N> "<task>" [--roles a,b]   # SPAWN a real multi-agent run
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # the local web page + API
 pantheon pipeline --spec "task" [RUN_ID]

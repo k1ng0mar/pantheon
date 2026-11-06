@@ -62,30 +62,22 @@ pub enum AuxiliaryKind {
     Embeddings,
     /// Vision model (config `[vision]`): describes and answers about
     /// images attached to a turn. Host-orchestrated; never chat. Absent =
-    /// `auto`: the run's default model. No call sites yet - there is no
-    /// image-input pipeline; the slot exists so a model can be pinned
-    /// ahead of it landing.
+    /// `auto`: the run's default model. Consulted by
+    /// `Session::vision_aux_pass` before an image-bearing turn reaches the
+    /// chat model, and gated by `[tools] vision`.
     Vision,
     /// Video-analysis model (config `[video]`): understands video attached
     /// to a turn - scene description, temporal question answering,
     /// keyframe summarization. Host-orchestrated; never chat. Absent =
     /// `auto`: the run's default model.
     ///
-    /// Call-site proposal (the actual video-understanding pipeline is
-    /// future work - this slot pins the model ahead of it landing):
-    /// - the turn loop gains a `video` attachment kind next to the
-    ///   (planned) image attachment kind; when a turn carries video, the
-    ///   host samples keyframes (or hands the container/URL to a
-    ///   provider-native video input) and calls this slot, never chat;
-    /// - the `[tools]` `video_analysis` toggle gates the slot: off =
-    ///   the entry never resolves, so a configured `[video]` cannot be
-    ///   consulted by accident;
-    /// - long video goes through the same summarization shape as
-    ///   `[search_synthesis]` (chunk → note → context), so the window
-    ///   never fills with raw frames.
-    ///
-    /// No call sites yet - the slot exists so a model can be pinned
-    /// ahead of the video pipeline landing.
+    /// Consulted by `Session::video_aux_pass`: when a turn carries video,
+    /// the pass samples keyframes (`extract_frames`, ffmpeg) and calls this
+    /// slot, never chat. The `[tools]` `video_analysis` toggle gates it, so
+    /// a configured `[video]` cannot be consulted by accident. Long video
+    /// goes through the same summarization shape as `[search_synthesis]`
+    /// (chunk -> note -> context), so the window never fills with raw
+    /// frames.
     Video,
     /// Search-synthesis model (config `[search_synthesis]`): turns raw
     /// web-search results into a short cited brief before they enter
@@ -96,12 +88,15 @@ pub enum AuxiliaryKind {
     SearchSynthesis,
     /// Judge model (config `[judge]`): classifies, routes, scores. Never
     /// generates chat. Used for route selection, tool gating, verification
-    /// thresholds. Replaces the old `DecisionRouter` name. No call sites
-    /// yet - the engine supports a judge, but the production
-    /// `Session::drive` path builds its `AgentLoop` with `judge: None`,
-    /// so a configured `[judge]` is validated by `doctor` and then never
-    /// consulted. The slot exists so a model can be pinned ahead of the
-    /// judge being installed into the runtime loop.
+    /// thresholds. Replaces the old `DecisionRouter` name.
+    ///
+    /// Wired: `Session::build_judge` resolves this slot and
+    /// `judge_verdict_for_call` consults it in `PermissionMode::Smart`, so a
+    /// configured judge actually adjudicates approval-gated calls. Every
+    /// failure path (no entry, unresolvable key, transport error,
+    /// unparseable answer) yields `None`, and `PermissionMode::resolve`
+    /// turns `None` into a park - an unreachable judge degrades to asking a
+    /// human, never to running unattended.
     Judge,
     /// MCP tool-result synthesis model (config `[mcp_synthesis]`): bounds
     /// large MCP tool results into a note before they enter context.
