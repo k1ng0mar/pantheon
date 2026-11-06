@@ -119,6 +119,37 @@ pub struct PluginManifest {
     /// Sandbox declaration. Defaults to high, network denied, work dir only.
     #[serde(default)]
     pub sandbox: PluginSandbox,
+    /// Optional provider registration. When present, this plugin registers
+    /// a model provider without recompiling Pantheon. OpenAI compatible
+    /// endpoints only in Phase 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderRegistration>,
+}
+
+/// Provider registration declared in a plugin manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderRegistration {
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    pub base_url: String,
+    #[serde(default = "default_api_mode")]
+    pub api_mode: String,
+    #[serde(default)]
+    pub key_env: String,
+    #[serde(default)]
+    pub models: Vec<ProviderModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderModel {
+    pub model: String,
+    #[serde(default)]
+    pub context_limit: Option<u32>,
+}
+
+fn default_api_mode() -> String {
+    "openai".to_string()
 }
 
 fn default_runner() -> String {
@@ -441,6 +472,7 @@ fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugi
             runner,
             enabled: extra.enabled,
             sandbox: PluginSandbox::default(),
+            provider: None,
         },
         location: loc,
         root: path.to_path_buf(),
@@ -874,6 +906,7 @@ pub fn install_catalog(
         runner: "run.sh".into(),
         enabled: true,
         sandbox: PluginSandbox::default(),
+        provider: None,
     };
     let yaml = serde_yaml::to_string(&manifest)
         .map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("{e}")))?;

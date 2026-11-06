@@ -143,6 +143,7 @@ fn write_exec_plugin(dir: &Path, name: &str) {
         runner: "run.sh".into(),
         enabled: false,
         sandbox: PluginSandbox::default(),
+        provider: None,
     };
     std::fs::write(
         p.join("manifest.yaml"),

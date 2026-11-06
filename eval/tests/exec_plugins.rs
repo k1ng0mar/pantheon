@@ -275,6 +275,7 @@ fn write_plugin(dir: &Path, name: &str, runner: &str, caps: Vec<ToolCapability>)
         runner: runner.into(),
         enabled: false,
         sandbox: PluginSandbox::default(),
+        provider: None,
     };
     std::fs::write(
         p.join("manifest.yaml"),
@@ -312,6 +313,7 @@ fn plugin_with_runner(root: &Path, runner: &str) -> DiscoveredPlugin {
             runner: runner.into(),
             enabled: false,
             sandbox: PluginSandbox::default(),
+            provider: None,
         },
         location: PluginLocation::User,
         root: proot,

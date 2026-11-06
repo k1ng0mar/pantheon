@@ -100,6 +100,7 @@ fn registry_wires_plugin_tool() {
             allow_direct_fallback: true,
             ..PluginSandbox::default()
         },
+        provider: None,
     };
     let sup = Arc::new(Mutex::new(spawn_plugin(
         &dir,
@@ -144,6 +145,7 @@ fn register_plugin_tools_rejects_squat() {
             allow_direct_fallback: true,
             ..PluginSandbox::default()
         },
+        provider: None,
     };
 
     // For the full registration path we need an Arc<Mutex<PluginSupervisor>>

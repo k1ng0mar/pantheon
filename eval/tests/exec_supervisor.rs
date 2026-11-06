@@ -104,6 +104,7 @@ fn live_call_round_trip() {
             allow_direct_fallback: true,
             ..PluginSandbox::default()
         },
+        provider: None,
     };
     let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_secs(5), &[]);
     let out = sup.call("ping", serde_json::json!({})).unwrap();
@@ -151,6 +152,7 @@ fn timeout_kills_wedged_plugin() {
             allow_direct_fallback: true,
             ..PluginSandbox::default()
         },
+        provider: None,
     };
     let mut sup = spawn_plugin(&dir, &manifest, &data_dir, Duration::from_millis(300), &[]);
     let t0 = Instant::now();
@@ -233,6 +235,7 @@ fn manifest_env_needs_allowlist_hit() {
             allow_direct_fallback: true,
             ..PluginSandbox::default()
         },
+        provider: None,
     };
     let allowlist = vec!["PANTHEON_SUP_TEST_ALLOWED".to_string()];
     let mut sup = spawn_plugin(

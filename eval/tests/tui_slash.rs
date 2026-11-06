@@ -254,6 +254,7 @@ fn skill(name: &str) -> Skill {
             description: "test skill".into(),
             origin: "user".into(),
             exec: Vec::new(),
+            dependencies: Vec::new(),
         },
         path: PathBuf::from("/tmp/test-skill.md"),
         dir: PathBuf::from("/tmp"),

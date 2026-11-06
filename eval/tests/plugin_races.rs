@@ -49,6 +49,7 @@ fn tool_manifest(name: &str) -> PluginManifest {
         runner: "run.sh".into(),
         enabled: true,
         sandbox: PluginSandbox::default(),
+        provider: None,
     }
 }
 

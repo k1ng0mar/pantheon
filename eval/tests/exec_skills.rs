@@ -108,6 +108,7 @@ fn import_skill_rejects_bad_meta_name() {
             description: String::new(),
             origin: String::new(),
             exec: Vec::new(),
+            dependencies: Vec::new(),
         },
         path: dir.join("x"),
         dir: dir.join("x"),
