@@ -1028,6 +1028,25 @@ fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<()
 /// Persist the choice: `.env` keys, `[custom_providers.*]` row for custom
 /// endpoints, and the `[model]` / aux section. Registers customs in-memory.
 pub fn save_choice(data_dir: &std::path::Path, choice: &ModelChoice) -> Result<(), String> {
+    // Ollama gate: a local provider must be reachable with at least one
+    // model and enough RAM before it can become the default. This keeps
+    // a dead local endpoint from being saved as the default by accident.
+    if choice.provider == "local" || choice.provider == "ollama" {
+        let base = choice
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string());
+        let report = crate::ollama::check_local_models(&base);
+        if !report.ready {
+            return Err(format!(
+                "local provider not ready: reachable={} models={} ram={:?} GiB, need at least {} GiB and one pulled model",
+                report.reachable,
+                report.models.len(),
+                report.ram_gib,
+                crate::ollama::MIN_RAM_GIB
+            ));
+        }
+    }
     if let Some(keys) = &choice.raw_keys {
         super::dotenv::persist_dotenv_value(data_dir, &choice.key_env, keys.trim())
             .map_err(|e| format!("write .env: {e}"))?;
