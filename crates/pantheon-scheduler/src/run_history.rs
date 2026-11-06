@@ -36,6 +36,8 @@ pub struct JobRunStats {
     pub last_run_ms: i64,
     pub total_runs: u64,
     pub total_failures: u64,
+    pub last_delivery: Option<String>,
+    pub last_delivery_ok: Option<bool>,
 }
 
 /// Durable per-job run history. The map is the whole file: `open`,
@@ -62,6 +64,13 @@ impl RunHistory {
 
     /// Record one fired run's outcome and persist. `error` carries the
     /// executor's failure detail for `TimedOut`/`Panicked` runs.
+    pub fn record_delivery(&mut self, job_id: &str, target: &str, ok: bool) -> Result<(), String> {
+        let st = self.stats.entry(job_id.to_string()).or_default();
+        st.last_delivery = Some(target.to_string());
+        st.last_delivery_ok = Some(ok);
+        self.save()
+    }
+
     pub fn record(
         &mut self,
         job_id: &str,
