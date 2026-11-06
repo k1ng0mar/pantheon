@@ -14,13 +14,29 @@
 //! The approval store itself lives in `pantheon-api` (shared with
 //! `pantheon-exec`'s tool plugins). The wrappers below only supply this
 //! crate's `plugin.yaml` manifest loader.
-pub mod bundled;
-pub mod doctor;
-pub mod event_bridge;
-pub mod hooks;
-pub mod manager;
-pub mod manifest;
-pub mod python_runner;
+pub mod plugins;
+
+pub mod bundled {
+    pub use crate::plugins::bundled::*;
+}
+pub mod doctor {
+    pub use crate::plugins::doctor::*;
+}
+pub mod event_bridge {
+    pub use crate::plugins::event_bridge::*;
+}
+pub mod hooks {
+    pub use crate::plugins::hooks::*;
+}
+pub mod manager {
+    pub use crate::plugins::manager::*;
+}
+pub mod manifest {
+    pub use crate::plugins::manifest::*;
+}
+pub mod python_runner {
+    pub use crate::plugins::python_runner::*;
+}
 
 use pantheon_api::approval;
 use pantheon_api::error::PantheonError;
@@ -56,16 +72,16 @@ pub fn revoke_approval(ext_dir: &Path, name: &str) -> Result<bool, PantheonError
 pub use approval::{
     is_approved, warning_text, ApprovalRecord, ApprovalStore, PendingPlugin, PRIVILEGE_WARNING,
 };
-pub use bundled::{
+pub use plugins::bundled::{
     bundled_plugins, disable, enable, find, is_enabled, seed, set_enabled, BundledPlugin,
     PluginKind,
 };
-pub use doctor::{doctor, DoctorReport};
-pub use event_bridge::{dispatch, dispatch_stream_edges, HookDispatcher, HookFire};
-pub use hooks::{Hook, HookClass};
-pub use manager::{ExtensionManager, GateDecision};
-pub use manifest::PluginManifest;
-pub use python_runner::{
+pub use plugins::doctor::{doctor, DoctorReport};
+pub use plugins::event_bridge::{dispatch, dispatch_stream_edges, HookDispatcher, HookFire};
+pub use plugins::hooks::{Hook, HookClass};
+pub use plugins::manager::{ExtensionManager, GateDecision};
+pub use plugins::manifest::PluginManifest;
+pub use plugins::python_runner::{
     fire_hook, fire_hook_full, HookDirective, HookInput, HookOutput, PythonPlugin, RunnerConfig,
 };
 
