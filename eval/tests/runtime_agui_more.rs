@@ -124,9 +124,10 @@ fn hostile_token_cannot_break_out_of_script() {
     // The token round-trips through JSON decoding instead.
     let line = page
         .lines()
-        .find(|l| l.starts_with("const TOKEN="))
+        .find(|l| l.trim_start().starts_with("const TOKEN="))
         .unwrap();
     let lit = line
+        .trim_start()
         .trim_start_matches("const TOKEN=")
         .trim_end_matches(';');
     let decoded: String = serde_json::from_str(lit).unwrap();
