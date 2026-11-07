@@ -23,7 +23,7 @@ use pantheon_api::error::PantheonError;
 use pantheon_api::message::{Message, ToolSchema};
 use pantheon_api::model::{DefaultModel, ModelPolicy};
 use pantheon_secrets::SecretValue;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
 

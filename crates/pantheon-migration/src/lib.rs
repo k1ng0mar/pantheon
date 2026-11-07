@@ -30,9 +30,6 @@ pub(crate) mod carry {
 pub mod compat {
     pub use crate::migration::compat::*;
 }
-pub(crate) mod index {
-    pub(crate) use crate::migration::index::*;
-}
 pub(crate) mod providers {
     pub(crate) use crate::migration::providers::*;
 }

@@ -52,9 +52,6 @@ pub mod title {
 pub mod verify {
     pub use crate::auxiliary::verify::*;
 }
-pub(crate) mod answer_line {
-    pub(crate) use crate::auxiliary::answer_line::non_empty_unfenced_lines;
-}
 pub mod distill {
     pub use crate::auxiliary::distill::*;
 }

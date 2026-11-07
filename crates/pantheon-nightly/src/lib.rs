@@ -90,7 +90,6 @@ pub use ideas_group::propose::{
     candidate_key, from_signals, memory_proposals, weigh_candidates, Proposal, ProposalKind,
     ProposalStatus, WeighedCandidate, MAX_FACT_CHARS,
 };
-use ideas_group::report;
 pub use ideas_group::report::render as render_report;
 use ideas_group::signals;
 pub use ideas_group::signals::{

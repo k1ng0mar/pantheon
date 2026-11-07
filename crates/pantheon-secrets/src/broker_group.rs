@@ -1618,7 +1618,6 @@ pub mod grants {
     //! shell access from reading secret files directly; filesystem
     //! confinement is the separate half of the boundary.
 
-    use crate::SecretVault;
     use crate::{SecretsBroker, SecretsError};
 
     /// Why a child run needs a credential.

@@ -1083,7 +1083,7 @@ pub mod skill_exec_tool {
     use pantheon_api::error::PantheonError;
     use pantheon_api::message::ToolSchema;
     use pantheon_exec::skills::{
-        find_skill_exec, parse_skill_exec_args, skill_dir, Skill, SkillExecSideEffects,
+        find_skill_exec, parse_skill_exec_args, skill_dir, Skill,
         SKILL_EXEC_TOOL_NAME,
     };
     use pantheon_tools::tools::ToolRegistry;
