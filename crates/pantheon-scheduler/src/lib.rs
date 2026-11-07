@@ -42,7 +42,9 @@ pub use jobs::templates::{
     apply_defaults, builtin_templates, expand_template, is_reserved_var, render_prompt,
     ScheduleTemplate, TemplateSchedule, TemplateStore, TemplateVar,
 };
-pub use jobs::tick::{occurrence_key, ClaimLedger, PausedCheck, RunOutcome, TickDecision, TickDriver};
+pub use jobs::tick::{
+    occurrence_key, ClaimLedger, PausedCheck, RunOutcome, TickDecision, TickDriver,
+};
 
 /// Default ceiling for one job run: 10 minutes. A run that outlives it is
 /// abandoned (the tick stops waiting; Rust cannot kill the thread, so the
