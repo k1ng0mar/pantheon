@@ -117,11 +117,27 @@ impl RedactionRegistry {
         }
         let mut ordered: Vec<&str> = values.iter().map(String::as_str).collect();
         ordered.sort_by_key(|a| std::cmp::Reverse(a.len()));
-        let mut out = text.to_string();
-        for value in ordered {
-            if out.contains(value) {
-                out = out.replace(value, REDACTED);
+        // Substitute once, in a single left-to-right pass, never re-scanning
+        // emitted output. `str::replace` cascades: with a value that overlaps
+        // the placeholder (a registered "[redacted-secret]", or a short value
+        // like "redact"), a later iteration rewrites bytes an earlier one just
+        // inserted, producing `[redacted-[redacted-secret]]`. A single pass is
+        // a fixed point by construction: scrubbing scrubbed text is a no-op.
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        'outer: while !rest.is_empty() {
+            for value in &ordered {
+                if rest.starts_with(*value) {
+                    out.push_str(REDACTED);
+                    rest = &rest[value.len()..];
+                    continue 'outer;
+                }
             }
+            // No registered value starts here: copy one char (UTF-8 safe) and
+            // advance.
+            let ch = rest.chars().next().expect("non-empty");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
         }
         out
     }
@@ -235,5 +251,69 @@ mod tests {
         );
         // Registration is a silent no-op too.
         reg.register("another-value");
+    }
+}
+
+#[cfg(test)]
+mod fixed_point_tests {
+    //! Scrubbing must be a fixed point: scrubbing an already-scrubbed string
+    //! is a no-op. The old implementation chained `str::replace` per value, so
+    //! a registered value overlapping the placeholder rewrote the placeholder
+    //! into `[redacted-[redacted-secret]]`. That surfaced as a flaky
+    //! assertion in `oauth::tests::redaction_registered_on_handout`, because
+    //! every broker shares one process-wide registry and sibling tests were
+    //! registering an overlapping value.
+    use super::*;
+
+    #[test]
+    fn scrubbing_twice_equals_scrubbing_once() {
+        let reg = RedactionRegistry::for_scope("test-fixed-point-twice");
+        reg.register("super-secret-value");
+        let once = reg.scrub("echo super-secret-value done");
+        assert_eq!(once, "echo [redacted-secret] done");
+        assert_eq!(
+            reg.scrub(&once),
+            once,
+            "a second scrub must not rewrite the placeholder"
+        );
+    }
+
+    /// A registered value that overlaps the placeholder itself is the exact
+    /// case that produced the nested placeholder.
+    #[test]
+    fn a_value_overlapping_the_placeholder_does_not_nest() {
+        let reg = RedactionRegistry::for_scope("test-fixed-point-overlap");
+        reg.register("[redacted-secret]");
+        let out = reg.scrub("[redacted-secret]");
+        assert!(
+            !out.contains("[redacted-[redacted-secret]]"),
+            "placeholder must not nest: {out}"
+        );
+    }
+
+    /// A short registered value that happens to be a substring of the
+    /// placeholder ("redact") must not chew into it either.
+    #[test]
+    fn a_short_value_inside_the_placeholder_does_not_nest() {
+        let reg = RedactionRegistry::for_scope("test-fixed-point-short");
+        reg.register("redact");
+        let out = reg.scrub("[redacted-secret]");
+        assert!(
+            !out.contains("[redacted-[redacted-secret]]"),
+            "placeholder must not nest: {out}"
+        );
+    }
+
+    #[test]
+    fn ordinary_values_still_scrub_longest_first() {
+        // Both values must exceed MIN_SECRET_LEN (4): anything shorter is
+        // deliberately ignored by `register`, which would make this test pass
+        // vacuously.
+        let reg = RedactionRegistry::for_scope("test-fixed-point-longest");
+        reg.register("abcdefgh");
+        reg.register("abcd");
+        // Longest-first: the whole "abcdefgh" becomes one placeholder, not two.
+        assert_eq!(reg.scrub("abcdefgh"), "[redacted-secret]");
+        assert_eq!(reg.scrub("abcd x"), "[redacted-secret] x");
     }
 }

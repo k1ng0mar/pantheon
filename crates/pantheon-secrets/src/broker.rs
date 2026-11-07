@@ -150,7 +150,12 @@ impl SecretsBroker {
     /// fallback is exercised without touching the developer's real keyring
     /// (a locked keyring would otherwise prompt for an unlock, bounded by
     /// the keychain operation timeout).
-    fn durable_with(data_dir: &Path, keychain_usable: bool) -> Result<Self, SecretsError> {
+    ///
+    /// Public because a host that builds a broker per request needs an
+    /// enumerable backend: the OS keychain cannot list its entries, so under
+    /// the keychain backend a secret stored by one request reads back as
+    /// `SECRET_NOT_FOUND` on the next. Headless hosts and tests pin `false`.
+    pub fn durable_with(data_dir: &Path, keychain_usable: bool) -> Result<Self, SecretsError> {
         let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
         if keychain_usable {
             durable.push(Arc::new(crate::keychain::KeychainVault::new()));
