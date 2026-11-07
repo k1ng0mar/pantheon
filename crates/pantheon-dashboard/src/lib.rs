@@ -34,42 +34,46 @@
 //!   micro-labels, neutral buttons, mono footer metadata. Accent is a
 //!   restrained cyan (`#22d3ee`); green/amber/red are statuses only.
 
-mod approvals;
-mod browser;
-mod config;
+mod ops_group;
+mod plugins_group;
+mod settings_group;
+mod web_group;
+mod workspace_group;
+use ops_group::approvals;
+use ops_group::logs;
+pub(crate) use ops_group::runs;
+use ops_group::schedule;
+use ops_group::stats;
+use plugins_group::mcp;
+use plugins_group::plugin_import;
+use plugins_group::plugins;
+use settings_group::config;
+use settings_group::env;
+use settings_group::logins;
+use settings_group::oauth;
+use settings_group::secrets;
+use web_group::browser;
+pub use web_group::link_preview;
+use web_group::ui_actions;
+pub use web_group::uploads;
+use web_group::util;
+use workspace_group::experts;
+use workspace_group::ideas;
+use workspace_group::memory;
+use workspace_group::profiles;
+use workspace_group::skills;
+use workspace_group::teams;
+use workspace_group::templates;
 pub mod desktop;
-mod env;
-mod experts;
-mod ideas;
-pub mod link_preview;
-mod logins;
-mod logs;
-mod mcp;
-mod memory;
-mod oauth;
-mod plugin_import;
-mod plugins;
-mod profiles;
-pub(crate) mod runs;
-mod schedule;
-mod secrets;
 mod session_factory;
-mod skills;
-mod stats;
 /// Swarm routes: multi-agent fan-out through real subprocess turns.
 /// Public so hosts constructing [`App`] (the TUI mounts) can build the
 /// production orchestrator via
 /// [`swarm::orchestrator_for`].
 pub mod swarm;
 mod system;
-mod teams;
-mod templates;
-mod ui_actions;
 /// Public so the turn child and integration tests can resolve upload ids
 /// to vision image parts without going through HTTP.
-pub mod uploads;
-mod util;
-
 use pantheon_gateway::http::{AuthCtx, AuthGroup, HttpMount, Request, Response};
 use std::collections::HashMap;
 use std::path::PathBuf;
