@@ -44,93 +44,103 @@
 //! survives a migration is a module inside this crate; what does not earn
 //! one is deleted.
 
-pub mod app;
-pub mod checkpoint;
-pub mod cli_surface;
-pub mod codebase;
-pub mod commands;
-pub mod custom_commands;
-pub mod render;
-pub mod sanitize;
+mod account_group;
+mod cli_group;
+mod config_group;
+mod heal_group;
+mod model_group;
+mod remote_group;
+mod render_group;
+mod setup_group;
+use account_group::backup;
+pub use account_group::checkpoint;
+use account_group::oauth;
+use account_group::secrets;
+pub use account_group::secrets_form;
+use cli_group::acp;
+use cli_group::agui;
+use cli_group::args;
+pub use cli_group::cli_surface;
+pub use cli_group::commands;
+pub use cli_group::consolidate_cli;
+pub use cli_group::custom_commands;
+use cli_group::entry;
+pub use cli_group::mentions;
+use cli_group::prompt;
+pub use config_group::config;
+use config_group::config_schema;
+use config_group::config_verb;
+use config_group::fallback;
+use config_group::gateway;
+use config_group::init;
+use config_group::logs;
+pub use config_group::mcp;
+use config_group::migrate;
+pub use config_group::notify;
+use config_group::pipeline;
+use config_group::plugin_toggle;
+use config_group::plugins_verb;
+use config_group::reset;
+pub use config_group::richtext;
+use config_group::uninstall;
+use config_group::update;
+use config_group::worktree;
+use heal_group::doctor;
+pub use heal_group::nightly_cli;
+pub use heal_group::nightly_repair;
+pub use heal_group::reflect_cli;
+use heal_group::repair;
+pub use heal_group::schedule;
+use heal_group::schedule_self_heal;
+use model_group::model;
+use model_group::model_browser;
+use model_group::model_catalog;
+use model_group::ollama;
+use model_group::provider;
+pub use model_group::setup_providers;
+pub use remote_group::plugin_remote;
+pub use remote_group::swarm;
+pub use remote_group::swarm_remote;
+pub use remote_group::swarm_view;
+pub use remote_group::team_remote;
+pub use render_group::app;
+pub use render_group::codebase;
+pub use render_group::desktop;
+pub use render_group::diffview;
+pub use render_group::render;
+pub use render_group::sanitize;
+pub use render_group::send;
+pub use render_group::session_summary;
+use render_group::skills;
+pub use render_group::stats;
+use render_group::tabs;
+pub use render_group::todo_card;
+pub use render_group::transcript;
+pub use render_group::ui_render;
+pub use render_group::widget;
+pub use render_group::yank;
+pub use setup_group::setup;
+pub use setup_group::setup_graph;
+use setup_group::setup_wizard;
 pub mod session;
-pub mod setup;
-pub mod setup_graph;
-pub mod setup_providers;
-pub mod widget;
 
-pub use app::TuiApp;
-pub use widget::{Confirm, Item, Key, KeyResult, MultiSelect, Select, Selection, TextInput};
+pub use render_group::app::TuiApp;
+pub use render_group::widget::{
+    Confirm, Item, Key, KeyResult, MultiSelect, Select, Selection, TextInput,
+};
 
 // Terminal command modules: argv dispatch and the non-interactive verbs.
 // Private: the binary calls `terminal::run()`; nothing outside this crate
 // reaches past it.
-mod acp;
-mod agui;
-mod args;
-mod backup;
-mod secrets;
 
-pub mod config;
-mod config_schema;
-mod config_verb;
-pub mod consolidate_cli;
-pub mod diffview;
-mod doctor;
-mod uninstall;
 pub use pantheon_api::dotenv;
-mod entry;
-mod fallback;
-mod gateway;
-mod init;
-mod logs;
 mod markdown;
-pub mod mcp;
-pub mod mentions;
-mod migrate;
-mod model;
-mod model_browser;
-mod model_catalog;
-pub mod nightly_cli;
-pub mod nightly_repair;
-pub mod notify;
-mod oauth;
-mod ollama;
-mod pipeline;
-pub mod plugin_remote;
-mod plugin_toggle;
-mod plugins_verb;
-mod prompt;
-mod provider;
-pub mod reflect_cli;
-mod repair;
-mod reset;
-pub mod richtext;
-pub mod schedule;
-mod schedule_self_heal;
-pub mod secrets_form;
-pub mod send;
-pub mod session_summary;
-mod setup_wizard;
-mod skills;
-pub mod stats;
-pub mod swarm;
-pub mod swarm_remote;
-pub mod swarm_view;
-pub mod team_remote;
 pub mod terminal;
-pub mod transcript;
-mod update;
-mod worktree;
-pub mod yank;
 
 // TUI-A: session tab bar model + rendering (startup splash lives in terminal).
-mod tabs;
 
 // Agent todo card: "Working on N to-dos" widget, rendered
 // with ratatui only. The visual track wires it into the transcript.
-pub mod todo_card;
 
 // Native ratatui renderers for the UI protocol (`pantheon_api::ui`):
 // each component lowers to transcript lines in the current theme.
-pub mod desktop;
-pub mod ui_render;
