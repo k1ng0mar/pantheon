@@ -9,17 +9,12 @@
 //!
 //! Cascade - the user always gets the best available, never a silent gap:
 //!
-//! 1. **Native.** When the resolved model is flagged `video: true` (catalog
-//!    row, or a custom-endpoint model with `video = true` declared in
-//!    config - e.g. Qwen-Omni on an OpenAI-compatible endpoint), the video
-//!    bytes go to the model as-is through that model's own API:
-//!    Google Gemini via `generateContent` + `inline_data`, OpenAI-compatible
-//!    endpoints via a `video_url` content part (the established extension
-//!    Qwen-Omni-style endpoints accept). The wire protocol only dictates
-//!    *how* to talk to the API - never what the model can understand.
-//!    Any failure of this call (4xx/rejected part type, transport error,
-//!    missing key, oversize) falls through to step 2; the native error is
-//!    never surfaced directly.
+//! 1. **Native, Gemini only.** When the resolved model is flagged
+//!    `video: true` and speaks the Gemini wire (Google provider or a
+//!    `gemini` api_mode row), the video bytes go to the model as-is
+//!    through `generateContent` + `inline_data`. Any failure of this
+//!    call (4xx, transport error, missing key, oversize) falls through
+//!    to step 2; the native error is never surfaced directly.
 //! 2. **Frames + audio fallback.** `ffmpeg` extracts a bounded set of
 //!    frames; the audio track is extracted and transcribed through the
 //!    configured `[stt]` provider when one exists. Frames are described
@@ -682,7 +677,20 @@ impl VideoClient {
     /// error when the vision leg fails closed too. The returned text is
     /// data for the host to inject, never a chat turn.
     pub fn describe(&self, req: &VideoRequest) -> Result<VideoSummary, PantheonError> {
-        if self.native {
+        // Wire split: Gemini gets a native attempt with frames as
+        // fallback. OpenAI-compatible and Anthropic endpoints go
+        // straight to ffmpeg frames, because their wire formats have
+        // no native video part (or the model is not flagged for it).
+        // Custom endpoints (e.g. a ZAI v4 URL) are not in the catalog,
+        // so they also take the frames path, noted honestly in the
+        // summary instead of a doomed native call.
+        let api_mode = catalog::provider(&self.target.provider)
+            .map(|pr| pr.api_mode)
+            .unwrap_or(crate::catalog::ApiMode::OpenAi);
+        let native_allowed = self.native
+            && (api_mode == crate::catalog::ApiMode::Gemini
+                || self.target.provider.eq_ignore_ascii_case("google"));
+        if native_allowed {
             match self.describe_native(req) {
                 Ok(summary) => {
                     crate::model_event::record_auxiliary_usage(
