@@ -73,6 +73,10 @@ pub fn current_call_context() -> Option<ToolCallContext> {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Tool>,
+    /// Tools loaded into the model's current turn. Auto mode starts
+    /// with a small core set; the model loads more by name through
+    /// the `load_tools` meta tool. Always-available mode loads all.
+    loaded: std::collections::HashSet<String>,
 }
 
 impl ToolRegistry {
@@ -124,8 +128,42 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.schema.clone()).collect()
     }
 
+    /// Schemas for tools loaded into the current turn (auto mode).
+    /// Empty loaded set means always-available: all schemas.
+    pub fn loaded_schemas(&self) -> Vec<ToolSchema> {
+        if self.loaded.is_empty() {
+            return self.schemas();
+        }
+        self.tools
+            .values()
+            .filter(|t| self.loaded.contains(&t.schema.name))
+            .map(|t| t.schema.clone())
+            .collect()
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    /// Mark tools as loaded for the next turn. Unknown names are
+    /// ignored. Returns the names actually loaded.
+    pub fn load_tools(&mut self, names: &[String]) -> Vec<String> {
+        let mut loaded = Vec::new();
+        for name in names {
+            if self.tools.contains_key(name) && self.loaded.insert(name.clone()) {
+                loaded.push(name.clone());
+            }
+        }
+        loaded
+    }
+
+    /// Set the always-loaded core set (auto mode start state).
+    pub fn set_core_tools(&mut self, names: &[String]) {
+        self.loaded = names.iter().cloned().filter(|n| self.tools.contains_key(n)).collect();
+    }
+
+    pub fn is_loaded(&self, name: &str) -> bool {
+        self.loaded.is_empty() || self.loaded.contains(name)
     }
 
     /// Execute by name. Unknown tool is a structured error, never a panic.
@@ -407,6 +445,25 @@ mod call_context_tests {
             "no fake grant command: {}",
             denied.cause
         );
+    }
+
+    #[test]
+    fn loaded_schemas_start_empty_and_load_by_name() {
+        let mut reg = probe_registry();
+        reg.register(
+            pantheon_api::message::ToolSchema { name: "extra".into(), description: "x".into(), parameters: serde_json::json!({}) },
+            pantheon_api::capability::Capability::FilesystemRead,
+            |_| Ok("x".into()),
+        );
+        // Empty loaded set = always available.
+        assert!(!reg.loaded_schemas().is_empty());
+        reg.set_core_tools(&["probe".into()]);
+        assert_eq!(reg.loaded_schemas().len(), 1);
+        let loaded = reg.load_tools(&["extra".into(), "missing".into()]);
+        assert_eq!(loaded, vec!["extra".to_string()]);
+        assert_eq!(reg.loaded_schemas().len(), 2);
+        assert!(reg.is_loaded("extra"));
+        assert!(!reg.is_loaded("missing"));
     }
 
     #[test]

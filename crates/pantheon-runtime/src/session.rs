@@ -2501,6 +2501,10 @@ pub struct Session {
     /// session > config > model maximum from these two slots.
     /// `None` = the config set no token cap (0 also maps to `None`).
     pub budget_max_tokens: Mutex<Option<u32>>,
+    /// Tools loaded into the model's turn in auto mode. Empty = the
+    /// core set built at registry time. Persists across turns so a
+    /// load in one turn stays loaded for the session.
+    pub loaded_tools: Mutex<std::collections::HashSet<String>>,
     /// Active `/goal` text, mirrored here from the TUI. Appended to the
     /// system prompt at turn assembly so the model keeps pursuing it
     /// across turns until `/goal clear`. `None` = no active goal.
@@ -2875,6 +2879,7 @@ impl Session {
             credential_grants: Vec::new(),
             budget: Mutex::new(Budget::default()),
             budget_max_tokens: Mutex::new(None),
+            loaded_tools: Mutex::new(std::collections::HashSet::new()),
             goal: Mutex::new(None),
             mode: Arc::new(Mutex::new(AgentMode::default())),
             permission_mode: Arc::new(Mutex::new(configured_permission_mode)),
@@ -4029,6 +4034,33 @@ impl Session {
         registry: &ToolRegistry,
         loop_guard: &crate::loop_guard::LoopGuard,
     ) -> Result<String, PantheonError> {
+        // Auto tool loading: the load_tools meta tool is handled by
+        // the host, never executed. Names load into the session set
+        // and take effect on the next turn.
+        if name == "load_tools" {
+            let v: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
+            let names: Vec<String> = v
+                .get("names")
+                .and_then(|n| n.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut set = self
+                .loaded_tools
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            for n in &names {
+                set.insert(n.clone());
+            }
+            if let Ok(mut g) = self.loaded_tools.lock() {
+                *g = set;
+            }
+            return Ok(serde_json::json!({"loaded": names}).to_string());
+        }
         self.supervisor.assert_lease(run_id).map_err(|e| {
             PantheonError::new(
                 "LOST_LEASE",
@@ -5917,6 +5949,42 @@ Extracted:
                 );
             }
         }
+        // Auto tool loading: start each turn with the core set plus
+        // whatever the model loaded in earlier turns. Empty loaded
+        // set in the registry means always-available (all schemas).
+        {
+            let loaded = self
+                .loaded_tools
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if !loaded.is_empty() {
+                let core: Vec<String> = [
+                    "shell",
+                    "read_file",
+                    "write_file",
+                    "list_dir",
+                    "ask_user",
+                    "load_tools",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .chain(loaded.iter().cloned())
+                .collect();
+                reg.set_core_tools(&core);
+            }
+        }
+        // Register the load_tools meta tool: the model calls it by name
+        // to load more tools into the next turn.
+        reg.register(
+            pantheon_api::message::ToolSchema {
+                name: "load_tools".into(),
+                description: "Load tools by name into the next turn. Pass names as a JSON array of tool names. Already loaded tools are ignored. Call this when a task needs a tool that is not in your current list.".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}}, "required": ["names"]}),
+            },
+            pantheon_api::capability::Capability::Other("load_tools".into()),
+            |_args| Err(pantheon_api::error::PantheonError::new("TOOL_HOST_MEDIATED", pantheon_api::error::Layer::Execution, false, String::from("load_tools is handled by the host, never executed directly"), "check tool name and arguments", "")),
+        );
         // Transport selection: always the real HTTP transport. There is
         // no fixture or offline mode - `--provider mock` is rejected
         // below like any other unknown provider id.
@@ -5949,7 +6017,7 @@ Extracted:
                 })?
                 .unwrap_or_default();
             let mut chain =
-                ProviderChain::new(self.policy_snapshot(), transport, reg.schemas(), api_key);
+                ProviderChain::new(self.policy_snapshot(), transport, reg.loaded_schemas(), api_key);
             chain.oauth_broker = Some(self.secrets.clone());
             chain
         };
