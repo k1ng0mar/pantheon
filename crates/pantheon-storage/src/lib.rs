@@ -23,7 +23,7 @@ use std::time::Duration;
 /// hook or maintenance pass instead - auto-checkpointing on close would turn a
 /// cheap disconnect into a latency spike, and doing it here would hide the
 /// cost inside every store open. Retention likewise stays an explicit API
-/// (e.g. [`ledger::Ledger::prune_events_before`]); nothing in this crate wires
+/// (e.g. [`ledger::Ledger::prune_events_before_active_safe_active_safe`]); nothing in this crate wires
 /// automatic pruning into open paths.
 pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), PantheonError> {
     let err = |suffix: &str, cause: String| {

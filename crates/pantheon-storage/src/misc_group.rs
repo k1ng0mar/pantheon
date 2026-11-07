@@ -2409,7 +2409,7 @@ pub mod search {
         }
 
         /// Drop chunks (and their FTS rows) older than `cutoff_ts_ms`
-        /// (retention policy). Pairs with `Ledger::prune_events_before`: the FTS
+        /// (retention policy). Pairs with `Ledger::prune_events_before_active_safe`: the FTS
         /// sidecar must not retain searchable text for history the ledger has
         /// already pruned. Returns the number of chunks pruned.
         pub fn prune_before(&self, cutoff_ts_ms: i64) -> Result<usize, PantheonError> {

@@ -4,7 +4,7 @@ pub mod ledger {
     //! Event-sourced execution ledger. Every run persists its events to SQLite;
     //! ``pantheon logs run_X`` replays them. During normal operation history is
     //! append-only (events are never updated in place); retention pruning
-    //! ([`Ledger::prune_events_before`]) and explicit run deletion
+    //! ([`Ledger::prune_events_before_active_safe`]) and explicit run deletion
     //! ([`Ledger::delete_run`]) are the only paths that remove rows. Events carry
     //! no hash chain and no format version, so this is a local audit trail, not
     //! tamper-evident evidence against someone with write access to the file.
@@ -1626,17 +1626,6 @@ pub mod ledger {
         /// and outcomes, drop transcripts" retention means. Pair with
         /// `SessionSearch::prune_before` so the FTS sidecar does not retain text
         /// for history the ledger has already pruned.
-        pub fn prune_events_before(&self, cutoff_ts_ms: i64) -> Result<usize, PantheonError> {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
-            let pruned = conn
-                .execute("DELETE FROM events WHERE ts_ms < ?1", params![cutoff_ts_ms])
-                .map_err(|e| err("LEDGER_PRUNE", e.to_string()))?;
-            Ok(pruned)
-        }
-
         /// Delete a run outright: its events, its `runs` row, its
         /// session-search chunks and FTS rows, its `todos` snapshot, and
         /// its `run_process_groups` rows, all in a single transaction. A
@@ -1717,7 +1706,7 @@ pub mod ledger {
             Ok((events, runs))
         }
 
-        /// Retention-safe prune: like [`Self::prune_events_before`], but never
+        /// Retention-safe prune: like [`Self::prune_events_before_active_safe`], but never
         /// deletes events of runs whose status is not terminal. The active run's
         /// transcript survives even when its oldest events predate the cutoff
         /// a run that stays open for months must not lose the history a resume
