@@ -5787,12 +5787,17 @@ Extracted:
         // include it when the tool is actually registered (ToolGroup::Tasks
         // on); otherwise the model is told to use a tool that doesn't exist.
         let system_prompt = self.with_todo_guidance(system_prompt);
-        // Planner: when the `[planner]` slot is pinned, decompose this
-        // turn's goal into steps and ride them in the system prompt.
-        // Unconfigured or on error there is no plan block, so the turn
-        // is exactly as before. The planner call is synchronous and
-        // bounded by the slot timeout, same as the judge call.
-        let system_prompt = match self.plan_goal(run_id, user_message) {
+        // Planner: when the `[planner]` slot resolves and a session
+        // goal is active, decompose that goal into steps and ride them
+        // in the system prompt. Gated on an active goal so ordinary
+        // turns never pay a planner call. Unconfigured or on error
+        // there is no plan block, so the turn is exactly as before.
+        let active_goal = self.goal.lock().ok().and_then(|g| g.clone());
+        let system_prompt = match active_goal
+            .as_deref()
+            .filter(|g| !g.trim().is_empty())
+            .and_then(|goal| self.plan_goal(run_id, goal))
+        {
             Some(steps) if !steps.is_empty() => {
                 let numbered = steps
                     .iter()

@@ -1717,8 +1717,9 @@ pub mod model {
         /// `auto`: the run's default model.
         ///
         /// Wired: `Session::chat_turn` resolves this slot at turn start
-        /// and rides the plan steps in the system prompt. Unconfigured
-        /// or on error there is no plan block, never a fabricated one.
+        /// when a session goal is active, and rides the plan steps in
+        /// the system prompt. Unconfigured or on error there is no plan
+        /// block, never a fabricated one.
         Planner,
         /// Adversarial verifier model (config `[verify]`): after a delegated
         /// sub-agent completes, it takes the task's goal plus the child's
