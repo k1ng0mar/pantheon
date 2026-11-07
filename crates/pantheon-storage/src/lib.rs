@@ -74,26 +74,28 @@ pub(crate) fn add_column_once(conn: &Connection, sql: &str) -> Result<(), rusqli
     }
 }
 
-pub mod audit;
-pub mod backup;
-pub mod claims;
-pub mod collaboration;
-pub mod ideas;
-pub mod leases;
-pub mod ledger;
-pub mod operations;
-pub mod search;
+mod core_group;
+mod misc_group;
 pub use audit::{audit_line, export_jsonl};
 pub use claims::ClaimStore;
 pub use collaboration::{
     AgentMessage, AgentTask, Collaboration, CollaborationStatus, CollaborationStore, MessageKind,
     TaskConflict, TaskMutationError, TaskStatus,
 };
+pub use core_group::claims;
+pub use core_group::leases;
+pub use core_group::ledger;
+pub use core_group::operations;
 pub use ideas::{
     FeedbackSignal, Idea, IdeaKind, IdeaStatus, IdeaStore, NewIdea, ScheduleSpec, TopicSignals,
 };
 pub use leases::{LostLeaseError, RunLease, RunLeaseStore};
 pub use ledger::{Artifact, Ledger, LedgerEntry, RunListing, RunMetrics, HOME_SESSION_ID};
+pub use misc_group::audit;
+pub use misc_group::backup;
+pub use misc_group::collaboration;
+pub use misc_group::ideas;
+pub use misc_group::search;
 pub use operations::{Operation, OperationConflict, OperationStatus, OperationStore};
 pub use search::{recreate_search_index, search_index_health};
 pub use search::{SearchHit, SessionChunk, SessionSearch};
