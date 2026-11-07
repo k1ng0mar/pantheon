@@ -22,7 +22,15 @@ use pantheon_secrets::{
 };
 
 fn broker_for(app: &App) -> Result<SecretsBroker, Response> {
-    SecretsBroker::durable(&app.data_dir).map_err(|e| {
+    // A broker is built per request, so the backend must be one whose entries
+    // a *fresh* broker can see again. The OS keychain cannot enumerate, so
+    // with the keychain backend a secret stored by one request reads back as
+    // SECRET_NOT_FOUND on the next - which made these tests flake whenever
+    // the probe happened to succeed. Unit tests pin the file vault; real
+    // hosts keep the keychain, and PANTHEON_SECRETS_FILE_VAULT=1 forces the
+    // file vault on a headless host whose keyring is misleading.
+    let use_keychain = !cfg!(test) && std::env::var_os("PANTHEON_SECRETS_FILE_VAULT").is_none();
+    SecretsBroker::durable_with(&app.data_dir, use_keychain).map_err(|e| {
         err_json(
             500,
             "SECRETS_UNAVAILABLE",
