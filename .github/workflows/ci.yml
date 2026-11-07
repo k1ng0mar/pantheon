@@ -135,3 +135,18 @@ jobs:
         working-directory: desktop
       - run: npm run test:release
         working-directory: desktop
+
+  install-smoke:
+    name: installer smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run installer against latest release
+        env:
+          PANTHEON_NO_INIT: "1"
+          PANTHEON_NO_PYTHON_DEPS: "1"
+          PANTHEON_INSTALL_DIR: ${{ runner.temp }}/pantheon-bin
+        run: |
+          bash install.sh
+          "${PANTHEON_INSTALL_DIR}/pantheon" --version
+          "${PANTHEON_INSTALL_DIR}/pantheon" --help > /dev/null
