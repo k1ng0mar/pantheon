@@ -7,8 +7,8 @@ export const PROJECT_LINKS = {
   repository: 'https://github.com/k1ng0mar/pantheon',
   issues: 'https://github.com/k1ng0mar/pantheon/issues',
   releases: 'https://github.com/k1ng0mar/pantheon/releases',
-  license: 'https://github.com/aicodeking/pandacode/blob/main/LICENSE',
-  attribution: 'https://github.com/aicodeking/pandacode',
+  license: 'https://github.com/k1ng0mar/pantheon/blob/master/desktop/LICENSE',
+  attribution: 'https://github.com/k1ng0mar/pantheon',
 } as const;
 
 const link = (label: string, url: string) =>
@@ -17,7 +17,7 @@ const link = (label: string, url: string) =>
 /** The About group: app version, license, updates from GitHub Releases, and links. */
 export function aboutSettingsHtml(): string {
   return `<div class="settings-group settings-about" aria-labelledby="settings-about-heading">
-    <div class="setting-row"><div><strong id="settings-about-heading">About Pantheon</strong><small class="settings-about-version">Version … · This is a fork of <button type="button" class="text-link" data-action="open-url" data-url="${PROJECT_LINKS.attribution}">PandaCode</button></small></div></div>
+    <div class="setting-row"><div><strong id="settings-about-heading">About Pantheon</strong><small class="settings-about-version">Version … · Pantheon desktop</small></div></div>
     <div class="setting-row"><div><strong>License</strong><small>Open source (MIT-based). No account, no telemetry.</small></div>${link('Pantheon License', PROJECT_LINKS.license)}</div>
     <div class="setting-row settings-updates"><div><strong>Updates</strong><small class="settings-update-status" aria-live="polite">Checks GitHub Releases automatically.</small></div><div class="settings-row-actions"><button type="button" class="secondary-button settings-update-action" hidden></button>${link('Releases', PROJECT_LINKS.releases)}</div></div>
     <div class="setting-row settings-updates-auto"><div><strong>Install updates automatically</strong><small>Downloads in the background and restarts when no agent is working.</small></div><input type="checkbox" class="settings-switch" data-update-automatic aria-label="Install updates automatically"></div>

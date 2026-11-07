@@ -5,7 +5,7 @@ import { wallpaperAccents } from './wallpaper-accents';
 import { pantheonAccentSource, loadPantheonTint } from './pantheon-theme';
 export type { VsixTheme } from './palette-core';
 
-/* The app's colors: Pantheon's own palette with an accent that is classic yellow,
+/* The app's colors: Pantheon's own palette with a purple accent by default,
  * a fixed color, or drawn from the current wallpaper — or, when a VS Code theme is
  * active, that theme's colors, which then stay put whatever the wallpaper does. */
 
@@ -24,7 +24,7 @@ function read(): Saved {
     const saved = JSON.parse(localStorage.getItem(STORE) ?? 'null') as Partial<Saved> | null;
     const accent = saved?.accent;
     const valid = accent && (accent.mode === 'pantheon' || accent.mode === 'wallpaper' || accent.mode === 'classic' || (accent.mode === 'custom' && parseHex(accent.color)));
-    return { accent: valid ? accent : { mode: 'wallpaper' }, vsix: saved?.vsix ?? null, cache: saved?.cache ?? null };
+    return { accent: valid ? accent : { mode: 'pantheon' }, vsix: saved?.vsix ?? null, cache: saved?.cache ?? null };
   } catch { return { accent: { mode: 'pantheon' }, vsix: null, cache: null }; }
 }
 let state = read();

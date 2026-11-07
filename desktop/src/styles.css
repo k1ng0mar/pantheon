@@ -1,4 +1,4 @@
-:root{--titlebar-height:calc(55px / var(--page-zoom,1));--traffic-light-gutter:calc(104px / var(--page-zoom,1));font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;color:var(--text);background:var(--bg);font-synthesis:none;font-size:14px;line-height:1.5;font-weight:400;--bg:#ffffff;--sidebar:#f5f5f3;--panel:#fbfbfa;--raised:#f1f1ef;--border:#e3e3df;--muted:#656560;--faint:#71716c;--text:#242423;--accent:#ffd43b;--accent-dim:#fff1b6;--accent-rgb:255 212 59;--accent-deep-rgb:153 115 0;--on-accent:#242423;--accent-hover:#f5ca2f;--accent-tint:#fffcf1;--accent-tint-strong:#fffcf1;--mono:"SF Mono","Cascadia Code",Consolas,monospace;color-scheme:light;font-optical-sizing:auto;--accent-ink:#554400;--focus:#8b6c00;--success:#237345;--danger:#b03535;--bamboo:#577342;--bamboo-art-opacity:.1}
+:root{--titlebar-height:calc(55px / var(--page-zoom,1));--traffic-light-gutter:calc(104px / var(--page-zoom,1));font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;color:var(--text);background:var(--bg);font-synthesis:none;font-size:14px;line-height:1.5;font-weight:400;--bg:#ffffff;--sidebar:#f5f5f3;--panel:#fbfbfa;--raised:#f1f1ef;--border:#e3e3df;--muted:#656560;--faint:#71716c;--text:#242423;--accent:#7223ff;--accent-dim:#ede6ff;--accent-rgb:114 35 255;--accent-deep-rgb:75 0 205;--on-accent:#ffffff;--accent-hover:#5f1dff;--accent-tint:#f7f3ff;--accent-tint-strong:#f7f3ff;--mono:"SF Mono","Cascadia Code",Consolas,monospace;color-scheme:light;font-optical-sizing:auto;--accent-ink:#4b00cd;--focus:#4b00cd;--success:#237345;--danger:#b03535;--bamboo:#7223ff;--bamboo-art-opacity:.1}
 *{box-sizing:border-box}
 html,body,#app{margin:0;width:100%;height:100%;overflow:hidden}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -722,8 +722,8 @@ html[data-theme="dark"]{
   color-scheme:dark;
   --bg:#1c1c1b;--sidebar:#232321;--panel:#222220;--raised:#31312e;--border:#3b3b36;
   --text:#f3f1e9;--muted:#b1b0a7;--faint:#a09f95;
-  --accent:#ffd43b;--accent-dim:#48401e;--accent-ink:#f3d778;--focus:#e4be37;--on-accent:#29230e;--accent-tint:#29271f;--accent-tint-strong:#27261e;
-  --success:#83cf9c;--danger:#ff9e96;--bamboo:#adbf86;--bamboo-art-opacity:.075;
+  --accent:#a78bff;--accent-dim:#2e1a5e;--accent-ink:#c4b5fd;--focus:#a78bff;--on-accent:#1a0533;--accent-tint:#241b3a;--accent-tint-strong:#211839;
+  --success:#83cf9c;--danger:#ff9e96;--bamboo:#a78bff;--bamboo-art-opacity:.075;
 }
 html[data-theme="dark"] .sidebar{background:radial-gradient(ellipse at 75% -15%,rgb(var(--accent-rgb) / .11),transparent 72%) 0 0/100% 190px no-repeat,var(--sidebar)}
 html[data-theme="dark"] .brand-name{color:var(--muted)}
@@ -911,6 +911,6 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
 .steer-state .icon{width:13px;height:13px}
 :is(.steer-state,.queue-status,.queue-next) .support-spinner{width:11px;height:11px}
 .queue-status{margin-left:auto;font-size:.74rem;color:var(--muted)}
-/* PandaCode is instant: no transitions anywhere. Looping status indicators (spinners,
+/* Pantheon is instant: no transitions anywhere. Looping status indicators (spinners,
    working pulses) are animations, not transitions, so they keep running. */
 *,*::before,*::after{transition:none!important}

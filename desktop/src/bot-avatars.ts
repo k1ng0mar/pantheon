@@ -1,5 +1,6 @@
-/** Bot icons: ten panda faces on colored badges, or an image the user uploaded (stored as a
- *  small data: URL). Legacy bots keep their emoji or the first letter of their name. */
+/** Bot icons: ten temple marks on colored badges, or an image the user uploaded (stored as a
+ *  small data: URL). Legacy bots keep their emoji or the first letter of their name. Avatar ids
+ *  keep the legacy panda: prefix so stored bots keep their badge. */
 
 export const PANDAS: { id: string; name: string; color: string }[] = [
   ['Orange', '#f97316'], ['Amber', '#f59e0b'], ['Coral', '#fb7185'], ['Pink', '#ec4899'], ['Violet', '#8b5cf6'],
@@ -14,16 +15,12 @@ const INK = '#1d1d1f';
 
 const escape = (value: string): string => value.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
-/** A panda face on its preset color; '' for an unknown id. */
+/** A temple mark on its preset color; '' for an unknown id. */
 export function pandaSvg(id: string): string {
   const panda = PANDAS.find(p => p.id === id);
   if (!panda) return '';
   return `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="${panda.color}"/>`
-    + `<circle cx="17" cy="19" r="8" fill="${INK}"/><circle cx="47" cy="19" r="8" fill="${INK}"/>`
-    + '<ellipse cx="32" cy="36" rx="20" ry="17.5" fill="#fff"/>'
-    + `<ellipse cx="24" cy="35" rx="5" ry="6.5" transform="rotate(30 24 35)" fill="${INK}"/><ellipse cx="40" cy="35" rx="5" ry="6.5" transform="rotate(-30 40 35)" fill="${INK}"/>`
-    + '<circle cx="25" cy="34" r="1.7" fill="#fff"/><circle cx="39" cy="34" r="1.7" fill="#fff"/>'
-    + `<ellipse cx="32" cy="42" rx="2.8" ry="1.9" fill="${INK}"/><path d="M29 45.5q3 2.5 6 0" fill="none" stroke="${INK}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+    + `<g fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 22 32 10l21 12M13 22h38M17 29v18M26 29v18M38 29v18M47 29v18M11 47h42"/></g></svg>`;
 }
 
 export function botAvatarHtml(avatar: string, name: string, cls = ''): string {
@@ -38,7 +35,7 @@ function customSwatch(url: string, pressed: boolean): string {
 }
 
 export function avatarPicker(current: string): string {
-  const swatches = PANDAS.map(p => `<button type="button" class="avatar-swatch" data-avatar-choice="${p.id}" aria-pressed="${p.id === current}" aria-label="${p.name} panda">${pandaSvg(p.id)}</button>`).join('');
+  const swatches = PANDAS.map(p => `<button type="button" class="avatar-swatch" data-avatar-choice="${p.id}" aria-pressed="${p.id === current}" aria-label="${p.name} temple">${pandaSvg(p.id)}</button>`).join('');
   return `<div class="avatar-picker" role="radiogroup" aria-label="Icon"><input type="hidden" name="avatar" value="${escape(current)}">${swatches}`
     + `${IMAGE.test(current) ? customSwatch(current, true) : ''}<button type="button" class="avatar-upload" data-avatar-upload-button>Upload…</button>`
     + `<input type="file" hidden accept="${UPLOAD_TYPES.join(',')}" data-avatar-upload><span class="avatar-error" role="alert" hidden></span></div>`;

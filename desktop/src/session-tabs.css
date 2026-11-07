@@ -1,4 +1,4 @@
-/* Session tabs (MonoCode steal, plan doc §11): one tab per open task over
+/* Session tabs (plan doc §11): one tab per open task over
  * the conversation column. Sits above the file-tabs strip. */
 
 .session-tabs{display:flex;align-items:stretch;gap:2px;height:36px;padding:4px 8px 0;border-bottom:1px solid var(--border);background:var(--panel);overflow-x:auto;scrollbar-width:none;flex-shrink:0}
