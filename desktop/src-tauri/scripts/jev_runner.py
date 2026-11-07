@@ -1,4 +1,4 @@
-"""PandaCode's isolated, bounded adapter for the pinned Jev runtime.
+"""Pantheon's isolated, bounded adapter for the pinned Jev runtime.
 
 The application embeds this small standard-library entry point; Python, Chrome,
 and Jev are installed separately. stdout is a JSONL protocol, never a debug log.
@@ -188,7 +188,7 @@ def doctor(custom_chrome=""):
         distribution = importlib.metadata.distribution("jev-ultrafast")
         version = distribution.version
         if version != "0.1.0" or not pinned_distribution(distribution):
-            issues.append("Install PandaCode's pinned Jev runtime using Setup runtime.")
+            issues.append("Install Pantheon's pinned Jev runtime using Setup runtime.")
     except importlib.metadata.PackageNotFoundError:
         issues.append("Jev is not installed in this Python environment.")
     try:

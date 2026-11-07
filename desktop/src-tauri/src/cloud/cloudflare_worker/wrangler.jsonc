@@ -1,5 +1,5 @@
 {
-  // Deployed by PandaCode to your Cloudflare account: one sandbox container per name.
+  // Deployed by Pantheon to your Cloudflare account: one sandbox container per name.
   "name": "pandacode-sandbox",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-02",

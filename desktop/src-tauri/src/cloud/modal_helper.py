@@ -1,4 +1,4 @@
-# PandaCode's bridge to Modal sandboxes (src-tauri/src/cloud/modal.rs). Reads one JSON
+# Pantheon's bridge to Modal sandboxes (src-tauri/src/cloud/modal.rs). Reads one JSON
 # request on stdin, prints one JSON reply on stdout. Credentials arrive only as
 # MODAL_TOKEN_ID / MODAL_TOKEN_SECRET (and MODAL_ENVIRONMENT) in this process's environment.
 import sys
@@ -38,7 +38,7 @@ def run(request):
     if op == "create":
         image = modal.Image.debian_slim().apt_install("git", "curl", "ca-certificates")
         sb = modal.Sandbox.create("sh", "-c", WATCH, app=app(modal), image=image, timeout=LIFETIME, cpu=2.0, memory=4096)
-        # Modal ends the sandbox at its timeout; remember when, so PandaCode knows how long a run may last.
+        # Modal ends the sandbox at its timeout; remember when, so Pantheon knows how long a run may last.
         sb.set_tags(dict(TAG, name=request["name"], expires=str(int(time.time()) + LIFETIME)))
         return {"id": sb.object_id}
     sb = modal.Sandbox.from_id(request["id"])
