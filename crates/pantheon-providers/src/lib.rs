@@ -55,9 +55,29 @@ pub mod verify {
 pub mod distill {
     pub use crate::auxiliary::distill::*;
 }
+pub mod search_synthesis {
+    pub use crate::auxiliary::search_synthesis::*;
+}
+pub mod mcp_synthesis {
+    pub use crate::auxiliary::mcp_synthesis::*;
+}
+pub mod extraction {
+    pub use crate::auxiliary::extraction::*;
+}
+pub mod rerank {
+    pub use crate::auxiliary::rerank::*;
+}
+pub mod planner {
+    pub use crate::auxiliary::planner::*;
+}
 pub use crate::auxiliary::compress::CompressionClient;
 pub use crate::auxiliary::distill::{DistillClient, DISTILL_TIMEOUT_SECS};
+pub use crate::auxiliary::extraction::ExtractionClient;
 pub use crate::auxiliary::judge::{parse_answer, prompt_for, JudgeClient};
+pub use crate::auxiliary::mcp_synthesis::McpSynthesisClient;
+pub use crate::auxiliary::planner::PlannerClient;
+pub use crate::auxiliary::rerank::RerankClient;
+pub use crate::auxiliary::search_synthesis::SearchSynthesisClient;
 pub use crate::auxiliary::title::{TitleGenClient, TITLEGEN_TIMEOUT_SECS};
 pub use crate::auxiliary::verify::{parse_verdict, VerifyClient, VerifyRequest, VerifyVerdict};
 pub use crate::auxiliary::vision::{
