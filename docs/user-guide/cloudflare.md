@@ -119,7 +119,8 @@ and a generic multi-provider framework.
   token in the dashboard. Avoid the Global API Key; it is legacy.
 - Every cf call fails with "No zone specified": pass `--zone` or set
   `CLOUDFLARE_ZONE_ID`.
-- Token injection appears dead: check `[cloudflare].enabled`, then
-  `pantheon cloudflare status`.
+- Token injection appears dead: check `CLOUDFLARE_API_TOKEN` is exported
+  in the environment the shell tool inherits, then run
+  `cf auth whoami` to confirm the token works.
 - A cf call parked for approval: the approval prompt shows the exact
   argv. Grant the specific call or deny it; a grant is one-shot.

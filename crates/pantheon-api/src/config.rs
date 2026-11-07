@@ -444,15 +444,13 @@ pub type EmbeddingsSection = AuxSection;
 pub type SearchSynthesisSection = AuxSection;
 
 /// `[vision]`: the image-understanding model. Absent = `auto`: the run's
-/// default model handles images. Config + client surface only for now
-/// message image plumbing lands with multimodal content.
+/// default model handles images. Consulted by the vision host pass before
+/// an image-bearing turn reaches the chat model.
 pub type VisionSection = AuxSection;
 
 /// `[video]`: the video-understanding model. Absent = `auto`: the run's
-/// default model handles video. Mirrors `[vision]` exactly: config +
-/// client surface only for now - the video-understanding pipeline
-/// (keyframe sampling, temporal QA) is future work; the slot exists so a
-/// model can be pinned ahead of it landing.
+/// default model handles video. Consulted by the video host pass, which
+/// samples keyframes and calls this slot, never chat.
 pub type VideoSection = AuxSection;
 
 /// `[scheduled]`: the model scheduled (background) runs execute with.

@@ -22,6 +22,7 @@ Pantheon is an assistant that runs on your own computer. It talks to AI models f
 | [Extensions](user-guide/extensions.md) | Plugins and extra capabilities |
 | [Web access](user-guide/web.md) | Web search and browser automation |
 | [MCP servers](user-guide/mcp.md) | Third-party tools: declaring, approving, watching them run |
+| [Cloudflare](user-guide/cloudflare.md) | Cloudflare through the cf CLI, cf-ops plugin and remote MCP |
 
 ## Reference
 

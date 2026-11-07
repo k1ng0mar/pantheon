@@ -195,6 +195,11 @@ Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PAN
 | [Memory](docs/user-guide/memory.md) | Scope, provenance, trust, skills |
 | [Providers](docs/user-guide/providers.md) | Models, fallbacks, custom endpoints |
 | [Channels](docs/user-guide/channels.md) | Terminal, web, Discord, Telegram |
+| [Sessions](docs/user-guide/sessions.md) | Terminal app, one-off tasks, past conversations |
+| [Scheduling](docs/user-guide/scheduling.md) | Recurring tasks that run on their own |
+| [Web access](docs/user-guide/web.md) | Web search and browser automation |
+| [MCP servers](docs/user-guide/mcp.md) | Third-party tools: declaring, approving, watching them run |
+| [Cloudflare](docs/user-guide/cloudflare.md) | Cloudflare through the cf CLI, cf-ops plugin and remote MCP |
 | [Extensions](docs/user-guide/extensions.md) | Hooks, tools, plugin behavior |
 | [Configuration](docs/reference/configuration.md) | Every field, the data dir, secrets |
 | [Troubleshooting](docs/reference/troubleshooting.md) | Diagnostics and common issues |
