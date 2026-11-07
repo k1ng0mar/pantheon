@@ -12,38 +12,41 @@
 //! Resolution order (documented, deterministic): configured durable vaults
 //! in insertion order, then the environment (`PANTHEON_SECRET_*`).
 
-pub mod broker;
-pub mod dotenv;
-pub mod env;
-pub mod error;
-pub mod filevault;
-pub mod gateway_tokens;
-pub mod grants;
-pub mod keychain;
-pub mod logins;
-pub mod migration;
-pub mod oauth;
-pub mod redaction;
-pub mod secure_forms;
-pub mod value;
-pub mod vault;
-
-pub use broker::SecretsBroker;
-pub use dotenv::DotenvVault;
-pub use env::EnvVault;
-pub use error::SecretsError;
-pub use filevault::EncryptedFileVault;
-pub use gateway_tokens::{
+mod auth_group;
+mod broker_group;
+pub use auth_group::dotenv;
+pub use auth_group::dotenv::DotenvVault;
+pub use auth_group::env;
+pub use auth_group::env::EnvVault;
+pub use auth_group::gateway_tokens;
+pub use auth_group::gateway_tokens::{
     delete_gateway_token, gateway_token, gateway_token_broker, mask_token, set_gateway_token,
     DISCORD_TOKEN_NAME, GATEWAY_SECRETS_FILE, TELEGRAM_TOKEN_NAME,
 };
-pub use grants::{intersect_grants, CredentialGrant, CredentialPurpose, ScopedBroker};
-pub use keychain::KeychainVault;
-pub use logins::{LoginCredential, LoginStore, LOGINS_FILE, LOGINS_META_FILE, MASKED};
-pub use redaction::RedactionRegistry;
-pub use secure_forms::{
+pub use auth_group::logins;
+pub use auth_group::logins::{LoginCredential, LoginStore, LOGINS_FILE, LOGINS_META_FILE, MASKED};
+pub use auth_group::migration;
+pub use auth_group::oauth;
+pub use auth_group::secure_forms;
+pub use auth_group::secure_forms::{
     default_verifier, BotTokenVerifier, LocalVerifier, ProviderModelsVerifier, SaveOutcome,
     SecretCaller, SecretEntry, SecretScope, SecureFormStore, Verifier, VerifyOutcome,
 };
-pub use value::SecretValue;
-pub use vault::{MemoryVault, ReadOnlyVault, SecretVault};
+pub use broker_group::broker;
+pub use broker_group::broker::SecretsBroker;
+pub use broker_group::error;
+pub use broker_group::error::SecretsError;
+pub use broker_group::filevault;
+pub use broker_group::filevault::EncryptedFileVault;
+pub use broker_group::grants;
+pub use broker_group::grants::{
+    intersect_grants, CredentialGrant, CredentialPurpose, ScopedBroker,
+};
+pub use broker_group::keychain;
+pub use broker_group::keychain::KeychainVault;
+pub use broker_group::redaction;
+pub use broker_group::redaction::RedactionRegistry;
+pub use broker_group::value;
+pub use broker_group::value::SecretValue;
+pub use broker_group::vault;
+pub use broker_group::vault::{MemoryVault, ReadOnlyVault, SecretVault};
