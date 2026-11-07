@@ -2226,6 +2226,63 @@ pub struct EgressSection {
     pub allowlist: Vec<String>,
 }
 
+/// `[limits]`: user-adjustable safety caps. Every field is optional;
+/// absent means the built-in default in parentheses. Environment
+/// overrides (`PANTHEON_LIMIT_<FIELD>`) win over the config file, so
+/// deployments can tune without editing config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LimitsSection {
+    /// Max decoded voice audio bytes per transcribe request (25 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_audio_bytes: Option<usize>,
+    /// Max speak text chars per request (64000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_text_chars: Option<usize>,
+    /// Max image bytes per attachment (25 MiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_bytes: Option<usize>,
+    /// Max images per message (10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images_per_message: Option<usize>,
+    /// Max videos per message (5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub videos_per_message: Option<usize>,
+    /// Video frames sampled per video (16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_frames: Option<usize>,
+    /// Search synthesis brief cap chars (4000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_synthesis_chars: Option<usize>,
+    /// MCP synthesis note cap chars (3000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_synthesis_chars: Option<usize>,
+    /// Vision description cap chars (4000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_chars: Option<usize>,
+    /// Video summary cap chars (6000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_chars: Option<usize>,
+    /// Planner max steps (20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_steps: Option<usize>,
+}
+
+/// Resolve one limit: env override, then config, then the default.
+pub fn limit_or_env(field: &str, configured: Option<usize>, default: usize) -> usize {
+    let env_name = format!("PANTHEON_LIMIT_{}", field.to_ascii_uppercase());
+    if let Ok(v) = std::env::var(&env_name) {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    match configured {
+        Some(n) if n > 0 => n,
+        _ => default,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
     /// The agent this install runs as (`agent = "zeus"`). Must name a
@@ -2322,6 +2379,9 @@ pub struct Config {
     /// default limits (see [`LiveVoiceSection`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<LiveVoiceSection>,
+    /// `[limits]`: user-adjustable safety caps. Absent = built-in defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<LimitsSection>,
     pub policy: Option<PolicyPreset>,
     /// `permission_mode`: how much scrutiny an approval-gated tool call
     /// gets (`ask` / `smart` / `allow_all`). Absent = `ask`, the
@@ -2463,6 +2523,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "agent",
     "model",
     "judge",
+    "limits",
     "embeddings",
     "search_synthesis",
     "vision",
@@ -3500,6 +3561,16 @@ pub fn cfg_section<'a>(cfg: &'a Config, slot: &AuxSlot) -> Option<&'a AuxSection
 mod config_max_tokens_tests {
     use super::*;
 
+    #[test]
+    fn limit_or_env_prefers_env_then_config_then_default() {
+        std::env::set_var("PANTHEON_LIMIT_TEST_FIELD", "42");
+        assert_eq!(super::limit_or_env("test_field", Some(7), 99), 42);
+        std::env::remove_var("PANTHEON_LIMIT_TEST_FIELD");
+        assert_eq!(super::limit_or_env("test_field", Some(7), 99), 7);
+        assert_eq!(super::limit_or_env("test_field", None, 99), 99);
+        assert_eq!(super::limit_or_env("test_field", Some(0), 99), 99);
+    }
+
     /// Item 4: known 64k model, nothing set -> the model's own cap.
     #[test]
     fn resolver_prefers_model_max_output_when_nothing_set() {
@@ -4413,6 +4484,7 @@ mod fix_pass4_leaf1_tests {
             stt: Some(VoiceSection::default()),
             tts: Some(VoiceSection::default()),
             voice: Some(LiveVoiceSection::default()),
+            limits: Some(LimitsSection::default()),
             policy: Some(PolicyPreset::default()),
             // Non-None on purpose: the guard test serializes this
             // literal and compares its keys against KNOWN_CONFIG_KEYS,

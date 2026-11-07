@@ -485,17 +485,18 @@ pub mod vision {
     /// the caller treats an empty bound as an error.
     pub fn bound_description(raw: &str) -> String {
         let t = raw.trim();
-        if t.len() <= VISION_DESC_MAX_CHARS {
+        let cap = pantheon_api::config::limit_or_env("vision_chars", None, VISION_DESC_MAX_CHARS);
+        if t.len() <= cap {
             return t.to_string();
         }
         // Cut on a char boundary, preferring the last sentence end.
-        let mut end = VISION_DESC_MAX_CHARS;
+        let mut end = cap;
         while end > 0 && !t.is_char_boundary(end) {
             end -= 1;
         }
         let cut = &t[..end];
         match cut.rfind(". ") {
-            Some(i) if i > VISION_DESC_MAX_CHARS / 2 => cut[..=i].to_string(),
+            Some(i) if i > cap / 2 => cut[..=i].to_string(),
             _ => cut.to_string(),
         }
     }
@@ -1580,7 +1581,14 @@ pub mod search_synthesis {
                 "check the [search_synthesis] endpoint is healthy",
             ));
         }
-        Ok(brief.chars().take(SEARCH_SYNTHESIS_MAX_CHARS).collect())
+        Ok(brief
+            .chars()
+            .take(pantheon_api::config::limit_or_env(
+                "search_synthesis_chars",
+                None,
+                SEARCH_SYNTHESIS_MAX_CHARS,
+            ))
+            .collect())
     }
 
     pub struct SearchSynthesisClient {
@@ -1717,7 +1725,14 @@ pub mod mcp_synthesis {
                 "check the [mcp_synthesis] endpoint is healthy",
             ));
         }
-        Ok(note.chars().take(MCP_SYNTHESIS_MAX_CHARS).collect())
+        Ok(note
+            .chars()
+            .take(pantheon_api::config::limit_or_env(
+                "mcp_synthesis_chars",
+                None,
+                MCP_SYNTHESIS_MAX_CHARS,
+            ))
+            .collect())
     }
 
     pub struct McpSynthesisClient {
@@ -2181,7 +2196,11 @@ pub mod planner {
                 "check the [planner] endpoint is healthy",
             ));
         }
-        steps.truncate(PLANNER_MAX_STEPS);
+        steps.truncate(pantheon_api::config::limit_or_env(
+            "planner_steps",
+            None,
+            PLANNER_MAX_STEPS,
+        ));
         Ok(steps)
     }
 

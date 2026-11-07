@@ -318,7 +318,9 @@ pub mod voice {
             if bytes.is_empty() {
                 return VoiceHttp::err(400, "voice_bad_request", "field `audio` decoded to empty");
             }
-            if bytes.len() > MAX_AUDIO_BYTES {
+            if bytes.len()
+                > pantheon_api::config::limit_or_env("voice_audio_bytes", None, MAX_AUDIO_BYTES)
+            {
                 return VoiceHttp::err(
                     413,
                     "voice_audio_too_large",
@@ -402,7 +404,9 @@ pub mod voice {
             if text.is_empty() {
                 return VoiceHttp::err(400, "voice_bad_request", "field `text` is required");
             }
-            if text.chars().count() > MAX_TEXT_CHARS {
+            if text.chars().count()
+                > pantheon_api::config::limit_or_env("voice_text_chars", None, MAX_TEXT_CHARS)
+            {
                 return VoiceHttp::err(
                     413,
                     "voice_text_too_large",

@@ -1263,7 +1263,7 @@ pub mod message {
         /// [`MAX_IMAGE_BYTES`], and base64-encodes. The claimed mime is never
         /// trusted - a renamed `.exe` fails the sniff and is rejected loudly.
         pub fn from_bytes(name: &str, bytes: &[u8]) -> Result<Self, ImageError> {
-            if bytes.len() > MAX_IMAGE_BYTES {
+            if bytes.len() > crate::config::limit_or_env("image_bytes", None, MAX_IMAGE_BYTES) {
                 return Err(ImageError::TooLarge(bytes.len()));
             }
             let mime = sniff_image_mime(bytes).ok_or(ImageError::UnsupportedMime)?;
@@ -1418,7 +1418,9 @@ pub mod message {
                 // First non-entry line ends the block (the trailer copy).
                 break;
             }
-            if out.len() >= MAX_IMAGES_PER_MESSAGE {
+            if out.len()
+                >= crate::config::limit_or_env("images_per_message", None, MAX_IMAGES_PER_MESSAGE)
+            {
                 break;
             }
             // Split `- name (mime, size, id: xxx): /abs/path` on the last "): ".
@@ -1495,7 +1497,9 @@ pub mod message {
             if !line.starts_with("- ") {
                 break;
             }
-            if out.len() >= MAX_VIDEOS_PER_MESSAGE {
+            if out.len()
+                >= crate::config::limit_or_env("videos_per_message", None, MAX_VIDEOS_PER_MESSAGE)
+            {
                 break;
             }
             let Some(sep) = line.rfind("): ") else {

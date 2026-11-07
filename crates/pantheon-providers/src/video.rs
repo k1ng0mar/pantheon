@@ -165,17 +165,18 @@ pub fn synthesis_prompt(
 /// caller treats an empty bound as an error.
 pub fn bound_summary(raw: &str) -> String {
     let t = raw.trim();
-    if t.len() <= VIDEO_SUMMARY_MAX_CHARS {
+    let cap = pantheon_api::config::limit_or_env("video_chars", None, VIDEO_SUMMARY_MAX_CHARS);
+    if t.len() <= cap {
         return t.to_string();
     }
     // Cut on a char boundary, preferring the last sentence end.
-    let mut end = VIDEO_SUMMARY_MAX_CHARS;
+    let mut end = cap;
     while end > 0 && !t.is_char_boundary(end) {
         end -= 1;
     }
     let cut = &t[..end];
     match cut.rfind(". ") {
-        Some(i) if i > VIDEO_SUMMARY_MAX_CHARS / 2 => cut[..=i].to_string(),
+        Some(i) if i > cap / 2 => cut[..=i].to_string(),
         _ => cut.to_string(),
     }
 }
@@ -963,7 +964,10 @@ impl VideoClient {
         if let Some(sink) = self.usage_sink.as_ref() {
             vision = vision.with_usage_sink(Arc::clone(sink));
         }
-        let frames = extract_frames(&req.video_path, MAX_FRAMES)?;
+        let frames = extract_frames(
+            &req.video_path,
+            pantheon_api::config::limit_or_env("video_frames", None, MAX_FRAMES),
+        )?;
         let (transcript, audio_note) = self.audio_leg(&req.video_path);
         let mut described: Vec<(f64, String)> = Vec::new();
         let mut last_err: Option<PantheonError> = None;

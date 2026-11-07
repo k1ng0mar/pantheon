@@ -148,6 +148,25 @@ max_iterations     = 10      # exchanges allowed per /goal before it stops and a
 
 Every key is optional; `0` counts as unset. These are the defaults for a session. `/set <key> <value>` changes them live for the current session, and `/tokens [n|off]` manages the per-response output cap on its own. There is no spending cap: cost is tracked for statistics only.
 
+## Safety caps you can tune
+
+```toml
+[limits]
+voice_audio_bytes    = 26214400  # decoded voice audio per request (25 MiB)
+voice_text_chars     = 64000     # speak text per request
+image_bytes          = 26214400  # per image attachment (25 MiB)
+images_per_message   = 10
+videos_per_message   = 5
+video_frames         = 16        # frames sampled per video
+search_synthesis_chars = 4000
+mcp_synthesis_chars  = 3000
+vision_chars         = 4000
+video_chars          = 6000
+planner_steps        = 20
+```
+
+Every key is optional. Environment overrides win over the file: `PANTHEON_LIMIT_VOICE_AUDIO_BYTES=52428800` and so on, one per field, uppercased with underscores.
+
 ## Time awareness
 
 ```toml
