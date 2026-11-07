@@ -480,24 +480,8 @@ pub mod model {
         if let Some(m) = &cfg.model {
             consider(&m.provider, m.api_key_env.as_deref());
         }
-        for slot in config::AUX_SLOTS {
-            if let Some(s) = (slot.section)(cfg) {
-                consider(&s.provider, s.api_key_env.as_deref());
-            }
-        }
-        if let Some(r) = &cfg.reflect {
-            if let Some(p) = r.provider.as_deref() {
-                consider(p, r.api_key_env.as_deref());
-            }
-        }
-        if let Some(c) = &cfg.consolidation {
-            if let Some(p) = c.provider.as_deref() {
-                consider(p, c.api_key_env.as_deref());
-            }
-        }
-        if let Some(m) = cfg.nightly.as_ref().and_then(|n| n.model.as_ref()) {
-            consider(&m.provider, m.api_key_env.as_deref());
-        }
+        // Per-task keys are gone: aux pins name only provider/model,
+        // the provider key is the only key considered here.
         if let Some(cp) = cfg.custom_providers.get(provider_id) {
             if let Some(e) = cp.key_env.as_deref() {
                 push(e);
@@ -908,7 +892,6 @@ pub mod model {
         let pin = |prev_timeout: Option<u64>| AuxSection {
             provider: choice.provider.clone(),
             model: choice.model.clone(),
-            api_key_env: Some(choice.key_env.clone()),
             timeout: prev_timeout,
         };
         match kind {
@@ -988,12 +971,10 @@ pub mod model {
                     max_proposals: 5,
                     provider: None,
                     model: None,
-                    api_key_env: None,
                     timeout: None,
                 });
                 r.provider = Some(choice.provider.clone());
                 r.model = Some(choice.model.clone());
-                r.api_key_env = Some(choice.key_env.clone());
                 // Timeout survives the re-pin (see `pin_aux_slot`).
                 cfg.reflect = Some(r);
             }
@@ -1006,12 +987,10 @@ pub mod model {
                     cron: "0 3 * * *".to_string(),
                     provider: None,
                     model: None,
-                    api_key_env: None,
                     timeout: None,
                 });
                 c.provider = Some(choice.provider.clone());
                 c.model = Some(choice.model.clone());
-                c.api_key_env = Some(choice.key_env.clone());
                 // Timeout survives the re-pin (see `pin_aux_slot`).
                 cfg.consolidation = Some(c);
             }
@@ -1171,7 +1150,7 @@ pub mod model {
             let sec = (slot.section)(&cfg);
             aux(
                 slot.name,
-                sec.map(|s| (s.provider.clone(), s.model.clone(), s.api_key_env.clone())),
+                sec.map(|s| (s.provider.clone(), s.model.clone(), None)),
             );
         }
         // The three pins that live outside AUX_SLOTS. `[reflect]` /
@@ -1180,13 +1159,13 @@ pub mod model {
         aux(
             "reflect",
             cfg.reflect.as_ref().and_then(|r| {
-                pin_triple(r.provider.clone(), r.model.clone(), r.api_key_env.clone())
+                pin_triple(r.provider.clone(), r.model.clone(), None)
             }),
         );
         aux(
             "consolidation",
             cfg.consolidation.as_ref().and_then(|c| {
-                pin_triple(c.provider.clone(), c.model.clone(), c.api_key_env.clone())
+                pin_triple(c.provider.clone(), c.model.clone(), None)
             }),
         );
         aux(
@@ -1198,7 +1177,7 @@ pub mod model {
                     pin_triple(
                         Some(m.provider.clone()),
                         Some(m.model.clone()),
-                        m.api_key_env.clone(),
+                        None,
                     )
                 }),
         );
@@ -1715,58 +1694,60 @@ pub mod model {
             push(&m.provider, m.api_key_env.as_deref());
         }
         if let Some(d) = &cfg.judge {
-            push(&d.provider, d.api_key_env.as_deref());
+            push(&d.provider, None);
         }
         if let Some(c) = &cfg.compression {
-            push(&c.aux.provider, c.aux.api_key_env.as_deref());
+            push(&c.aux.provider, None);
         }
         if let Some(t) = &cfg.title_gen {
-            push(&t.provider, t.api_key_env.as_deref());
+            push(&t.provider, None);
         }
         for sec in [
+            // (provider, explicit key env) - per-task keys are gone, so
+            // explicit is always None and the provider key resolves.
             cfg.embeddings
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None::<&str>)),
             cfg.search_synthesis
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.vision
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.video
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.scheduled
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.mcp_synthesis
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.extraction
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.rerank
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.planner
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.repair
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.verify
                 .as_ref()
-                .map(|s| (s.provider.as_str(), &s.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
             cfg.reflect
                 .as_ref()
-                .map(|r| (r.provider.as_deref().unwrap_or(""), &r.api_key_env)),
+                .map(|s| (s.provider.as_deref().unwrap_or(""), None)),
             cfg.consolidation
                 .as_ref()
-                .map(|c| (c.provider.as_deref().unwrap_or(""), &c.api_key_env)),
+                .map(|s| (s.provider.as_deref().unwrap_or(""), None)),
             cfg.nightly
                 .as_ref()
                 .and_then(|n| n.model.as_ref())
-                .map(|m| (m.provider.as_str(), &m.api_key_env)),
+                .map(|s| (s.provider.as_str(), None)),
         ]
         .into_iter()
         .flatten()

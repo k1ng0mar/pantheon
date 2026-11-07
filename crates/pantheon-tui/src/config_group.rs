@@ -295,12 +295,12 @@ pub mod config {
     /// falls back to `PANTHEON_KEY_<PROVIDER>`.
     fn resolve_aux_key_env(
         provider: Option<&str>,
-        api_key_env: Option<&str>,
+        _api_key_env: Option<&str>,
         model: Option<&ModelSection>,
     ) -> Option<String> {
-        if let Some(env) = api_key_env.filter(|s| !s.trim().is_empty()) {
-            return Some(env.to_string());
-        }
+        // Per-task keys are gone: aux pins name only provider/model,
+        // the key comes from the provider's own credential. A
+        // default-inheriting provider inherits `[model].api_key_env`.
         let inherits = provider
             .map(|p| {
                 let p = p.trim();
@@ -603,75 +603,12 @@ pub mod config {
     /// Seed a named vault entry from an env-var name in config, so the session
     /// resolves aux endpoint keys at the execution boundary like every other
     /// secret. Missing section, missing env, or unset var = no-op.
-    fn seed_env_key(
-        secrets: pantheon_secrets::SecretsBroker,
-        env: Option<String>,
-        vault_name: &'static str,
-    ) -> pantheon_secrets::SecretsBroker {
-        let Some(env) = env else {
-            return secrets;
-        };
-        let Ok(value) = std::env::var(&env) else {
-            return secrets;
-        };
-        let mem = pantheon_secrets::MemoryVault::new();
-        let _ = mem.set(vault_name, pantheon_secrets::SecretValue::new(value));
-        secrets.with_vault(Box::new(mem))
-    }
-
-    /// Seed every configured aux key in one call (the session-builder sites'
-    /// entry point). A default-inheriting provider seeds from
-    /// `[model].api_key_env` via [`resolve_aux_key_env`], so an aux slot that
-    /// inherits the default model also inherits its key without repeating it.
     pub fn with_aux_keys(
         secrets: pantheon_secrets::SecretsBroker,
-        cfg: Option<&Config>,
+        _cfg: Option<&Config>,
     ) -> pantheon_secrets::SecretsBroker {
-        let mut secrets = secrets;
-        let model_section = cfg.and_then(|c| c.model.as_ref());
-        for slot in AUX_SLOTS {
-            let env = cfg.and_then(slot.section).and_then(|s| {
-                resolve_aux_key_env(
-                    Some(s.provider.as_str()),
-                    s.api_key_env.as_deref(),
-                    model_section,
-                )
-            });
-            secrets = seed_env_key(secrets, env, slot.vault_name);
-        }
-        // `[reflect]` is not an AUX_SLOTS row (combined behavior + pin
-        // table); seed its key the same way, with inheritance.
-        let reflect_env = cfg.and_then(|c| c.reflect.as_ref()).and_then(|r| {
-            resolve_aux_key_env(
-                r.provider.as_deref(),
-                r.api_key_env.as_deref(),
-                model_section,
-            )
-        });
-        secrets = seed_env_key(secrets, reflect_env, "PANTHEON_REFLECTION_API_KEY");
-        // `[consolidation]` likewise: its key seeds PANTHEON_CONSOLIDATION_API_KEY.
-        let consolidate_env = cfg.and_then(|c| c.consolidation.as_ref()).and_then(|s| {
-            resolve_aux_key_env(
-                s.provider.as_deref(),
-                s.api_key_env.as_deref(),
-                model_section,
-            )
-        });
-        secrets = seed_env_key(secrets, consolidate_env, "PANTHEON_CONSOLIDATION_API_KEY");
-        // `[nightly]` is its own aux slot now (`[nightly.model]`): seed its
-        // key the same way, with inheritance - the pass's key lookup tries
-        // PANTHEON_NIGHTLY_API_KEY first.
-        let nightly_env = cfg
-            .and_then(|c| c.nightly.as_ref())
-            .and_then(|n| n.model.as_ref())
-            .and_then(|m| {
-                resolve_aux_key_env(
-                    Some(m.provider.as_str()),
-                    m.api_key_env.as_deref(),
-                    model_section,
-                )
-            });
-        secrets = seed_env_key(secrets, nightly_env, "PANTHEON_NIGHTLY_API_KEY");
+        // Per-task keys are gone: aux pins name only provider/model,
+        // keys resolve from the provider credential at call time.
         secrets
     }
 

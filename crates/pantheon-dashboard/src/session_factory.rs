@@ -191,46 +191,6 @@ fn model_policy(cfg: Option<&Config>) -> ModelPolicy {
     }
 }
 
-/// Seed `PANTHEON_COMPRESSION_API_KEY` in a memory vault from the
-/// compression slot's key env: explicit `api_key_env` wins; a
-/// default-inheriting provider inherits `[model].api_key_env`; otherwise
-/// the runtime falls back to `PANTHEON_KEY_<PROVIDER>`, which the system
-/// env broker below already loads. Mirrors the TUI's `seed_env_key` /
-/// `resolve_aux_key_env` for this slot.
-fn seed_compression_key(
-    broker: pantheon_secrets::SecretsBroker,
-    cfg: Option<&Config>,
-) -> pantheon_secrets::SecretsBroker {
-    let section = cfg.and_then(|c| c.compression.as_ref());
-    let explicit = section
-        .and_then(|s| s.aux.api_key_env.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let inherits_default = section
-        .map(|s| s.aux.provider.trim())
-        .map(|p| p.is_empty() || p.eq_ignore_ascii_case("default"))
-        .unwrap_or(true);
-    let key_env = explicit.or_else(|| {
-        if inherits_default {
-            cfg.and_then(|c| c.model.as_ref())
-                .and_then(|m| m.api_key_env.clone())
-        } else {
-            None
-        }
-    });
-    let (vault_name, key_env) = ("PANTHEON_COMPRESSION_API_KEY", key_env);
-    let Some(env) = key_env else {
-        return broker;
-    };
-    let Ok(value) = std::env::var(&env) else {
-        return broker;
-    };
-    let mem = pantheon_secrets::MemoryVault::new();
-    let _ = mem.set(vault_name, pantheon_secrets::SecretValue::new(value));
-    broker.with_vault(Box::new(mem))
-}
-
 /// Resolve `[budget]` to the run [`Budget`]: max turns, tool calls,
 /// delegate depth, token cap. Absent = the runtime defaults. Mirrors
 /// `pantheon-tui`'s `config_budget`/`resolve_budget_section` (0 counts as
@@ -270,7 +230,7 @@ pub(crate) fn secrets_broker(cfg: Option<&Config>) -> pantheon_secrets::SecretsB
         .and_then(|m| m.api_key_env.clone());
     let broker =
         pantheon_secrets::SecretsBroker::from_system_env_with_api_key(model_key_env.as_deref());
-    seed_compression_key(broker, cfg)
+    broker
 }
 
 /// Resolve the maintenance-session policy, mirroring the TUI's

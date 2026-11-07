@@ -75,11 +75,6 @@ pub struct AuxSection {
     /// Model name, or empty to inherit `[model]`'s.
     #[serde(default)]
     pub model: String,
-    /// Env var name holding the API key for the endpoint.
-    /// Never the key itself. Only needed for a non-default provider;
-    /// a default-inheriting provider inherits `[model].api_key_env`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
     /// Per-aux request timeout in seconds (`timeout`).
     /// Absent = the client's built-in default for the capability
     /// (10s title/judge, 15s embeddings, 30s compression, 60s
@@ -522,12 +517,6 @@ pub struct ReflectSection {
     /// `"default"` (or empty) explicitly inherits the `[model]` model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Env var name holding the API key for the endpoint. Never the key
-    /// itself. Seeds the `PANTHEON_REFLECTION_API_KEY` vault entry.
-    /// Only needed for a non-default provider; a default-inheriting
-    /// provider inherits `[model].api_key_env`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
     /// Per-aux request timeout in seconds (`timeout`).
     /// Absent = the client's built-in default for the capability
     /// (10s title/judge, 15s embeddings, 30s compression, 60s
@@ -601,12 +590,6 @@ pub struct ConsolidationSection {
     /// `"default"` (or empty) explicitly inherits the `[model]` model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Env var name holding the API key for the endpoint. Never the key
-    /// itself. Seeds the `PANTHEON_CONSOLIDATION_API_KEY` vault entry.
-    /// Only needed for a non-default provider; a default-inheriting
-    /// provider inherits `[model].api_key_env`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
     /// Per-aux request timeout in seconds (`timeout`).
     /// Absent = the client's built-in default for the capability
     /// (10s title/judge, 15s embeddings, 30s compression, 60s
@@ -2975,18 +2958,9 @@ impl Config {
         // (default-inheriting), so there is no "empty field" error anymore.
         fn aux_problem(
             name: &str,
-            api_key_env: &Option<String>,
             timeout: &Option<u64>,
             problems: &mut Vec<String>,
         ) {
-            if let Some(env) = api_key_env {
-                let r = SecretRef::from_env(env.clone());
-                if let Err(e) = r.validate() {
-                    problems.push(format!("{name}.api_key_env: {e}"));
-                } else if r.resolve().is_none() {
-                    problems.push(format!("env var {env} is not set"));
-                }
-            }
             if *timeout == Some(0) {
                 problems.push(format!(
                     "{name}.timeout is 0: aux requests would instantly time out"
@@ -2995,18 +2969,18 @@ impl Config {
         }
         for slot in AUX_SLOTS {
             if let Some(s) = cfg_section(self, slot) {
-                aux_problem(slot.name, &s.api_key_env, &s.timeout, &mut problems);
+                aux_problem(slot.name, &s.timeout, &mut problems);
             }
         }
         // `[reflect]` carries its own model pin; each field inherits
         // independently now, so a half-set pin is valid (set provider +
         // inherited model, or vice versa).
         if let Some(r) = &self.reflect {
-            aux_problem("reflect", &r.api_key_env, &r.timeout, &mut problems);
+            aux_problem("reflect", &r.timeout, &mut problems);
         }
         // `[consolidation]` likewise: each pin field inherits independently.
         if let Some(c) = &self.consolidation {
-            aux_problem("consolidation", &c.api_key_env, &c.timeout, &mut problems);
+            aux_problem("consolidation", &c.timeout, &mut problems);
         }
         if let Some(mem) = &self.memory {
             if mem.backend.trim().is_empty() {
@@ -3426,7 +3400,6 @@ pub struct AuxSlot {
     /// `PANTHEON_<PREFIX>_PROVIDER` / `PANTHEON_<PREFIX>_MODEL`.
     pub env_prefix: &'static str,
     /// Vault entry the section's key env seeds.
-    pub vault_name: &'static str,
     /// Absent section falls back to `auto` (the default model).
     /// False only for embeddings (absent = local embedder, never chat).
     pub auto: bool,
@@ -3438,7 +3411,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Judge,
         name: "judge",
         env_prefix: "JUDGE",
-        vault_name: "PANTHEON_JUDGE_API_KEY",
         auto: true,
         section: |c| c.judge.as_ref(),
     },
@@ -3446,7 +3418,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Compression,
         name: "compression",
         env_prefix: "COMPRESSION",
-        vault_name: "PANTHEON_COMPRESSION_API_KEY",
         auto: true,
         section: |c| c.compression.as_ref().map(|s| &s.aux),
     },
@@ -3454,7 +3425,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::TitleGen,
         name: "title_gen",
         env_prefix: "TITLEGEN",
-        vault_name: "PANTHEON_TITLEGEN_API_KEY",
         auto: true,
         section: |c| c.title_gen.as_ref(),
     },
@@ -3462,7 +3432,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Embeddings,
         name: "embeddings",
         env_prefix: "EMBEDDINGS",
-        vault_name: "PANTHEON_EMBEDDINGS_API_KEY",
         auto: false,
         section: |c| c.embeddings.as_ref(),
     },
@@ -3470,7 +3439,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::SearchSynthesis,
         name: "search_synthesis",
         env_prefix: "SEARCH_SYNTHESIS",
-        vault_name: "PANTHEON_SEARCH_SYNTHESIS_API_KEY",
         auto: true,
         section: |c| c.search_synthesis.as_ref(),
     },
@@ -3478,7 +3446,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Vision,
         name: "vision",
         env_prefix: "VISION",
-        vault_name: "PANTHEON_VISION_API_KEY",
         auto: true,
         section: |c| c.vision.as_ref(),
     },
@@ -3486,7 +3453,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Video,
         name: "video",
         env_prefix: "VIDEO",
-        vault_name: "PANTHEON_VIDEO_API_KEY",
         auto: true,
         section: |c| c.video.as_ref(),
     },
@@ -3494,7 +3460,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Scheduled,
         name: "scheduled",
         env_prefix: "SCHEDULED",
-        vault_name: "PANTHEON_SCHEDULED_API_KEY",
         auto: true,
         section: |c| c.scheduled.as_ref(),
     },
@@ -3502,7 +3467,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::McpSynthesis,
         name: "mcp_synthesis",
         env_prefix: "MCP_SYNTHESIS",
-        vault_name: "PANTHEON_MCP_SYNTHESIS_API_KEY",
         auto: true,
         section: |c| c.mcp_synthesis.as_ref(),
     },
@@ -3510,7 +3474,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Extraction,
         name: "extraction",
         env_prefix: "EXTRACTION",
-        vault_name: "PANTHEON_EXTRACTION_API_KEY",
         auto: true,
         section: |c| c.extraction.as_ref(),
     },
@@ -3518,7 +3481,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Rerank,
         name: "rerank",
         env_prefix: "RERANK",
-        vault_name: "PANTHEON_RERANK_API_KEY",
         auto: true,
         section: |c| c.rerank.as_ref(),
     },
@@ -3526,7 +3488,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Planner,
         name: "planner",
         env_prefix: "PLANNER",
-        vault_name: "PANTHEON_PLANNER_API_KEY",
         auto: true,
         section: |c| c.planner.as_ref(),
     },
@@ -3534,7 +3495,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Repair,
         name: "repair",
         env_prefix: "REPAIR",
-        vault_name: "PANTHEON_REPAIR_API_KEY",
         auto: false,
         section: |c| c.repair.as_ref().map(|r| &r.aux),
     },
@@ -3542,7 +3502,6 @@ pub const AUX_SLOTS: &[AuxSlot] = &[
         kind: crate::model::AuxiliaryKind::Verify,
         name: "verify",
         env_prefix: "VERIFY",
-        vault_name: "PANTHEON_VERIFY_API_KEY",
         // The documented exception alongside embeddings: absent section
         // = the slot is OFF, never `auto`. Verification only runs when
         // the operator explicitly pins a model here - an unverified

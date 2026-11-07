@@ -3072,7 +3072,7 @@ impl Session {
             .auxiliary(&AuxiliaryKind::Vision)
             .map(|a| a.provider.clone())
             .unwrap_or_else(|| policy.default.provider.clone());
-        let api_key = self.resolve_aux_key(&vision_provider, "PANTHEON_VISION_API_KEY");
+        let api_key = self.resolve_aux_key(&vision_provider);
         let timeout_secs = policy
             .auxiliary(&AuxiliaryKind::Vision)
             .map(|a| a.timeout_secs)
@@ -4349,13 +4349,11 @@ impl Session {
     /// judge as "park", so an unconfigured judge can never silently
     /// auto-approve anything.
     ///
-    /// Resolve an aux key the Hermes way: provider key first
+    /// Resolve an aux key the Hermes way: the provider's own key
     /// (`PANTHEON_KEY_<PROVIDER>` from the catalog, where setup stores
-    /// provider keys), slot override second (optional per-slot key for
-    /// operators who want a separate account per slot), chat key last
-    /// for auto slots that inherit the default model. The provider key
-    /// is primary, slots never require their own key.
-    fn resolve_aux_key(&self, provider: &str, slot_vault: &str) -> Option<SecretValue> {
+    /// provider keys), chat key last for auto slots that inherit the
+    /// default model. There are no per-task keys.
+    fn resolve_aux_key(&self, provider: &str) -> Option<SecretValue> {
         let provider_env = pantheon_providers::catalog::provider(provider)
             .map(|pr| {
                 if pr.key_env.is_empty() {
@@ -4369,7 +4367,6 @@ impl Session {
             .inject(&provider_env)
             .ok()
             .flatten()
-            .or_else(|| self.secrets.inject(slot_vault).ok().flatten())
             .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten())
     }
 
@@ -4384,7 +4381,7 @@ impl Session {
             model: aux.model.clone(),
             key_env: None,
         };
-        let key = self.resolve_aux_key(&aux.provider, "PANTHEON_JUDGE_API_KEY");
+        let key = self.resolve_aux_key(&aux.provider);
         Some(
             pantheon_providers::JudgeClient::new(target, key)
                 .with_timeout_secs(aux.timeout_secs)
@@ -4396,7 +4393,6 @@ impl Session {
         &self,
         _run_id: &str,
         kind: pantheon_api::model::AuxiliaryKind,
-        key_env: &str,
         make: impl FnOnce(pantheon_api::model::DefaultModel, Option<SecretValue>) -> T,
     ) -> Option<T> {
         let policy = self.policy_snapshot();
@@ -4406,7 +4402,7 @@ impl Session {
             model: aux.model.clone(),
             key_env: None,
         };
-        let key = self.resolve_aux_key(&aux.provider, key_env);
+        let key = self.resolve_aux_key(&aux.provider);
         Some(make(target, key))
     }
 
@@ -4417,7 +4413,6 @@ impl Session {
         self.build_aux_client(
             run_id,
             pantheon_api::model::AuxiliaryKind::SearchSynthesis,
-            "PANTHEON_SEARCH_SYNTHESIS_API_KEY",
             |target, key| {
                 pantheon_providers::SearchSynthesisClient::new(target, key)
                     .with_usage_sink(self.auxiliary_usage_sink(run_id))
@@ -4429,7 +4424,6 @@ impl Session {
         self.build_aux_client(
             run_id,
             pantheon_api::model::AuxiliaryKind::McpSynthesis,
-            "PANTHEON_MCP_SYNTHESIS_API_KEY",
             |target, key| {
                 pantheon_providers::McpSynthesisClient::new(target, key)
                     .with_usage_sink(self.auxiliary_usage_sink(run_id))
@@ -4441,7 +4435,6 @@ impl Session {
         self.build_aux_client(
             run_id,
             pantheon_api::model::AuxiliaryKind::Extraction,
-            "PANTHEON_EXTRACTION_API_KEY",
             |target, key| {
                 pantheon_providers::ExtractionClient::new(target, key)
                     .with_usage_sink(self.auxiliary_usage_sink(run_id))
@@ -4453,7 +4446,6 @@ impl Session {
         self.build_aux_client(
             run_id,
             pantheon_api::model::AuxiliaryKind::Rerank,
-            "PANTHEON_RERANK_API_KEY",
             |target, key| {
                 pantheon_providers::RerankClient::new(target, key)
                     .with_usage_sink(self.auxiliary_usage_sink(run_id))
@@ -4472,7 +4464,7 @@ impl Session {
             model: aux.model.clone(),
             key_env: None,
         };
-        let key = self.resolve_aux_key(&aux.provider, "PANTHEON_PLANNER_API_KEY");
+        let key = self.resolve_aux_key(&aux.provider);
         let client = pantheon_providers::PlannerClient::new(target, key)
             .with_timeout_secs(aux.timeout_secs)
             .with_usage_sink(self.auxiliary_usage_sink(run_id));
@@ -6283,7 +6275,7 @@ Extracted:
         let model_label = target.model.clone();
         // Title-specific key first; in `auto` mode the default model shares
         // the chat key. Both resolve through the broker at the boundary.
-        let key = self.resolve_aux_key(&target.provider, "PANTHEON_TITLEGEN_API_KEY");
+        let key = self.resolve_aux_key(&target.provider);
         let sup = self.supervisor.clone();
         let usage_sink = self.auxiliary_usage_sink(run_id);
         let run_id = run_id.to_string();
@@ -6396,7 +6388,7 @@ Extracted:
         if let Some(aux) = aux {
             // Key order: provider key first (Hermes-style, from the
             // catalog), slot override second, chat key last for auto mode.
-            let key = self.resolve_aux_key(&aux.provider, "PANTHEON_COMPRESSION_API_KEY");
+            let key = self.resolve_aux_key(&aux.provider);
             let client = pantheon_providers::CompressionClient::new(
                 pantheon_api::model::DefaultModel {
                     provider: aux.provider.clone(),
@@ -8206,7 +8198,6 @@ fn vision_tool_run(
             .inject(&provider_env)
             .ok()
             .flatten()
-            .or_else(|| secrets.inject("PANTHEON_VISION_API_KEY").ok().flatten())
             .or_else(|| secrets.inject("PANTHEON_API_KEY").ok().flatten())
     };
     let timeout_secs = policy

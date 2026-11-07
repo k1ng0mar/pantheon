@@ -658,8 +658,17 @@ impl VideoClient {
     /// the best available path.
     pub fn resolve(policy: &ModelPolicy, secrets: &SecretsBroker) -> Self {
         let target = pinned_video_target(policy).unwrap_or_else(|| policy.default.clone());
+        let provider_env = catalog::provider(&target.provider)
+            .map(|pr| {
+                if pr.key_env.is_empty() {
+                    format!("PANTHEON_KEY_{}", pr.id.to_uppercase())
+                } else {
+                    pr.key_env.clone()
+                }
+            })
+            .unwrap_or_else(|| format!("PANTHEON_KEY_{}", target.provider.to_uppercase()));
         let api_key = secrets
-            .inject("PANTHEON_VIDEO_API_KEY")
+            .inject(&provider_env)
             .ok()
             .flatten()
             .or_else(|| secrets.inject("PANTHEON_API_KEY").ok().flatten());
@@ -760,7 +769,7 @@ impl VideoClient {
                 "VIDEO_NO_KEY",
                 "no API key for the native video call".to_string(),
                 false,
-                "set the provider key (e.g. GEMINI_API_KEY) or PANTHEON_VIDEO_API_KEY",
+                "set the provider key (e.g. GEMINI_API_KEY)",
             ));
         }
         if self.target.provider.eq_ignore_ascii_case("google") {
@@ -944,12 +953,7 @@ impl VideoClient {
     ) -> Result<VideoSummary, PantheonError> {
         // Fail-closed on the vision flag first: no point extracting
         // frames when nothing can describe them.
-        let vkey = self
-            .secrets
-            .inject("PANTHEON_VISION_API_KEY")
-            .ok()
-            .flatten()
-            .or_else(|| self.api_key.clone());
+        let vkey = self.api_key.clone();
         let mut vision = VisionClient::resolve(&self.policy, vkey).map_err(|e| {
             verr(
                 "VIDEO_UNAVAILABLE",

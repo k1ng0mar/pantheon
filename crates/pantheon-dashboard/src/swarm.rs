@@ -380,10 +380,7 @@ pub fn judge_transport_for(data_dir: &Path) -> Option<ConfigJudgeTransport> {
     Some(ConfigJudgeTransport {
         provider,
         model,
-        api_key_env: section
-            .api_key_env
-            .clone()
-            .or_else(|| model_cfg.and_then(|m| m.api_key_env.clone())),
+        api_key_env: model_cfg.and_then(|m| m.api_key_env.clone()),
         timeout_secs: section
             .timeout
             .filter(|&t| t > 0)

@@ -452,13 +452,7 @@ pub mod nightly_cli {
         // can only hit the Reflection target, distillation only the
         // Consolidation target.
         let secrets = crate::config::chat_secrets(file_cfg.as_ref());
-        let api_key = [
-            "PANTHEON_NIGHTLY_API_KEY",
-            "PANTHEON_CONSOLIDATION_API_KEY",
-            "PANTHEON_API_KEY",
-        ]
-        .iter()
-        .find_map(|env| secrets.inject(env).ok().flatten());
+        let api_key = secrets.inject("PANTHEON_API_KEY").ok().flatten();
 
         struct Router {
             refine: pantheon_providers::DistillClient,

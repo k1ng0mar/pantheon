@@ -377,6 +377,7 @@ pub mod setup {
                 max_results: None,
             }),
             verify: None,
+            limits: None,
             mcp: mcp_section(&answers.mcp_servers),
             vision: None,
             scheduled: None,
