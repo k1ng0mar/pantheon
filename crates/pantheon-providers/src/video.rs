@@ -60,9 +60,9 @@ pub const VIDEO_TIMEOUT_SECS: u64 = 120;
 /// A video summary is a transcript ingredient, not an essay.
 pub const VIDEO_MAX_TOKENS: u32 = 2048;
 /// Hard bound on a returned summary: models ramble.
-pub const VIDEO_SUMMARY_MAX_CHARS: usize = 3000;
+pub const VIDEO_SUMMARY_MAX_CHARS: usize = 6000;
 /// Keyframe fallback: how many frames to extract at most.
-pub const MAX_FRAMES: usize = 8;
+pub const MAX_FRAMES: usize = 16;
 /// Native video cap: bigger videos skip the native path and go straight
 /// to the frames fallback. Keeps one request from ballooning past what
 /// inline/base64 video inputs tolerate.

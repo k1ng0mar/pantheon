@@ -1211,7 +1211,7 @@ pub mod message {
     /// Hard cap on one image's raw bytes: 10 MiB. Base64 inflates stored rows
     /// by ~4/3 on top of this, and providers cap per-image payloads too - so
     /// anything bigger is rejected at the attach site, not mid-request.
-    pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+    pub const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
     /// Mimes the wire encoders know how to label. Sniffed from magic bytes,
     /// never trusted from the client.
     pub const ALLOWED_IMAGE_MIMES: &[&str] =
@@ -1455,7 +1455,7 @@ pub mod message {
     /// Cap on videos parsed from one `[attachments]` block: videos are
     /// expensive (frames × describe calls), so the block beyond two is left
     /// for the model to open with its file tools.
-    pub const MAX_VIDEOS_PER_MESSAGE: usize = 2;
+    pub const MAX_VIDEOS_PER_MESSAGE: usize = 5;
 
     /// One video referenced by an `[attachments]` block: validated path only,
     /// never bytes - a 25 MiB upload must not be read fully into memory.

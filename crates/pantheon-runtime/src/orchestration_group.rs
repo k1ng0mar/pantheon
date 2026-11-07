@@ -2903,9 +2903,7 @@ pub mod swarm_exec {
         let _ = ();
         let mut out = String::from(base_task);
         out.push_str("\n\n## Swarm collaboration\n");
-        out.push_str(
-            "You are part of a multi-agent swarm. Your peers, addressed by profile:\n",
-        );
+        out.push_str("You are part of a multi-agent swarm. Your peers, addressed by profile:\n");
         for p in &peers {
             out.push_str(&format!("- {p}\n"));
         }

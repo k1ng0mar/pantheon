@@ -57,13 +57,13 @@ pub mod voice {
     /// 32 KB/s). The HTTP transport allows larger wire bodies on the
     /// transcribe path (see [`MAX_VOICE_BODY_BYTES`]); this caps what one
     /// request can make us buffer and hand to a backend.
-    pub const MAX_AUDIO_BYTES: usize = 8 * 1024 * 1024;
+    pub const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
     /// Wire-body cap for `POST /agui/voice/transcribe`: 12 MiB. The audio
     /// rides as base64 inside JSON, so 8 MiB of audio is ~10.7 MiB on the
     /// wire; the extra headroom covers the JSON envelope. Every other
     /// route keeps the transport's 1 MiB [`crate::server::http::MAX_BODY`] guard.
-    pub const MAX_VOICE_BODY_BYTES: usize = 12 * 1024 * 1024;
+    pub const MAX_VOICE_BODY_BYTES: usize = 32 * 1024 * 1024;
 
     /// Bound on one transcribe/synthesize call. Backends carry their own
     /// (shorter) bounds; this is the edge's guarantee to the HTTP client.
@@ -71,7 +71,7 @@ pub mod voice {
 
     /// Synthesis input cap: 32 KiB of text is ~30 minutes of spoken audio.
     /// Anything bigger is abuse, not speech.
-    pub const MAX_TEXT_CHARS: usize = 32 * 1024;
+    pub const MAX_TEXT_CHARS: usize = 64 * 1024;
 
     /// `POST /agui/voice/transcribe` body.
     #[derive(Debug, Deserialize)]

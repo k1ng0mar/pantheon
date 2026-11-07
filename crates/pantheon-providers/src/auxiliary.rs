@@ -441,7 +441,7 @@ pub mod vision {
     /// A description is a transcript ingredient, not an essay.
     pub const VISION_MAX_TOKENS: u32 = 1024;
     /// Hard bound on a returned description: models ramble.
-    pub const VISION_DESC_MAX_CHARS: usize = 2000;
+    pub const VISION_DESC_MAX_CHARS: usize = 4000;
 
     fn verr(
         code: &str,
@@ -1542,7 +1542,7 @@ pub mod search_synthesis {
 
     pub const SEARCH_SYNTHESIS_TIMEOUT_SECS: u64 = 30;
     pub const SEARCH_SYNTHESIS_MAX_TOKENS: u32 = 512;
-    pub const SEARCH_SYNTHESIS_MAX_CHARS: usize = 2000;
+    pub const SEARCH_SYNTHESIS_MAX_CHARS: usize = 4000;
 
     fn serr(
         code: &str,
@@ -1661,8 +1661,8 @@ pub mod search_synthesis {
         fn brief_is_bounded_and_nonempty() {
             assert!(parse_brief("  hello [1] ").unwrap() == "hello [1]");
             assert!(parse_brief("   ").is_err());
-            let long = "x".repeat(2500);
-            assert_eq!(parse_brief(&long).unwrap().chars().count(), 2000);
+            let long = "x".repeat(5000);
+            assert_eq!(parse_brief(&long).unwrap().chars().count(), 4000);
         }
     }
 }
@@ -1686,7 +1686,7 @@ pub mod mcp_synthesis {
 
     pub const MCP_SYNTHESIS_TIMEOUT_SECS: u64 = 30;
     pub const MCP_SYNTHESIS_MAX_TOKENS: u32 = 512;
-    pub const MCP_SYNTHESIS_MAX_CHARS: usize = 1500;
+    pub const MCP_SYNTHESIS_MAX_CHARS: usize = 3000;
 
     fn serr(
         code: &str,
@@ -1797,7 +1797,7 @@ pub mod mcp_synthesis {
         fn note_is_bounded_and_nonempty() {
             assert!(parse_note("  total 42 ").unwrap() == "total 42");
             assert!(parse_note("").is_err());
-            assert_eq!(parse_note(&"x".repeat(2000)).unwrap().chars().count(), 1500);
+            assert_eq!(parse_note(&"x".repeat(4000)).unwrap().chars().count(), 3000);
         }
     }
 }
@@ -2138,7 +2138,7 @@ pub mod planner {
 
     pub const PLANNER_TIMEOUT_SECS: u64 = 60;
     pub const PLANNER_MAX_TOKENS: u32 = 512;
-    pub const PLANNER_MAX_STEPS: usize = 12;
+    pub const PLANNER_MAX_STEPS: usize = 20;
 
     fn perr(
         code: &str,
@@ -2152,7 +2152,7 @@ pub mod planner {
     pub fn prompt_for(goal: &str) -> String {
         format!(
             "You decompose a goal into a task plan. Reply with one step per\n\
-             line, numbered from 1, at most 12 steps, each step a short\n\
+             line, numbered from 1, at most 20 steps, each step a short\n\
              imperative sentence. No preamble, no code blocks.\nGoal: {goal}"
         )
     }
@@ -2257,11 +2257,11 @@ pub mod planner {
             let steps = parse_plan("1. Write code\n2) Run tests\n- Ship it").unwrap();
             assert_eq!(steps, vec!["Write code", "Run tests", "Ship it"]);
             assert!(parse_plan("   ").is_err());
-            let many = (1..20)
+            let many = (1..25)
                 .map(|i| format!("{i}. step {i}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert_eq!(parse_plan(&many).unwrap().len(), 12);
+            assert_eq!(parse_plan(&many).unwrap().len(), 20);
         }
         #[test]
         fn prompt_carries_goal() {
