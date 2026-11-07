@@ -4053,13 +4053,20 @@ impl Session {
                 .lock()
                 .map(|g| g.clone())
                 .unwrap_or_default();
+            let mut loaded = Vec::new();
+            let mut unknown = Vec::new();
             for n in &names {
-                set.insert(n.clone());
+                if registry.get(n).is_some() {
+                    set.insert(n.clone());
+                    loaded.push(n.clone());
+                } else {
+                    unknown.push(n.clone());
+                }
             }
             if let Ok(mut g) = self.loaded_tools.lock() {
                 *g = set;
             }
-            return Ok(serde_json::json!({"loaded": names}).to_string());
+            return Ok(serde_json::json!({"loaded": loaded, "unknown": unknown, "available": registry.names()}).to_string());
         }
         self.supervisor.assert_lease(run_id).map_err(|e| {
             PantheonError::new(
@@ -5975,11 +5982,14 @@ Extracted:
             }
         }
         // Register the load_tools meta tool: the model calls it by name
-        // to load more tools into the next turn.
+        // to load more tools into the next turn. The description lists
+        // every available tool name (cheap, just names) so the model
+        // can discover unloaded tools without hallucinating them.
+        let available_names = reg.names();
         reg.register(
             pantheon_api::message::ToolSchema {
                 name: "load_tools".into(),
-                description: "Load tools by name into the next turn. Pass names as a JSON array of tool names. Already loaded tools are ignored. Call this when a task needs a tool that is not in your current list.".into(),
+                description: format!("Load tools by name into the next turn. Pass names as a JSON array of tool names. Already loaded tools are ignored. Call this when a task needs a tool that is not in your current list. Available tools: {}", available_names.join(", ")).into(),
                 parameters: serde_json::json!({"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}}, "required": ["names"]}),
             },
             pantheon_api::capability::Capability::Other("load_tools".into()),
@@ -6016,8 +6026,12 @@ Extracted:
                     )
                 })?
                 .unwrap_or_default();
-            let mut chain =
-                ProviderChain::new(self.policy_snapshot(), transport, reg.loaded_schemas(), api_key);
+            let mut chain = ProviderChain::new(
+                self.policy_snapshot(),
+                transport,
+                reg.loaded_schemas(),
+                api_key,
+            );
             chain.oauth_broker = Some(self.secrets.clone());
             chain
         };
