@@ -491,6 +491,10 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("POST", "runs", "", "", "") => runs::create(app, req),
         ("POST", "runs", id, "message", "") => runs::send_message(app, id, req),
         ("POST", "runs", id, "retry", "") => runs::retry_turn(app, id),
+        ("POST", "runs", id, "edit-resubmit", "") => runs::edit_resubmit(app, req, id),
+        ("POST", "runs", id, "continue", "") => runs::continue_turn(app, req, id),
+        ("POST", "runs", id, "pin-message", "") => runs::pin_message(app, req, id),
+        ("POST", "runs", id, "clear-context", "") => runs::clear_context(app, id),
         ("POST", "runs", id, "cancel", "") => runs::cancel_run(app, id),
         ("POST", "runs", id, "kill", "") => runs::kill_run(app, id),
         ("DELETE", "runs", id, "queue", idx) if !idx.is_empty() => {

@@ -1416,6 +1416,23 @@ impl Supervisor {
     pub fn ledger_delete_run(&self, run_id: &str) -> Result<(usize, usize), PantheonError> {
         self.ledger().delete_run(run_id)
     }
+    pub fn ledger_pin_message(
+        &self,
+        run_id: &str,
+        message_id: &str,
+        pinned: bool,
+    ) -> Result<(), PantheonError> {
+        self.ledger().pin_message(run_id, message_id, pinned)
+    }
+    pub fn ledger_pinned_messages(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
+        self.ledger().pinned_messages(run_id)
+    }
+    pub fn ledger_append(
+        &self,
+        event: &pantheon_api::events::Event,
+    ) -> Result<pantheon_storage::LedgerEntry, PantheonError> {
+        self.ledger().append(event)
+    }
     pub fn ledger_reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         self.ledger().reopen_run(run_id)
     }

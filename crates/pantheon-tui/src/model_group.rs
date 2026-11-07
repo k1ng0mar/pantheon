@@ -1158,28 +1158,22 @@ pub mod model {
         // `[nightly.model]` is a sub-table.
         aux(
             "reflect",
-            cfg.reflect.as_ref().and_then(|r| {
-                pin_triple(r.provider.clone(), r.model.clone(), None)
-            }),
+            cfg.reflect
+                .as_ref()
+                .and_then(|r| pin_triple(r.provider.clone(), r.model.clone(), None)),
         );
         aux(
             "consolidation",
-            cfg.consolidation.as_ref().and_then(|c| {
-                pin_triple(c.provider.clone(), c.model.clone(), None)
-            }),
+            cfg.consolidation
+                .as_ref()
+                .and_then(|c| pin_triple(c.provider.clone(), c.model.clone(), None)),
         );
         aux(
             "nightly",
             cfg.nightly
                 .as_ref()
                 .and_then(|n| n.model.as_ref())
-                .and_then(|m| {
-                    pin_triple(
-                        Some(m.provider.clone()),
-                        Some(m.model.clone()),
-                        None,
-                    )
-                }),
+                .and_then(|m| pin_triple(Some(m.provider.clone()), Some(m.model.clone()), None)),
         );
         if cfg.custom_providers.is_empty() {
             println!("custom providers: none");
@@ -1711,33 +1705,17 @@ pub mod model {
             cfg.search_synthesis
                 .as_ref()
                 .map(|s| (s.provider.as_str(), None)),
-            cfg.vision
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
-            cfg.video
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
-            cfg.scheduled
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
+            cfg.vision.as_ref().map(|s| (s.provider.as_str(), None)),
+            cfg.video.as_ref().map(|s| (s.provider.as_str(), None)),
+            cfg.scheduled.as_ref().map(|s| (s.provider.as_str(), None)),
             cfg.mcp_synthesis
                 .as_ref()
                 .map(|s| (s.provider.as_str(), None)),
-            cfg.extraction
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
-            cfg.rerank
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
-            cfg.planner
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
-            cfg.repair
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
-            cfg.verify
-                .as_ref()
-                .map(|s| (s.provider.as_str(), None)),
+            cfg.extraction.as_ref().map(|s| (s.provider.as_str(), None)),
+            cfg.rerank.as_ref().map(|s| (s.provider.as_str(), None)),
+            cfg.planner.as_ref().map(|s| (s.provider.as_str(), None)),
+            cfg.repair.as_ref().map(|s| (s.provider.as_str(), None)),
+            cfg.verify.as_ref().map(|s| (s.provider.as_str(), None)),
             cfg.reflect
                 .as_ref()
                 .map(|s| (s.provider.as_deref().unwrap_or(""), None)),

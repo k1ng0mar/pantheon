@@ -1382,6 +1382,191 @@ pub mod runs {
         )
     }
 
+    /// `POST /api/runs/:id/pin-message`: pin or unpin one message.
+    pub fn pin_message(app: &App, req: &Request, run_id: &str) -> Response {
+        let ledger = match ledger(app) {
+            Ok(l) => l,
+            Err(r) => return r,
+        };
+        let body: serde_json::Value = match serde_json::from_slice(&req.body) {
+            Ok(v) => v,
+            Err(_) => return bad_json("body must be JSON"),
+        };
+        let message_id = body
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if message_id.is_empty() {
+            return bad_json("field \"message_id\" is required");
+        }
+        let pinned = body.get("pinned").and_then(|v| v.as_bool()).unwrap_or(true);
+        match ledger.pin_message(run_id, message_id, pinned) {
+            Ok(()) => Response::accepted_json(
+                serde_json::json!({"ok": true, "pinned": pinned}).to_string(),
+            ),
+            Err(e) => err_json(500, "LEDGER", &format!("pin: {e}")),
+        }
+    }
+
+    /// `POST /api/runs/:id/edit-resubmit`: rewind to a turn, then run a
+    /// new turn with edited text. Body: `{turn_id, text}`.
+    pub fn edit_resubmit(app: &App, req: &Request, run_id: &str) -> Response {
+        let ledger = match ledger(app) {
+            Ok(l) => l,
+            Err(r) => return r,
+        };
+        let body: serde_json::Value = match serde_json::from_slice(&req.body) {
+            Ok(v) => v,
+            Err(_) => return bad_json("body must be JSON"),
+        };
+        let turn_id = body.get("turn_id").and_then(|v| v.as_str()).unwrap_or("");
+        let text = body.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        if turn_id.is_empty() || text.trim().is_empty() {
+            return bad_json("fields \"turn_id\" and \"text\" are required");
+        }
+        if ledger.status(run_id).unwrap_or(None).as_deref() == Some("awaiting_approval") {
+            return conflict(
+                "RUN_PARKED",
+                "run is parked on approval; grant or deny it first",
+            );
+        }
+        let sup = match Supervisor::open(app.data_dir.clone()) {
+            Ok(s) => s,
+            Err(e) => return err_json(500, "RUNTIME", &format!("open runtime: {e}")),
+        };
+        if sup.has_active_lease(run_id).unwrap_or(false) {
+            return conflict("TURN_IN_FLIGHT", "run already has a turn running");
+        }
+        if let Err(e) = ledger.append(&Event::TurnRewound {
+            run_id: run_id.to_string(),
+            turn_id: turn_id.to_string(),
+        }) {
+            return err_json(500, "LEDGER", &format!("rewind: {e}"));
+        }
+        let mode = ledger
+            .run_mode(run_id)
+            .unwrap_or_else(|_| DEFAULT_RUN_MODE.to_string());
+        match spawn_turn_child_with_stdin(
+            &[
+                "run",
+                "--taskID",
+                run_id,
+                "--say",
+                "-",
+                "--deliver",
+                "session",
+                "--mode",
+                mode.as_str(),
+            ],
+            text.as_bytes(),
+        ) {
+            Ok(pid) => app.register_turn_child(run_id, pid),
+            Err(e) => return err_json(500, "SPAWN", &format!("failed to start turn: {e}")),
+        }
+        #[cfg(not(test))]
+        if !wait_for_turn_lease(&sup, run_id) {
+            return err_json(500, "SPAWN", "turn process failed to start");
+        }
+        Response::accepted_json(serde_json::json!({"ok": true, "edited": true}).to_string())
+    }
+
+    /// `POST /api/runs/:id/continue`: continue a failed turn from its
+    /// partial response. Body: `{prompt}` optional override.
+    pub fn continue_turn(app: &App, req: &Request, run_id: &str) -> Response {
+        let ledger = match ledger(app) {
+            Ok(l) => l,
+            Err(r) => return r,
+        };
+        let entries = match ledger.replay(run_id) {
+            Ok(e) if !e.is_empty() => e,
+            Ok(_) => return err_json(404, "NOT_FOUND", "unknown run"),
+            Err(e) => return err_json(500, "LEDGER", &format!("replay: {e}")),
+        };
+        let mut partial = String::new();
+        let mut last_user = String::new();
+        for e in &entries {
+            match &e.event {
+                Event::UserMessage { text, .. } => last_user = text.clone(),
+                Event::ModelDelta { delta, .. } => partial.push_str(delta),
+                _ => {}
+            }
+        }
+        let body: serde_json::Value =
+            serde_json::from_slice(&req.body).unwrap_or(serde_json::json!({}));
+        let prompt = body
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Continue from where you left off.");
+        let say = if partial.is_empty() {
+            prompt.to_string()
+        } else {
+            format!("{prompt}\n\n[Partial response so far, continue it]\n{partial}")
+        };
+        if last_user.is_empty() && partial.is_empty() {
+            return bad_json(
+                "nothing to continue: the run has no recorded prompt or partial response",
+            );
+        }
+        let sup = match Supervisor::open(app.data_dir.clone()) {
+            Ok(s) => s,
+            Err(e) => return err_json(500, "RUNTIME", &format!("open runtime: {e}")),
+        };
+        if sup.has_active_lease(run_id).unwrap_or(false) {
+            return conflict("TURN_IN_FLIGHT", "run already has a turn running");
+        }
+        match spawn_turn_child_with_stdin(
+            &[
+                "run",
+                "--taskID",
+                run_id,
+                "--say",
+                "-",
+                "--deliver",
+                "session",
+                "--mode",
+                "ask",
+            ],
+            say.as_bytes(),
+        ) {
+            Ok(pid) => app.register_turn_child(run_id, pid),
+            Err(e) => return err_json(500, "SPAWN", &format!("failed to start turn: {e}")),
+        }
+        #[cfg(not(test))]
+        if !wait_for_turn_lease(&sup, run_id) {
+            return err_json(500, "SPAWN", "turn process failed to start");
+        }
+        Response::accepted_json(serde_json::json!({"ok": true, "continued": true}).to_string())
+    }
+
+    /// `POST /api/runs/:id/clear-context`: drop transcript context
+    /// without deleting the run. Emits a rewind at the first turn so
+    /// replay sees a fresh conversation, history stays in the ledger.
+    pub fn clear_context(app: &App, run_id: &str) -> Response {
+        let ledger = match ledger(app) {
+            Ok(l) => l,
+            Err(r) => return r,
+        };
+        let entries = match ledger.replay(run_id) {
+            Ok(e) if !e.is_empty() => e,
+            Ok(_) => return err_json(404, "NOT_FOUND", "unknown run"),
+            Err(e) => return err_json(500, "LEDGER", &format!("replay: {e}")),
+        };
+        let first_turn = entries.iter().find_map(|e| match &e.event {
+            Event::TurnStarted { turn_id, .. } => Some(turn_id.clone()),
+            _ => None,
+        });
+        let Some(turn_id) = first_turn else {
+            return bad_json("nothing to clear: the run has no turns");
+        };
+        if let Err(e) = ledger.append(&Event::TurnRewound {
+            run_id: run_id.to_string(),
+            turn_id,
+        }) {
+            return err_json(500, "LEDGER", &format!("clear: {e}"));
+        }
+        Response::accepted_json(serde_json::json!({"ok": true, "cleared": true}).to_string())
+    }
+
     /// `GET /api/runs/:id/export?format=json|markdown`: download the
     /// transcript. Redacted the same way as the detail view.
     pub fn export(app: &App, req: &Request, run_id: &str) -> Response {

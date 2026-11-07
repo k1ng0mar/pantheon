@@ -10962,6 +10962,122 @@ fn do_steer(
     }
 }
 
+fn do_pin(state: &mut TuiState, session: &Arc<Session>, arg: &str) {
+    let Some(run_id) = state.active_run.clone() else {
+        state.add_status("/pin: no active run".into());
+        return;
+    };
+    let message_id = arg.trim();
+    if message_id.is_empty() {
+        state.add_status("usage: /pin <message-id> - pin a message for quick access".into());
+        return;
+    }
+    match session
+        .supervisor
+        .ledger_pin_message(&run_id, message_id, true)
+    {
+        Ok(()) => state.add_status(format!("pinned {message_id}")),
+        Err(e) => state.add_status(format!("pin failed: {e}")),
+    }
+}
+
+fn do_edit(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    arg: &str,
+) {
+    if state.ready == false {
+        state.add_status("/edit: wait for the turn to finish".into());
+        return;
+    }
+    let Some(run_id) = state.active_run.clone() else {
+        state.add_status("/edit: no active run".into());
+        return;
+    };
+    let Some((turn_id, text)) = arg.split_once(' ') else {
+        state.add_status("usage: /edit <turn-id> <new text> - rewind and resubmit".into());
+        return;
+    };
+    let turn_id = turn_id.trim();
+    let text = text.trim();
+    if turn_id.is_empty() || text.is_empty() {
+        state.add_status("usage: /edit <turn-id> <new text> - rewind and resubmit".into());
+        return;
+    }
+    if let Err(e) = session
+        .supervisor
+        .ledger_append(&pantheon_api::events::Event::TurnRewound {
+            run_id: run_id.clone(),
+            turn_id: turn_id.to_string(),
+        })
+    {
+        state.add_status(format!("rewind failed: {e}"));
+        return;
+    }
+    state.add_user_message(text.to_string());
+    state.add_status("edited and resubmitted".into());
+    start_turn(state, session, tx, text.to_string());
+}
+
+fn do_continue(
+    state: &mut TuiState,
+    session: &Arc<Session>,
+    tx: &std::sync::mpsc::Sender<TuiEvent>,
+    arg: &str,
+) {
+    if state.ready == false {
+        state.add_status("/continue: wait for the turn to finish".into());
+        return;
+    }
+    let Some(run_id) = state.active_run.clone() else {
+        state.add_status("/continue: no active run".into());
+        return;
+    };
+    let prompt = if arg.trim().is_empty() {
+        "Continue from where you left off.".to_string()
+    } else {
+        arg.trim().to_string()
+    };
+    state.add_user_message(prompt.clone());
+    state.add_status("continuing response".into());
+    start_turn(state, session, tx, prompt);
+}
+
+fn do_clear_context(state: &mut TuiState, session: &Arc<Session>) {
+    if state.ready == false {
+        state.add_status("/clear-context: wait for the turn to finish".into());
+        return;
+    }
+    let Some(run_id) = state.active_run.clone() else {
+        state.add_status("/clear-context: no active run".into());
+        return;
+    };
+    let entries = match session.supervisor.replay(&run_id) {
+        Ok(e) => e,
+        Err(e) => {
+            state.add_status(format!("clear failed: {e}"));
+            return;
+        }
+    };
+    let first_turn = entries.iter().find_map(|e| match &e.event {
+        pantheon_api::events::Event::TurnStarted { turn_id, .. } => Some(turn_id.clone()),
+        _ => None,
+    });
+    let Some(turn_id) = first_turn else {
+        state.add_status("/clear-context: no turns yet".into());
+        return;
+    };
+    if let Err(e) = session
+        .supervisor
+        .ledger_append(&pantheon_api::events::Event::TurnRewound { run_id, turn_id })
+    {
+        state.add_status(format!("clear failed: {e}"));
+    } else {
+        state.add_status("context cleared, run kept".into());
+    }
+}
+
 fn do_yank(state: &mut TuiState, arg: &str) {
     let Some(text) = state.blocks.iter().rev().find_map(|b| match &b.kind {
         BlockKind::AssistantMessage(t) => Some(t.clone()),
@@ -11294,6 +11410,25 @@ fn handle_slash_inner(
     if cmd == "/steer" || cmd.starts_with("/steer ") {
         let arg = cmd.strip_prefix("/steer").map(str::trim).unwrap_or("");
         do_steer(state, session, tx, arg);
+        return;
+    }
+    if cmd == "/pin" || cmd.starts_with("/pin ") {
+        let arg = cmd.strip_prefix("/pin").map(str::trim).unwrap_or("");
+        do_pin(state, session, arg);
+        return;
+    }
+    if cmd == "/edit" || cmd.starts_with("/edit ") {
+        let arg = cmd.strip_prefix("/edit").map(str::trim).unwrap_or("");
+        do_edit(state, session, tx, arg);
+        return;
+    }
+    if cmd == "/continue" || cmd.starts_with("/continue ") {
+        let arg = cmd.strip_prefix("/continue").map(str::trim).unwrap_or("");
+        do_continue(state, session, tx, arg);
+        return;
+    }
+    if cmd == "/clear-context" {
+        do_clear_context(state, session);
         return;
     }
     // Background tasks: /btw fires one without touching the running turn;

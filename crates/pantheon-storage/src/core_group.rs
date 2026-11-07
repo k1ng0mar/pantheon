@@ -253,6 +253,13 @@ pub mod ledger {
       todos_json TEXT NOT NULL,
       updated_ms INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS message_pins (
+      run_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 1,
+      ts_ms INTEGER NOT NULL,
+      PRIMARY KEY (run_id, message_id)
+    );
     CREATE TABLE IF NOT EXISTS browser_activity (
       session TEXT PRIMARY KEY,
       action TEXT NOT NULL,
@@ -1450,6 +1457,39 @@ pub mod ledger {
 
         /// Set the operator-pinned flag on a run. Direct write like
         /// `set_run_mode`: operator metadata, not an agent event.
+        pub fn pin_message(
+            &self,
+            run_id: &str,
+            message_id: &str,
+            pinned: bool,
+        ) -> Result<(), PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            conn.execute(
+                "INSERT INTO message_pins (run_id, message_id, pinned, ts_ms) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(run_id, message_id) DO UPDATE SET pinned=excluded.pinned, ts_ms=excluded.ts_ms",
+                params![run_id, message_id, pinned as i64, now_ms()],
+            ).map_err(|e| err("LEDGER_PIN", e.to_string()))?;
+            Ok(())
+        }
+
+        pub fn pinned_messages(&self, run_id: &str) -> Result<Vec<String>, PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            let mut stmt = conn.prepare("SELECT message_id FROM message_pins WHERE run_id=?1 AND pinned=1 ORDER BY ts_ms").map_err(|e| err("LEDGER_PIN", e.to_string()))?;
+            let rows = stmt
+                .query_map(params![run_id], |r| r.get::<_, String>(0))
+                .map_err(|e| err("LEDGER_PIN", e.to_string()))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| err("LEDGER_PIN", e.to_string()))?);
+            }
+            Ok(out)
+        }
+
         pub fn set_run_pinned(&self, run_id: &str, pinned: bool) -> Result<(), PantheonError> {
             let conn = self
                 .conn
