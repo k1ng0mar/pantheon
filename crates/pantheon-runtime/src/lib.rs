@@ -18,63 +18,65 @@ macro_rules! log_warn {
     }};
 }
 
-pub mod agent_runtime;
-pub mod agui;
-pub mod agui_serve;
-pub mod computer;
-pub mod delegate_budget;
-pub mod desktop_takeover;
-
-pub mod judge;
 /// Loop-hygiene gate: refuses the third consecutive identical tool call
 /// with a model-visible change-approach reason (dsh steal, plan doc §10).
-pub mod loop_guard;
-pub mod nightly_tools;
-pub mod operation;
-pub mod partial_handoff;
-pub mod pipeline;
-pub mod pipeline_runner;
-pub mod rpc;
 pub mod session;
-pub mod skill_exec_tool;
-pub mod swarm;
-pub mod swarm_exec;
-pub mod swarm_persist;
-pub mod temporal;
-pub mod tool_config;
-pub mod watchdog;
 
-pub use agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
-pub use agui::{
+mod control_group;
+mod orchestration_group;
+mod support_group;
+pub use control_group::agui;
+pub use control_group::agui::{
     dispatcher_for, dispatcher_for_with_hint, dispatcher_for_with_hint_and_base,
     dispatcher_for_with_hint_and_host,
 };
-pub use agui_serve::{remember_thread, snapshot_frames};
-pub use operation::{
+pub use control_group::agui_serve;
+pub use control_group::agui_serve::{remember_thread, snapshot_frames};
+pub use control_group::computer;
+pub use control_group::desktop_takeover;
+pub use orchestration_group::delegate_budget;
+pub use orchestration_group::judge;
+pub use orchestration_group::operation;
+pub use orchestration_group::operation::{
     run_tool_operation, DurableOperationRunner, JsonToolAdapter, ToolOperationAdapter,
 };
+pub use orchestration_group::partial_handoff;
+pub use orchestration_group::pipeline;
+pub use orchestration_group::pipeline::{run_model_stage, StageEvaluator, StageExecutor};
+pub use orchestration_group::pipeline_runner;
+pub use orchestration_group::pipeline_runner::{PipelineOutcome, PipelineRunner};
+pub use orchestration_group::swarm;
+pub use orchestration_group::swarm_exec;
+pub use orchestration_group::swarm_persist;
+pub use orchestration_group::temporal;
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::events::Event;
 pub use pantheon_storage::LostLeaseError;
 use pantheon_storage::{
     Ledger, Operation, OperationStatus, OperationStore, RunLease, RunLeaseStore,
 };
-pub use pipeline::{run_model_stage, StageEvaluator, StageExecutor};
-pub use pipeline_runner::{PipelineOutcome, PipelineRunner};
-pub use rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
-pub use tool_config::{
+pub use support_group::agent_runtime;
+pub use support_group::agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
+pub use support_group::loop_guard;
+pub use support_group::nightly_tools;
+pub use support_group::rpc;
+pub use support_group::rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
+pub use support_group::skill_exec_tool;
+pub use support_group::tool_config;
+pub use support_group::tool_config::{
     browser_backend_config, build_browser_backend, resolve_browser_section, BrowserToolConfig,
     CamofoxToolConfig, WebsearchToolConfig,
 };
+pub use support_group::watchdog;
 
 /// A subscriber to the run's event stream. Cheap to clone, shared across threads.
 pub type EventObserver = std::sync::Arc<dyn Fn(&Event) + Send + Sync>;
-pub use watchdog::{TurnWatchdog, WatchdogAction};
+pub use support_group::watchdog::{TurnWatchdog, WatchdogAction};
 
 /// Default approval time-to-live: a parked approval request expires 24h
 /// after it was raised. Stale decisions are dangerous - the run's context
