@@ -1282,13 +1282,13 @@ pub struct WebsearchSection {
     /// was false: the registry applies the override to all): setting
     /// it for a keyed hosted provider redirects that provider's calls
     /// - and its API key - to the override host. Only set it for
-    /// self-hosted instances (e.g. a local SearXNG URL) or test
-    /// mirrors. Absent = the provider's default endpoint.
+    ///   self-hosted instances (e.g. a local SearXNG URL) or test
+    ///   mirrors. Absent = the provider's default endpoint.
     ///
     /// DEPRECATED: a single global override leaks one provider's
     /// endpoint into another provider's requests the moment the
     /// provider switches (a Tavily URL following a switch to Exa sends
-    /// Exa calls - and the Exa key - to the Tavily host). Use
+    ///   Exa calls - and the Exa key - to the Tavily host). Use
     /// `base_urls` below, one entry per provider. This field is kept
     /// for deserialization so old configs still load. It is never
     /// applied directly; the one exception is a searxng-only
@@ -4346,12 +4346,14 @@ mod fix_pass4_leaf1_tests {
 
     #[test]
     fn validate_flags_bad_permission_mode_and_accepts_lan_host() {
-        let mut cfg = Config::default();
-        cfg.permission_mode = Some("smrt".to_string());
-        cfg.server = Some(ServerSection {
-            host: "192.168.1.10".to_string(),
-            port: 18789,
-        });
+        let mut cfg = Config {
+            permission_mode: Some("smrt".to_string()),
+            server: Some(ServerSection {
+                host: "192.168.1.10".to_string(),
+                port: 18789,
+            }),
+            ..Config::default()
+        };
         let problems = cfg.validate();
         assert!(
             problems.iter().any(|p| p.contains("permission_mode")),
@@ -4513,29 +4515,31 @@ mod config_repair_section_tests {
     }
     #[test]
     fn validate_flags_duplicate_and_self_fallbacks() {
-        let mut cfg = Config::default();
-        cfg.model = Some(ModelSection {
-            provider: "openai".into(),
-            model: "gpt-4o".into(),
-            fallbacks: vec![
-                FallbackEntry {
-                    provider: "openai".into(),
-                    model: "gpt-4o".into(),
-                    key_env: None,
-                },
-                FallbackEntry {
-                    provider: "anthropic".into(),
-                    model: "claude-sonnet-4-6".into(),
-                    key_env: None,
-                },
-                FallbackEntry {
-                    provider: "anthropic".into(),
-                    model: "claude-sonnet-4-6".into(),
-                    key_env: None,
-                },
-            ],
-            ..ModelSection::default()
-        });
+        let cfg = Config {
+            model: Some(ModelSection {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                fallbacks: vec![
+                    FallbackEntry {
+                        provider: "openai".into(),
+                        model: "gpt-4o".into(),
+                        key_env: None,
+                    },
+                    FallbackEntry {
+                        provider: "anthropic".into(),
+                        model: "claude-sonnet-4-6".into(),
+                        key_env: None,
+                    },
+                    FallbackEntry {
+                        provider: "anthropic".into(),
+                        model: "claude-sonnet-4-6".into(),
+                        key_env: None,
+                    },
+                ],
+                ..ModelSection::default()
+            }),
+            ..Config::default()
+        };
         let problems = cfg.validate();
         assert!(
             problems

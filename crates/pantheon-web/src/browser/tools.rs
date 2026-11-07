@@ -1267,9 +1267,11 @@ mod tools_tests {
     #[test]
     fn browser_act_on_non_gsd_is_an_erroring_stub_not_unknown() {
         let mut reg = ToolRegistry::new();
-        let mut opts = BrowserOptions::default();
-        opts.enabled = true;
-        opts.backend = BackendKind::Playwright;
+        let opts = BrowserOptions {
+            enabled: true,
+            backend: BackendKind::Playwright,
+            ..BrowserOptions::default()
+        };
         register_browser_tools(&mut reg, opts).expect("register");
         assert!(reg.names().contains(&"browser_act".to_string()));
         let err = reg
@@ -1282,9 +1284,11 @@ mod tools_tests {
     #[test]
     fn browser_act_on_gsd_is_registered() {
         let mut reg = ToolRegistry::new();
-        let mut opts = BrowserOptions::default();
-        opts.enabled = true;
-        opts.backend = BackendKind::Gsd;
+        let opts = BrowserOptions {
+            enabled: true,
+            backend: BackendKind::Gsd,
+            ..BrowserOptions::default()
+        };
         register_browser_tools(&mut reg, opts).expect("register");
         assert!(reg.names().contains(&"browser_act".to_string()));
     }

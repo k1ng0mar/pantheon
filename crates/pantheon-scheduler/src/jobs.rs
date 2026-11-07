@@ -2346,9 +2346,9 @@ pub mod tick {
         /// and the worker drain claims the same occurrence key, loses, and
         /// is consumed without firing. One fire per event, ever.
         ///
-        /// NOTE: this test previously expected TWO executions (natural fire
-        /// + recovered drain, back to back). For a one-shot that is a
-        /// duplicate: there is only one event (its `at_ms`), and firing it
+        /// Note that this test previously expected TWO executions, a natural fire
+        /// and a recovered drain back to back. For a one-shot that is a
+        /// duplicate, there is only one event (its `at_ms`), and firing it
         /// twice is the catch-up multi-fire this fix removes.
         #[test]
         fn recovery_plus_due_fires_once_not_twice() {

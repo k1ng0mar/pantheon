@@ -362,8 +362,10 @@ mod tests {
         let guard = QueryGuardProvider {
             inner: stub.clone(),
         };
-        let mut opts = SearchOptions::default();
-        opts.max_results = 0;
+        let opts = SearchOptions {
+            max_results: 0,
+            ..SearchOptions::default()
+        };
         guard.search("hello", &opts).expect("guard passes through");
         assert_eq!(*stub.seen.lock().unwrap(), vec![1]);
     }

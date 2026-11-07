@@ -402,10 +402,7 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
         .blocks
         .iter()
         .rev()
-        .find_map(|b| match &b.kind {
-            BlockKind::ToolCall { ok: None, .. } => Some(b),
-            _ => None,
-        })
+        .find(|b| matches!(&b.kind, BlockKind::ToolCall { ok: None, .. }))
         .or_else(|| {
             state
                 .blocks

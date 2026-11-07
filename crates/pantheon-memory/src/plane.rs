@@ -155,10 +155,7 @@ pub mod backend {
     /// uses to print the corruption instead of silently reading a
     /// different store.
     pub fn load_selection(data_dir: &Path) -> BackendSelection {
-        match load_selection_result(data_dir) {
-            Ok(sel) => sel,
-            Err(_) => BackendSelection::default(),
-        }
+        load_selection_result(data_dir).unwrap_or_default()
     }
 
     /// Load the persisted selection, distinguishing "no file" (default, no

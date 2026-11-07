@@ -500,18 +500,18 @@ pub fn swarm_spawn(blocks: &mut Vec<TranscriptBlock>, call_id: Option<String>, a
 /// only inside that call's block; without one it flips the most
 /// recent still-running row of that name. Unknown agents are a
 /// no-op, never a new row.
-pub fn swarm_complete(blocks: &mut Vec<TranscriptBlock>, call_id: Option<&str>, agent: &str) {
+pub fn swarm_complete(blocks: &mut [TranscriptBlock], call_id: Option<&str>, agent: &str) {
     let name = agent.trim();
     if name.is_empty() {
         return;
     }
     let target = blocks.iter_mut().rev().find(|b| match &b.kind {
         BlockKind::Swarm { call_id: c, agents } => {
-            (call_id.is_some() && c.as_deref() == call_id
+            call_id.is_some() && c.as_deref() == call_id
                 || call_id.is_none()
                     && agents
                         .iter()
-                        .any(|a| a.name == name && a.status == activity::SubAgentStatus::Running))
+                        .any(|a| a.name == name && a.status == activity::SubAgentStatus::Running)
         }
         _ => false,
     });
@@ -3388,10 +3388,7 @@ impl TuiState {
 /// Icons for transcript cards. Every entry is used
 /// by `render_block` below - no speculative glyphs.
 mod icon {
-    pub const RUNNING: &str = "●";
-    pub const SUCCESS: &str = "✓";
     pub const FAILURE: &str = "×";
-    pub const TOOL: &str = "⚙";
     pub const AGENT: &str = "→";
     pub const WARN: &str = "⚠";
 }
@@ -3793,17 +3790,13 @@ pub fn render(state: &mut TuiState, f: &mut Frame) {
         // transcript and composer. Lines come from the form itself and
         // never contain the value.
         let area = f.area();
-        let w = (area.width.saturating_sub(8)).max(40).min(76);
+        let w = area.width.saturating_sub(8).clamp(40, 76);
         let h = 10u16.min(area.height);
         let x = area.x + area.width.saturating_sub(w) / 2;
         let y = area.y + area.height.saturating_sub(h) / 2;
         let overlay = Rect::new(x, y, w, h);
         f.render_widget(Clear, overlay);
-        let lines: Vec<Line> = form
-            .render_lines()
-            .into_iter()
-            .map(|l| Line::from(l))
-            .collect();
+        let lines: Vec<Line> = form.render_lines().into_iter().map(Line::from).collect();
         f.render_widget(
             Paragraph::new(Text::from(lines))
                 .block(Block::default().borders(Borders::ALL).title(" Secrets ")),
@@ -3989,7 +3982,6 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
 /// background tint than the surrounding #121212/#1E1E1E. No glyphs
 /// the box-drawing ban still stands. The tint itself lives in the
 /// theme module ([`theme::DIVIDER_BG`]).
-
 /// Session body: single-column base — transcript + input block. At
 /// ≥160 cols with the sidebar toggled on, a 25% sidebar appears on
 /// the right (wide inspector); below 160 cols the body is a single
@@ -4966,7 +4958,7 @@ fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> V
     let line_len = line.chars().count();
     // Horizontal window ending at the cursor when it runs past the
     // right edge; the marker appended by callers sits at the cursor.
-    let start = if line_len + 1 <= max_w {
+    let start = if line_len < max_w {
         0
     } else {
         col.saturating_sub(max_w.saturating_sub(1)).min(line_len)

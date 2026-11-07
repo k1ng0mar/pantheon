@@ -43,9 +43,7 @@ pub fn build_turns(blocks: &[TranscriptBlock]) -> Vec<TimelineTurn> {
 /// the tail window stays visible. Pure, so tests cover it directly.
 pub fn window_start(sel: usize, total: usize, rows: usize) -> usize {
     let rows = rows.max(1);
-    if total <= rows {
-        0
-    } else if sel < rows {
+    if total <= rows || sel < rows {
         0
     } else {
         (sel + 1 - rows).min(total - rows)

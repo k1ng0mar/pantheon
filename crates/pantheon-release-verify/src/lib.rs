@@ -14,6 +14,7 @@
 //! - missing, unreadable, or malformed `.minisig` → failure.
 //! - signature mismatch, wrong key id, or legacy (non-prehashed)
 //!   signature → failure.
+//!
 //! There is no bypass flag: an unverified binary is never installed.
 //!
 //! Callers fetch the `{asset_url}.minisig` text themselves (their

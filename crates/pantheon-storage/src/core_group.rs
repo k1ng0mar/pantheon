@@ -1656,8 +1656,8 @@ pub mod ledger {
         /// - `browser_activity`: keyed by browser `session`, not run id;
         /// - `collaboration.db` tasks/messages: a separate file this store
         ///   does not own, keyed by collaboration/task, not run id.
-        /// Those leftovers are documented, not silently dropped on the
-        /// floor: a future run-keyed schema could extend this list.
+        ///   Those leftovers are documented, not silently dropped on the
+        ///   floor: a future run-keyed schema could extend this list.
         pub fn delete_run(&self, run_id: &str) -> Result<(usize, usize), PantheonError> {
             if run_id == HOME_SESSION_ID {
                 return Err(err(

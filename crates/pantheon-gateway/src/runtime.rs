@@ -2162,18 +2162,18 @@ pub mod service {
 pub mod watchdog {
     //! Hung-gateway watchdog.
     //!
-    //! A gateway poller thread that stops ticking is hung: its channel
+    //! A gateway poller thread that stops ticking is hung, and its channel
     //! stops delivering in both directions, and no in-process check can
     //! unstick a thread blocked inside a transport call (Rust cannot kill
     //! a thread). The supervisor therefore abandons the hung thread and
     //! spawns a replacement poller - exactly ONCE per channel. A second
-    //! hang is not restarted: the supervisor reports the failure (loud log
+    //! hang is not restarted. The supervisor reports the failure (loud log
     //! + a persistent `watchdog-<channel>.json` report under the gateway
-    //! state dir, which the operator - and the agent, when asked - can
-    //! read) and stops supervising that channel. No infinite restart loop:
-    //! a channel that hangs, restarts, and hangs again is broken, and
-    //! restarting it forever would flap its cursors and duplicate
-    //! deliveries while hiding the breakage.
+    //!   state dir, which the operator - and the agent, when asked - can
+    //!   read) and stops supervising that channel. No infinite restart loop,
+    //!   because a channel that hangs, restarts, and hangs again is broken, and
+    //!   restarting it forever would flap its cursors and duplicate
+    //!   deliveries while hiding the breakage.
     //!
     //! This module is the decision logic only (clock-injectable, unit
     //! tested). The heartbeat itself is a shared millisecond timestamp
@@ -2287,7 +2287,8 @@ pub mod watchdog {
         /// - Any later breach → `Report`, sticky: the supervisor must not
         ///   restart again, and repeated checks keep reporting rather
         ///   than silently recovering.
-        /// A heartbeat after a restart re-arms the budget: a recovered
+        ///
+        /// A heartbeat after a restart re-arms the budget. A recovered
         /// channel is healthy again, but the restart budget is NOT
         /// refunded - a channel that hangs, recovers, and hangs again
         /// still reports instead of restarting a second time.

@@ -1321,9 +1321,8 @@ pub mod agui_serve {
                 "second call reuses the persisted secret, never regenerates"
             );
             let _ = std::fs::remove_dir_all(&dir);
-            match prev {
-                Some(v) => std::env::set_var("PANTHEON_GENUI_SECRET", v),
-                None => {}
+            if let Some(v) = prev {
+                std::env::set_var("PANTHEON_GENUI_SECRET", v)
             }
         }
     }

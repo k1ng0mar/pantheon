@@ -2291,6 +2291,8 @@ pub mod search {
     /// writes are committed independently of any ledger write transaction
     /// there is deliberately no cross-connection transaction coupling here, so
     /// an indexing failure can never roll back or block a run's event append.
+    type SearchRow = (String, String, i64, String, String, i64, Option<Vec<u8>>);
+
     pub struct SessionSearch {
         conn: Mutex<Connection>,
     }
@@ -2556,8 +2558,7 @@ pub mod search {
                 .conn
                 .lock()
                 .map_err(|e| err("SEARCH_LOCK", e.to_string()))?;
-            let mut rows: Vec<(String, String, i64, String, String, i64, Option<Vec<u8>>)> =
-                Vec::new();
+            let mut rows: Vec<SearchRow> = Vec::new();
             {
                 // (a) lexical candidates, by id.
                 let ids: Vec<&str> = lexical.iter().map(|h| h.chunk.chunk_id.as_str()).collect();
@@ -2700,6 +2701,62 @@ pub mod search {
         }
     }
 
+    /// Whether the FTS5 sidecar can answer a query.
+    ///
+    /// Separate from "has rows": a freshly created index has no rows and is
+    /// perfectly healthy, while an index whose internal structures are damaged
+    /// raises on `MATCH` and cannot be repaired by writing to it. Probing for a
+    /// working query is the only way to tell those apart.
+    pub fn search_index_health(db: &std::path::Path) -> Result<bool, PantheonError> {
+        let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
+        // Match on tokens that appear in ordinary prose, so a populated index
+        // actually returns something to prove the query path works.
+        let probe: Result<i64, _> = conn.query_row(
+            "SELECT count(*) FROM session_fts WHERE session_fts MATCH 'the' OR session_fts MATCH 'run'",
+            [],
+            |r| r.get(0),
+        );
+        match probe {
+            Ok(_) => Ok(true),
+            // "no such table" means the sidecar was never created, which for a
+            // ledger that predates search is normal rather than broken.
+            Err(e) if e.to_string().contains("no such table") => Ok(false),
+            Err(e) => Err(err("SEARCH_FTS_UNUSABLE", e.to_string())),
+        }
+    }
+
+    /// Drop and recreate the FTS5 sidecar, then repopulate it from the chunk
+    /// store.
+    ///
+    /// The FTS table is a derived index, but `session_chunks` is the durable
+    /// record of what was indexed: it survives an FTS drop, so the contents are
+    /// recoverable without replaying the ledger. Returns the number of chunks
+    /// restored. Previously this returned an empty table and told the user a
+    /// re-index was "not implemented", which left every previously indexed run
+    /// silently unsearchable.
+    pub fn recreate_search_index(db: &std::path::Path) -> Result<usize, PantheonError> {
+        let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
+        conn.execute_batch("DROP TABLE IF EXISTS session_fts;")
+            .map_err(|e| err("SEARCH_FTS_DROP", e.to_string()))?;
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE session_fts USING fts5(
+                chunk_id UNINDEXED, text, kind UNINDEXED, run_id UNINDEXED,
+                tokenize = 'unicode61'
+            );",
+        )
+        .map_err(|e| err("SEARCH_FTS_CREATE", e.to_string()))?;
+        // Rebuild from the durable chunk rows. `session_chunks` holds the same
+        // (already truncation-bounded) text the FTS rows carry, so this is a
+        // faithful restore rather than a re-derivation from the ledger.
+        let restored = conn
+            .execute(
+                "INSERT INTO session_fts (chunk_id, text, kind, run_id)
+                 SELECT chunk_id, text, kind, run_id FROM session_chunks",
+                [],
+            )
+            .map_err(|e| err("SEARCH_FTS_BACKFILL", e.to_string()))?;
+        Ok(restored)
+    }
     #[cfg(test)]
     mod tests {
         //! Fresh coverage for the `session_search` sidecar's core path: FTS
@@ -2980,62 +3037,5 @@ pub mod search {
             );
             assert_eq!(reopened.search("recent", 10).expect("search").len(), 1);
         }
-    }
-
-    /// Whether the FTS5 sidecar can answer a query.
-    ///
-    /// Separate from "has rows": a freshly created index has no rows and is
-    /// perfectly healthy, while an index whose internal structures are damaged
-    /// raises on `MATCH` and cannot be repaired by writing to it. Probing for a
-    /// working query is the only way to tell those apart.
-    pub fn search_index_health(db: &std::path::Path) -> Result<bool, PantheonError> {
-        let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
-        // Match on tokens that appear in ordinary prose, so a populated index
-        // actually returns something to prove the query path works.
-        let probe: Result<i64, _> = conn.query_row(
-            "SELECT count(*) FROM session_fts WHERE session_fts MATCH 'the' OR session_fts MATCH 'run'",
-            [],
-            |r| r.get(0),
-        );
-        match probe {
-            Ok(_) => Ok(true),
-            // "no such table" means the sidecar was never created, which for a
-            // ledger that predates search is normal rather than broken.
-            Err(e) if e.to_string().contains("no such table") => Ok(false),
-            Err(e) => Err(err("SEARCH_FTS_UNUSABLE", e.to_string())),
-        }
-    }
-
-    /// Drop and recreate the FTS5 sidecar, then repopulate it from the chunk
-    /// store.
-    ///
-    /// The FTS table is a derived index, but `session_chunks` is the durable
-    /// record of what was indexed: it survives an FTS drop, so the contents are
-    /// recoverable without replaying the ledger. Returns the number of chunks
-    /// restored. Previously this returned an empty table and told the user a
-    /// re-index was "not implemented", which left every previously indexed run
-    /// silently unsearchable.
-    pub fn recreate_search_index(db: &std::path::Path) -> Result<usize, PantheonError> {
-        let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
-        conn.execute_batch("DROP TABLE IF EXISTS session_fts;")
-            .map_err(|e| err("SEARCH_FTS_DROP", e.to_string()))?;
-        conn.execute_batch(
-            "CREATE VIRTUAL TABLE session_fts USING fts5(
-                chunk_id UNINDEXED, text, kind UNINDEXED, run_id UNINDEXED,
-                tokenize = 'unicode61'
-            );",
-        )
-        .map_err(|e| err("SEARCH_FTS_CREATE", e.to_string()))?;
-        // Rebuild from the durable chunk rows. `session_chunks` holds the same
-        // (already truncation-bounded) text the FTS rows carry, so this is a
-        // faithful restore rather than a re-derivation from the ledger.
-        let restored = conn
-            .execute(
-                "INSERT INTO session_fts (chunk_id, text, kind, run_id)
-                 SELECT chunk_id, text, kind, run_id FROM session_chunks",
-                [],
-            )
-            .map_err(|e| err("SEARCH_FTS_BACKFILL", e.to_string()))?;
-        Ok(restored)
     }
 }

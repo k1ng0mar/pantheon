@@ -133,7 +133,7 @@ impl ModelEventSink for TextTrackingSink<'_> {
             if !text.is_empty() {
                 self.add_emitted_text(text);
             }
-            if !self.is_emitted(&text) {
+            if !self.is_emitted(text) {
                 self.mark_emitted(text.clone());
             }
         }
@@ -141,7 +141,7 @@ impl ModelEventSink for TextTrackingSink<'_> {
             if !text.is_empty() {
                 self.add_emitted_reasoning(text);
             }
-            if !self.is_emitted(&text) {
+            if !self.is_emitted(text) {
                 self.mark_emitted(text.clone());
             }
         }
@@ -1153,7 +1153,6 @@ fn is_key_failure(e: &PantheonError) -> bool {
 mod output_limit_tests {
     use super::*;
     use crate::http::{StreamEnd, WireRequest};
-    use crate::model_event::NoopModelSink;
     use pantheon_api::message::Message;
     use pantheon_api::model::{DefaultModel, FallbackChain, ReasoningLevel};
 
@@ -1360,9 +1359,10 @@ mod fix_model_chain_tests {
         static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _g = ENV_GUARD.lock().expect("env guard");
         std::env::set_var("PANTHEON_DEC_RT_FALLBACK_KEY", "fallback-key-123");
+        type HeadersLog = Vec<Vec<(String, String)>>;
         struct FailOnce {
             calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-            headers: std::sync::Arc<Mutex<Vec<Vec<(String, String)>>>>,
+            headers: std::sync::Arc<Mutex<HeadersLog>>,
         }
         impl ChatTransport for FailOnce {
             fn post(&self, req: &WireRequest) -> Result<String, PantheonError> {
@@ -1746,7 +1746,6 @@ mod fix_model_chain_tests {
 #[cfg(test)]
 mod tracking_sink_tests {
     use super::*;
-    use crate::model_event::NoopModelSink;
 
     #[test]
     fn tracking_sink_accumulates_emitted_text_and_forwards_every_event() {

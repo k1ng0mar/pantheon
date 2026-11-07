@@ -2923,27 +2923,21 @@ pub mod logging {
             let candidate = &rest[pos..];
             let mut stream =
                 serde_json::Deserializer::from_str(candidate).into_iter::<serde_json::Value>();
-            match stream.next() {
-                Some(Ok(mut v)) => {
-                    let consumed = stream.byte_offset();
-                    if redact_json_node(&mut v) {
-                        match serde_json::to_string(&v) {
-                            Ok(redacted) => {
-                                out.push_str(&redacted);
-                                rest = &candidate[consumed..];
-                                continue;
-                            }
-                            Err(_) => {}
-                        }
+            if let Some(Ok(mut v)) = stream.next() {
+                let consumed = stream.byte_offset();
+                if redact_json_node(&mut v) {
+                    if let Ok(redacted) = serde_json::to_string(&v) {
+                        out.push_str(&redacted);
+                        rest = &candidate[consumed..];
+                        continue;
                     }
-                    // Parsed but clean: copy verbatim, continue after it.
-                    out.push_str(&candidate[..consumed]);
-                    rest = &candidate[consumed..];
                 }
-                _ => {
-                    out.push('{');
-                    rest = &candidate[1..];
-                }
+                // Parsed but clean: copy verbatim, continue after it.
+                out.push_str(&candidate[..consumed]);
+                rest = &candidate[consumed..];
+            } else {
+                out.push('{');
+                rest = &candidate[1..];
             }
         }
         out.push_str(rest);

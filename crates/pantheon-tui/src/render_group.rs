@@ -2542,9 +2542,9 @@ pub mod transcript {
     /// here — the Frame-rendered composer gets the full border, the
     /// transcript card gets the left border. Shell cards show `$ command`
     /// + output (last [`SHELL_VISIBLE_LINES`] when collapsed); non-shell
-    /// cards show args (capped at 6 when collapsed) + error detail.
-    /// `ShellView`/`ToolView` stay for their own tests; the live
-    /// transcript path in `session.rs::render_block` renders through here.
+    ///   cards show args (capped at 6 when collapsed) + error detail.
+    ///   `ShellView`/`ToolView` stay for their own tests; the live
+    ///   transcript path in `session.rs::render_block` renders through here.
     #[derive(Debug, Clone)]
     pub struct ToolCard {
         pub display_name: String,

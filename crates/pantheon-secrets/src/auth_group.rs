@@ -2603,7 +2603,7 @@ pub mod secure_forms {
                 refs.get("NVIDIA_KEY").unwrap(),
                 &vec!["custom_providers.nvidia.key_env".to_string()]
             );
-            assert!(refs.get("exoseed").is_none());
+            assert!(!refs.contains_key("exoseed"));
         }
 
         #[test]

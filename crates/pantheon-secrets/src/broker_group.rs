@@ -1730,6 +1730,7 @@ pub mod grants {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::vault::SecretVault;
         use crate::SecretValue;
 
         fn broker_with(name: &str, value: &str) -> SecretsBroker {

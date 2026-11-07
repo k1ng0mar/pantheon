@@ -274,7 +274,7 @@ impl<'a> Renderer<'a> {
                         let l = lines[j];
                         let li = leading_spaces(l);
                         if li <= 3 {
-                            if let Some((c2, len2)) = fence_close(l.trim_start(), fence_char) {
+                            if let Some((_c2, len2)) = fence_close(l.trim_start(), fence_char) {
                                 if len2 >= fence_len {
                                     break;
                                 }
@@ -1219,9 +1219,7 @@ fn html_block_end(lines: &[&str], i: usize, last_was_paragraph: bool) -> Option<
         }
         return Some(j);
     }
-    let Some((name, _closing)) = html_tag_name(trimmed) else {
-        return None;
-    };
+    let (name, _closing) = html_tag_name(trimmed)?;
     if !BLOCK_TAGS.contains(&name.as_str()) && !DISALLOWED_TAGS.contains(&name.as_str()) {
         // Type 7 candidate: a complete tag alone on a line, any tag
         // name. It may not interrupt a paragraph (GFM 4.6).
@@ -1685,7 +1683,7 @@ fn collect_defs(lines: &[&str]) -> Defs {
         let indent = leading_spaces(line);
         if let Some((fc, flen)) = in_fence {
             if indent <= 3 {
-                if let Some((c2, len2)) = fence_close(trimmed, fc) {
+                if let Some((_c2, len2)) = fence_close(trimmed, fc) {
                     if len2 >= flen {
                         in_fence = None;
                     }
@@ -2589,7 +2587,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
     };
     let mut nodes: Vec<INode> = Vec::new();
     let mut buf = String::new();
-    let mut flush = |buf: &mut String, nodes: &mut Vec<INode>| {
+    let flush = |buf: &mut String, nodes: &mut Vec<INode>| {
         if !buf.is_empty() {
             nodes.push(INode::Text(std::mem::take(buf)));
         }
@@ -2668,7 +2666,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
             if let Some((end, inner, is_image)) = parse_link_at(text, start, defs, th) {
                 flush(&mut buf, &mut nodes);
                 if is_image {
-                    let alt: String = inner.iter().flat_map(|n| node_plain_text(n)).collect();
+                    let alt: String = inner.iter().flat_map(node_plain_text).collect();
                     nodes.push(INode::Image(alt));
                 } else {
                     nodes.push(INode::Link(inner));
@@ -2817,7 +2815,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
                     // Domain must contain at least one more dot and be valid.
                     if let Some(dot) = domain_part.find('.') {
                         let domain = &domain_part[..domain_part
-                            .find(|ch: char| ch == '/' || ch == '?' || ch == '#')
+                            .find(['/', '?', '#'])
                             .unwrap_or(domain_part.len())];
                         let _ = dot;
                         if valid_domain(domain) {
@@ -2917,7 +2915,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
     }
     flush(&mut buf, &mut nodes);
     // Resolve emphasis / strikethrough in place.
-    let mut nodes = process_emphasis(nodes);
+    let nodes = process_emphasis(nodes);
     // Recursively resolve emphasis inside link texts that were parsed
     // with allow_links=false: their nodes still contain delimiters.
     // parse_inline_nodes already calls process_emphasis at its end, so
@@ -2984,10 +2982,11 @@ fn process_emphasis(mut nodes: Vec<INode>) -> Vec<INode> {
             if och != ch || !ocan_open || olen == 0 {
                 continue;
             }
-            if (ocan_open && ocan_close) || (can_open_c && can_close) {
-                if (olen + len) % 3 == 0 && !(olen % 3 == 0 && len % 3 == 0) {
-                    continue;
-                }
+            if ((ocan_open && ocan_close) || (can_open_c && can_close))
+                && (olen + len) % 3 == 0
+                && !(olen % 3 == 0 && len % 3 == 0)
+            {
+                continue;
             }
             let has_content = nodes[j + 1..i]
                 .iter()
@@ -3011,9 +3010,7 @@ fn process_emphasis(mut nodes: Vec<INode>) -> Vec<INode> {
             } => (*len, *can_open, *can_close),
             _ => unreachable!(),
         };
-        let use_n = if ch == '~' {
-            2
-        } else if olen >= 2 && len >= 2 {
+        let use_n = if ch == '~' || (olen >= 2 && len >= 2) {
             2
         } else {
             1
@@ -3027,8 +3024,8 @@ fn process_emphasis(mut nodes: Vec<INode>) -> Vec<INode> {
         let clen_rem = len - use_n;
         // Take content nodes in place (no shifts).
         let mut content: Vec<INode> = Vec::new();
-        for k in (op + 1)..cl {
-            let taken = std::mem::replace(&mut nodes[k], INode::Empty);
+        for node in nodes[op + 1..cl].iter_mut() {
+            let taken = std::mem::replace(node, INode::Empty);
             if !matches!(taken, INode::Empty) {
                 content.push(taken);
             }

@@ -53,10 +53,7 @@ impl SearchError {
                 // 4xx (bad key, bad request shape) is not fixed by a
                 // retry; 429 (rate limit) and 5xx/transport errors are.
                 // Status errors are formatted as "HTTP {code}: ...".
-                match parse_http_status(detail) {
-                    Some(code) if (400..500).contains(&code) && code != 429 => false,
-                    _ => true,
-                }
+                !matches!(parse_http_status(detail), Some(code) if (400..500).contains(&code) && code != 429)
             }
             _ => false,
         }

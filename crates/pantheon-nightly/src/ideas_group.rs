@@ -178,7 +178,7 @@ pub mod audit {
             // No PassFinished yet means the pass is still running or died
             // mid-pass: bound the window at now, not i64::MAX, or usage
             // from every later pass would be folded into this one.
-            .unwrap_or_else(|| pantheon_api::logging::now_ms());
+            .unwrap_or_else(pantheon_api::logging::now_ms);
         let mut proposed = 0;
         let mut applied = 0;
         let mut queued = 0;
@@ -1316,6 +1316,7 @@ pub mod report {
         /// the report never leaves the operator guessing whether the pass
         /// itself succeeded.
         #[test]
+        #[allow(clippy::field_reassign_with_default)]
         fn report_header_names_outcome() {
             let mut state = NightlyState::default();
             state.last_run_ms = 1_790_449_200_000;
@@ -1929,6 +1930,7 @@ pub mod state {
         /// `skipped` for a recorded dry run. A fresh default (never ran)
         /// stays blank, and the dashboard renders "no passes yet" for it.
         #[test]
+        #[allow(clippy::field_reassign_with_default)]
         fn normalize_fills_legacy_outcome() {
             let mut legacy = NightlyState::default();
             legacy.last_run_ms = 1_790_449_200_000;

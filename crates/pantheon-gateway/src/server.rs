@@ -1297,8 +1297,8 @@ pub mod mcp_boot {
                 }
                 let convertible = matches!(s.transport.as_str(), "stdio" | "sse" | "http")
                     && match s.transport.as_str() {
-                        "stdio" => s.command.as_deref().map(str::trim).unwrap_or("").len() > 0,
-                        _ => s.url.as_deref().map(str::trim).unwrap_or("").len() > 0,
+                        "stdio" => !s.command.as_deref().map(str::trim).unwrap_or("").is_empty(),
+                        _ => !s.url.as_deref().map(str::trim).unwrap_or("").is_empty(),
                     };
                 if !convertible {
                     out.push(McpBootHealth {

@@ -3623,18 +3623,12 @@ pub mod update {
             if entry.starts_with('/') || entry.starts_with('\\') {
                 return Err(format!("install failed: absolute archive member {entry:?}"));
             }
-            if entry
-                .split(|c| c == '/' || c == '\\')
-                .any(|seg| seg == "..")
-            {
+            if entry.split(['/', '\\']).any(|seg| seg == "..") {
                 return Err(format!(
                     "install failed: archive member escapes its directory: {entry:?}"
                 ));
             }
-            let base = entry
-                .rsplit(|c| c == '/' || c == '\\')
-                .next()
-                .unwrap_or(entry);
+            let base = entry.rsplit(['/', '\\']).next().unwrap_or(entry);
             if names.contains(&base) {
                 candidates.push(entry.to_string());
             }

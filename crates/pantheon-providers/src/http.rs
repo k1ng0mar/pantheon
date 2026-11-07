@@ -956,10 +956,9 @@ impl ChatTransport for HttpTransport {
                 }
                 if !pending.is_empty()
                     && serde_json::from_str::<serde_json::Value>(pending.trim()).is_ok()
+                    && flush(&mut pending, on_payload)?
                 {
-                    if flush(&mut pending, on_payload)? {
-                        return Ok(StreamEnd::Done);
-                    }
+                    return Ok(StreamEnd::Done);
                 }
                 if !pending.is_empty() {
                     pending.push('\n');

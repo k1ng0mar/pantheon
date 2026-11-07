@@ -2895,7 +2895,7 @@ pub mod swarm_exec {
         peers.sort_unstable();
         peers.dedup();
         // Fewer than two distinct identities in play: nothing to message.
-        if peers.len() < 1 || roster.iter().filter(|p| p.as_str() != me).count() == 0 {
+        if peers.is_empty() || roster.iter().filter(|p| p.as_str() != me).count() == 0 {
             return base_task.to_string();
         }
         // Guard: a roster where every entry equals `me` (pure count mode) has
@@ -2903,9 +2903,9 @@ pub mod swarm_exec {
         let _ = ();
         let mut out = String::from(base_task);
         out.push_str("\n\n## Swarm collaboration\n");
-        out.push_str(&format!(
-            "You are part of a multi-agent swarm. Your peers, addressed by profile:\n"
-        ));
+        out.push_str(
+            "You are part of a multi-agent swarm. Your peers, addressed by profile:\n",
+        );
         for p in &peers {
             out.push_str(&format!("- {p}\n"));
         }

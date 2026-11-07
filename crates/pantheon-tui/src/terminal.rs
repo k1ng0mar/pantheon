@@ -669,6 +669,7 @@ fn write_seen(keys: &HashSet<(String, String, String)>) {
 /// - Transform hooks have no payload on the CLI, so they are refused
 ///   with a clear error instead of silently doing nothing.
 /// - Context/observer hooks use the context path as before.
+///
 /// Returns `Err` for refused hooks so the caller can exit non-zero.
 fn cli_fire(hook: Hook, session: &str, platform: &str) -> Result<Option<String>, String> {
     if !hook.is_wired() {
@@ -851,7 +852,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
     };
     let mut i = 2;
     while i < args.len() {
-        let mut take_value = |i: &mut usize| -> Option<String> {
+        let take_value = |i: &mut usize| -> Option<String> {
             *i += 1;
             if *i < args.len() {
                 Some(args[*i].clone())

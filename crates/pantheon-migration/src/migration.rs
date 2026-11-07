@@ -4681,7 +4681,7 @@ pub mod session_import {
     /// summary, or a title must never land in the resumed session as
     /// assistant speech. The target format (ledger user/assistant messages
     /// + reasoning traces) has no system role, so these records are
-    /// dropped and counted, not remapped (see [`classify_role`]).
+    ///   dropped and counted, not remapped (see [`classify_role`]).
     fn classify_role(rec: &Record) -> Option<TurnRole> {
         // Only conversational roles become turns. Anything else - system /
         // summary / title metadata, tool traffic, or an unknown role - is

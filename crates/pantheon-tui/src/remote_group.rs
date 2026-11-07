@@ -1169,9 +1169,7 @@ pub mod swarm_remote {
             return Err("usage: /swarm <id>".into());
         }
         if words.next().is_some() {
-            return Err(format!(
-                "usage: /swarm <id> (one id; got extra words - see /swarm tree, /swarm new <task>, /swarm retry <id>)"
-            ));
+            return Err("usage: /swarm <id> (one id; got extra words - see /swarm tree, /swarm new <task>, /swarm retry <id>)".to_string());
         }
         Ok(id)
     }

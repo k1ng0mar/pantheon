@@ -168,27 +168,26 @@ fn authed_cdp_url(websocket_url: &str, api_key: &str) -> String {
     )
 }
 
-#[cfg(test)]
-mod authed_cdp_url_tests {
-    use super::*;
+/// Steel browser backend.
+pub struct SteelBackend {
+    inner: RemoteCdpBackend<SteelProvisioner>,
+}
 
-    #[test]
-    fn plain_key_unchanged_and_empty_key_adds_nothing() {
-        assert_eq!(
-            authed_cdp_url("wss://example.com/cdp", "abc123"),
-            "wss://example.com/cdp?apiKey=abc123"
-        );
-        assert_eq!(
-            authed_cdp_url("wss://example.com/cdp", ""),
-            "wss://example.com/cdp"
-        );
+impl SteelBackend {
+    pub fn new(config: SteelConfig) -> Self {
+        Self {
+            inner: RemoteCdpBackend::new(SteelProvisioner { config }),
+        }
+    }
+}
+
+impl BrowserBackend for SteelBackend {
+    fn invoke(&self, argv: &[String], session: &str) -> Result<serde_json::Value, BrowserError> {
+        self.inner.invoke(argv, session)
     }
 
-    #[test]
-    fn key_metacharacters_are_encoded_not_split() {
-        let url = authed_cdp_url("wss://example.com/cdp?x=1", "a&b=c+d");
-        assert_eq!(url, "wss://example.com/cdp?x=1&apiKey=a%26b%3Dc%2Bd");
-        assert_eq!(url.matches("apiKey=").count(), 1);
+    fn stop_daemon(&self, session: &str) -> Result<(), BrowserError> {
+        self.inner.stop_daemon(session)
     }
 }
 
@@ -236,25 +235,26 @@ impl SessionProvisioner for SteelProvisioner {
     }
 }
 
-/// Steel browser backend.
-pub struct SteelBackend {
-    inner: RemoteCdpBackend<SteelProvisioner>,
-}
+#[cfg(test)]
+mod authed_cdp_url_tests {
+    use super::*;
 
-impl SteelBackend {
-    pub fn new(config: SteelConfig) -> Self {
-        Self {
-            inner: RemoteCdpBackend::new(SteelProvisioner { config }),
-        }
-    }
-}
-
-impl BrowserBackend for SteelBackend {
-    fn invoke(&self, argv: &[String], session: &str) -> Result<serde_json::Value, BrowserError> {
-        self.inner.invoke(argv, session)
+    #[test]
+    fn plain_key_unchanged_and_empty_key_adds_nothing() {
+        assert_eq!(
+            authed_cdp_url("wss://example.com/cdp", "abc123"),
+            "wss://example.com/cdp?apiKey=abc123"
+        );
+        assert_eq!(
+            authed_cdp_url("wss://example.com/cdp", ""),
+            "wss://example.com/cdp"
+        );
     }
 
-    fn stop_daemon(&self, session: &str) -> Result<(), BrowserError> {
-        self.inner.stop_daemon(session)
+    #[test]
+    fn key_metacharacters_are_encoded_not_split() {
+        let url = authed_cdp_url("wss://example.com/cdp?x=1", "a&b=c+d");
+        assert_eq!(url, "wss://example.com/cdp?x=1&apiKey=a%26b%3Dc%2Bd");
+        assert_eq!(url.matches("apiKey=").count(), 1);
     }
 }

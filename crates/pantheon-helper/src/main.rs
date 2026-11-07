@@ -269,7 +269,7 @@ fn cmd_update(args: &[String]) {
     let helper_exe = current_exe.with_file_name("pantheon-helper");
     let mut helper_failed: Option<String> = None;
     if helper_exe.is_file() {
-        if let Err(e) = std::fs::copy(&helper_exe, &helper_exe.with_extension("prev")) {
+        if let Err(e) = std::fs::copy(&helper_exe, helper_exe.with_extension("prev")) {
             helper_failed = Some(format!("cannot back up helper ({e})"));
         }
     }
@@ -956,7 +956,7 @@ fn extract_tar(
             return Err(format!("extract failed: absolute member {entry:?}"));
         }
         if entry
-            .split(|c| c == '/' || c == '\\')
+            .split(['/', '\\'])
             .any(|seg| seg == "..")
         {
             return Err(format!(
@@ -964,7 +964,7 @@ fn extract_tar(
             ));
         }
         let base = entry
-            .rsplit(|c| c == '/' || c == '\\')
+            .rsplit(['/', '\\'])
             .next()
             .unwrap_or(entry);
         if base == expected {
@@ -1316,9 +1316,9 @@ mod tests {
         std::fs::write(stage.join(sig_asset_name(&main_asset)), "main-sig").unwrap();
         let reused =
             reuse_staged_update_with(&stage, "k1ng0mar/pantheon", "v9.9.9", |bytes, sig| {
-                if bytes == helper_bytes && sig == "helper-sig" {
-                    Ok(())
-                } else if bytes == main_bytes && sig == "main-sig" {
+                if (bytes == helper_bytes && sig == "helper-sig")
+                    || (bytes == main_bytes && sig == "main-sig")
+                {
                     Ok(())
                 } else {
                     Err("not the staged pair".into())
@@ -1645,9 +1645,9 @@ mod tests {
             out.extend_from_slice(&h);
             out.extend_from_slice(data);
             let pad = (512 - data.len() % 512) % 512;
-            out.extend(std::iter::repeat(0).take(pad));
+            out.extend(std::iter::repeat_n(0, pad));
         }
-        out.extend(std::iter::repeat(0).take(1024));
+        out.extend(std::iter::repeat_n(0, 1024));
         out
     }
 

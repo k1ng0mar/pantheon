@@ -1922,6 +1922,7 @@ pub mod tool_config {
         use super::*;
 
         #[test]
+        #[allow(clippy::field_reassign_with_default)]
         fn code_intel_false_from_section_disables_the_group() {
             let mut section = pantheon_api::config::ToolsSection::default();
             section.code_intel = Some(false);

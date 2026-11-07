@@ -1469,6 +1469,7 @@ impl Supervisor {
     /// - `UsageRecorded` rows: they are accounting, not conversation,
     ///   and copying them would double-count the source's spend in
     ///   `usage_between` (the fork's own later usage is still recorded).
+    ///
     /// Copied alongside the events: the source's todo snapshot, its
     /// agent mode, and its queued-message list (FIFO order preserved):
     /// a fork continues the conversation, and queued follow-ups are

@@ -1396,7 +1396,7 @@ fn register_delegate_tool(reg: &mut ToolRegistry, driver: Arc<DelegateDriver>) {
     reg.register(
         ToolSchema {
             name: "delegate".into(),
-            description: description.into(),
+            description,
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2278,6 +2278,7 @@ fn run_delegate_child_routed(
 /// scope so the operator can resolve them against the child run. The
 /// parent run cannot grant them: [`Supervisor::grant`] matches scopes
 /// against the run that requested them.
+#[allow(clippy::too_many_arguments)]
 fn map_child_outcome(
     model_policy: &ModelPolicy,
     parent_run_id: &str,
@@ -9215,7 +9216,7 @@ mod delegate_tool_tests {
     fn unverified_delegation_result_is_marked_not_run() {
         let (session, dir) = test_session();
         attach_parent_agent(&session, &dir);
-        let driver = stubbed_driver(&session, "run-unverified", |c, r, t| success_stub(c, r, t));
+        let driver = stubbed_driver(&session, "run-unverified", success_stub);
         let result =
             run_delegate_child(&driver, "child", "task one", None, None, None).expect("delegate");
         assert!(
@@ -9927,6 +9928,7 @@ mod delegate_tool_tests {
     /// `/model`-switched) default. An unpinned child keeps the parent's
     /// default, and the child's auto auxiliaries follow its own default.
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn delegate_child_applies_profile_model_pin() {
         use pantheon_api::model::{AuxiliaryKind, AuxiliaryModel, DefaultModel, FallbackChain};
         let (session, dir) = test_session();
@@ -12287,6 +12289,7 @@ mod tool_registration_diagnostics_tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn missing_web_search_key_registers_nothing_and_records_nothing() {
         let (session, _dir) = test_session();
         let mut w = WebsearchToolConfig::default();
@@ -12311,6 +12314,7 @@ mod tool_registration_diagnostics_tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn unknown_web_search_provider_is_a_diagnostic_not_a_tool() {
         let (session, _dir) = test_session();
         let mut w = WebsearchToolConfig::default();
@@ -12329,6 +12333,7 @@ mod tool_registration_diagnostics_tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn uninstalled_computer_driver_is_silent_but_unknown_driver_is_a_diagnostic() {
         // Known driver, no explicit binary: whether or not the binary
         // happens to be on PATH in this environment, a missing driver
@@ -12364,6 +12369,7 @@ mod tool_registration_diagnostics_tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn configured_but_missing_driver_binary_is_a_diagnostic() {
         let (session, _dir) = test_session();
         let mut c = ComputerToolConfig::default();
@@ -12384,6 +12390,7 @@ mod tool_registration_diagnostics_tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn code_intel_false_registers_no_code_intel_tools() {
         // Config -> enablement -> registry, end to end: `[tools]
         // code_intel = false` used to leave the group on because
@@ -12413,6 +12420,7 @@ mod tool_registration_diagnostics_tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn memory_false_registers_no_session_search_and_plugins_false_registers_no_oauth_tools() {
         // `[tools]` toggles used to be bypassed by these two: OAuth
         // connector tools and session_search registered
