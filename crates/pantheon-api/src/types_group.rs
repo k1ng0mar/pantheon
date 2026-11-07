@@ -1652,8 +1652,9 @@ pub mod model {
         /// large MCP tool results into a note before they enter context.
         ///
         /// Wired: `Session::durable_tool` consults this slot for large
-        /// results from tools whose name mentions `mcp`. Any failure keeps
-        /// the raw result.
+        /// tool results (MCP tools register with bare names, so the
+        /// trigger is result size, not tool name). Any failure keeps the
+        /// raw result.
         McpSynthesis,
         /// Model for scheduled (background) runs (config `[scheduled]`): when a
         /// scheduled job executes an agent turn it uses this model instead of
@@ -1715,9 +1716,9 @@ pub mod model {
         /// run on different models. Host-orchestrated; never chat. Absent =
         /// `auto`: the run's default model.
         ///
-        /// Wired: `Session::plan_goal` resolves this slot and returns the
-        /// plan steps, or `None` when unconfigured or on error, so hosts
-        /// fall back to no plan, never to a fabricated one.
+        /// Wired: `Session::chat_turn` resolves this slot at turn start
+        /// and rides the plan steps in the system prompt. Unconfigured
+        /// or on error there is no plan block, never a fabricated one.
         Planner,
         /// Adversarial verifier model (config `[verify]`): after a delegated
         /// sub-agent completes, it takes the task's goal plus the child's

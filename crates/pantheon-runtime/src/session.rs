@@ -4533,11 +4533,10 @@ Raw results:
                 }
             }
         }
-        // MCP synthesis: large results from MCP servers get a bounded
-        // note. MCP tools are not name-prefixed, so this keys off the
-        // configured slot plus result size, and only for tools whose
-        // name mentions mcp to avoid summarizing shell output.
-        if tool.contains("mcp") && result.chars().count() > 6000 {
+        // MCP synthesis: large tool results get a bounded note. MCP
+        // tools register with bare names (no server prefix), so the
+        // trigger keys off the configured slot plus result size only.
+        if result.chars().count() > 6000 {
             if let Some(client) = self.build_mcp_synthesis(run_id) {
                 if let Ok(note) = client.summarize(tool, &result) {
                     return note;
@@ -5787,6 +5786,23 @@ Extracted:
         // include it when the tool is actually registered (ToolGroup::Tasks
         // on); otherwise the model is told to use a tool that doesn't exist.
         let system_prompt = self.with_todo_guidance(system_prompt);
+        // Planner: when the `[planner]` slot is pinned, decompose this
+        // turn's goal into steps and ride them in the system prompt.
+        // Unconfigured or on error there is no plan block, so the turn
+        // is exactly as before. The planner call is synchronous and
+        // bounded by the slot timeout, same as the judge call.
+        let system_prompt = match self.plan_goal(run_id, user_message) {
+            Some(steps) if !steps.is_empty() => {
+                let numbered = steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{}. {s}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("{system_prompt}\n\nPlan for this goal:\n{numbered}")
+            }
+            _ => system_prompt,
+        };
         // Nightly persona overlay: approved persona proposals (evals +
         // replay + explicit human approval - `decide(approve = true)` is
         // the only writer to the persona namespace) shape the preamble
