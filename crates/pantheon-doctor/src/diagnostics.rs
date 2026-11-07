@@ -77,6 +77,12 @@ pub mod checks {
                 title: "provider reachable (opt-in probe)",
                 run: check_provider_reachable,
             },
+            CheckDef {
+                id: "providers.media_binaries",
+                subsystem: Subsystem::Providers,
+                title: "media binaries (ffmpeg, local voice)",
+                run: check_media_binaries,
+            },
             // -- memory ---------------------------------------------------
             CheckDef {
                 id: "memory.ledger",
@@ -717,6 +723,62 @@ pub mod checks {
     }
 
     // -- memory -----------------------------------------------------------
+
+    fn check_media_binaries(ctx: &DoctorCtx) -> Vec<Finding> {
+        let mut findings = Vec::new();
+        // ffmpeg: required by the video frames fallback. Missing is a
+        // warning, not an error, because native Gemini video and text
+        // chat never need it.
+        if detect_binary("command -v ffmpeg", DETECT_TIMEOUT) {
+            findings.push(Finding::passed(
+                "providers.media_binaries",
+                Subsystem::Providers,
+                "ffmpeg is on PATH",
+            ));
+        } else {
+            findings.push(Finding::failed(
+                "providers.media_binaries",
+                Subsystem::Providers,
+                Severity::Warning,
+                "ffmpeg is not on PATH",
+                "video frames fallback will fail",
+                "install ffmpeg",
+            ));
+        }
+        // Local voice binaries: when [stt]/[tts] use the command backend,
+        // the configured cmd must exist, or every voice request fails.
+        if let Ok(cfg) = load_config(ctx) {
+            for (slot, section) in [("stt", &cfg.stt), ("tts", &cfg.tts)] {
+                if let Some(sec) = section {
+                    if sec.backend == "command" {
+                        if let Some(cmd) = sec.options.get("cmd") {
+                            let bin = cmd.split_whitespace().next().unwrap_or("");
+                            if !bin.is_empty()
+                                && !detect_binary(&format!("command -v {bin}"), DETECT_TIMEOUT)
+                            {
+                                findings.push(Finding::failed(
+                                    "providers.media_binaries",
+                                    Subsystem::Providers,
+                                    Severity::Error,
+                                    format!("[{slot}] command backend '{bin}' is not on PATH"),
+                                    "voice requests through this backend will fail",
+                                    "install the binary or switch the backend",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if findings.is_empty() {
+            findings.push(Finding::passed(
+                "providers.media_binaries",
+                Subsystem::Providers,
+                "no local media binaries required",
+            ));
+        }
+        findings
+    }
 
     fn check_ledger(ctx: &DoctorCtx) -> Vec<Finding> {
         let path = ctx.data_dir.join("ledger.db");
@@ -1384,7 +1446,7 @@ pub mod checks {
                     def.id
                 );
             }
-            assert_eq!(seen.len(), 18);
+            assert_eq!(seen.len(), 19);
         }
 
         // -- previously untested checks -------------------------------------
