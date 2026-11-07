@@ -245,19 +245,9 @@ pub mod http {
             })
             .unwrap_or(false);
         if !ok {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            std::time::SystemTime::now().hash(&mut h);
-            std::process::id().hash(&mut h);
-            std::thread::current().id().hash(&mut h);
-            let v = h.finish();
-            for (i, b) in v.to_le_bytes().iter().enumerate() {
-                bytes[i] = *b;
-                bytes[i + 8] = b.wrapping_mul(0x9d);
-                bytes[i + 16] = b.wrapping_add(0x3c);
-                bytes[i + 24] = b ^ 0xa5;
-            }
+            // Fail closed: a predictable token is worse than no
+            // token. Panic at startup rather than mint a guessable one.
+            panic!("cannot read /dev/urandom to generate the dashboard token");
         }
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
