@@ -43,58 +43,61 @@
 //! `max_age_days`. Plain frequency + recency - the old exponential
 //! half-life formula is gone.
 
-mod apply;
-mod audit;
-mod fixloop;
-mod gate;
-mod ideas;
-mod llm;
-mod persona;
-mod propose;
-mod repair_targets;
-mod replay;
-mod report;
-mod signals;
-mod state;
-
-pub use apply::{
+mod heal_group;
+mod ideas_group;
+use heal_group::apply;
+pub use heal_group::apply::{
     apply_memory_lesson, apply_skill_or_persona, decide, load_pending, pending_path,
     queue_for_approval, route, ApplyOutcome, ValidationBinding,
 };
-pub use audit::{audit, audit_path, last_run_summary, read_events, NightlyEvent};
-pub use fixloop::{
+use heal_group::fixloop;
+pub use heal_group::fixloop::{
     escalated_path, load_escalated, validate_with_fix_loop, Escalation, FixOutcome,
     DEFAULT_MAX_FIX_ATTEMPTS,
 };
-pub use gate::{gate, EvalOutcome, EvalRunner, EvalVerdict, SubprocessEvalRunner};
-pub use ideas::{
-    add_days, downranked, general_from_failure, general_from_repair, median_hour_utc,
-    run_ideas_phase, scheduled_from_sequence, today_utc, GeneratedIdea, MAX_IDEAS_PER_DAY,
-    PENDING_KEEP_DAYS,
-};
-pub use llm::{
-    resolve_distill, resolve_refiner, resolve_repair, DeterministicDistill, DistillBackend,
-    NightlyLlm, ResolvedDistill,
-};
-pub use persona::{approved_notes, overlay_block, PERSONA_KEY_PREFIX, PERSONA_NAMESPACE};
-pub use propose::{
-    candidate_key, from_signals, memory_proposals, weigh_candidates, Proposal, ProposalKind,
-    ProposalStatus, WeighedCandidate, MAX_FACT_CHARS,
-};
-pub use repair_targets::{
+use heal_group::gate;
+pub use heal_group::gate::{gate, EvalOutcome, EvalRunner, EvalVerdict, SubprocessEvalRunner};
+use heal_group::repair_targets;
+pub use heal_group::repair_targets::{
     run_repair_phase, McpRepairTarget, McpServerSnapshot, RepairOutcome, RepairReport,
     RepairTargets, ScheduleRepairTarget, ScheduledJobSnapshot, ToolCallStats, ToolRepairTarget,
 };
-pub use replay::{
+use heal_group::replay;
+pub use heal_group::replay::{
     replay_gate, CompositeReplayRunner, ReplayCheck, ReplayRunner, ReplayStore, ReplayTask,
     ReplayVerdict, SubprocessReplayRunner, TaskExec, TaskSpecReplayRunner,
     UnconfiguredReplayRunner,
 };
-pub use report::render as render_report;
-pub use signals::{
+use ideas_group::audit;
+pub use ideas_group::audit::{audit, audit_path, last_run_summary, read_events, NightlyEvent};
+use ideas_group::ideas;
+pub use ideas_group::ideas::{
+    add_days, downranked, general_from_failure, general_from_repair, median_hour_utc,
+    run_ideas_phase, scheduled_from_sequence, today_utc, GeneratedIdea, MAX_IDEAS_PER_DAY,
+    PENDING_KEEP_DAYS,
+};
+use ideas_group::llm;
+pub use ideas_group::llm::{
+    resolve_distill, resolve_refiner, resolve_repair, DeterministicDistill, DistillBackend,
+    NightlyLlm, ResolvedDistill,
+};
+use ideas_group::persona;
+pub use ideas_group::persona::{
+    approved_notes, overlay_block, PERSONA_KEY_PREFIX, PERSONA_NAMESPACE,
+};
+use ideas_group::propose;
+pub use ideas_group::propose::{
+    candidate_key, from_signals, memory_proposals, weigh_candidates, Proposal, ProposalKind,
+    ProposalStatus, WeighedCandidate, MAX_FACT_CHARS,
+};
+use ideas_group::report;
+pub use ideas_group::report::render as render_report;
+use ideas_group::signals;
+pub use ideas_group::signals::{
     collect as collect_signals, CandidateKind, MemoryCandidate, ScanResult, Signal, Source, TurnRef,
 };
-pub use state::{state_path, NightlyState};
+use ideas_group::state;
+pub use ideas_group::state::{state_path, NightlyState};
 
 use pantheon_api::error::PantheonError;
 use pantheon_api::logging::now_ms;
