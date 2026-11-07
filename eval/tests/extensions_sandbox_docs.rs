@@ -15,10 +15,17 @@ const EXTENSIONS_MD: &str = include_str!("../../docs/user-guide/extensions.md");
 const ARCHITECTURE_MD: &str = include_str!("../../docs/developer/architecture.md");
 
 /// Hook plugin runner that builds children through the sandbox gate.
-const HOOK_RUNNER_RS: &str = include_str!("../../crates/pantheon-extensions/src/python_runner.rs");
+///
+/// `python_runner` is now a re-export inside `plugins.rs`; the former
+/// `python_runner.rs` file no longer exists.
+const HOOK_RUNNER_RS: &str = include_str!("../../crates/pantheon-extensions/src/plugins.rs");
 
 /// Tool plugin supervisor that seals and spawns runners.
-const TOOL_SUPERVISOR_RS: &str = include_str!("../../crates/pantheon-exec/src/supervisor.rs");
+///
+/// The supervisor moved into the `sandbox_group` module when the exec sandbox
+/// was consolidated; `crates/pantheon-exec/src/supervisor.rs` no longer
+/// exists. Point at the file that actually defines `PluginSupervisor`.
+const TOOL_SUPERVISOR_RS: &str = include_str!("../../crates/pantheon-exec/src/sandbox_group.rs");
 
 /// PluginEnable must map to the strongest sandbox level.
 const SANDBOX_MOD_RS: &str = include_str!("../../crates/pantheon-exec/src/sandbox/mod.rs");
