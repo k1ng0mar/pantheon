@@ -36,6 +36,8 @@ pub use diagnostics::finding::{
     aggregate, summarize, CheckStatus, DiagnosticReport, Finding, OverallHealth, Severity,
     Subsystem,
 };
-pub use diagnostics::health::{build as build_health_response, HealthResponse, SCHEMA as HEALTH_SCHEMA};
+pub use diagnostics::health::{
+    build as build_health_response, HealthResponse, SCHEMA as HEALTH_SCHEMA,
+};
 pub use diagnostics::registry::{CheckDef, DoctorCtx, Registry};
 pub use diagnostics::render::{exit_code, render_concise, render_json, render_verbose};
