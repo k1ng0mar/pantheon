@@ -1630,9 +1630,11 @@ pub mod model {
         /// Search-synthesis model (config `[search_synthesis]`): turns raw
         /// web-search results into a short cited brief before they enter
         /// context. Host-orchestrated; never chat. Absent = `auto`: the run's
-        /// default model. No call sites yet - search results currently enter
-        /// context raw; the slot exists so a model can be pinned ahead of the
-        /// synthesis workload landing.
+        /// default model.
+        ///
+        /// Wired: `Session::durable_tool` consults this slot for `web_search`
+        /// results and prepends the cited brief above the raw results. Any
+        /// failure keeps the raw results unchanged.
         SearchSynthesis,
         /// Judge model (config `[judge]`): classifies, routes, scores. Never
         /// generates chat. Used for route selection, tool gating, verification
@@ -1648,6 +1650,10 @@ pub mod model {
         Judge,
         /// MCP tool-result synthesis model (config `[mcp_synthesis]`): bounds
         /// large MCP tool results into a note before they enter context.
+        ///
+        /// Wired: `Session::durable_tool` consults this slot for large
+        /// results from tools whose name mentions `mcp`. Any failure keeps
+        /// the raw result.
         McpSynthesis,
         /// Model for scheduled (background) runs (config `[scheduled]`): when a
         /// scheduled job executes an agent turn it uses this model instead of
@@ -1688,22 +1694,30 @@ pub mod model {
         /// and records out of prose and tool outputs (dates, amounts, names,
         /// entities) into typed values the runtime can act on.
         /// Host-orchestrated; never chat. Absent = `auto`: the run's default
-        /// model. No call sites yet - the slot exists so a model can be pinned
-        /// ahead of the extraction workload landing.
+        /// model.
+        ///
+        /// Wired: `Session::durable_tool` consults this slot for large tool
+        /// results and appends the extracted fields. Any failure keeps the
+        /// raw result.
         Extraction,
         /// Rerank model (config `[rerank]`): scores and orders search and
         /// memory-retrieval candidates before they enter context, so the best
         /// evidence wins the window instead of the loudest keyword match.
         /// Host-orchestrated; never chat. Absent = `auto`: the run's default
-        /// model. No call sites yet - the slot exists so a model can be pinned
-        /// ahead of the reranking workload landing.
+        /// model.
+        ///
+        /// Wired: `Session::durable_tool` consults this slot for
+        /// `session_search` and `vault_search` results and reorders the
+        /// hit blocks. Any failure keeps the retrieval order.
         Rerank,
         /// Planner model (config `[planner]`): decomposes a goal into a task
         /// plan for a future planner/worker split, where planning and execution
         /// run on different models. Host-orchestrated; never chat. Absent =
-        /// `auto`: the run's default model. No call sites yet - the slot
-        /// exists so a model can be pinned ahead of the planner workload
-        /// landing.
+        /// `auto`: the run's default model.
+        ///
+        /// Wired: `Session::plan_goal` resolves this slot and returns the
+        /// plan steps, or `None` when unconfigured or on error, so hosts
+        /// fall back to no plan, never to a fabricated one.
         Planner,
         /// Adversarial verifier model (config `[verify]`): after a delegated
         /// sub-agent completes, it takes the task's goal plus the child's

@@ -4068,7 +4068,8 @@ impl Session {
                 "",
             )
         })?;
-        op.state
+        let raw_result = op
+            .state
             .get("result")
             .and_then(|v| v.as_str())
             .map(ToOwned::to_owned)
@@ -4081,7 +4082,8 @@ impl Session {
                     "inspect the tool operation state",
                     "",
                 )
-            })
+            })?;
+        Ok(self.aux_postprocess_result(run_id, name, args, raw_result))
     }
 
     /// One conversational turn. A fresh run id starts a conversation; a
@@ -4369,6 +4371,212 @@ impl Session {
                 .with_timeout_secs(aux.timeout_secs)
                 .with_usage_sink(self.auxiliary_usage_sink(run_id)),
         )
+    }
+
+    fn build_aux_client<T>(
+        &self,
+        _run_id: &str,
+        kind: pantheon_api::model::AuxiliaryKind,
+        key_env: &str,
+        make: impl FnOnce(pantheon_api::model::DefaultModel, Option<SecretValue>) -> T,
+    ) -> Option<T> {
+        let policy = self.policy_snapshot();
+        let aux = policy.auxiliary(&kind)?;
+        let target = pantheon_api::model::DefaultModel {
+            provider: aux.provider.clone(),
+            model: aux.model.clone(),
+            key_env: None,
+        };
+        let key = self
+            .secrets
+            .inject(key_env)
+            .ok()
+            .flatten()
+            .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
+        Some(make(target, key))
+    }
+
+    fn build_search_synthesis(
+        &self,
+        run_id: &str,
+    ) -> Option<pantheon_providers::SearchSynthesisClient> {
+        self.build_aux_client(
+            run_id,
+            pantheon_api::model::AuxiliaryKind::SearchSynthesis,
+            "PANTHEON_SEARCH_SYNTHESIS_API_KEY",
+            |target, key| {
+                pantheon_providers::SearchSynthesisClient::new(target, key)
+                    .with_usage_sink(self.auxiliary_usage_sink(run_id))
+            },
+        )
+    }
+
+    fn build_mcp_synthesis(&self, run_id: &str) -> Option<pantheon_providers::McpSynthesisClient> {
+        self.build_aux_client(
+            run_id,
+            pantheon_api::model::AuxiliaryKind::McpSynthesis,
+            "PANTHEON_MCP_SYNTHESIS_API_KEY",
+            |target, key| {
+                pantheon_providers::McpSynthesisClient::new(target, key)
+                    .with_usage_sink(self.auxiliary_usage_sink(run_id))
+            },
+        )
+    }
+
+    fn build_extraction(&self, run_id: &str) -> Option<pantheon_providers::ExtractionClient> {
+        self.build_aux_client(
+            run_id,
+            pantheon_api::model::AuxiliaryKind::Extraction,
+            "PANTHEON_EXTRACTION_API_KEY",
+            |target, key| {
+                pantheon_providers::ExtractionClient::new(target, key)
+                    .with_usage_sink(self.auxiliary_usage_sink(run_id))
+            },
+        )
+    }
+
+    fn build_rerank(&self, run_id: &str) -> Option<pantheon_providers::RerankClient> {
+        self.build_aux_client(
+            run_id,
+            pantheon_api::model::AuxiliaryKind::Rerank,
+            "PANTHEON_RERANK_API_KEY",
+            |target, key| {
+                pantheon_providers::RerankClient::new(target, key)
+                    .with_usage_sink(self.auxiliary_usage_sink(run_id))
+            },
+        )
+    }
+
+    /// Generate a task plan for a goal through the `[planner]` slot.
+    /// Returns `None` when the slot is unconfigured or the call fails, so
+    /// hosts fall back to no plan, never to a fabricated one.
+    pub fn plan_goal(&self, run_id: &str, goal: &str) -> Option<Vec<String>> {
+        let policy = self.policy_snapshot();
+        let aux = policy.auxiliary(&pantheon_api::model::AuxiliaryKind::Planner)?;
+        let target = pantheon_api::model::DefaultModel {
+            provider: aux.provider.clone(),
+            model: aux.model.clone(),
+            key_env: None,
+        };
+        let key = self
+            .secrets
+            .inject("PANTHEON_PLANNER_API_KEY")
+            .ok()
+            .flatten()
+            .or_else(|| self.secrets.inject("PANTHEON_API_KEY").ok().flatten());
+        let client = pantheon_providers::PlannerClient::new(target, key)
+            .with_timeout_secs(aux.timeout_secs)
+            .with_usage_sink(self.auxiliary_usage_sink(run_id));
+        client.plan(goal).ok()
+    }
+
+    /// Post-process one tool result through the configured result aux
+    /// slots. Every slot is opt-in and every failure falls back to the
+    /// raw result, so unconfigured slots change nothing.
+    fn aux_postprocess_result(
+        &self,
+        run_id: &str,
+        tool: &str,
+        args: &str,
+        result: String,
+    ) -> String {
+        // Search synthesis: web search results get a cited brief first,
+        // raw results stay below it truncated, so evidence is never lost.
+        if tool == "web_search" {
+            if let Some(client) = self.build_search_synthesis(run_id) {
+                let query = serde_json::from_str::<serde_json::Value>(args)
+                    .ok()
+                    .and_then(|v| v.get("query").and_then(|q| q.as_str()).map(str::to_string))
+                    .unwrap_or_default();
+                let lines: Vec<String> = result.lines().map(str::to_string).collect();
+                if let Ok(brief) = client.synthesize(&query, &lines) {
+                    let raw: String = result.chars().take(4000).collect();
+                    return format!(
+                        "{brief}
+
+Raw results:
+{raw}"
+                    );
+                }
+            }
+        }
+        // Rerank: session and vault search hits are reordered by the
+        // rerank model over blank-line separated blocks. Any failure
+        // keeps the retrieval order.
+        if tool == "session_search" || tool == "vault_search" {
+            if let Some(client) = self.build_rerank(run_id) {
+                let query = serde_json::from_str::<serde_json::Value>(args)
+                    .ok()
+                    .and_then(|v| v.get("query").and_then(|q| q.as_str()).map(str::to_string))
+                    .unwrap_or_default();
+                let blocks: Vec<String> = result
+                    .split(
+                        "
+
+",
+                    )
+                    .map(|b| b.trim().to_string())
+                    .filter(|b| !b.is_empty())
+                    .collect();
+                if blocks.len() > 1 {
+                    if let Ok(order) = client.rerank(&query, &blocks) {
+                        return order
+                            .iter()
+                            .map(|i| blocks[*i].clone())
+                            .collect::<Vec<_>>()
+                            .join(
+                                "
+
+",
+                            );
+                    }
+                }
+            }
+        }
+        // MCP synthesis: large results from MCP servers get a bounded
+        // note. MCP tools are not name-prefixed, so this keys off the
+        // configured slot plus result size, and only for tools whose
+        // name mentions mcp to avoid summarizing shell output.
+        if tool.contains("mcp") && result.chars().count() > 6000 {
+            if let Some(client) = self.build_mcp_synthesis(run_id) {
+                if let Ok(note) = client.summarize(tool, &result) {
+                    return note;
+                }
+            }
+        }
+        // Extraction: pull typed fields out of large results and append
+        // them, so dates, amounts and errors survive bounding.
+        if result.chars().count() > 4000 {
+            if let Some(client) = self.build_extraction(run_id) {
+                let fields = [
+                    "date".to_string(),
+                    "amount".to_string(),
+                    "name".to_string(),
+                    "url".to_string(),
+                    "error".to_string(),
+                    "status".to_string(),
+                ];
+                if let Ok(found) = client.extract(&result, &fields) {
+                    if !found.is_empty() {
+                        let lines = found
+                            .iter()
+                            .map(|(k, v)| format!("{k}: {v}"))
+                            .collect::<Vec<_>>()
+                            .join(
+                                "
+",
+                            );
+                        return format!(
+                            "{result}
+
+Extracted:
+{lines}"
+                        );
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Ask the judge about one approval-gated call, in `Smart` mode only.

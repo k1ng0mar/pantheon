@@ -1829,20 +1829,17 @@ pub type McpSynthesisSection = AuxSection;
 
 /// `[extraction]`: the structured-extraction model. Pulls fields and
 /// records out of prose and tool outputs into typed values the runtime
-/// can act on. Absent = `auto`: the run's default model extracts. No
-/// call sites yet - pin a model here ahead of the extraction workload.
+/// can act on. Absent = `auto`: the run's default model extracts.
 pub type ExtractionSection = AuxSection;
 
 /// `[rerank]`: the rerank model. Scores and orders search and
 /// memory-retrieval candidates before they enter context. Absent =
-/// `auto`: the run's default model reranks. No call sites yet - pin a
-/// model here ahead of the reranking workload.
+/// `auto`: the run's default model reranks.
 pub type RerankSection = AuxSection;
 
 /// `[planner]`: the planner model for a future planner/worker split,
 /// where planning and execution run on different models. Absent =
-/// `auto`: the run's default model plans. No call sites yet - pin a
-/// model here ahead of the planner workload.
+/// `auto`: the run's default model plans.
 pub type PlannerSection = AuxSection;
 
 /// `[repair]`: the repair model for the nightly fix loop - the only
@@ -2249,8 +2246,7 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<VisionSection>,
     /// `[video]`: the video-understanding model pin. Absent = `auto`:
-    /// the run's default model. No call sites yet; pin ahead of the
-    /// video pipeline landing.
+    /// the run's default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<VideoSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2258,15 +2254,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_synthesis: Option<McpSynthesisSection>,
     /// `[extraction]`: structured-extraction model pin. Absent = `auto`.
-    /// No call sites yet; pin ahead of the workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction: Option<ExtractionSection>,
-    /// `[rerank]`: rerank model pin. Absent = `auto`. No call sites yet;
-    /// pin ahead of the workload.
+    /// `[rerank]`: rerank model pin. Absent = `auto`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankSection>,
     /// `[planner]`: planner model pin for a future planner/worker split.
-    /// Absent = `auto`. No call sites yet; pin ahead of the workload.
+    /// Absent = `auto`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner: Option<PlannerSection>,
     /// `[repair]`: repair model pin. Absent = OFF: the slot adds no
