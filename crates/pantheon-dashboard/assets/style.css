@@ -1024,7 +1024,7 @@ code.inline {
   padding: 2px 9px; font-size: 11px; font-weight: 700; }
 .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border);
   border-radius: 99px; padding: 2px 10px 2px 3px; font-size: 12px; font-weight: 600; background: var(--surface); }
-.tm-sys { font-size: 12px; color: var(--text-faint); padding: 6px 10px; border-left: 2px solid var(--border);
+.tm-sys { font-size: 12px; color: var(--text-faint); padding: 6px 10px; border-left: 1px solid var(--rule-soft);
   margin: 4px 0; white-space: pre-wrap; }
 .tm-sys.warn { border-color: var(--amber, #b45309); color: var(--text); }
 .tm-sys.err { border-color: var(--red-border); color: var(--red); }
