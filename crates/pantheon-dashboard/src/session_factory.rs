@@ -40,12 +40,11 @@ fn env_nonempty(name: &str) -> Option<String> {
 }
 
 /// Resolve the default chat model under the canonical precedence
-/// (explicit > environment > `[model]` section > local default, empty
-/// values ignored) in [`pantheon_api::config_resolve::resolve_default_model`].
-/// The dashboard passes no explicit args, so this is env > config >
-/// default — the previous hand-rolled order (config > env) disagreed
-/// with the TUI and with the runtime, and an empty env var could no
-/// longer shadow config.
+/// (explicit > `[model]` section > local default, empty values ignored)
+/// in [`pantheon_api::config_resolve::resolve_default_model`]. Config
+/// is the single source: the process environment is not consulted, so
+/// a stale `PANTHEON_PROVIDER`/`PANTHEON_MODEL` in a shell cannot
+/// shadow it.
 fn default_model(cfg: Option<&Config>) -> DefaultModel {
     pantheon_api::config_resolve::resolve_default_model(cfg, None, None)
 }
