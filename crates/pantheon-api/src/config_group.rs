@@ -52,7 +52,8 @@ pub mod config_resolve {
     }
 
     /// Resolve one model field under the canonical precedence: explicit
-    /// argument > environment variable > `config.toml` value > default.
+    /// argument > environment variable (skipped when `env_name` is empty)
+    /// > `config.toml` value > default.
     pub fn resolve_field(
         explicit: Option<String>,
         env_name: &str,
@@ -62,7 +63,13 @@ pub mod config_resolve {
         explicit
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .or_else(|| env_nonempty(env_name))
+            .or_else(|| {
+                if env_name.is_empty() {
+                    None
+                } else {
+                    env_nonempty(env_name)
+                }
+            })
             .or_else(|| {
                 cfg_value
                     .map(|s| s.trim().to_string())
@@ -72,8 +79,10 @@ pub mod config_resolve {
     }
 
     /// Resolve the default chat model: explicit provider/model arguments >
-    /// `PANTHEON_PROVIDER`/`PANTHEON_MODEL` > the `[model]` section >
-    /// the local default.
+    /// the `[model]` section > the local default. The process environment
+    /// is intentionally not consulted: config is the single source of
+    /// truth for the default model, so a stale `PANTHEON_PROVIDER`/
+    /// `PANTHEON_MODEL` in a shell cannot silently shadow it.
     pub fn resolve_default_model(
         cfg: Option<&Config>,
         provider: Option<String>,
@@ -83,16 +92,11 @@ pub mod config_resolve {
         DefaultModel {
             provider: resolve_field(
                 provider,
-                "PANTHEON_PROVIDER",
+                "",
                 section.map(|s| s.provider.as_str()),
                 DEFAULT_PROVIDER,
             ),
-            model: resolve_field(
-                model,
-                "PANTHEON_MODEL",
-                section.map(|s| s.model.as_str()),
-                DEFAULT_MODEL,
-            ),
+            model: resolve_field(model, "", section.map(|s| s.model.as_str()), DEFAULT_MODEL),
             key_env: None,
         }
     }
@@ -155,14 +159,15 @@ pub mod config_resolve {
             assert_eq!(d.provider, "cfg-provider");
             assert_eq!(d.model, "cfg-model");
 
-            // Env beats config.
+            // Env is ignored: config wins even when env vars are set.
+            // (Single source of truth is config; env must not shadow it.)
             std::env::set_var("PANTHEON_PROVIDER", "env-provider");
             std::env::set_var("PANTHEON_MODEL", "env-model");
             let d = resolve_default_model(Some(&cfg), None, None);
-            assert_eq!(d.provider, "env-provider");
-            assert_eq!(d.model, "env-model");
+            assert_eq!(d.provider, "cfg-provider");
+            assert_eq!(d.model, "cfg-model");
 
-            // Explicit beats env.
+            // Explicit beats config.
             let d = resolve_default_model(
                 Some(&cfg),
                 Some("flag-provider".into()),
@@ -179,15 +184,16 @@ pub mod config_resolve {
             clear_env();
             let cfg = cfg_with_model("cfg-provider", "cfg-model");
 
-            // An empty env var reads as unset: config still wins.
+            // Env is ignored entirely: even a set env var does not
+            // shadow config.
             std::env::set_var("PANTHEON_PROVIDER", "   ");
             let d = resolve_default_model(Some(&cfg), None, None);
             assert_eq!(d.provider, "cfg-provider");
 
-            // An empty explicit arg reads as unset: env still wins.
+            // An empty explicit arg reads as unset: config wins.
             std::env::set_var("PANTHEON_PROVIDER", "env-provider");
             let d = resolve_default_model(Some(&cfg), Some("".into()), None);
-            assert_eq!(d.provider, "env-provider");
+            assert_eq!(d.provider, "cfg-provider");
             clear_env();
         }
 
@@ -197,10 +203,10 @@ pub mod config_resolve {
             clear_env();
             let cfg = cfg_with_model("cfg-provider", "cfg-model");
             std::env::set_var("PANTHEON_MODEL", "env-model");
-            // Provider falls through to config while model takes env.
+            // Env is ignored for both fields: both fall to config.
             let d = resolve_default_model(Some(&cfg), None, None);
             assert_eq!(d.provider, "cfg-provider");
-            assert_eq!(d.model, "env-model");
+            assert_eq!(d.model, "cfg-model");
             clear_env();
         }
 

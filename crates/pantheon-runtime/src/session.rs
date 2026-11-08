@@ -6032,6 +6032,9 @@ Extracted:
                 reg.loaded_schemas(),
                 api_key,
             );
+            chain = chain.with_key_rotation(pantheon_providers::chain::KeyRotation::parse(
+                &std::env::var("PANTHEON_AUTH_ROTATION").unwrap_or_default(),
+            ));
             chain.oauth_broker = Some(self.secrets.clone());
             chain
         };

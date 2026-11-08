@@ -378,6 +378,7 @@ pub mod setup {
             }),
             verify: None,
             limits: None,
+            auth: None,
             mcp: mcp_section(&answers.mcp_servers),
             vision: None,
             scheduled: None,

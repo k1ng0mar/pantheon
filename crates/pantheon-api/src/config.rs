@@ -2213,6 +2213,18 @@ pub struct EgressSection {
 /// absent means the built-in default in parentheses. Environment
 /// overrides (`PANTHEON_LIMIT_<FIELD>`) win over the config file, so
 /// deployments can tune without editing config.
+/// `[auth]`: credential pool policy. Keys themselves live once per
+/// provider in the dotenv under `PANTHEON_KEY_<PROVIDER>`; this section
+/// only tunes how stacked keys are picked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AuthSection {
+    /// Key rotation across stacked keys: `fill_first` (default, try in
+    /// order, rotate only on 401/403/429), `round_robin` (spread every
+    /// attempt across keys), `random` (pick a random key per attempt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LimitsSection {
     /// Max decoded voice audio bytes per transcribe request (25 MiB).
@@ -2365,6 +2377,9 @@ pub struct Config {
     /// `[limits]`: user-adjustable safety caps. Absent = built-in defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<LimitsSection>,
+    /// `[auth]`: credential rotation policy. Absent = fill_first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthSection>,
     pub policy: Option<PolicyPreset>,
     /// `permission_mode`: how much scrutiny an approval-gated tool call
     /// gets (`ask` / `smart` / `allow_all`). Absent = `ask`, the
@@ -2507,6 +2522,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "model",
     "judge",
     "limits",
+    "auth",
     "embeddings",
     "search_synthesis",
     "vision",
@@ -2956,11 +2972,7 @@ impl Config {
         // api_key_env when named, and a non-zero timeout. Empty
         // provider/model is valid - it inherits the `[model]` target
         // (default-inheriting), so there is no "empty field" error anymore.
-        fn aux_problem(
-            name: &str,
-            timeout: &Option<u64>,
-            problems: &mut Vec<String>,
-        ) {
+        fn aux_problem(name: &str, timeout: &Option<u64>, problems: &mut Vec<String>) {
             if *timeout == Some(0) {
                 problems.push(format!(
                     "{name}.timeout is 0: aux requests would instantly time out"
@@ -4444,6 +4456,7 @@ mod fix_pass4_leaf1_tests {
             tts: Some(VoiceSection::default()),
             voice: Some(LiveVoiceSection::default()),
             limits: Some(LimitsSection::default()),
+            auth: Some(AuthSection::default()),
             policy: Some(PolicyPreset::default()),
             // Non-None on purpose: the guard test serializes this
             // literal and compares its keys against KNOWN_CONFIG_KEYS,

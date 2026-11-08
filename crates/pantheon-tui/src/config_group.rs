@@ -1323,14 +1323,15 @@ pub mod config {
             assert_eq!(policy.default.provider, "cfg-provider");
             assert_eq!(policy.default.model, "cfg-model");
 
-            // Env beats config (the pre-migration order was config > env).
+            // Env is ignored: config wins even when env vars are set
+            // (single source of truth is config).
             std::env::set_var("PANTHEON_PROVIDER", "env-provider");
             std::env::set_var("PANTHEON_MODEL", "env-model");
             let policy = build_model_policy(Some(&cfg), None, None);
-            assert_eq!(policy.default.provider, "env-provider");
-            assert_eq!(policy.default.model, "env-model");
+            assert_eq!(policy.default.provider, "cfg-provider");
+            assert_eq!(policy.default.model, "cfg-model");
 
-            // Explicit beats env.
+            // Explicit beats config.
             let policy = build_model_policy(
                 Some(&cfg),
                 Some("flag-provider".into()),
@@ -1339,7 +1340,7 @@ pub mod config {
             assert_eq!(policy.default.provider, "flag-provider");
             assert_eq!(policy.default.model, "flag-model");
 
-            // Empty env reads as unset: config still wins.
+            // Env empty or set: config still wins (env ignored).
             std::env::set_var("PANTHEON_PROVIDER", "");
             std::env::remove_var("PANTHEON_MODEL");
             let policy = build_model_policy(Some(&cfg), None, None);
@@ -6245,11 +6246,19 @@ pub mod gateway {
         policy: Policy,
     ) -> Result<pantheon_runtime::session::Session, pantheon_api::error::PantheonError> {
         let cfg = crate::config::Config::load_or_report(data_dir);
-        let default = pantheon_api::model::DefaultModel {
-            provider: std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into()),
-            model: std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
-            key_env: None,
-        };
+        let default = cfg
+            .as_ref()
+            .and_then(|c| c.model.clone())
+            .map(|m| pantheon_api::model::DefaultModel {
+                provider: m.provider.clone(),
+                model: m.model.clone(),
+                key_env: None,
+            })
+            .unwrap_or(pantheon_api::model::DefaultModel {
+                provider: "local".into(),
+                model: "llama3.2".into(),
+                key_env: None,
+            });
         let model_policy = pantheon_api::model::ModelPolicy {
             reasoning_budget: Default::default(),
             reasoning: Default::default(),
@@ -9169,12 +9178,7 @@ pub mod pipeline {
             .as_ref()
             .and_then(|c| c.model.clone())
             .map(|m| (m.provider, m.model))
-            .unwrap_or_else(|| {
-                (
-                    std::env::var("PANTHEON_PROVIDER").unwrap_or_else(|_| "local".into()),
-                    std::env::var("PANTHEON_MODEL").unwrap_or_else(|_| "llama3.2".into()),
-                )
-            });
+            .unwrap_or_else(|| ("local".into(), "llama3.2".into()));
         let model_policy = pantheon_api::model::ModelPolicy {
             reasoning_budget: Default::default(),
             reasoning: Default::default(),

@@ -155,10 +155,49 @@ impl ModelEventSink for TextTrackingSink<'_> {
 /// interruption carries no marker and enters the fallback walk instead.
 const VISIBLE_OUTPUT_EVIDENCE: &str = "visible_output_delivered";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyRotation {
+    #[default]
+    FillFirst,
+    RoundRobin,
+    Random,
+}
+
+impl KeyRotation {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "round_robin" | "round-robin" | "rr" => KeyRotation::RoundRobin,
+            "random" => KeyRotation::Random,
+            _ => KeyRotation::FillFirst,
+        }
+    }
+    /// Starting key index for attempt `attempt` across `count` keys.
+    pub fn start_index(&self, attempt: usize, count: usize, jitter: f64) -> usize {
+        if count == 0 {
+            return 0;
+        }
+        match self {
+            KeyRotation::FillFirst => 0,
+            KeyRotation::RoundRobin => attempt % count,
+            KeyRotation::Random => {
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as usize)
+                    .unwrap_or(0);
+                (seed + attempt) % count.max(1)
+            }
+        }
+    }
+}
+
 /// Retry budget + backoff shape for one chain entry (Umar's spec:
 /// retry 3 times before fallback or fail).
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    /// Key rotation across stacked keys: fill_first (default, in
+    /// order, rotate only on credential failures), round_robin
+    /// (spread across keys), random (pick per attempt).
+    pub key_rotation: KeyRotation,
     /// Retries after the initial attempt, per chain entry.
     pub max_retries: u32,
     /// The first retry waits ~this; the wait doubles each retry, with
@@ -171,6 +210,7 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
+            key_rotation: KeyRotation::FillFirst,
             max_retries: 3,
             base_delay: Duration::from_millis(500),
             max_delay: Duration::from_secs(30),
@@ -247,6 +287,11 @@ fn resolve_named_key(name: &str, broker: Option<&pantheon_secrets::SecretsBroker
 }
 
 impl<T: ChatTransport> ProviderChain<T> {
+    pub fn with_key_rotation(mut self, rotation: KeyRotation) -> Self {
+        self.retry.key_rotation = rotation;
+        self
+    }
+
     pub fn new(
         policy: ModelPolicy,
         transport: T,
@@ -432,8 +477,27 @@ impl<T: ChatTransport> ProviderChain<T> {
         let tracked_sink = TextTrackingSink::new(sink);
 
         let mut key_failures = 0usize;
-        for (ki, one_key) in keys.iter().enumerate() {
-            let last_key = ki + 1 >= keys.len();
+        let rotation_start = match self.retry.key_rotation {
+            KeyRotation::FillFirst => 0,
+            KeyRotation::RoundRobin => {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static RR: AtomicUsize = AtomicUsize::new(0);
+                if keys.is_empty() {
+                    0
+                } else {
+                    RR.fetch_add(1, Ordering::Relaxed) % keys.len()
+                }
+            }
+            KeyRotation::Random => self.retry.key_rotation.start_index(0, keys.len(), 0.0),
+        };
+        let ordered_keys: Vec<&String> = keys
+            .iter()
+            .skip(rotation_start)
+            .chain(keys.iter().take(rotation_start))
+            .collect();
+        for (ki, one_key) in ordered_keys.iter().enumerate() {
+            let one_key = *one_key;
+            let last_key = ki + 1 >= ordered_keys.len();
             // A model the catalog knows cannot take reasoning never
             // gets a thinking budget either: like the OpenAI adapter's
             // effort skip, this stops one 400 from poisoning every

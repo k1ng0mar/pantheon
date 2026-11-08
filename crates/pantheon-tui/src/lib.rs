@@ -122,6 +122,7 @@ pub use render_group::yank;
 pub use setup_group::setup;
 pub use setup_group::setup_graph;
 use setup_group::setup_wizard;
+pub mod auth;
 pub mod session;
 
 pub use render_group::app::TuiApp;

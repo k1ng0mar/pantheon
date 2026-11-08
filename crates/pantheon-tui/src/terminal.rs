@@ -1931,6 +1931,9 @@ timeout_ms = 5000
         "provider" => {
             crate::provider::cmd_provider(&args);
         }
+        "auth" => {
+            crate::auth::cmd_auth(&args);
+        }
         "config" => {
             crate::config_verb::cmd_config(&args);
         }

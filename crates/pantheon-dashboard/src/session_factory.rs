@@ -398,14 +398,15 @@ mod default_model_tests {
     }
 
     #[test]
-    fn canonical_precedence_env_beats_config() {
+    fn canonical_precedence_config_beats_env() {
         let _g = ENV_GUARD.lock().expect("env guard");
         std::env::remove_var("PANTHEON_PROVIDER");
         std::env::remove_var("PANTHEON_MODEL");
         let cfg = cfg_with_model("cfg-provider", "cfg-model");
         assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
+        // Env must not shadow config: single source of truth is config.
         std::env::set_var("PANTHEON_PROVIDER", "env-provider");
-        assert_eq!(default_model(Some(&cfg)).provider, "env-provider");
+        assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
         std::env::set_var("PANTHEON_PROVIDER", "  ");
         assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
         std::env::remove_var("PANTHEON_PROVIDER");
