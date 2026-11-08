@@ -60,6 +60,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
+pub use support_group::tool_config::ComputerToolConfig;
 pub use support_group::agent_runtime;
 pub use support_group::agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
 pub use support_group::loop_guard;
@@ -1433,6 +1434,14 @@ impl Supervisor {
     ) -> Result<pantheon_storage::LedgerEntry, PantheonError> {
         self.ledger().append(event)
     }
+    /// Clear the durable cancel flag for a run about to start a new
+    /// turn. `reopen_run` only fires for terminal runs, so a running
+    /// run interrupted by double-Esc would otherwise stay canceled
+    /// for every later turn. Called by `start_turn` in the TUI.
+    pub fn clear_cancel_intent(&self, run_id: &str) -> Result<(), PantheonError> {
+        self.ledger().set_cancel_intent(run_id, false)
+    }
+
     pub fn ledger_reopen_run(&self, run_id: &str) -> Result<bool, PantheonError> {
         self.ledger().reopen_run(run_id)
     }

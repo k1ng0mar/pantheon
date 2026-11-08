@@ -80,6 +80,20 @@ pub mod config {
         cfg: Option<&Config>,
     ) {
         session.set_tool_enablement(tool_enablement(cfg));
+        // `[computer_use]` threads into the runtime the same way as
+        // browser/websearch: without this, a configured driver/binary
+        // is silently ignored.
+        let computer = cfg
+            .and_then(|c| c.computer_use.clone())
+            .map(|s| pantheon_runtime::ComputerToolConfig {
+                enabled: true,
+                driver: s
+                    .driver
+                    .unwrap_or_else(|| pantheon_runtime::computer::CUA_DRIVER_ID.to_string()),
+                binary: s.binary.map(std::path::PathBuf::from),
+            })
+            .unwrap_or_default();
+        session.set_computer_config(computer);
     }
 
     /// Whether a tool group is enabled in a loaded config. Used for

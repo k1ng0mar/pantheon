@@ -2729,6 +2729,21 @@ impl TuiState {
                     }
                 }
             }
+            RuntimeErrorEvent::ContextTrimmed { run_id, .. }
+            | RuntimeErrorEvent::ContextCompressed { run_id, .. } => {
+                self.blocks.push(TranscriptBlock {
+                    kind: BlockKind::Status(format!("context trimmed for run {run_id}")),
+                });
+            }
+            RuntimeErrorEvent::ToolInterrupted { call_id, .. } => {
+                // Mark the card interrupted instead of leaving a live
+                // spinner forever (no arm previously).
+                if let Some(pos) = self.blocks.iter().rposition(|b| {
+                    matches!(&b.kind, BlockKind::ToolCall { call_id: cid, .. } if cid == call_id)
+                }) {
+                    self.blocks[pos].kind = BlockKind::Status("tool interrupted".to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -7278,6 +7293,11 @@ fn start_turn(
     state.consume_goal_iteration();
     session.reset_cancel();
     let run_id = resolve_send_run_id(state).to_string();
+    // Clear the durable cancel flag, not just the in-process token:
+    // double-Esc sets both (cancel_run_intent writes the ledger flag),
+    // and reopen_run only fires for terminal runs, so a running run
+    // would otherwise stay canceled for every later turn.
+    let _ = session.supervisor.clear_cancel_intent(&run_id);
     state.active_run = Some(run_id.clone());
     spawn_turn(tx, session, &run_id, &msg);
     true
@@ -10963,10 +10983,10 @@ fn do_steer(
 }
 
 fn do_pin(state: &mut TuiState, session: &Arc<Session>, arg: &str) {
-    let Some(run_id) = state.active_run.clone() else {
-        state.add_status("/pin: no active run".into());
-        return;
-    };
+    let run_id = state
+        .active_run
+        .clone()
+        .unwrap_or_else(|| state.session_id.clone());
     let message_id = arg.trim();
     if message_id.is_empty() {
         state.add_status("usage: /pin <message-id> - pin a message for quick access".into());
@@ -10991,10 +11011,12 @@ fn do_edit(
         state.add_status("/edit: wait for the turn to finish".into());
         return;
     }
-    let Some(run_id) = state.active_run.clone() else {
-        state.add_status("/edit: no active run".into());
-        return;
-    };
+    // active_run clears on completion; the session id is the run for
+    // run-scoped commands issued between turns.
+    let run_id = state
+        .active_run
+        .clone()
+        .unwrap_or_else(|| state.session_id.clone());
     let Some((turn_id, text)) = arg.split_once(' ') else {
         state.add_status("usage: /edit <turn-id> <new text> - rewind and resubmit".into());
         return;
@@ -11030,10 +11052,8 @@ fn do_continue(
         state.add_status("/continue: wait for the turn to finish".into());
         return;
     }
-    if state.active_run.is_none() {
-        state.add_status("/continue: no active run".into());
-        return;
-    }
+    // No active_run check: between turns the session id is the run
+    // to continue from.
     let prompt = if arg.trim().is_empty() {
         "Continue from where you left off.".to_string()
     } else {
@@ -11049,10 +11069,10 @@ fn do_clear_context(state: &mut TuiState, session: &Arc<Session>) {
         state.add_status("/clear-context: wait for the turn to finish".into());
         return;
     }
-    let Some(run_id) = state.active_run.clone() else {
-        state.add_status("/clear-context: no active run".into());
-        return;
-    };
+    let run_id = state
+        .active_run
+        .clone()
+        .unwrap_or_else(|| state.session_id.clone());
     let entries = match session.supervisor.replay(&run_id) {
         Ok(e) => e,
         Err(e) => {
