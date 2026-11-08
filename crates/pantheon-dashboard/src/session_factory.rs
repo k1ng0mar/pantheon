@@ -17,7 +17,6 @@ use pantheon_api::model::{
     AuxiliaryKind, AuxiliaryModel, DefaultModel, ModelPolicy, ReasoningLevel,
 };
 use pantheon_runtime::session::Session;
-use pantheon_secrets::vault::SecretVault;
 use std::path::Path;
 
 pub(crate) fn load_config(data_dir: &Path) -> Result<Option<Config>, String> {

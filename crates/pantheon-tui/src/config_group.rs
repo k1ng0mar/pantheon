@@ -21,7 +21,6 @@ pub mod config {
 
     pub use pantheon_api::config::*;
 
-    use pantheon_secrets::SecretVault;
 
     // --- Resolution of document sections into runtime/agent types ---------------
     // These were inherent `resolve()` methods before the document moved to
@@ -287,31 +286,6 @@ pub mod config {
             .map(str::to_string)
             .unwrap_or_else(|| default.model.clone());
         (provider, model)
-    }
-
-    /// Effective key env var name for an aux pin: an explicit `api_key_env`
-    /// wins; a default-inheriting provider (`None`, empty, or `"default"`)
-    /// inherits `[model].api_key_env`; otherwise `None`, and the runtime
-    /// falls back to `PANTHEON_KEY_<PROVIDER>`.
-    fn resolve_aux_key_env(
-        provider: Option<&str>,
-        _api_key_env: Option<&str>,
-        model: Option<&ModelSection>,
-    ) -> Option<String> {
-        // Per-task keys are gone: aux pins name only provider/model,
-        // the key comes from the provider's own credential. A
-        // default-inheriting provider inherits `[model].api_key_env`.
-        let inherits = provider
-            .map(|p| {
-                let p = p.trim();
-                p.is_empty() || p.eq_ignore_ascii_case("default")
-            })
-            .unwrap_or(true);
-        if inherits {
-            model.and_then(|m| m.api_key_env.clone())
-        } else {
-            None
-        }
     }
 
     /// Resolve one slot's target from its section + env pair, applying
@@ -959,9 +933,10 @@ pub mod config {
         }
     }
 
-    /// Resolve the model policy for one session: explicit override > environment >
-    /// `config.toml` > the hardcoded local default, plus the configured fallback
-    /// chain and every auxiliary slot.
+    /// Resolve the model policy for one session: explicit override >
+    /// `config.toml` > the hardcoded local default, plus the configured
+    /// fallback chain and every auxiliary slot. The process environment
+    /// is not consulted: config is the single source of truth.
     ///
     /// This lives here, not in an interface module, because it is a property of
     /// the config document rather than of any surface. The TUI, the AG-UI

@@ -11030,10 +11030,10 @@ fn do_continue(
         state.add_status("/continue: wait for the turn to finish".into());
         return;
     }
-    let Some(run_id) = state.active_run.clone() else {
+    if state.active_run.is_none() {
         state.add_status("/continue: no active run".into());
         return;
-    };
+    }
     let prompt = if arg.trim().is_empty() {
         "Continue from where you left off.".to_string()
     } else {

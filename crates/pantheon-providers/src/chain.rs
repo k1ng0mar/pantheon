@@ -172,7 +172,7 @@ impl KeyRotation {
         }
     }
     /// Starting key index for attempt `attempt` across `count` keys.
-    pub fn start_index(&self, attempt: usize, count: usize, jitter: f64) -> usize {
+    pub fn start_index(&self, attempt: usize, count: usize, _jitter: f64) -> usize {
         if count == 0 {
             return 0;
         }
