@@ -1718,6 +1718,283 @@ pub mod env {
     }
 }
 
+pub mod models {
+    //! Model catalog picker: `GET /api/models`.
+    //!
+    //! Lists every selectable provider with its models, whether a key is
+    //! present in the dotenv, and key counts, so the UI can offer a real
+    //! picker instead of a free-text field. The default provider/model is
+    //! already editable through `PUT /api/config` (`model.provider`,
+    //! `model.model`); this endpoint feeds the choices.
+
+    use crate::{json_ok, App};
+
+    /// `GET /api/models`: `{providers: [{id, label, key_env, has_key,
+    /// key_count, models: [...]}]}`.
+    pub fn list(app: &App) -> pantheon_gateway::http::Response {
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for meta in pantheon_providers::catalog::selectable_providers() {
+            let key_env = if meta.key_env.trim().is_empty() {
+                format!("PANTHEON_KEY_{}", meta.id.to_ascii_uppercase())
+            } else {
+                meta.key_env.clone()
+            };
+            // Both the vendor-native name (catalog key_env) and the
+            // Pantheon pool name (PANTHEON_KEY_<ID>) count.
+            let pool_env = format!("PANTHEON_KEY_{}", meta.id.to_ascii_uppercase());
+            let raw = pantheon_api::dotenv::read_dotenv_value(&app.data_dir, &key_env)
+                .unwrap_or_default();
+            let pool_raw = pantheon_api::dotenv::read_dotenv_value(&app.data_dir, &pool_env)
+                .unwrap_or_default();
+            let key_count = raw
+                .split(',')
+                .chain(pool_raw.split(','))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .count();
+            let models: Vec<serde_json::Value> = pantheon_providers::catalog::catalog()
+                .providers
+                .iter()
+                .find(|p| p.id == meta.id)
+                .map(|p| {
+                    p.models
+                        .iter()
+                        .map(|m| {
+                            serde_json::json!({"id": m.model, "reasoning": m.reasoning, "vision": m.vision, "video": m.video, "context_limit": m.context_limit})
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            out.push(serde_json::json!({
+                "id": meta.id,
+                "label": meta.label,
+                "key_env": key_env,
+                "has_key": key_count > 0,
+                "key_count": key_count,
+                "models": models,
+            }));
+        }
+        json_ok(serde_json::json!({"providers": out}))
+    }
+}
+
+pub mod auth {
+    //! Structured provider key pools: `GET /api/auth`, `POST /api/auth/add`,
+    //! `POST /api/auth/remove`, `POST /api/auth/priority`, `POST /api/auth/policy`.
+    //!
+    //! Mirrors `pantheon auth` for the browser. Keys live once per provider
+    //! as `PANTHEON_KEY_<PROVIDER>` (comma stacked). Aux slots and fallbacks
+    //! pick providers/models from the catalog and share these keys; they
+    //! never own keys, so this is the single key-management surface.
+    //! Reads never return key material: only masked previews.
+
+    use crate::{bad_json, body_json, err_json, json_ok, App};
+    use pantheon_gateway::http::{Request, Response};
+
+    fn key_name(provider: &str) -> String {
+        format!("PANTHEON_KEY_{}", provider.to_ascii_uppercase())
+    }
+
+    fn mask(key: &str) -> String {
+        let chars: Vec<char> = key.chars().collect();
+        if chars.len() <= 8 {
+            "****".to_string()
+        } else {
+            let head: String = chars.iter().take(4).collect();
+            let tail: String = chars.iter().skip(chars.len() - 4).collect();
+            format!("{head}...{tail}")
+        }
+    }
+
+    fn read_keys(app: &App, provider: &str) -> Vec<String> {
+        let name = key_name(provider);
+        let raw = pantheon_api::dotenv::read_dotenv_value(&app.data_dir, &name).unwrap_or_default();
+        raw.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    fn write_keys(app: &App, provider: &str, keys: &[String]) -> Result<(), Response> {
+        let name = key_name(provider);
+        if keys.is_empty() {
+            let _ = pantheon_api::dotenv::delete_dotenv_key(&app.data_dir, &name);
+        } else {
+            pantheon_api::dotenv::upsert_dotenv(&app.data_dir, &name, &keys.join(","))
+                .map_err(|e| err_json(500, "AUTH", &format!("write {name}: {e}")))?;
+        }
+        Ok(())
+    }
+
+    fn providers(app: &App) -> Vec<String> {
+        let path = pantheon_api::dotenv::dotenv_file_path(&app.data_dir, ".env");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let parsed = pantheon_api::dotenv::parse_dotenv(&text);
+        let mut out: Vec<String> = parsed
+            .iter()
+            .filter_map(|(k, _)| {
+                k.strip_prefix("PANTHEON_KEY_")
+                    .map(|p| p.to_ascii_lowercase())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// `GET /api/auth`: pools with masked previews + current rotation.
+    pub fn list(app: &App) -> Response {
+        let policy =
+            pantheon_api::dotenv::read_dotenv_value(&app.data_dir, "PANTHEON_AUTH_ROTATION")
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "fill_first".to_string());
+        let mut pools: Vec<serde_json::Value> = Vec::new();
+        for provider in providers(app) {
+            let keys = read_keys(app, &provider);
+            if keys.is_empty() {
+                continue;
+            }
+            pools.push(serde_json::json!({
+                "provider": provider,
+                "key_env": key_name(&provider),
+                "count": keys.len(),
+                "keys": keys.iter().enumerate().map(|(i, k)| serde_json::json!({
+                    "index": i,
+                    "preview": mask(k),
+                    "priority": i,
+                })).collect::<Vec<_>>(),
+            }));
+        }
+        json_ok(serde_json::json!({"pools": pools, "rotation": policy}))
+    }
+
+    /// `POST /api/auth/add`: `{provider, key}` stacks a key.
+    pub fn add(app: &App, req: &Request) -> Response {
+        let body = match body_json(req) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let provider = body
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let key = body
+            .get("key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if provider.is_empty() || key.is_empty() || key.contains(',') {
+            return bad_json("provider and a non-empty key without commas are required");
+        }
+        let mut keys = read_keys(app, provider);
+        if keys.iter().any(|k| k == key) {
+            return json_ok(serde_json::json!({"added": false, "count": keys.len()}));
+        }
+        keys.push(key.to_string());
+        if let Err(r) = write_keys(app, provider, &keys) {
+            return r;
+        }
+        json_ok(serde_json::json!({"added": true, "count": keys.len()}))
+    }
+
+    /// `POST /api/auth/remove`: `{provider, index?}` removes one key
+    /// (default: last).
+    pub fn remove(app: &App, req: &Request) -> Response {
+        let body = match body_json(req) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let provider = body
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if provider.is_empty() {
+            return bad_json("provider is required");
+        }
+        let mut keys = read_keys(app, provider);
+        if keys.is_empty() {
+            return err_json(404, "AUTH", "provider has no keys");
+        }
+        let idx = body
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or_else(|| keys.len() - 1);
+        if idx >= keys.len() {
+            return bad_json(&format!("index out of range (0..{})", keys.len()));
+        }
+        let removed = keys.remove(idx);
+        if let Err(r) = write_keys(app, provider, &keys) {
+            return r;
+        }
+        json_ok(serde_json::json!({
+            "removed": mask(&removed),
+            "count": keys.len(),
+        }))
+    }
+
+    /// `POST /api/auth/priority`: `{provider, from, to}` reorders.
+    pub fn priority(app: &App, req: &Request) -> Response {
+        let body = match body_json(req) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let provider = body
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let from = body
+            .get("from")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let to = body.get("to").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let (from, to) = match (from, to) {
+            (Some(f), Some(t)) => (f, t),
+            _ => return bad_json("from and to indexes are required"),
+        };
+        if provider.is_empty() {
+            return bad_json("provider is required");
+        }
+        let mut keys = read_keys(app, provider);
+        if from >= keys.len() || to >= keys.len() {
+            return bad_json(&format!("index out of range (0..{})", keys.len()));
+        }
+        let k = keys.remove(from);
+        keys.insert(to, k);
+        if let Err(r) = write_keys(app, provider, &keys) {
+            return r;
+        }
+        json_ok(serde_json::json!({"moved": [from, to], "count": keys.len()}))
+    }
+
+    /// `POST /api/auth/policy`: `{policy: fill_first|round_robin|random}`.
+    pub fn policy(app: &App, req: &Request) -> Response {
+        let body = match body_json(req) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let policy = body
+            .get("policy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        match policy.as_str() {
+            "fill_first" | "round_robin" | "random" => {}
+            _ => {
+                return bad_json("policy must be fill_first, round_robin, or random");
+            }
+        }
+        pantheon_api::dotenv::upsert_dotenv(&app.data_dir, "PANTHEON_AUTH_ROTATION", &policy)
+            .map_err(|e| err_json(500, "AUTH", &format!("write policy: {e}")))
+            .map(|_| json_ok(serde_json::json!({"rotation": policy})))
+            .unwrap_or_else(|r| r)
+    }
+}
+
 pub mod oauth {
     //! OAuth connection status: `GET /api/oauth/status`.
     //!

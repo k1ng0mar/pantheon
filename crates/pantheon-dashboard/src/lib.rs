@@ -47,9 +47,11 @@ use ops_group::stats;
 use plugins_group::mcp;
 use plugins_group::plugin_import;
 use plugins_group::plugins;
+use settings_group::auth;
 use settings_group::config;
 use settings_group::env;
 use settings_group::logins;
+use settings_group::models;
 use settings_group::oauth;
 use settings_group::secrets;
 use web_group::browser;
@@ -573,6 +575,13 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("PUT", "config", "", "", "") => config::put(app, req),
         ("GET", "config", "export", "", "") => config::export(app),
         ("POST", "config", "import", "", "") => config::import(app, req),
+        // Auth pools + model catalog (dashboard control surface)
+        ("GET", "auth", "", "", "") => auth::list(app),
+        ("POST", "auth", "add", "", "") => auth::add(app, req),
+        ("POST", "auth", "remove", "", "") => auth::remove(app, req),
+        ("POST", "auth", "priority", "", "") => auth::priority(app, req),
+        ("POST", "auth", "policy", "", "") => auth::policy(app, req),
+        ("GET", "models", "", "", "") => models::list(app),
         // Env / keys
         ("GET", "env", "", "", "") => env::list(app),
         ("PUT", "env", "", "", "") => env::put(app, req),
@@ -926,6 +935,78 @@ mod route_tests {
     /// NOT prune the run. (Before the fix the `("DELETE", "runs", id, _, _)`
     /// catch-all routed it to `runs::prune`, so `?confirm=true` silently
     /// deleted the whole run.)
+    #[test]
+    fn auth_pool_add_list_remove_roundtrip() {
+        use super::settings_group::auth;
+        let (app, dir) = test_app();
+        let req = |path: &str, body: serde_json::Value| {
+            json_req(
+                "POST",
+                path,
+                &serde_json::to_string(&body).expect("json body"),
+            )
+        };
+        let r = auth::add(
+            &app,
+            &req(
+                "/api/auth/add",
+                serde_json::json!({"provider": "openai", "key": "sk-testkey123456789"}),
+            ),
+        );
+        assert_eq!(status_of(&r), 200, "add should succeed");
+        let r = auth::list(&app);
+        let Response::Buffered { body: b, .. } = r else {
+            panic!("buffered")
+        };
+        let v: serde_json::Value = serde_json::from_slice(&b).expect("list json");
+        assert_eq!(v["pools"][0]["provider"], "openai");
+        assert_eq!(v["pools"][0]["count"], 1);
+        assert!(v["pools"][0]["keys"][0]["preview"]
+            .as_str()
+            .unwrap()
+            .contains("sk-t"));
+        assert!(
+            !v.to_string().contains("sk-testkey123456789"),
+            "key material must not leak"
+        );
+        let r = auth::remove(
+            &app,
+            &req(
+                "/api/auth/remove",
+                serde_json::json!({"provider": "openai"}),
+            ),
+        );
+        assert_eq!(status_of(&r), 200, "remove should succeed");
+        let r = auth::list(&app);
+        let Response::Buffered { body: b, .. } = r else {
+            panic!("buffered")
+        };
+        let v: serde_json::Value = serde_json::from_slice(&b).expect("list json");
+        assert!(v["pools"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn models_endpoint_lists_providers_with_key_presence() {
+        use super::settings_group::models;
+        let (app, dir) = test_app();
+        pantheon_api::dotenv::upsert_dotenv(&dir, "OPENAI_API_KEY", "sk-test").expect("write key");
+        let r = models::list(&app);
+        let Response::Buffered { body: b, .. } = r else {
+            panic!("buffered")
+        };
+        let v: serde_json::Value = serde_json::from_slice(&b).expect("models json");
+        let providers = v["providers"].as_array().expect("providers array");
+        let openai = providers
+            .iter()
+            .find(|p| p["id"] == "openai")
+            .expect("openai present");
+        assert_eq!(openai["has_key"], true);
+        assert_eq!(openai["key_count"], 1);
+        assert!(!providers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn delete_unknown_subresource_404s_and_preserves_run() {
         let (app, dir) = test_app();
