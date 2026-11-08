@@ -8723,6 +8723,8 @@ pub enum TranscriptItem {
         revision: u64,
         document: UiDocument,
     },
+    /// A mid-turn steering directive preserved for display replay.
+    Status(String),
 }
 
 /// Rebuild the display transcript: messages plus imported reasoning traces,
@@ -8839,6 +8841,9 @@ pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Tr
                 }
             }
             Event::ImportedReasoning { text, .. } => out.push(TranscriptItem::Reasoning(text)),
+            Event::SteeringProvided { text, .. } => {
+                out.push(TranscriptItem::Status(format!("steered: {text}")))
+            }
             Event::UiContent {
                 ui_id, document, ..
             } => {
@@ -11661,6 +11666,34 @@ mod delegate_tool_tests {
                 }
             }
             other => panic!("expected Ui, got {other:?}"),
+        }
+    }
+
+    /// Steer markers survive transcript rebuild: `rebuild_transcript`
+    /// must keep `SteeringProvided` rows as `Status` items in ledger
+    /// order, so a reopened or re-switched tab shows the redirect.
+    #[test]
+    fn rebuild_transcript_preserves_steering_status() {
+        use crate::session::rebuild_transcript;
+        let entries = vec![pantheon_storage::LedgerEntry {
+            id: 1,
+            run_id: "r".to_string(),
+            seq: 1,
+            run_seq: 1,
+            version: 1,
+            ts_ms: 1,
+            event: Event::SteeringProvided {
+                run_id: "r".to_string(),
+                text: "use the short version".to_string(),
+            },
+        }];
+        let items = rebuild_transcript(entries);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            crate::session::TranscriptItem::Status(t) => {
+                assert_eq!(t, "steered: use the short version")
+            }
+            other => panic!("expected Status, got {other:?}"),
         }
     }
 

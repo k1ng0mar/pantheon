@@ -1295,6 +1295,10 @@ pub mod tabs {
         /// True when this session is parked on an approval (or a clarify
         /// question). Renders the amber dot - the "look at me" state.
         pub approval: bool,
+        /// True when a background turn finished while this tab was not
+        /// visible. Renders as the attention marker instead of the plain
+        /// idle dot; cleared when the tab regains focus.
+        pub attention: bool,
     }
 
     impl Tab {
@@ -1345,6 +1349,12 @@ pub mod tabs {
                     title: title.clone(),
                     busy: busy(run_id),
                     approval: false,
+                    attention: self
+                        .tabs
+                        .iter()
+                        .find(|t| &t.run_id == run_id)
+                        .map(|t| t.attention)
+                        .unwrap_or(false),
                 })
                 .collect();
             // The selected session may hold no lease yet (fresh /new) and thus
@@ -1358,6 +1368,7 @@ pub mod tabs {
                         title: None,
                         busy: false,
                         approval: false,
+                        attention: false,
                     },
                 );
             }
@@ -1385,6 +1396,13 @@ pub mod tabs {
         pub fn set_title(&mut self, run_id: &str, title: &str) {
             if let Some(tab) = self.tabs.iter_mut().find(|t| t.run_id == run_id) {
                 tab.title = Some(title.to_string());
+            }
+        }
+
+        /// Update the background-completion attention badge for one run.
+        pub fn set_attention(&mut self, run_id: &str, attention: bool) {
+            if let Some(tab) = self.tabs.iter_mut().find(|t| t.run_id == run_id) {
+                tab.attention = attention;
             }
         }
 
@@ -1554,6 +1572,7 @@ pub mod tabs {
     /// parked on approval/input (the look-at-me state), grey = idle.
     const DOT_BUSY: &str = "●";
     const DOT_APPROVAL: &str = "●";
+    const DOT_ATTENTION: &str = "◆";
     const DOT_IDLE: &str = "○";
 
     /// Click target in the tab bar, with its x-range relative to the
@@ -1666,6 +1685,8 @@ pub mod tabs {
                 (DOT_APPROVAL, theme.warning)
             } else if tab.busy {
                 (DOT_BUSY, theme.success)
+            } else if tab.attention {
+                (DOT_ATTENTION, theme.warning)
             } else {
                 (DOT_IDLE, theme.dim)
             };
@@ -1709,6 +1730,7 @@ pub mod tabs {
                 title: title.map(str::to_string),
                 busy: false,
                 approval: false,
+                attention: false,
             }
         }
 

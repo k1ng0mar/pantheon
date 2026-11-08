@@ -655,3 +655,178 @@ Stated plainly so the report is not read as stronger than it is:
 | Event enum | `crates/pantheon-api/src/types_group.rs:59` |
 | Ledger (`reopen_run`, `set_cancel_intent`) | `crates/pantheon-storage/src/core_group.rs` |
 | CLI verbs (`mcp`, `doctor`, …) | `crates/pantheon-tui/src/{config_group,heal_group,model_group}.rs` |
+
+---
+
+# Part 2 — Deep pass (2026-11-08, second session)
+
+Scope: turn lifecycles (park/resume/interrupt), replay and restore fidelity,
+cross-tab concurrency, queued-message routing, command execution paths.
+Method identical to Part 1: read-verified against the working tree, probes
+only where empirical proof was needed (none required this pass), no product
+code modified by the audit.
+
+## 9. Tree state changed during the audit
+
+Between Part 1 and this pass the repository moved twice:
+
+- `08d12de` — fix overlay underflow, verb registry, auth data dir
+- `960db80` — **wire computer use, clear cancel flag, fix run guards**
+
+`960db80` implements fixes for five Part-1 findings, matching the report's
+recommendations:
+
+| Finding | Fix in `960db80` | Verified |
+| --- | --- | --- |
+| F-01 cancel-intent poison | `Supervisor::clear_cancel_intent` (runtime/lib.rs) called from `start_turn` before spawning | [CONFIRMED] build + tests pass |
+| F-02 `[computer_use]` ignored | `apply_config` now threads the section into `set_computer_config` | [CONFIRMED] |
+| F-03 dead `/edit` `/continue` `/pin` `/clear-context` | all four fall back to `state.session_id` | [CONFIRMED] |
+| F-04 compression invisible | `ContextTrimmed`/`ContextCompressed` render a Status block | [CONFIRMED] |
+| F-08 `ToolInterrupted` spinner | card matched by `call_id` and replaced with "tool interrupted" | [CONFIRMED] |
+
+Post-fix state: `cargo build -p pantheon-tui` clean; **312 TUI + 141 runtime
+tests pass, 0 failures**. `/pin` was additionally checked end-to-end at the
+storage layer (`pin_message` is a plain upsert keyed by run id — works between
+turns). One intermediate revision of the `ToolInterrupted` arm referenced a
+non-existent `b.call_id` field; it was corrected to a `BlockKind::ToolCall`
+match before commit and the committed code compiles.
+
+Residual from F-01's fix: the durable flag is now cleared on the *next*
+`start_turn`, so `/reset`-mid-turn (which still writes `cancel_intent` via
+`cancel_current_run`) can no longer poison the following turn. The window
+between `/reset` and the next send keeps the flag set, but nothing reads it
+before `start_turn` clears it. F-01 and its `/reset` surface are both closed
+by the same change.
+
+## 10. New findings (deep pass)
+
+Evidence tags as in Part 1. Line numbers refer to HEAD `960db80`.
+
+### D-01 — `interrupted` flag survives the interrupt and tab switches — MEDIUM [CONFIRMED]
+
+`press_esc` sets `state.interrupted = true` (session.rs:2827). It is cleared
+only in `begin_turn` (2900), `reset_ephemeral` (2974), and
+`on_turn_complete` (3015). The `TuiEvent::Canceled` arm (9217–9245) clears
+`interrupt_armed_at` but **not** `interrupted`; `switch_to_run` (3632) touches
+neither. Consequences until the next turn starts:
+
+- queued tool cards (`ok: None, started: None`) render as **Interrupted** (dim
+  `■`) instead of **Queued** — including on a *different tab* after switching;
+- the status line can show "interrupted" for a run that was never stopped.
+
+Fix: reset `interrupted = false` in the `Canceled` arm (and in
+`switch_to_run`, where the flag belongs to the previous tab anyway).
+
+### D-03 — Queued message is global, not per-tab — HIGH [CONFIRMED]
+
+`queued_message` is a single `Option<String>` on `TuiState` (session.rs:797),
+set by `begin_turn` when the *any* busy state queues (2894) and drained by
+`drain_queued_message`, which starts the turn on `state.session_id` **at drain
+time**. `switch_to_run` does not re-key or clear it. Concrete failure:
+
+1. Tab A is running; the user types M in A → queued ("queued for after this
+   turn").
+2. The user switches to tab B and sends N; B is idle, so N starts a turn on B.
+3. B completes → `TurnComplete{B}` matches the visible session → drain fires →
+   **M starts a turn on B**, executing in B's ledger/workspace context.
+
+The message the user typed into A is silently delivered to B. Fix: key the
+queue by run id (`HashMap<String, String>` or per-tab state) and drain only
+the queue belonging to the run that just completed.
+
+### D-04 — `attention`/`attention_note` are write-only — MEDIUM [CONFIRMED]
+
+`on_turn_complete(false)` sets `attention = true` + note (3023–3034),
+`on_background_turn_complete` ditto, the background error/cancel arms set the
+note (9177, 9219). A repo-wide search finds **zero readers** — the tab dot is
+driven by `tab.busy`/`tab.approval` (lease + parked decisions), and
+`render_group.rs` never references `attention`. The field's own doc comment
+(session.rs:822) claims "the tab UI renders it as a badge"; that badge does
+not exist. The only user-visible background-completion signal is the desktop
+notification/bell. Fix: render the badge (e.g. a hollow dot for tabs with
+`attention`) or delete the field and fix the doc.
+
+### D-07 — `switch_to_run` leaves the previous tab's turn state armed — HIGH [CONFIRMED]
+
+`switch_to_run` (3632) clears transient modals, tokens, drafts, rebuilds
+blocks, hydrates decisions — but does **not** touch `ready`, `active_run`,
+`status_line`, `interrupted`, or `queued_message`, all of which belong to the
+tab just left. Switching from a running tab A to idle tab B leaves the UI in
+A's state while showing B's transcript:
+
+- `begin_turn` sees `!ready` and queues B's messages into the global slot
+  (feeding D-03);
+- **Esc in tab B cancels tab A's turn**: `press_esc` arms on `!ready`, and
+  `interrupt_target()` (3001) returns `active_run` = A's run id;
+- the status line and context meter show A's state on B.
+
+Switching *into* a busy tab is self-healing (its own `TurnComplete` arrives
+later and resets state), but switching *away* from one is not. Fix: derive
+per-tab turn state (or recompute `ready`/`active_run`/`status_line` for the
+target tab on switch — `has_active_lease` already provides the busy truth).
+
+### D-10 — Turn worker has no panic guard — MEDIUM [CODE]
+
+`spawn_turn` (7227) and `spawn_bg_task` (7310) run `chat`/`chat_turn` on a
+bare `std::thread::spawn` with no `catch_unwind`. A panic inside the turn
+kills the thread before any `TuiEvent` is sent: the tab stays `ready=false`,
+`active_run=Some`, status "working" — forever. Esc cannot help (the `Canceled`
+event never arrives; the interrupt only arms). The ledger-side lease expires
+and `settle_stuck_run` repairs storage, but the TUI state stays stuck until
+`/reset`. Fix: wrap the worker body in `catch_unwind` and send
+`TuiEvent::Error` on unwind so the UI un-sticks with an honest message.
+
+### D-02 — `/edit` does not hide the rewound turn (view/ledger divergence) — LOW [CONFIRMED]
+
+`do_edit` (10984→ shifted) emits `TurnRewound`, appends the new user message,
+and starts a turn — but does **not** truncate the live view, unlike the
+shared rewind core `rewind_to_turn` (8765) used by double-Esc and `/restore`.
+The edited turn and its replacement are both visible until the next tab
+switch rebuilds the transcript from the ledger (which drops the rewound
+turn). Investigated as a potential `/restore` numbering hazard and **cleared**:
+`plan_restore` + `user_message_block` converge because the view's user blocks
+are always a superset of the ledger's effective turns in order, so truncating
+at the Nth view block never keeps content the ledger dropped. Residual
+defects: inconsistent UX between the two "rewind and resubmit" paths, and the
+draft restored by a later `/restore` is the *old* edited text, not the
+replacement. Fix: route `do_edit` through `rewind_to_turn`'s view truncation.
+
+### D-09 — Steer markers vanish on rebuild — LOW [CODE]
+
+A mid-turn steer renders live as a Status block ("steered: …",
+session.rs:2649) from `SteeringProvided`, and the model context keeps it
+(`rebuild_messages` has a `SteeringProvided` arm). But `rebuild_transcript`
+(runtime/session.rs:8730) has **no** `SteeringProvided` arm, so a reopened or
+re-switched tab loses the steer marker from the visible transcript while the
+model still sees it. Fix: map `SteeringProvided` to a Status item in
+`rebuild_transcript`.
+
+### Withdrawn during this pass
+
+- **D-05 (thinking-block merge across turns)**: `ReasoningDelta` appends to a
+  trailing Thinking block regardless of turn boundaries, which *would* merge
+  an interrupted turn's reasoning into the next turn's block — but every
+  terminal path (Canceled, Error, park) pushes a Status/Approval block that
+  breaks the append. Not reachable through normal flows; noted as a fragility
+  only.
+- **User-prompt loss on rebuild (investigated, not a bug)**: the ledger stores
+  the raw prompt twice — `Event::UserMessage` (retry bookkeeping) *and*
+  `Event::AssistantMessage` carrying `Message::user` (the transcript row).
+  `rebuild_messages`/`rebuild_transcript` intentionally skip the former; the
+  TUI's `Role::User` mapping is alive.
+
+## 11. Updated priorities
+
+| P | Item | Note |
+| --- | --- | --- |
+| P0 | D-03 cross-tab queue injection | silent wrong-session execution |
+| P0 | D-07 switch leaves A's turn state on B | Esc in B cancels A |
+| P1 | D-10 panic guard on turn workers | stuck "working" until /reset |
+| P1 | D-01 `interrupted` flag reset | wrong card states cross-tab |
+| P2 | D-04 attention badge | dead state + unimplemented documented feature |
+| P2 | D-02 `/edit` view truncation | UX consistency + draft quirk |
+| P3 | D-09 steer marker on rebuild | replay fidelity, cosmetic |
+
+Part-1 priorities unchanged except F-01/F-02/F-03/F-04/F-08 move to
+**fixed (960db80)**; regression tests for the five fixes are still
+recommended before the fixes are considered locked in.

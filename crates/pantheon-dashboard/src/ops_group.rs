@@ -1632,6 +1632,9 @@ pub mod runs {
                                 redact(&pantheon_api::ui::text_summary(&document.root))
                             ));
                         }
+                        TranscriptItem::Status(t) => {
+                            md.push_str(&format!("## Status\n\n{}\n\n", redact(&t)));
+                        }
                     }
                 }
                 Response::download(
@@ -1678,6 +1681,10 @@ pub mod runs {
                             "ui_id": ui_id,
                             "revision": revision,
                             "document": document,
+                        }),
+                        TranscriptItem::Status(t) => serde_json::json!({
+                            "type": "status",
+                            "content": redact(&t),
                         }),
                     })
                     .collect();

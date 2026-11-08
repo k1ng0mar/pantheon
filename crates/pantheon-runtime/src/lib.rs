@@ -60,7 +60,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
-pub use support_group::tool_config::ComputerToolConfig;
 pub use support_group::agent_runtime;
 pub use support_group::agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
 pub use support_group::loop_guard;
@@ -69,6 +68,7 @@ pub use support_group::rpc;
 pub use support_group::rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
 pub use support_group::skill_exec_tool;
 pub use support_group::tool_config;
+pub use support_group::tool_config::ComputerToolConfig;
 pub use support_group::tool_config::{
     browser_backend_config, build_browser_backend, resolve_browser_section, BrowserToolConfig,
     CamofoxToolConfig, WebsearchToolConfig,

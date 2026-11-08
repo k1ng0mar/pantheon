@@ -792,9 +792,12 @@ pub struct TuiState {
     /// The conversation's current title: set by the title auxiliary
     /// (SessionTitled), by /name, and refreshed when resuming a run.
     pub title: Option<String>,
-    /// Message typed while a turn was running. Enter queues it instead of
-    /// spawning a second agent loop; it fires when the turn ends.
-    pub queued_message: Option<String>,
+    /// Messages typed while a turn was running, keyed by run id. Enter
+    /// queues instead of spawning a second agent loop; each entry fires
+    /// only when its own run's turn ends. A global single slot used to
+    /// leak across tabs: type in busy tab A, switch to B, and B's completion
+    /// would deliver A's text in B's ledger context.
+    pub queued_messages: std::collections::HashMap<String, String>,
     /// Run id of the turn currently in flight, if any. Esc interrupts this
     /// run (not the selected session) so a mid-turn resume cannot retarget
     /// the interrupt at the wrong loop.
@@ -1033,7 +1036,7 @@ impl Default for TuiState {
             palette: None,
             pending_snaps: std::collections::HashMap::new(),
             title: None,
-            queued_message: None,
+            queued_messages: std::collections::HashMap::new(),
             active_run: None,
             turn_in: None,
             turn_out: None,
@@ -1319,7 +1322,7 @@ impl TuiState {
             palette: None,
             pending_snaps: std::collections::HashMap::new(),
             title: None,
-            queued_message: None,
+            queued_messages: std::collections::HashMap::new(),
             active_run: None,
             turn_in: None,
             turn_out: None,
@@ -2891,7 +2894,7 @@ impl TuiState {
     /// against the shipped code rather than a copy of it.
     pub fn begin_turn(&mut self, msg: String) -> bool {
         if !self.ready {
-            self.queued_message = Some(msg);
+            self.queued_messages.insert(self.session_id.clone(), msg);
             return false;
         }
         self.ready = false;
@@ -2950,9 +2953,33 @@ impl TuiState {
         self.checkpoint_names.clear();
     }
 
-    /// Take the message queued while a turn was running, if any.
+    /// Take the message queued for the visible run, if any.
     pub fn take_queued(&mut self) -> Option<String> {
-        self.queued_message.take()
+        let run_id = self.session_id.clone();
+        self.queued_messages.remove(&run_id)
+    }
+
+    /// Take the message queued for one specific run. Used when a turn
+    /// completes so other tabs' queued follow-ups stay parked.
+    pub fn take_queued_for(&mut self, run_id: &str) -> Option<String> {
+        self.queued_messages.remove(run_id)
+    }
+
+    /// Queue or replace a follow-up message for one run.
+    pub fn queue_message(&mut self, run_id: &str, msg: String) {
+        if msg.is_empty() {
+            self.queued_messages.remove(run_id);
+        } else {
+            self.queued_messages.insert(run_id.to_string(), msg);
+        }
+    }
+
+    /// The queued follow-up for the visible run, if any. Kept as a
+    /// read-only accessor for renderers and tests.
+    pub fn queued_message(&self) -> Option<&str> {
+        self.queued_messages
+            .get(&self.session_id)
+            .map(String::as_str)
     }
 
     /// Reset ephemeral turn state without touching the session identity,
@@ -2968,7 +2995,7 @@ impl TuiState {
     pub fn reset_ephemeral(&mut self) -> bool {
         let was_running = !self.ready;
         self.blocks.clear();
-        self.queued_message = None;
+        self.queued_messages.remove(&self.session_id.clone());
         self.ready = true;
         self.status_line = "ready".to_string();
         self.interrupted = false;
@@ -3000,6 +3027,26 @@ impl TuiState {
         self.active_run.as_deref().unwrap_or(&self.session_id)
     }
 
+    /// Recompute the visible turn gate from the ledger lease. This is
+    /// the only place tab switching may repair `ready`/`active_run`:
+    /// durable leases—not the previous tab's in-memory flags—are the
+    /// source of truth for whether the visible run is still busy.
+    pub fn sync_turn_state_from_lease(&mut self, busy: bool) {
+        self.ready = !busy;
+        self.active_run = if busy {
+            Some(self.session_id.clone())
+        } else {
+            None
+        };
+        self.status_line = if busy {
+            "working".to_string()
+        } else {
+            "ready".to_string()
+        };
+        self.interrupted = false;
+        self.interrupt_armed_at = None;
+    }
+
     /// Mark a turn finished. `focused` tells whether this session's tab is
     /// the visible one: a background finish raises the tab badge instead
     /// of touching anything the user is doing.
@@ -3019,9 +3066,13 @@ impl TuiState {
         if focused {
             self.attention = false;
             self.attention_note = None;
+            let run_id = self.session_id.clone();
+            self.tabs.set_attention(&run_id, false);
         } else {
             self.attention = true;
             self.attention_note = Some(format!("turn {} finished", self.turns_completed));
+            let run_id = self.session_id.clone();
+            self.tabs.set_attention(&run_id, true);
         }
     }
 
@@ -3031,14 +3082,29 @@ impl TuiState {
     /// are never touched here.
     pub fn on_background_turn_complete(&mut self, run_id: &str) {
         self.tabs.set_busy(run_id, false);
-        self.attention = true;
-        self.attention_note = Some("a background turn finished".to_string());
+        self.tabs.set_attention(run_id, true);
+        if run_id == self.session_id {
+            self.attention = true;
+            self.attention_note = Some("a background turn finished".to_string());
+        }
     }
 
     /// Clear the background-completion badge: the tab is focused again.
     pub fn attention_clear(&mut self) {
         self.attention = false;
         self.attention_note = None;
+        let run_id = self.session_id.clone();
+        self.tabs.set_attention(&run_id, false);
+    }
+
+    /// Whether the visible tab has an unread background-completion badge.
+    pub fn tab_attention(&self) -> bool {
+        self.tabs
+            .tabs()
+            .iter()
+            .find(|t| t.run_id == self.session_id)
+            .map(|t| t.attention)
+            .unwrap_or(self.attention)
     }
 
     /// Toggle the turn-timeline rail. Opening selects the latest turn.
@@ -3586,6 +3652,10 @@ fn new_tab(state: &mut TuiState, session: &Arc<Session>, status: &str) {
         state.drafts.insert(old, std::mem::take(&mut state.input));
     }
     state.session_id = pantheon_runtime::new_run_id();
+    // A fresh run has no durable lease yet, so the visible turn gate is
+    // idle by definition. Do not inherit the old tab's busy/interrupted
+    // state; queued messages remain keyed to their own run ids.
+    state.sync_turn_state_from_lease(false);
     // Opening a tab is explicit membership: the new run joins the
     // open-tab list immediately, ledger row or not.
     if !state.open_tabs.contains(&state.session_id) {
@@ -3650,6 +3720,11 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
         // modal state still must not linger across the switch.
         state.clear_transient_modals();
         state.attention_clear();
+        let busy = session
+            .supervisor
+            .has_active_lease(id)
+            .unwrap_or(!state.ready);
+        state.sync_turn_state_from_lease(busy);
         return;
     }
     // Transient modals act on the visible session; a mouse click that
@@ -3734,6 +3809,7 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
                     revision,
                     document,
                 },
+                pantheon_runtime::session::TranscriptItem::Status(text) => BlockKind::Status(text),
             };
             state.blocks.push(TranscriptBlock { kind });
         }
@@ -3769,6 +3845,8 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
             }
             None => state.pending_clarify = None,
         }
+        let busy = session.supervisor.has_active_lease(id).unwrap_or(false);
+        state.sync_turn_state_from_lease(busy);
         state.scroll_to_bottom();
     }
     let draft = state.drafts.remove(id).unwrap_or_default();
@@ -7240,8 +7318,25 @@ fn spawn_turn(
         // event with it so the loop can route background streams away
         // from the visible transcript.
         set_stream_run(&run_id_owned);
-        match session_owned.chat(&run_id_owned, &msg_owned) {
-            Ok(outcome) => match outcome {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session_owned.chat(&run_id_owned, &msg_owned)
+        }));
+        match outcome {
+            Err(_) => {
+                let _ = tx2.send(TuiEvent::Error {
+                    run_id: run_id_owned.clone(),
+                    msg: "turn worker panicked (see process logs); state reset to ready"
+                        .to_string(),
+                });
+                return;
+            }
+            Ok(Err(e)) => {
+                let _ = tx2.send(TuiEvent::Error {
+                    run_id: run_id_owned.clone(),
+                    msg: e.to_string(),
+                });
+            }
+            Ok(Ok(outcome)) => match outcome {
                 pantheon_agent::LoopOutcome::AwaitingApproval { .. } => {
                     // The ApprovalRequested runtime event (via the observer)
                     // carries scope; the worker just marks the turn parked.
@@ -7260,12 +7355,6 @@ fn spawn_turn(
                     });
                 }
             },
-            Err(e) => {
-                let _ = tx2.send(TuiEvent::Error {
-                    run_id: run_id_owned.clone(),
-                    msg: e.to_string(),
-                });
-            }
         }
     });
 }
@@ -7324,8 +7413,19 @@ fn spawn_bg_task(
         // Tag the stream: bg-task model events belong to the task's run,
         // never to the visible transcript.
         set_stream_run(&run_id);
-        let outcome =
-            session_owned.chat_turn_with_cancel(&run_id, &turn_id, &prompt_owned, &cancel);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session_owned.chat_turn_with_cancel(&run_id, &turn_id, &prompt_owned, &cancel)
+        }));
+        let outcome = match outcome {
+            Err(_) => {
+                let _ = tx2.send(TuiEvent::BgDone {
+                    task_id,
+                    result: Err("background task worker panicked (see process logs)".to_string()),
+                });
+                return;
+            }
+            Ok(outcome) => outcome,
+        };
         let result = match outcome {
             Ok(pantheon_agent::LoopOutcome::Answered { text, .. }) => Ok(text),
             Ok(pantheon_agent::LoopOutcome::Delegated { agent }) => Ok(format!(
@@ -8257,20 +8357,26 @@ fn resume_parked_turn(
     let sess3 = session.clone();
     std::thread::spawn(move || {
         set_stream_run(&run3);
-        match sess3.chat_turn(&run3, "", "") {
-            Ok(_) => {
-                // The model-event callback already rendered the response
-                // incrementally (or as one completed delta for a
-                // non-streaming model). Sending the final text separately
-                // would append the same answer a second time.
-                let _ = tx3.send(TuiEvent::TurnComplete {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sess3.chat_turn(&run3, "", "")
+        }));
+        match outcome {
+            Err(_) => {
+                let _ = tx3.send(TuiEvent::Error {
                     run_id: run3.clone(),
+                    msg: "resume worker panicked (see process logs); state reset to ready"
+                        .to_string(),
                 });
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 let _ = tx3.send(TuiEvent::Error {
                     run_id: run3.clone(),
                     msg: e.to_string(),
+                });
+            }
+            Ok(Ok(_)) => {
+                let _ = tx3.send(TuiEvent::TurnComplete {
+                    run_id: run3.clone(),
                 });
             }
         }
@@ -9023,6 +9129,11 @@ fn tui_loop(
         if !running.load(Ordering::SeqCst) || state.shutting_down {
             break;
         }
+        // Drain only the visible run's follow-up. This covers the case
+        // where a busy run finished while its tab was in the background:
+        // its queue stayed keyed to that run, and switching back makes it
+        // the visible run again. Other runs' queues stay parked.
+        drain_queued_message(state, &session, tx);
 
         while let Ok(ev) = rx.try_recv() {
             match ev {
@@ -9047,9 +9158,11 @@ fn tui_loop(
                     // follow-up so it isn't silently lost. It goes out
                     // with the next turn instead of redirecting this one.
                     for s in session.drain_steers() {
-                        let q = state.queued_message.take().unwrap_or_default();
-                        state.queued_message =
-                            Some(if q.is_empty() { s } else { format!("{q}\n{s}") });
+                        let q = state.take_queued_for(&run_id).unwrap_or_default();
+                        state.queue_message(
+                            &run_id,
+                            if q.is_empty() { s } else { format!("{q}\n{s}") },
+                        );
                     }
                     // `session_id` follows the visible tab; a completion
                     // for any other run belongs to a background tab: badge
@@ -9179,6 +9292,7 @@ fn tui_loop(
                         // A background run failed: badge its tab and move
                         // on. The visible session's error state is its own.
                         state.on_background_turn_complete(&run_id);
+                        state.tabs.set_attention(&run_id, true);
                         state.attention_note = Some(format!("background run failed: {msg}"));
                         continue;
                     }
@@ -9220,6 +9334,7 @@ fn tui_loop(
                         // belongs to the background tab, not the visible
                         // one.
                         state.on_background_turn_complete(&run_id);
+                        state.tabs.set_attention(&run_id, true);
                         state.attention_note = Some("background run interrupted".to_string());
                         continue;
                     }
@@ -9227,6 +9342,7 @@ fn tui_loop(
                     // ledger holds the partial transcript so it can be resumed.
                     state.ready = true;
                     state.interrupt_armed_at = None;
+                    state.interrupted = false;
                     state.status_line = "interrupted".to_string();
                     state.blocks.push(TranscriptBlock {
                         kind: BlockKind::Status(
@@ -11001,6 +11117,21 @@ fn do_pin(state: &mut TuiState, session: &Arc<Session>, arg: &str) {
     }
 }
 
+fn turn_drop_block(
+    state: &TuiState,
+    session: &Arc<Session>,
+    run_id: &str,
+    turn_id: &str,
+) -> Option<(usize, usize)> {
+    let entries = session.supervisor.replay(run_id).ok()?;
+    let turn_ids = crate::checkpoint::effective_turn_ids(&entries);
+    let idx = turn_ids.iter().position(|id| id == turn_id)?;
+    let drop_block = timeline::build_turns(&state.blocks)
+        .get(idx)
+        .map(|t| t.block_start)?;
+    Some((drop_block, turn_ids.len() - idx))
+}
+
 fn do_edit(
     state: &mut TuiState,
     session: &Arc<Session>,
@@ -11027,16 +11158,23 @@ fn do_edit(
         state.add_status("usage: /edit <turn-id> <new text> - rewind and resubmit".into());
         return;
     }
-    if let Err(e) = session
-        .supervisor
-        .ledger_append(&pantheon_api::events::Event::TurnRewound {
-            run_id: run_id.clone(),
-            turn_id: turn_id.to_string(),
-        })
-    {
-        state.add_status(format!("rewind failed: {e}"));
+    let Some((drop_block, turns_dropped)) = turn_drop_block(state, session, &run_id, turn_id)
+    else {
+        state.add_status(format!("/edit: unknown turn '{turn_id}'"));
         return;
-    }
+    };
+    rewind_to_turn(
+        state,
+        session,
+        turn_id,
+        drop_block,
+        turns_dropped as u32,
+        "edited turn",
+    );
+    // `rewind_to_turn` restores the old prompt as a draft. `/edit`
+    // immediately replaces it with the edited prompt, so clear that draft
+    // before adding the replacement user block.
+    state.clear_composer();
     state.add_user_message(text.to_string());
     state.add_status("edited and resubmitted".into());
     start_turn(state, session, tx, text.to_string());
@@ -14683,6 +14821,58 @@ mod streaming_response_tests {
             "new turn must not start at the old total"
         );
         assert_eq!(state.tokens_used, 500, "session spend stays cumulative");
+    }
+
+    #[test]
+    fn queued_messages_are_keyed_by_run() {
+        let mut state = test_state();
+        state.session_id = "run-a".into();
+        state.ready = false;
+        assert!(!state.begin_turn("for A".into()));
+        assert_eq!(state.queued_message(), Some("for A"));
+        state.session_id = "run-b".into();
+        assert_eq!(state.queued_message(), None);
+        state.queue_message("run-b", "for B".into());
+        assert_eq!(state.take_queued_for("run-a"), Some("for A".into()));
+        assert_eq!(state.take_queued_for("run-b"), Some("for B".into()));
+        assert!(state.queued_messages.is_empty());
+    }
+
+    #[test]
+    fn lease_sync_derives_visible_turn_state() {
+        let mut state = test_state();
+        state.session_id = "run-b".into();
+        state.ready = false;
+        state.active_run = Some("run-a".into());
+        state.interrupted = true;
+        state.sync_turn_state_from_lease(false);
+        assert!(state.ready);
+        assert_eq!(state.active_run, None);
+        assert_eq!(state.status_line, "ready");
+        assert!(!state.interrupted);
+        state.sync_turn_state_from_lease(true);
+        assert!(!state.ready);
+        assert_eq!(state.active_run.as_deref(), Some("run-b"));
+        assert_eq!(state.status_line, "working");
+    }
+
+    #[test]
+    fn background_attention_marks_only_that_tab() {
+        let mut state = test_state();
+        state.tabs.refresh_from_explicit(
+            &[
+                ("run-a".into(), Some("A".into())),
+                ("run-b".into(), Some("B".into())),
+            ],
+            |_| false,
+            "run-a",
+        );
+        state.session_id = "run-a".into();
+        state.on_background_turn_complete("run-b");
+        let a = state.tabs.tabs().iter().find(|t| t.run_id == "run-a");
+        let b = state.tabs.tabs().iter().find(|t| t.run_id == "run-b");
+        assert_eq!(a.map(|t| t.attention), Some(false));
+        assert_eq!(b.map(|t| t.attention), Some(true));
     }
 
     #[test]
