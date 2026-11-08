@@ -15,9 +15,7 @@ const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
 /// stream input, Codex uses `turn/steer`, Pi and omp use their own steer, Muse takes
 /// one on the wire, and OpenCode folds a second `session/prompt` into its running loop.
 const STEERING: [&str; 1] = ["pantheon"];
-const HARNESSES: [&str; 1] = [
-    "pantheon",
-];
+const HARNESSES: [&str; 1] = ["pantheon"];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +70,9 @@ pub fn plan(recipe: &Recipe, provider: &str, slash: &[String]) -> Result<Plan, S
 pub fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 64
-        && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
 }
 
@@ -102,13 +102,21 @@ pub fn validate(recipe: &Recipe) -> Result<(), String> {
         }
         match step.kind.as_str() {
             "slash" if !command.starts_with('/') || command.len() < 2 => {
-                return Err(format!("Step {n}: a slash step needs a command like /review."))
+                return Err(format!(
+                    "Step {n}: a slash step needs a command like /review."
+                ))
             }
-            "prompt" | "check" if text.is_empty() => return Err(format!("Step {n}: add the text to send.")),
+            "prompt" | "check" if text.is_empty() => {
+                return Err(format!("Step {n}: add the text to send."))
+            }
             _ => {}
         }
         for need in &step.requires {
-            let known = need == "mcp" || need == "steer" || need.strip_prefix("slash:").is_some_and(|s| !s.trim().is_empty());
+            let known = need == "mcp"
+                || need == "steer"
+                || need
+                    .strip_prefix("slash:")
+                    .is_some_and(|s| !s.trim().is_empty());
             if !known || need.len() > 160 {
                 return Err(format!("Step {n}: unknown requirement “{need}”."));
             }
@@ -126,13 +134,18 @@ fn file(dir: &Path, name: &str) -> Result<PathBuf, String> {
 
 /// Recipes in `dir` (unreadable or invalid files are skipped), sorted by name.
 pub fn list_dir(dir: &Path, scope: &str) -> Vec<Recipe> {
-    let Ok(entries) = fs::read_dir(dir) else { return vec![] };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return vec![];
+    };
     let mut found: Vec<Recipe> = entries
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
             let stem = path.file_stem()?.to_str()?.to_string();
-            if path.extension()? != "json" || !valid_name(&stem) || entry.metadata().ok()?.len() > MAX_FILE {
+            if path.extension()? != "json"
+                || !valid_name(&stem)
+                || entry.metadata().ok()?.len() > MAX_FILE
+            {
                 return None;
             }
             let mut recipe: Recipe = serde_json::from_str(&fs::read_to_string(&path).ok()?).ok()?;
@@ -149,7 +162,9 @@ pub fn list_dir(dir: &Path, scope: &str) -> Vec<Recipe> {
 
 /// Project recipes first; a project recipe hides a global one of the same name.
 pub fn list(project: Option<&Path>, global: &Path) -> Vec<Recipe> {
-    let mut all = project.map(|root| list_dir(&project_dir(root), "project")).unwrap_or_default();
+    let mut all = project
+        .map(|root| list_dir(&project_dir(root), "project"))
+        .unwrap_or_default();
     for recipe in list_dir(global, "global") {
         if !all.iter().any(|r| r.name == recipe.name) {
             all.push(recipe);
@@ -185,7 +200,11 @@ pub fn delete(dir: &Path, name: &str) -> Result<(), String> {
 
 fn note(report: &mut StepReport, status: &'static str, reason: String) {
     if rank(status) > rank(report.status) {
-        *report = StepReport { index: report.index, status, reason };
+        *report = StepReport {
+            index: report.index,
+            status,
+            reason,
+        };
     }
 }
 
@@ -201,7 +220,11 @@ fn rank(status: &str) -> u8 {
 /// Resolves every step against `provider`. `slash` lists the command names (with the leading
 /// `/`) the harness offers in this task, from `list_slash_commands`. A step never silently
 /// takes a weaker path: a missing command is `blocked`, unless the step carries fallback text.
-pub fn dry_run(recipe: &Recipe, provider: &str, slash: &[String]) -> Result<Vec<StepReport>, String> {
+pub fn dry_run(
+    recipe: &Recipe,
+    provider: &str,
+    slash: &[String],
+) -> Result<Vec<StepReport>, String> {
     if !HARNESSES.contains(&provider) {
         return Err("Unknown harness.".into());
     }
@@ -282,13 +305,24 @@ mod tests {
     use super::*;
 
     fn step(kind: &str, text: Option<&str>, command: Option<&str>, requires: &[&str]) -> Step {
-        Step { kind: kind.into(), text: text.map(Into::into), command: command.map(Into::into), requires: requires.iter().map(|s| s.to_string()).collect() }
+        Step {
+            kind: kind.into(),
+            text: text.map(Into::into),
+            command: command.map(Into::into),
+            requires: requires.iter().map(|s| s.to_string()).collect(),
+        }
     }
     fn recipe(steps: Vec<Step>) -> Recipe {
-        Recipe { name: "review".into(), description: "d".into(), steps, scope: String::new() }
+        Recipe {
+            name: "review".into(),
+            description: "d".into(),
+            steps,
+            scope: String::new(),
+        }
     }
     fn temp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pantheon-recipes-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-recipes-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
     }
@@ -299,7 +333,14 @@ mod tests {
             assert!(!valid_name(bad), "{bad}");
         }
         assert!(valid_name("review-diff_2"));
-        assert!(save(&temp("name"), &Recipe { name: "../x".into(), ..recipe(vec![step("prompt", Some("hi"), None, &[])]) }).is_err());
+        assert!(save(
+            &temp("name"),
+            &Recipe {
+                name: "../x".into(),
+                ..recipe(vec![step("prompt", Some("hi"), None, &[])])
+            }
+        )
+        .is_err());
     }
 
     #[test]
@@ -309,9 +350,25 @@ mod tests {
         assert!(validate(&recipe(vec![step("slash", None, Some("review"), &[])])).is_err());
         assert!(validate(&recipe(vec![step("nope", Some("x"), None, &[])])).is_err());
         assert!(validate(&recipe(vec![step("prompt", Some("x"), None, &["gpu"])])).is_err());
-        assert!(validate(&recipe(vec![step("prompt", Some(&"x".repeat(MAX_TEXT + 1)), None, &[])])).is_err());
-        assert!(validate(&recipe(vec![step("prompt", Some("x"), None, &[]); MAX_STEPS + 1])).is_err());
-        assert!(validate(&recipe(vec![step("approval", None, None, &["steer", "mcp", "slash:review"])])).is_ok());
+        assert!(validate(&recipe(vec![step(
+            "prompt",
+            Some(&"x".repeat(MAX_TEXT + 1)),
+            None,
+            &[]
+        )]))
+        .is_err());
+        assert!(validate(&recipe(vec![
+            step("prompt", Some("x"), None, &[]);
+            MAX_STEPS + 1
+        ]))
+        .is_err());
+        assert!(validate(&recipe(vec![step(
+            "approval",
+            None,
+            None,
+            &["steer", "mcp", "slash:review"]
+        )]))
+        .is_ok());
     }
 
     #[test]
@@ -326,12 +383,24 @@ mod tests {
         save(&global, &r).unwrap();
         fs::write(project_dir(&project).join("broken.json"), "{").unwrap();
         let all = list(Some(&project), &global);
-        let names: Vec<_> = all.iter().map(|r| (r.name.as_str(), r.scope.as_str(), r.description.as_str())).collect();
-        assert_eq!(names, [("review", "project", "d"), ("only-global", "global", "d")]);
-        assert!(!fs::read_to_string(project_dir(&project).join("review.json")).unwrap().contains("scope"));
+        let names: Vec<_> = all
+            .iter()
+            .map(|r| (r.name.as_str(), r.scope.as_str(), r.description.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [("review", "project", "d"), ("only-global", "global", "d")]
+        );
+        assert!(
+            !fs::read_to_string(project_dir(&project).join("review.json"))
+                .unwrap()
+                .contains("scope")
+        );
         delete(&project_dir(&project), "review").unwrap();
         delete(&project_dir(&project), "review").unwrap();
-        assert!(list(Some(&project), &global).iter().any(|r| r.name == "review" && r.scope == "global" && r.description == "global copy"));
+        assert!(list(Some(&project), &global)
+            .iter()
+            .any(|r| r.name == "review" && r.scope == "global" && r.description == "global copy"));
         assert!(delete(&global, "../review").is_err());
         let _ = fs::remove_dir_all(project);
         let _ = fs::remove_dir_all(global);
@@ -349,8 +418,25 @@ mod tests {
             step("prompt", Some("x"), None, &["slash:ship"]),
         ]);
         let slash = vec!["/review".to_string()];
-        let status = |provider: &str| dry_run(&r, provider, &slash).unwrap().iter().map(|s| s.status).collect::<Vec<_>>();
-        assert_eq!(status("pantheon"), ["supported", "supported", "fallback", "blocked", "supported", "manual", "blocked"]);
+        let status = |provider: &str| {
+            dry_run(&r, provider, &slash)
+                .unwrap()
+                .iter()
+                .map(|s| s.status)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            status("pantheon"),
+            [
+                "supported",
+                "supported",
+                "fallback",
+                "blocked",
+                "supported",
+                "manual",
+                "blocked"
+            ]
+        );
         let reports = dry_run(&r, "pantheon", &slash).unwrap();
         assert!(reports[3].reason.contains("/missing"));
         assert!(dry_run(&r, "nope", &slash).is_err());
@@ -378,8 +464,14 @@ mod tests {
     fn every_harness_the_app_supports_can_run_a_recipe() {
         let r = recipe(vec![step("prompt", Some("hi"), None, &[])]);
         for (provider, _) in crate::providers::PROVIDERS {
-            assert!(HARNESSES.contains(&provider), "{provider} is missing from the recipe harnesses");
-            assert!(dry_run(&r, provider, &[]).is_ok(), "{provider} cannot run a recipe");
+            assert!(
+                HARNESSES.contains(&provider),
+                "{provider} is missing from the recipe harnesses"
+            );
+            assert!(
+                dry_run(&r, provider, &[]).is_ok(),
+                "{provider} cannot run a recipe"
+            );
         }
     }
 
@@ -388,11 +480,21 @@ mod tests {
         let r = recipe(vec![step("check", Some("npm test"), None, &["steer"])]);
         for provider in ["pantheon"] {
             let reports = dry_run(&r, provider, &[]).unwrap();
-            assert_eq!(reports[0].status, "supported", "{provider} takes a message mid-turn");
+            assert_eq!(
+                reports[0].status, "supported",
+                "{provider} takes a message mid-turn"
+            );
         }
-        for provider in ["kimi", "grok", "deepseek", "commandcode", "cline", "antigravity", "github-copilot"] {
-            let reports = dry_run(&r, provider, &[]).unwrap();
-            assert_eq!(reports[0].status, "fallback", "{provider} holds the message until the run ends");
+        for provider in [
+            "kimi",
+            "grok",
+            "deepseek",
+            "commandcode",
+            "cline",
+            "antigravity",
+            "github-copilot",
+        ] {
+            assert_eq!(dry_run(&r, provider, &[]), Err("Unknown harness.".to_string()));
         }
     }
 }

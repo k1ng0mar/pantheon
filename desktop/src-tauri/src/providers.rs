@@ -23,38 +23,41 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms};
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
+pub use warm::{
+    discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent,
+    supported as warms,
+};
 pub(crate) mod acp;
 pub(crate) mod acp_catalog;
+pub(crate) mod claude_auth;
 #[cfg(test)]
 mod claude_stream_tests;
+mod cline;
 #[cfg(test)]
 mod codex_stream_tests;
+mod commandcode;
 #[cfg(all(test, unix))]
 pub(crate) mod concurrent_process_tests;
-mod cline;
-mod commandcode;
+mod deepseek;
+mod diagnostics;
 mod extra_models;
 mod github_copilot;
 mod glm;
+mod kilo;
+mod kimi_models;
+mod launch;
 mod mimo;
 mod muse;
-mod deepseek;
-mod kimi_models;
-mod kilo;
-mod launch;
 mod pi;
-mod diagnostics;
-pub(crate) mod claude_auth;
-pub(crate) use launch::{command, pty_command, external_path, executable_path, widen_process_path};
+pub(crate) use launch::{command, executable_path, external_path, pty_command, widen_process_path};
 #[cfg(test)]
 mod kimi_stream_tests;
-#[cfg(test)]
-mod slash_command_tests;
 mod limits;
 mod plan_reads;
+#[cfg(test)]
+mod slash_command_tests;
 mod steering;
 mod subagents;
 mod text_stream;
@@ -69,24 +72,22 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-pub(crate) const PROVIDERS: [(&str, &str); 1] = [
-    ("pantheon", "Pantheon"),
-];
+pub(crate) const PROVIDERS: [(&str, &str); 1] = [("pantheon", "Pantheon")];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
 
 /// Never runs an agent-reviewed task under some other policy.
-fn review_supported(_provider: &str, mode: &str) -> Result<(), String> {
-    if mode == "review" {
-        return Err("Approve for me is not available in Pantheon-only mode.".into());
+fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
+    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
+        return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
     }
     Ok(())
 }
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
-pub fn takes_system_instructions(_provider: &str) -> bool {
-    true
+pub fn takes_system_instructions(provider: &str) -> bool {
+    matches!(provider, "pantheon" | "claude" | "glm" | "mimo" | "pi" | "omp")
 }
 
 #[derive(Clone, Debug)]
@@ -127,16 +128,36 @@ pub struct AgentEvent {
 
 fn explicit_write_paths(name: &str, input: &Value) -> Option<Vec<String>> {
     match name {
-        "Write" | "Edit" | "MultiEdit" => Some(input["file_path"].as_str().filter(|p| p.len() <= 4096).map(str::to_owned).into_iter().collect()),
-        "NotebookEdit" => Some(input["notebook_path"].as_str().filter(|p| p.len() <= 4096).map(str::to_owned).into_iter().collect()),
+        "Write" | "Edit" | "MultiEdit" => Some(
+            input["file_path"]
+                .as_str()
+                .filter(|p| p.len() <= 4096)
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+        ),
+        "NotebookEdit" => Some(
+            input["notebook_path"]
+                .as_str()
+                .filter(|p| p.len() <= 4096)
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+        ),
         "Bash" | "Command" => Some(vec![]),
         _ => None,
     }
 }
 fn tool_write_paths(name: &str, input: &str) -> Option<Vec<String>> {
-    if matches!(name, "Bash" | "Command") { return Some(vec![]); }
-    if !matches!(name, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") { return None; }
-    serde_json::from_str(input).ok().and_then(|input| explicit_write_paths(name, &input))
+    if matches!(name, "Bash" | "Command") {
+        return Some(vec![]);
+    }
+    if !matches!(name, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") {
+        return None;
+    }
+    serde_json::from_str(input)
+        .ok()
+        .and_then(|input| explicit_write_paths(name, &input))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,22 +472,28 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse"
-            | "pantheon",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot"
+            | "muse" | "pantheon",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
-        ("codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo", Some(value)) => {
+        (
+            "codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline"
+            | "kilo",
+            Some(value),
+        ) => {
             !value.is_empty()
                 && value.len() <= 64
                 && value
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
         }
-        ("pi" | "omp", Some(value)) => ["off", "minimal", "low", "medium", "high", "xhigh"].contains(&value),
+        ("pi" | "omp", Some(value)) => {
+            ["off", "minimal", "low", "medium", "high", "xhigh"].contains(&value)
+        }
         ("kimi", Some(value)) => ["on", "off"].contains(&value),
         ("muse", Some(value)) => muse::valid_effort(value),
         _ => false,
@@ -623,19 +650,20 @@ fn version(path: &Path) -> Option<String> {
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
-    PROVIDERS.into_iter()
-    .map(|(id, name)| {
-        let path = executable(id);
-        ProviderInfo {
-            id: id.into(),
-            name: name.into(),
-            installed: path.is_some(),
-            version: path.as_deref().and_then(version).unwrap_or_default(),
-            path: path.map(|p| p.to_string_lossy().into_owned()),
-            models: vec![ModelInfo::default_choice()],
-        }
-    })
-    .collect()
+    PROVIDERS
+        .into_iter()
+        .map(|(id, name)| {
+            let path = executable(id);
+            ProviderInfo {
+                id: id.into(),
+                name: name.into(),
+                installed: path.is_some(),
+                version: path.as_deref().and_then(version).unwrap_or_default(),
+                path: path.map(|p| p.to_string_lossy().into_owned()),
+                models: vec![ModelInfo::default_choice()],
+            }
+        })
+        .collect()
 }
 
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
@@ -656,13 +684,10 @@ pub async fn list_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
 }
 
 fn model_discovery_index(provider: &str) -> Option<usize> {
-    PROVIDERS
-        .iter()
-        .position(|(id, _)| *id == provider)
+    PROVIDERS.iter().position(|(id, _)| *id == provider)
 }
 
-fn model_discovery_semaphores(
-) -> &'static [tokio::sync::Semaphore; PROVIDERS.len()] {
+fn model_discovery_semaphores() -> &'static [tokio::sync::Semaphore; PROVIDERS.len()] {
     static DISCOVERY: OnceLock<[tokio::sync::Semaphore; PROVIDERS.len()]> = OnceLock::new();
     DISCOVERY.get_or_init(|| std::array::from_fn(|_| tokio::sync::Semaphore::new(1)))
 }
@@ -691,14 +716,25 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse"
+        "opencode"
+            | "antigravity"
+            | "grok"
+            | "deepseek"
+            | "commandcode"
+            | "cline"
+            | "kilo"
+            | "github-copilot"
+            | "muse"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
-        tokio::time::timeout(Duration::from_secs(if provider == "opencode" { 20 } else { 65 }), semaphore.acquire())
-            .await
-            .map_err(|_| "Model discovery is busy. Try again shortly.".to_owned())?
-            .map_err(|_| "Model discovery is unavailable".to_owned())?
+        tokio::time::timeout(
+            Duration::from_secs(if provider == "opencode" { 20 } else { 65 }),
+            semaphore.acquire(),
+        )
+        .await
+        .map_err(|_| "Model discovery is busy. Try again shortly.".to_owned())?
+        .map_err(|_| "Model discovery is unavailable".to_owned())?
     } else {
         semaphore
             .try_acquire()
@@ -1270,7 +1306,10 @@ impl Protocol {
         // not retain a second copy for the rest of a potentially long turn.
         let mut content = std::mem::take(&mut self.image_blocks);
         let mut text = std::mem::take(&mut self.config.prompt);
-        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse") && self.config.mode == "plan" && !text.trim().is_empty() {
+        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse")
+            && self.config.mode == "plan"
+            && !text.trim().is_empty()
+        {
             text = format!("{}\n\n{text}", acp::GROK_PLAN_PREFIX);
         }
         if !text.trim().is_empty() {
@@ -1390,7 +1429,9 @@ impl Protocol {
         step.events.push(event);
     }
     fn tool_paths(&mut self, id: &str, paths: Option<Vec<String>>, step: &mut Step) {
-        let Some(paths) = paths else { return; };
+        let Some(paths) = paths else {
+            return;
+        };
         let mut bounded = Vec::new();
         let mut bytes = 0usize;
         for path in paths {
@@ -1401,14 +1442,23 @@ impl Protocol {
                 bounded.push(String::new());
                 break;
             }
-            if !bounded.contains(&path) { bounded.push(path); }
+            if !bounded.contains(&path) {
+                bounded.push(path);
+            }
         }
         let paths = bounded;
-        let Some(tool) = self.tools.get_mut(id) else { return; };
+        let Some(tool) = self.tools.get_mut(id) else {
+            return;
+        };
         let changed = tool.write_paths.as_ref() != Some(&paths);
         tool.write_paths = Some(paths);
         let tool = tool.clone();
-        if let Some(event) = step.events.iter_mut().rev().find(|e| e.tool.as_ref().is_some_and(|t| t.id == id)) {
+        if let Some(event) = step
+            .events
+            .iter_mut()
+            .rev()
+            .find(|e| e.tool.as_ref().is_some_and(|t| t.id == id))
+        {
             event.tool = Some(tool);
         } else if changed {
             let mut event = self.event("tool", format!("{} · {}", tool.name, tool.status), None);
@@ -1501,10 +1551,23 @@ impl Protocol {
                     (None, None)
                 };
                 self.tool_update(id, Some("Update files"), Some(status), input, output, step);
-                let paths = item["changes"].as_array().map(|changes| changes.iter().take(201).flat_map(|change| {
-                    [change["path"].as_str(), change["kind"]["move_path"].as_str(), change["kind"]["movePath"].as_str()]
-                        .into_iter().flatten().filter(|p| p.len() <= 4096).map(str::to_owned)
-                }).collect());
+                let paths = item["changes"].as_array().map(|changes| {
+                    changes
+                        .iter()
+                        .take(201)
+                        .flat_map(|change| {
+                            [
+                                change["path"].as_str(),
+                                change["kind"]["move_path"].as_str(),
+                                change["kind"]["movePath"].as_str(),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .filter(|p| p.len() <= 4096)
+                            .map(str::to_owned)
+                        })
+                        .collect()
+                });
                 self.tool_paths(id, paths, step);
             }
             "mcpToolCall" | "dynamicToolCall" => {
@@ -1575,7 +1638,10 @@ impl Protocol {
     }
     fn kimi_tool(&mut self, update: &Value, step: &mut Step) {
         let write_kind = matches!(field(update, "kind"), "edit" | "delete" | "move");
-        if write_kind { self.file_write_tools.insert(limited(field(update, "toolCallId"), 256)); }
+        if write_kind {
+            self.file_write_tools
+                .insert(limited(field(update, "toolCallId"), 256));
+        }
         let writes = write_kind || self.file_write_tools.contains(field(update, "toolCallId"));
         let status = match field(update, "status") {
             "completed" => Some("completed"),
@@ -1624,16 +1690,40 @@ impl Protocol {
             output,
             target,
         );
-        self.file_write_tools.retain(|id| self.tools.contains_key(id));
+        self.file_write_tools
+            .retain(|id| self.tools.contains_key(id));
         let paths = if writes {
-            let mut paths: Vec<String> = update["locations"].as_array().into_iter().flatten().take(201)
-                .filter_map(|location| location["path"].as_str()).filter(|p| p.len() <= 4096).map(str::to_owned).collect();
+            let mut paths: Vec<String> = update["locations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(201)
+                .filter_map(|location| location["path"].as_str())
+                .filter(|p| p.len() <= 4096)
+                .map(str::to_owned)
+                .collect();
             for key in ["file_path", "path", "notebook_path", "old_path", "new_path"] {
-                if let Some(path) = update["rawInput"][key].as_str().filter(|p| p.len() <= 4096) { paths.push(path.into()); }
+                if let Some(path) = update["rawInput"][key].as_str().filter(|p| p.len() <= 4096) {
+                    paths.push(path.into());
+                }
             }
-            paths.sort(); paths.dedup();
-            if paths.is_empty() && self.tools.get(field(update, "toolCallId")).is_some_and(|tool| tool.write_paths.as_ref().is_some_and(|p| !p.is_empty())) { None } else { Some(paths) }
-        } else if update["kind"] == "execute" { Some(vec![]) } else { None };
+            paths.sort();
+            paths.dedup();
+            if paths.is_empty()
+                && self
+                    .tools
+                    .get(field(update, "toolCallId"))
+                    .is_some_and(|tool| tool.write_paths.as_ref().is_some_and(|p| !p.is_empty()))
+            {
+                None
+            } else {
+                Some(paths)
+            }
+        } else if update["kind"] == "execute" {
+            Some(vec![])
+        } else {
+            None
+        };
         self.tool_paths(field(update, "toolCallId"), paths, target);
     }
     fn initial(&self) -> Value {
@@ -1646,7 +1736,8 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "pantheon" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline"
+            | "kilo" | "github-copilot" | "pantheon" => {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pantheon","version":"0.1.0"}}})
             }
             _ => {
@@ -1675,7 +1766,9 @@ impl Protocol {
         }
         let request = self.pending.remove(id)?;
         Some(match self.config.provider.as_str() {
-            "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
+            "pi" | "omp" => {
+                json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved})
+            }
             "codex" => {
                 let method = string(&request, "method");
                 let result = if method == "item/permissions/requestApproval" {
@@ -1685,11 +1778,20 @@ impl Protocol {
                 };
                 json!({"id":request["id"],"result":result})
             }
-            "pantheon" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline"
+            | "kilo" | "github-copilot" | "pantheon" => {
                 let options = request["params"]["options"].as_array();
-                let kinds = if approved { ["allow_once", "allow_always"] } else { ["reject_once", "reject_always"] };
-                let selected = kinds.iter().find_map(|kind| options.and_then(|o| o.iter().find(|o| o["kind"].as_str() == Some(kind))));
-                let outcome = selected.map(|o| json!({"outcome":"selected","optionId":o["optionId"]})).unwrap_or_else(|| json!({"outcome":"cancelled"}));
+                let kinds = if approved {
+                    ["allow_once", "allow_always"]
+                } else {
+                    ["reject_once", "reject_always"]
+                };
+                let selected = kinds.iter().find_map(|kind| {
+                    options.and_then(|o| o.iter().find(|o| o["kind"].as_str() == Some(kind)))
+                });
+                let outcome = selected
+                    .map(|o| json!({"outcome":"selected","optionId":o["optionId"]}))
+                    .unwrap_or_else(|| json!({"outcome":"cancelled"}));
                 json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
             }
             _ => {
@@ -1704,7 +1806,8 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "pantheon" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline"
+            | "kilo" | "github-copilot" | "pantheon" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1739,19 +1842,26 @@ impl Protocol {
             let question = field(&params["request"]["questions"][0], "question");
             let mut event = self.event("input_request", question, Some(&params["request"]));
             event.request_id = Some(request_id);
-            return Ok(Step { events: vec![event], ..Step::default() });
+            return Ok(Step {
+                events: vec![event],
+                ..Step::default()
+            });
         }
         if self.config.provider == "pantheon" && value["method"] == "_pantheon/input_resolved" {
             let mut event = self.event("input_cancelled", "", None);
             event.request_id = Some(field(&value["params"], "requestId").to_string());
-            return Ok(Step { events: vec![event], ..Step::default() });
+            return Ok(Step {
+                events: vec![event],
+                ..Step::default()
+            });
         }
         match self.config.provider.as_str() {
             "codex" => self.codex(value).map(|step| self.steered(step)),
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "pantheon" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline"
+            | "kilo" | "github-copilot" | "pantheon" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2402,7 +2512,11 @@ impl Protocol {
                                 None,
                                 &mut step,
                             );
-                            self.tool_paths(field(block, "id"), explicit_write_paths(field(block, "name"), &block["input"]), &mut step);
+                            self.tool_paths(
+                                field(block, "id"),
+                                explicit_write_paths(field(block, "name"), &block["input"]),
+                                &mut step,
+                            );
                         }
                     }
                 }
@@ -2437,7 +2551,13 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pantheon_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::architect::team_tool(tool))
+                    } else if name
+                        .strip_prefix("mcp__pantheon_architect__")
+                        .is_some_and(|tool| {
+                            optional_metadata_tool(tool)
+                                || crate::bots::tools::self_scoped(tool)
+                                || crate::architect::team_tool(tool)
+                        })
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
@@ -2446,7 +2566,13 @@ impl Protocol {
                         // touch that bot's memory, schedules and messages to its owner.
                         // Team tools only exist in team turns and only change team state.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
-                    } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
+                    } else if self.config.mode == "plan"
+                        && plan_reads::plan_read_only(
+                            &name,
+                            &value["request"]["input"],
+                            &self.config.cwd,
+                        )
+                    {
                         // Plan mode investigates: reads and web lookups anywhere run;
                         // Claude's own deny rules were applied before it asked.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
@@ -2693,7 +2819,9 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             // Pantheon speaks standard ACP on `serve acp` (stdio JSON-RPC).
             command.args(["serve", "acp"]);
         }
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => {
+            acp::configure(command, config)
+        }
         "github-copilot" => acp::configure(command, config),
         "kimi" => {
             if use_model {
@@ -2787,7 +2915,11 @@ async fn run_inner(
     validate_reasoning_effort(&config.provider, config.reasoning_effort.as_deref())?;
     // A cloud task runs the same pipeline through a bridge to its machine; local MCP host
     // tools stay on this computer (docs/cloud-agents.md, step 5).
-    if let Some(command) = crate::cloud_agents::transport::command(&config, |command| configure_command(command, &config)).await? {
+    if let Some(command) = crate::cloud_agents::transport::command(&config, |command| {
+        configure_command(command, &config)
+    })
+    .await?
+    {
         return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
     }
     let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
@@ -2823,21 +2955,16 @@ async fn run_inner(
     } else {
         None
     };
-    run_process_with_tools(
-        config,
-        sink,
-        input,
-        command,
-        image_blocks,
-        host,
-    )
-    .await
-    .map_err(|error| {
-        let error = key
-            .as_ref()
-            .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
-        connection.as_ref().map_or(error.clone(), |connection| connection.redact(&error))
-    })
+    run_process_with_tools(config, sink, input, command, image_blocks, host)
+        .await
+        .map_err(|error| {
+            let error = key
+                .as_ref()
+                .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
+            connection
+                .as_ref()
+                .map_or(error.clone(), |connection| connection.redact(&error))
+        })
 }
 
 #[cfg(all(test, unix))]
@@ -2867,11 +2994,10 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
     let Some(mut host) = host else {
         return (None, None);
     };
-    let (jev, other): (Vec<_>, Vec<_>) = host.tools.into_iter().partition(|tool| {
-        tool["name"]
-            .as_str()
-            .is_some_and(per_run_mcp_tool)
-    });
+    let (jev, other): (Vec<_>, Vec<_>) = host
+        .tools
+        .into_iter()
+        .partition(|tool| tool["name"].as_str().is_some_and(per_run_mcp_tool));
     host.tools = other;
     if jev.is_empty() {
         return (Some(host), None);
@@ -2882,8 +3008,7 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
         .filter(|name| per_run_mcp_tool(name))
         .cloned()
         .collect();
-    host.approval_tools
-        .retain(|name| !per_run_mcp_tool(name));
+    host.approval_tools.retain(|name| !per_run_mcp_tool(name));
     let jev = ToolHost {
         tools: jev,
         approval_tools: protected,
@@ -2911,7 +3036,9 @@ async fn run_process_with_tools(
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
-        Some(tools) if warm::supported(&config) => warm::take(&config.session_id, &warm::key(&config, &tools.tools)),
+        Some(tools) if warm::supported(&config) => {
+            warm::take(&config.session_id, &warm::key(&config, &tools.tools))
+        }
         _ => {
             warm::launched(&config.session_id);
             None
@@ -2962,8 +3089,14 @@ async fn run_process_with_tools(
         _ => return Err("Host tools are unavailable for this provider".into()),
     };
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
-        Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
-    } else { None };
+        Some(pi::Bridge::configure(
+            &mut command,
+            &config.mode,
+            mcp.as_ref(),
+        )?)
+    } else {
+        None
+    };
     let (mut child, mut group) = if let Some(spare) = spare {
         (spare.child, spare.group)
     } else {
@@ -3001,7 +3134,11 @@ async fn run_process_with_tools(
         .map(mcp_host::Server::codex_config);
     // An optional bridge can fail to bind. In that case no local MCP tool is
     // registered, so a same-named user server must retain normal approvals.
-    protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
+    protocol.mcp_tool_names = if mcp.is_some() {
+        mcp_tool_names
+    } else {
+        HashSet::new()
+    };
     let mut jobs = tokio::task::JoinSet::new();
     let mut queued = VecDeque::new();
     let mut bytes = Vec::new();
@@ -3156,16 +3293,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn github_copilot_is_discovered_with_its_direct_cli_executable_and_no_effort_override() {
-        assert!(PROVIDERS.contains(&("github-copilot", "GitHub Copilot CLI")));
+    fn github_copilot_adapter_uses_direct_cli_executable_and_no_effort_override() {
+        assert_eq!(PROVIDERS, [("pantheon", "Pantheon")]);
         assert_eq!(executable_name("github-copilot"), "copilot");
         assert!(validate_reasoning_effort("github-copilot", None).is_ok());
         assert!(validate_reasoning_effort("github-copilot", Some("high")).is_err());
     }
 
     #[test]
-    fn kilo_is_registered_with_its_cli_and_catalog_defined_efforts() {
-        assert!(PROVIDERS.contains(&("kilo", "Kilo Code")));
+    fn kilo_adapter_uses_cli_and_catalog_defined_efforts() {
+        assert_eq!(PROVIDERS, [("pantheon", "Pantheon")]);
         assert_eq!(executable_name("kilo"), "kilo");
         assert!(validate_reasoning_effort("kilo", None).is_ok());
         assert!(validate_reasoning_effort("kilo", Some("max")).is_ok());
@@ -3233,8 +3370,10 @@ mod tests {
                     host_tools::HostTools::new(host.clone()).unwrap_or_else(|error| {
                         panic!("browser={browser}, decisions={decisions}, base={base_enabled}: {error}")
                     });
-                    assert_eq!(host.approval_tools, expected,
-                        "browser={browser}, decisions={decisions}, base={base_enabled}");
+                    assert_eq!(
+                        host.approval_tools, expected,
+                        "browser={browser}, decisions={decisions}, base={base_enabled}"
+                    );
                     let (dynamic, mcp) = split_jev_host(Some(host));
                     assert_eq!(mcp.is_some(), browser || decisions);
                     for transport in [dynamic, mcp].into_iter().flatten() {
@@ -3276,13 +3415,19 @@ mod tests {
             handler: Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
         };
         let (dynamic, mcp) = split_jev_host(Some(host));
-        assert!(dynamic.is_none(), "existing Codex threads need the per-run MCP catalog");
+        assert!(
+            dynamic.is_none(),
+            "existing Codex threads need the per-run MCP catalog"
+        );
         let mcp = mcp.unwrap();
         assert_eq!(mcp.tools.len(), 2);
         for name in names {
             assert!(mcp.approval_tools.contains(name));
             assert!(optional_transport_tool(name));
-            assert!(!optional_metadata_tool(name), "preview must not inherit metadata permission exemptions");
+            assert!(
+                !optional_metadata_tool(name),
+                "preview must not inherit metadata permission exemptions"
+            );
         }
         host_tools::HostTools::new(mcp).unwrap();
     }
@@ -3292,14 +3437,20 @@ mod tests {
         for provider in ["kimi", "opencode", "antigravity", "grok"] {
             let mut p = Protocol::new(config(provider));
             p.mcp_server = Some(json!({"type":"http","name":"pantheon_architect"}));
-            p.mcp_required = ["pantheon_run_project", "pantheon_preview_file"].iter().any(|name| !optional_transport_tool(name));
+            p.mcp_required = ["pantheon_run_project", "pantheon_preview_file"]
+                .iter()
+                .any(|name| !optional_transport_tool(name));
             let mut step = p.receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{"mcpCapabilities":{"http":false}},"authMethods":[{"id":"cached_token","name":"cached_token"}],"_meta":{"defaultAuthMethodId":"cached_token"}}})).unwrap();
             if provider == "grok" {
                 assert_eq!(step.write[0]["method"], "authenticate");
                 step = p.receive(json!({"id":7,"result":{}})).unwrap();
             }
             assert_eq!(step.write[0]["method"], "session/new", "{provider}");
-            assert_eq!(step.write[0]["params"]["mcpServers"], json!([]), "{provider}");
+            assert_eq!(
+                step.write[0]["params"]["mcpServers"],
+                json!([]),
+                "{provider}"
+            );
         }
     }
 
@@ -3308,8 +3459,27 @@ mod tests {
         for provider in ["claude", "glm", "mimo"] {
             assert!(review_supported(provider, "review").is_ok());
         }
-        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse"] {
-            assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
+        for provider in [
+            "codex",
+            "kimi",
+            "opencode",
+            "antigravity",
+            "grok",
+            "pi",
+            "omp",
+            "deepseek",
+            "commandcode",
+            "cline",
+            "kilo",
+            "github-copilot",
+            "muse",
+        ] {
+            assert!(
+                review_supported(provider, "review")
+                    .unwrap_err()
+                    .contains("Approve for me"),
+                "{provider}"
+            );
             assert!(review_supported(provider, "ask").is_ok());
         }
     }
@@ -3321,17 +3491,33 @@ mod tests {
             cfg.mode = mode.into();
             let mut p = Protocol::new(cfg);
             let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":name,"input":input}})).unwrap();
-            step.write.first().map(|w| w["response"]["response"]["behavior"].clone())
+            step.write
+                .first()
+                .map(|w| w["response"]["response"]["behavior"].clone())
         };
         for (name, input) in [
-            ("Read", json!({"file_path":"/Users/me/other-repo/README.md"})),
+            (
+                "Read",
+                json!({"file_path":"/Users/me/other-repo/README.md"}),
+            ),
             ("Grep", json!({"pattern":"token","path":"/opt/lib"})),
             ("Glob", json!({"pattern":"**/*.md","path":"/Users/me/docs"})),
-            ("WebFetch", json!({"url":"https://docs.example.com","prompt":"summary"})),
+            (
+                "WebFetch",
+                json!({"url":"https://docs.example.com","prompt":"summary"}),
+            ),
             ("WebSearch", json!({"query":"tauri updater"})),
         ] {
-            assert_eq!(permission("plan", name, input.clone()), Some(json!("allow")), "{name}");
-            assert_eq!(permission("ask", name, input), None, "{name} keeps Standard approvals");
+            assert_eq!(
+                permission("plan", name, input.clone()),
+                Some(json!("allow")),
+                "{name}"
+            );
+            assert_eq!(
+                permission("ask", name, input),
+                None,
+                "{name} keeps Standard approvals"
+            );
         }
         // Credentials and anything that changes state still go to the user.
         for (name, input) in [
@@ -3367,19 +3553,38 @@ mod tests {
     #[test]
     fn titles_use_per_run_mcp_on_resumed_codex_and_hide_native_tool_mirrors() {
         let host = ToolHost {
-            tools: vec![json!({"type":"function","name":crate::session_titles::TOOL,"description":"Metadata","inputSchema":{"type":"object"}})],
+            tools: vec![
+                json!({"type":"function","name":crate::session_titles::TOOL,"description":"Metadata","inputSchema":{"type":"object"}}),
+            ],
             approval_tools: HashSet::new(),
             handler: Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
         };
         let (dynamic, mcp) = split_jev_host(Some(host));
         assert!(dynamic.is_none());
         assert_eq!(mcp.unwrap().tools[0]["name"], crate::session_titles::TOOL);
-        for name in [crate::session_titles::TOOL.into(), format!("mcp__pantheon_architect__{}", crate::session_titles::TOOL)] {
+        for name in [
+            crate::session_titles::TOOL.into(),
+            format!("mcp__pantheon_architect__{}", crate::session_titles::TOOL),
+        ] {
             let mut protocol = Protocol::new(config("codex"));
             protocol.mcp_tool_names.insert(name.clone());
             let mut step = Step::default();
-            protocol.tool_update("title-call", Some(&name), Some("running"), Some("sidebar metadata".into()), None, &mut step);
-            protocol.tool_update("title-call", None, Some("completed"), None, Some("staged".into()), &mut step);
+            protocol.tool_update(
+                "title-call",
+                Some(&name),
+                Some("running"),
+                Some("sidebar metadata".into()),
+                None,
+                &mut step,
+            );
+            protocol.tool_update(
+                "title-call",
+                None,
+                Some("completed"),
+                None,
+                Some("staged".into()),
+                &mut step,
+            );
             assert!(step.events.is_empty());
         }
     }
@@ -3388,7 +3593,9 @@ mod tests {
         for registered in [false, true] {
             for server in ["pantheon_architect", "other_server"] {
                 let mut p = Protocol::new(config("codex"));
-                if registered { p.mcp_tool_names.insert(crate::session_titles::TOOL.into()); }
+                if registered {
+                    p.mcp_tool_names.insert(crate::session_titles::TOOL.into());
+                }
                 for method in ["item/started", "item/completed"] {
                     let frame = json!({"method":method,"params":{"item":{"type":"mcpToolCall","id":"title-1","server":server,"tool":crate::session_titles::TOOL,"arguments":{"title":"Current conversation topic"},"status":if method=="item/started" {"inProgress"} else {"completed"},"result":{"content":[{"type":"text","text":"staged"}]}}}});
                     let step = p.receive(frame).unwrap();
@@ -3405,8 +3612,9 @@ mod tests {
             p.mcp_server = Some(json!({"type":"http","name":"pantheon_architect"}));
             p.mcp_required = required;
             let result = p.receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{"mcpCapabilities":{"http":false}}}}));
-            if required { assert!(result.err().unwrap().contains("HTTP MCP")); }
-            else {
+            if required {
+                assert!(result.err().unwrap().contains("HTTP MCP"));
+            } else {
                 let step = result.unwrap();
                 assert_eq!(step.write[0]["method"], "session/new");
                 assert_eq!(step.write[0]["params"]["mcpServers"], json!([]));
@@ -3415,17 +3623,33 @@ mod tests {
     }
     #[test]
     fn file_capture_metadata_uses_resumable_mcp_and_never_prompts_to_take_snapshots() {
-        let host = crate::turn_changes::with_host(None, None, Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let host = crate::turn_changes::with_host(
+            None,
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
         let (dynamic, mcp) = split_jev_host(Some(host));
         assert!(dynamic.is_none());
-        assert_eq!(mcp.unwrap().tools[0]["name"], crate::turn_changes::TRACK_TOOL);
-        let name = format!("mcp__pantheon_architect__{}", crate::turn_changes::TRACK_TOOL);
-        for registered in [false,true] {
+        assert_eq!(
+            mcp.unwrap().tools[0]["name"],
+            crate::turn_changes::TRACK_TOOL
+        );
+        let name = format!(
+            "mcp__pantheon_architect__{}",
+            crate::turn_changes::TRACK_TOOL
+        );
+        for registered in [false, true] {
             let mut p = Protocol::new(config("claude"));
-            if registered { p.mcp_tool_names.insert(name.clone()); }
+            if registered {
+                p.mcp_tool_names.insert(name.clone());
+            }
             let step=p.receive(json!({"type":"control_request","request_id":"tracking","request":{"subtype":"can_use_tool","tool_name":name,"input":{"action":"begin","paths":["file.txt"]}}})).unwrap();
-            if registered { assert!(step.events.is_empty()); assert_eq!(step.write[0]["response"]["response"]["behavior"],"allow"); }
-            else { assert_eq!(step.events[0].kind,"approval"); }
+            if registered {
+                assert!(step.events.is_empty());
+                assert_eq!(step.write[0]["response"]["response"]["behavior"], "allow");
+            } else {
+                assert_eq!(step.events[0].kind, "approval");
+            }
         }
     }
 
@@ -3434,11 +3658,18 @@ mod tests {
         let title_name = format!("mcp__pantheon_architect__{}", crate::session_titles::TOOL);
         for provider in ["claude", "glm", "mimo"] {
             for mode in ["ask", "auto", "plan"] {
-                for (registered, name) in [(true, title_name.as_str()), (false, title_name.as_str()), (true, "mcp__other__pantheon_title"), (true, "mcp__pantheon_architect__pantheon_open_browser")] {
+                for (registered, name) in [
+                    (true, title_name.as_str()),
+                    (false, title_name.as_str()),
+                    (true, "mcp__other__pantheon_title"),
+                    (true, "mcp__pantheon_architect__pantheon_open_browser"),
+                ] {
                     let mut cfg = config(provider);
                     cfg.mode = mode.into();
                     let mut p = Protocol::new(cfg);
-                    if registered { p.mcp_tool_names.insert(title_name.clone()); }
+                    if registered {
+                        p.mcp_tool_names.insert(title_name.clone());
+                    }
                     let input = json!({"title":"Current conversation topic"});
                     let step = p.receive(json!({"type":"control_request","request_id":"title-permission","request":{"subtype":"can_use_tool","tool_name":name,"input":input}})).unwrap();
                     if registered && name == title_name {
@@ -3950,15 +4181,18 @@ mod tests {
     fn provider_write_provenance_survives_sparse_completions_and_large_arguments() {
         let mut codex = Protocol::new(config("codex"));
         let start=codex.receive(json!({"method":"item/started","params":{"item":{"type":"fileChange","id":"edit","status":"inProgress","changes":[{"path":"old.txt","kind":{"type":"update","move_path":"new.txt"},"diff":""}]}}})).unwrap();
-        assert_eq!(activity(&start)["writePaths"],json!(["old.txt","new.txt"]));
+        assert_eq!(
+            activity(&start)["writePaths"],
+            json!(["old.txt", "new.txt"])
+        );
         let end=codex.receive(json!({"method":"item/completed","params":{"item":{"type":"fileChange","id":"edit","status":"completed"}}})).unwrap();
-        assert_eq!(activity(&end)["writePaths"],json!(["old.txt","new.txt"]));
+        assert_eq!(activity(&end)["writePaths"], json!(["old.txt", "new.txt"]));
 
         let mut claude = Protocol::new(config("claude"));
         let start=claude.receive(json!({"type":"assistant","message":{"id":"message","content":[{"type":"tool_use","id":"edit","name":"Write","input":{"content":"x".repeat(100_000),"file_path":"large.txt"}}]}})).unwrap();
-        assert_eq!(activity(&start)["writePaths"],json!(["large.txt"]));
+        assert_eq!(activity(&start)["writePaths"], json!(["large.txt"]));
         let end=claude.receive(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"edit","content":"Wrote file"}]}})).unwrap();
-        assert_eq!(activity(&end)["writePaths"],json!(["large.txt"]));
+        assert_eq!(activity(&end)["writePaths"], json!(["large.txt"]));
         let read=claude.receive(json!({"type":"assistant","message":{"id":"read","content":[{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"README.md"}}]}})).unwrap();
         assert!(activity(&read)["writePaths"].is_null());
 
@@ -3968,9 +4202,9 @@ mod tests {
             acp.remote_id = "remote".into();
             acp.receive(json!({"method":"session/update","params":{"sessionId":"remote","update":{"sessionUpdate":"tool_call","toolCallId":"edit","title":"Editing source","kind":"edit","status":"in_progress"}}})).unwrap();
             let start=acp.receive(json!({"method":"session/update","params":{"sessionId":"remote","update":{"sessionUpdate":"tool_call","toolCallId":"edit","status":"in_progress","locations":[{"path":"source.rs","line":1}],"rawInput":{"path":"source.rs"}}}})).unwrap();
-            assert_eq!(activity(&start)["writePaths"],json!(["source.rs"]));
+            assert_eq!(activity(&start)["writePaths"], json!(["source.rs"]));
             let end=acp.receive(json!({"method":"session/update","params":{"sessionId":"remote","update":{"sessionUpdate":"tool_call_update","toolCallId":"edit","kind":"edit","status":"completed"}}})).unwrap();
-            assert_eq!(activity(&end)["writePaths"],json!(["source.rs"]));
+            assert_eq!(activity(&end)["writePaths"], json!(["source.rs"]));
         }
     }
 

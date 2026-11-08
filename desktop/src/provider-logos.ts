@@ -10,7 +10,7 @@ export function providerLogo(id: ProviderId, cls = ''): string {
   const className = `provider-logo${cls ? ` ${escape(cls)}` : ''}`;
   const src = logos[id];
   if (!src) return '';
-  return `<img class="${className}" data-provider="${id}" src="${escape(src)}" width="20" height="20" alt="" aria-hidden="true" draggable="false">`;
+  return `<img class="${className}" data-provider="${escape(id)}" src="${escape(src)}" width="20" height="20" alt="" aria-hidden="true" draggable="false">`;
 }
 export const providerLogoUrl = (id: ProviderId): string | null => logos[id] ?? null;
 export const hasProviderLogo = (id: ProviderId): boolean => Boolean(logos[id]);

@@ -5,7 +5,7 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 
-const INFO = new TextEncoder().encode('pandacode-remote v1');
+const INFO = new TextEncoder().encode('pantheon-remote v1');
 const NONCE = 24;
 const utf8 = new TextEncoder();
 

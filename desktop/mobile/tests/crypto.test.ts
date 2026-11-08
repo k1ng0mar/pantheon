@@ -16,8 +16,8 @@ test('matches the Rust implementation byte for byte', () => {
   assert.equal(publicKey(b), 'zo060cy2M+x7cMF4FKXHbs0CloUFDTRHRboFhw5YfVk=');
   assert.equal(fingerprint(publicKey(b)), 'cfa570c653bd212b');
   const key = pairKey(a, A, publicKey(b), B);
-  assert.equal(hex(key), 'c899f243f803caec44b4ebdb1e920a24e492762031c22c3e0ab9da3a7d508c86');
-  const body = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHMGOxXqaPoZtqHa3PeEVUMzZrHV5UT032sJ0M1BXd';
+  assert.equal(hex(key), '1fa2bc63ee3efef57bbfb4fe4dff33186eeff83238304c58e08e14543903b23f');
+  const body = 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHn0j8ParMWQfTSgJ6BgeM3kzb5X8V59ayxs5mH2Ps';
   assert.equal(seal(key, A, B, '{"type":"req"}', new Uint8Array(24).fill(7)), body);
   assert.equal(open(pairKey(b, B, publicKey(a), A), A, B, body), '{"type":"req"}');
 });

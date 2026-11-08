@@ -12,16 +12,16 @@ import json
 import os
 import time
 
-TAG = {"pandacode": "sandbox"}
+TAG = {"pantheon": "sandbox"}
 LIFETIME = 24 * 60 * 60
 # PID 1 of every sandbox: runs until the deadline `keep_alive` writes, then exits, which
 # ends the sandbox. No deadline file means run until Modal's own timeout.
-WATCH = 'while [ "$(date +%s)" -lt "$(cat /tmp/.pandacode-deadline 2>/dev/null || echo 99999999999)" ]; do sleep 20; done'
+WATCH = 'while [ "$(date +%s)" -lt "$(cat /tmp/.pantheon-deadline 2>/dev/null || echo 99999999999)" ]; do sleep 20; done'
 
 
 def app(modal):
     environment = os.environ.get("MODAL_ENVIRONMENT") or None
-    return modal.App.lookup("pandacode", create_if_missing=True, environment_name=environment)
+    return modal.App.lookup("pantheon", create_if_missing=True, environment_name=environment)
 
 
 def run(request):
