@@ -8,16 +8,7 @@
 use std::path::Path;
 
 pub fn data_dir() -> std::path::PathBuf {
-    if let Some(d) = std::env::var_os("PANTHEON_DATA_DIR") {
-        if !d.is_empty() {
-            return std::path::PathBuf::from(d);
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        std::path::PathBuf::from(home).join(".pantheon")
-    } else {
-        std::path::PathBuf::from(".pantheon")
-    }
+    crate::terminal::data_dir()
 }
 
 fn env_key_name(provider: &str) -> String {

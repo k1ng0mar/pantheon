@@ -21,7 +21,6 @@ pub mod config {
 
     pub use pantheon_api::config::*;
 
-
     // --- Resolution of document sections into runtime/agent types ---------------
     // These were inherent `resolve()` methods before the document moved to
     // `pantheon-api`. The structs are foreign now, so they are free functions.

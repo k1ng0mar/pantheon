@@ -2895,9 +2895,9 @@ impl TuiState {
         // into this turn's status bar. The live estimate resets too:
         // it used to carry the previous turn's total into the new
         // turn's counter, and a provider that never reports Usage
-        // accumulated it forever. `tokens_used` stays cumulative (it
-        // is the session spend, snapped by Usage, not a per-turn
-        // figure).
+        // accumulated it forever. `tokens_used` is overwritten by the
+        // Usage event total (the provider's reported session total,
+        // snapped by Usage, not a per-turn figure).
         self.turn_in = None;
         self.turn_out = None;
         self.turn_estimate = 0;
@@ -4093,7 +4093,7 @@ fn render_mention_picker(f: &mut Frame, area: Rect, state: &TuiState) {
         return;
     };
     let th = &state.theme;
-    let w = area.width.clamp(40, 76);
+    let w = area.width.clamp(40, 76).min(area.width);
     let h = (picker.files.len().min(10) as u16 + 4).clamp(6, 16);
     let x = area.x + (area.width - w) / 2;
     let y = area.height.saturating_sub(h + 5) + area.y;
@@ -4144,7 +4144,7 @@ fn render_mention_picker(f: &mut Frame, area: Rect, state: &TuiState) {
 /// key-hint footer (delete ctrl+d, rename ctrl+r, all projects ctrl+a).
 fn render_history(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    let w = area.width.clamp(44, 84);
+    let w = area.width.clamp(44, 84).min(area.width);
     let h = area.height.clamp(9, 24);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
@@ -4321,7 +4321,7 @@ fn render_reflect_card(f: &mut Frame, area: Rect, state: &TuiState) {
 /// tab highlight color. Enter drills into the provider's models.
 fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    let w = area.width.clamp(44, 72);
+    let w = area.width.clamp(44, 72).min(area.width);
     let h = area.height.clamp(9, 22);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
@@ -4396,7 +4396,7 @@ fn render_providers(f: &mut Frame, area: Rect, state: &TuiState) {
 /// in the theme's tab highlight color. Esc steps back to providers.
 fn render_models(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
-    let w = area.width.clamp(48, 88);
+    let w = area.width.clamp(48, 88).min(area.width);
     let h = area.height.clamp(9, 22);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
