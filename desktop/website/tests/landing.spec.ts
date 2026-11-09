@@ -195,9 +195,9 @@ test('download and source links go to GitHub, open safely, and fetch nothing unt
   const direct = page.locator('[data-platform-download]');
   await expect(direct).toHaveCount(6);
   for (const [index, file] of [
-    'PandaCode-macOS-arm64.dmg', 'PandaCode-macOS-x64.dmg',
-    'PandaCode-Windows-x64-setup.exe', 'PandaCode-Windows-arm64-setup.exe',
-    'PandaCode-Linux-x86_64.AppImage', 'PandaCode-Linux-aarch64.AppImage',
+    'Pantheon-macOS-arm64.dmg', 'Pantheon-macOS-x64.dmg',
+    'Pantheon-Windows-x64-setup.exe', 'Pantheon-Windows-arm64-setup.exe',
+    'Pantheon-Linux-x86_64.AppImage', 'Pantheon-Linux-aarch64.AppImage',
   ].entries()) {
     await expect(direct.nth(index)).toHaveAttribute('href', `${repo}/releases/latest/download/${file}`);
   }
@@ -252,7 +252,7 @@ test('the site makes only same-origin requests and hosts no checkout, account or
   }
   const foreign = requests.filter(url => !url.startsWith('data:') && new URL(url).origin !== origin);
   expect(foreign, 'Every request should stay on this site').toEqual([]);
-  for (const path of ['/account', '/terms/', '/downloads/PandaCode-macOS-arm64.zip']) {
+  for (const path of ['/account', '/terms/', '/downloads/Pantheon-macOS-arm64.zip']) {
     expect((await request.get(path)).status(), path).toBe(404);
   }
 });

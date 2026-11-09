@@ -14,12 +14,12 @@ export const project = {
 // points at the newest build. Each has a matching .sha256 beside it.
 const latest = `${repoUrl}/releases/latest/download`;
 export const platformDownloads = [
-  { label: 'macOS', detail: 'Apple silicon', href: `${latest}/PandaCode-macOS-arm64.dmg` },
-  { label: 'macOS', detail: 'Intel', href: `${latest}/PandaCode-macOS-x64.dmg` },
-  { label: 'Windows', detail: 'x64', href: `${latest}/PandaCode-Windows-x64-setup.exe` },
-  { label: 'Windows', detail: 'arm64', href: `${latest}/PandaCode-Windows-arm64-setup.exe` },
-  { label: 'Linux', detail: 'x86_64', href: `${latest}/PandaCode-Linux-x86_64.AppImage` },
-  { label: 'Linux', detail: 'aarch64', href: `${latest}/PandaCode-Linux-aarch64.AppImage` },
+  { label: 'macOS', detail: 'Apple silicon', href: `${latest}/Pantheon-macOS-arm64.dmg` },
+  { label: 'macOS', detail: 'Intel', href: `${latest}/Pantheon-macOS-x64.dmg` },
+  { label: 'Windows', detail: 'x64', href: `${latest}/Pantheon-Windows-x64-setup.exe` },
+  { label: 'Windows', detail: 'arm64', href: `${latest}/Pantheon-Windows-arm64-setup.exe` },
+  { label: 'Linux', detail: 'x86_64', href: `${latest}/Pantheon-Linux-x86_64.AppImage` },
+  { label: 'Linux', detail: 'aarch64', href: `${latest}/Pantheon-Linux-aarch64.AppImage` },
 ] as const;
 
 export const distribution = {
