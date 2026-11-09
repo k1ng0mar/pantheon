@@ -81,11 +81,20 @@ function picture({ alt, src }: Picture, context: RichContext, pending: Promise<v
   figure.append(image);
   if (alt) { const caption = document.createElement('span'); caption.className = 'rich-caption'; caption.textContent = alt; figure.append(caption); }
   if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(src)) image.src = src;
-  else pending.push(context.image(src.replace(/^file:\/\//i, '')).then(url => { image.src = url; }).catch(() => {
-    figure.classList.add('rich-missing');
-    image.remove();
-    figure.prepend(`Image not found: ${src}`);
-  }));
+  else {
+    const relative = src.replace(/^file:\/\//i, '');
+    if (relative.startsWith('/') || relative.startsWith('\\') || relative.split(/[\\/]/).includes('..')) {
+      figure.classList.add('rich-missing');
+      image.remove();
+      figure.prepend(`Image not found: ${src}`);
+      return figure;
+    }
+    pending.push(context.image(relative).then(url => { image.src = url; }).catch(() => {
+      figure.classList.add('rich-missing');
+      image.remove();
+      figure.prepend(`Image not found: ${src}`);
+    }));
+  }
   return figure;
 }
 

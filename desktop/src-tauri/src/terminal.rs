@@ -121,11 +121,15 @@ impl Drop for Terminal {
         unsafe {
             // Shells may ignore HUP, and foreground jobs have a separate process group.
             if let Some(group) = self.master.process_group_leader().filter(|pid| *pid > 1) {
-                libc::kill(-group, libc::SIGKILL);
+                if libc::kill(group, 0) == 0 {
+                    libc::kill(-group, libc::SIGKILL);
+                }
             }
             if let Some(pid) = self.shell_pid.filter(|pid| *pid > 1) {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-                libc::kill(pid as i32, libc::SIGKILL);
+                if libc::kill(pid as i32, 0) == 0 {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
             }
         }
         #[cfg(not(unix))]
@@ -239,16 +243,24 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
     let executable = crate::providers::executable(context.provider)
         .ok_or("Install this harness before opening its console.")?;
     let mut cmd = crate::providers::pty_command(&executable)?;
-    for name in crate::providers::claude_auth::removed_environment(context.provider) { cmd.env_remove(name); }
+    for name in crate::providers::claude_auth::removed_environment(context.provider) {
+        cmd.env_remove(name);
+    }
     cmd.args(args);
     if matches!(context.provider, "claude" | "glm" | "mimo") {
         cmd.env_remove("CLAUDECODE");
     }
     if matches!(context.provider, "glm" | "mimo") {
         let (arguments, environment) = if context.provider == "glm" {
-            (crate::providers::glm_arguments(), crate::providers::glm_environment()?)
+            (
+                crate::providers::glm_arguments(),
+                crate::providers::glm_environment()?,
+            )
         } else {
-            (crate::providers::mimo_arguments()?, crate::providers::mimo_environment()?)
+            (
+                crate::providers::mimo_arguments()?,
+                crate::providers::mimo_environment()?,
+            )
         };
         cmd.args(arguments);
         for name in [
@@ -281,7 +293,20 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     if provider == "antigravity" {
         return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse") {
+    if !matches!(
+        provider,
+        "codex"
+            | "claude"
+            | "kimi"
+            | "glm"
+            | "opencode"
+            | "grok"
+            | "mimo"
+            | "pi"
+            | "omp"
+            | "github-copilot"
+            | "muse"
+    ) {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -292,7 +317,10 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             return Err("Copilot CLI's interactive console cannot enforce this task's approval mode. Use task chat instead.".into());
         }
         if context.reasoning_effort.is_some() {
-            return Err("Copilot CLI's interactive console does not accept Pantheon reasoning overrides.".into());
+            return Err(
+                "Copilot CLI's interactive console does not accept Pantheon reasoning overrides."
+                    .into(),
+            );
         }
         let mut args = vec!["--no-auto-update".into()];
         if let Some(model) = context
@@ -333,7 +361,11 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     }
     match provider {
         "pi" | "omp" => {
-            if context.mode != "full" { return Err("Pi console requires Full access. Use task chat for approval modes.".into()); }
+            if context.mode != "full" {
+                return Err(
+                    "Pi console requires Full access. Use task chat for approval modes.".into(),
+                );
+            }
         }
         "codex" => {
             let (sandbox, approval) = match context.mode {
@@ -375,7 +407,11 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             if context.mode == "full" {
                 args.push("--disable-approval".into());
             }
-            args.extend(crate::providers::muse_sandbox_args(context.mode).iter().map(|arg| (*arg).into()));
+            args.extend(
+                crate::providers::muse_sandbox_args(context.mode)
+                    .iter()
+                    .map(|arg| (*arg).into()),
+            );
         }
         "opencode" => {
             args.extend([
@@ -395,7 +431,11 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             } else {
                 crate::providers::grok_permission_mode(context.mode)
             };
-            args.extend(["--no-auto-update".into(), "--permission-mode".into(), mode.into()]);
+            args.extend([
+                "--no-auto-update".into(),
+                "--permission-mode".into(),
+                mode.into(),
+            ]);
         }
         _ => {
             match context.mode {
@@ -693,7 +733,10 @@ fn start_command(
     let mut registry = terms.lock().map_err(|e| e.to_string())?;
     check_start(
         registry.values().map(|terminal| {
-            (terminal.harness_session.as_deref(), terminal.closed.load(Ordering::SeqCst))
+            (
+                terminal.harness_session.as_deref(),
+                terminal.closed.load(Ordering::SeqCst),
+            )
         }),
         harness_session.as_deref(),
     )?;
@@ -727,7 +770,11 @@ fn start_command(
     #[cfg(not(target_os = "linux"))]
     let writer = pty.master.take_writer().map_err(|e| e.to_string())?;
     let writer = Arc::new(Mutex::new(writer));
-    let shell_name = cmd.get_argv().first().map(|name| process_name(&name.to_string_lossy())).unwrap_or_default();
+    let shell_name = cmd
+        .get_argv()
+        .first()
+        .map(|name| process_name(&name.to_string_lossy()))
+        .unwrap_or_default();
     let mut child = pty
         .slave
         .spawn_command(cmd)
@@ -949,13 +996,24 @@ mod tests {
         };
         let args = harness_arguments(&context).unwrap();
         // The TUI may offer to fork a session from another folder, so it takes `--session`.
-        assert_eq!(&args[..2], &["--session", "01a15ba3-9096-76db-bd69-35168c0ecfa9"]);
-        assert!(args.windows(2).any(|args| args == ["--model", "anthropic/sonnet"]));
+        assert_eq!(
+            &args[..2],
+            &["--session", "01a15ba3-9096-76db-bd69-35168c0ecfa9"]
+        );
+        assert!(args
+            .windows(2)
+            .any(|args| args == ["--model", "anthropic/sonnet"]));
         assert!(args.windows(2).any(|args| args == ["--thinking", "xhigh"]));
         for mode in ["ask", "auto", "plan"] {
-            assert!(harness_arguments(&HarnessContext { mode, ..context }).unwrap_err().contains("Full access"));
+            assert!(harness_arguments(&HarnessContext { mode, ..context })
+                .unwrap_err()
+                .contains("Full access"));
         }
-        assert!(harness_arguments(&HarnessContext { reasoning_effort: Some("max"), ..context }).is_err());
+        assert!(harness_arguments(&HarnessContext {
+            reasoning_effort: Some("max"),
+            ..context
+        })
+        .is_err());
     }
 
     #[test]
@@ -969,13 +1027,31 @@ mod tests {
             mode: "plan",
         };
         let args = harness_arguments(&context).unwrap();
-        assert_eq!(&args[..2], &["resume", "01a16681-4036-7383-ab96-9dd8865524d8"]);
-        for pair in [["--approval-mode", "untrusted"], ["--model", "muse-spark-1.3"], ["--reasoning-effort", "low"]] {
+        assert_eq!(
+            &args[..2],
+            &["resume", "01a16681-4036-7383-ab96-9dd8865524d8"]
+        );
+        for pair in [
+            ["--approval-mode", "untrusted"],
+            ["--model", "muse-spark-1.3"],
+            ["--reasoning-effort", "low"],
+        ] {
             assert!(args.windows(2).any(|args| args == pair), "{args:?}");
         }
-        assert!(args.contains(&"--disable-write".to_owned()) && args.contains(&"--disable-shell".to_owned()));
-        let full = harness_arguments(&HarnessContext { mode: "full", resume_id: None, ..context }).unwrap();
-        assert!(full.contains(&"--disable-approval".to_owned()) && full.contains(&"--disable-sandbox".to_owned()));
+        assert!(
+            args.contains(&"--disable-write".to_owned())
+                && args.contains(&"--disable-shell".to_owned())
+        );
+        let full = harness_arguments(&HarnessContext {
+            mode: "full",
+            resume_id: None,
+            ..context
+        })
+        .unwrap();
+        assert!(
+            full.contains(&"--disable-approval".to_owned())
+                && full.contains(&"--disable-sandbox".to_owned())
+        );
     }
 
     #[test]
@@ -994,7 +1070,10 @@ mod tests {
             ..context
         })
         .unwrap();
-        assert_eq!(selected_model, ["--no-auto-update", "--model=claude-sonnet-4.5"]);
+        assert_eq!(
+            selected_model,
+            ["--no-auto-update", "--model=claude-sonnet-4.5"]
+        );
         for mode in ["auto", "plan", "full"] {
             assert!(harness_arguments(&HarnessContext { mode, ..context })
                 .unwrap_err()
@@ -1091,8 +1170,15 @@ mod tests {
                 "low"
             ]
         );
-        let full = harness_arguments(&HarnessContext { provider: "grok", mode: "full", ..context }).unwrap();
-        assert!(full.windows(2).any(|args| args == ["--permission-mode", "bypassPermissions"]));
+        let full = harness_arguments(&HarnessContext {
+            provider: "grok",
+            mode: "full",
+            ..context
+        })
+        .unwrap();
+        assert!(full
+            .windows(2)
+            .any(|args| args == ["--permission-mode", "bypassPermissions"]));
         // MiMo is Claude Code underneath: Claude flags, MiMo default model.
         let mimo = harness_arguments(&HarnessContext {
             provider: "mimo",
@@ -1101,11 +1187,29 @@ mod tests {
             ..context
         })
         .unwrap();
-        assert_eq!(mimo, ["--permission-mode", "acceptEdits", "--model", "mimo-v2.6-pro"]);
+        assert_eq!(
+            mimo,
+            [
+                "--permission-mode",
+                "acceptEdits",
+                "--model",
+                "mimo-v2.6-pro"
+            ]
+        );
         // Approve for me is Claude Code's auto mode, as in task runs.
         for provider in ["claude", "glm", "mimo"] {
-            let review = harness_arguments(&HarnessContext { provider, mode: "review", ..context }).unwrap();
-            assert!(review.windows(2).any(|args| args == ["--permission-mode", "auto"]), "{provider}");
+            let review = harness_arguments(&HarnessContext {
+                provider,
+                mode: "review",
+                ..context
+            })
+            .unwrap();
+            assert!(
+                review
+                    .windows(2)
+                    .any(|args| args == ["--permission-mode", "auto"]),
+                "{provider}"
+            );
         }
     }
 
@@ -1223,7 +1327,13 @@ mod tests {
     #[test]
     fn terminal_activity_treats_an_open_harness_console_as_busy() {
         let shell = shell("printf ready; read line");
-        shell.terms.lock().unwrap().get_mut(&shell.id).unwrap().harness_session = Some("task".into());
+        shell
+            .terms
+            .lock()
+            .unwrap()
+            .get_mut(&shell.id)
+            .unwrap()
+            .harness_session = Some("task".into());
         let result = activity(&shell.terms, &shell.id).unwrap();
         assert!(result.running);
         assert!(!result.uncertain);
@@ -1234,7 +1344,13 @@ mod tests {
     #[test]
     fn terminal_activity_treats_a_run_script_as_busy_even_between_child_processes() {
         let shell = shell("printf ready; read line");
-        shell.terms.lock().unwrap().get_mut(&shell.id).unwrap().run_script = true;
+        shell
+            .terms
+            .lock()
+            .unwrap()
+            .get_mut(&shell.id)
+            .unwrap()
+            .run_script = true;
         let result = activity(&shell.terms, &shell.id).unwrap();
         assert!(result.running);
         assert!(!result.uncertain);
@@ -1245,10 +1361,22 @@ mod tests {
     #[test]
     fn terminal_activity_protects_a_live_terminal_when_process_identity_is_unknown() {
         let shell = shell("printf ready; read line");
-        shell.terms.lock().unwrap().get_mut(&shell.id).unwrap().shell_pid = None;
+        shell
+            .terms
+            .lock()
+            .unwrap()
+            .get_mut(&shell.id)
+            .unwrap()
+            .shell_pid = None;
         let result = activity(&shell.terms, &shell.id).unwrap();
         // Restore ownership before any assertions so fixture cleanup remains reliable.
-        shell.terms.lock().unwrap().get_mut(&shell.id).unwrap().shell_pid = Some(shell.pid);
+        shell
+            .terms
+            .lock()
+            .unwrap()
+            .get_mut(&shell.id)
+            .unwrap()
+            .shell_pid = Some(shell.pid);
         assert!(result.uncertain);
         assert!(!result.running);
         close(&shell.terms, &shell.id).unwrap();
@@ -1269,12 +1397,31 @@ mod tests {
     fn task_deletion_requires_harness_to_close_but_preserves_ordinary_shells() {
         let shell = shell("printf ready; exec sleep 30");
         let (mut state, project) = crate::concurrent_task_tests::test_state();
-        let sid = state.store.lock().unwrap()
-            .create_session(&project, "codex", "default", "ask").unwrap().id;
+        let sid = state
+            .store
+            .lock()
+            .unwrap()
+            .create_session(&project, "codex", "default", "ask")
+            .unwrap()
+            .id;
         Arc::get_mut(&mut state).unwrap().terminals = shell.terms.clone();
-        shell.terms.lock().unwrap().get_mut(&shell.id).unwrap().harness_session = Some(sid.clone());
-        assert!(crate::task_deletion::delete_state(&state, &sid).unwrap_err().contains("harness"));
-        shell.terms.lock().unwrap().get_mut(&shell.id).unwrap().harness_session = None;
+        shell
+            .terms
+            .lock()
+            .unwrap()
+            .get_mut(&shell.id)
+            .unwrap()
+            .harness_session = Some(sid.clone());
+        assert!(crate::task_deletion::delete_state(&state, &sid)
+            .unwrap_err()
+            .contains("harness"));
+        shell
+            .terms
+            .lock()
+            .unwrap()
+            .get_mut(&shell.id)
+            .unwrap()
+            .harness_session = None;
         assert!(crate::task_deletion::delete_state(&state, &sid).is_ok());
         assert!(shell.terms.lock().unwrap().contains_key(&shell.id));
         close(&shell.terms, &shell.id).unwrap();
@@ -1378,19 +1525,33 @@ mod platform_tests {
         assert!(activity.running && !activity.uncertain);
         assert_eq!(activity.process_names, ["node.exe", "worker app.exe"]);
         assert!(parse_windows_processes("not json").is_err());
-        assert_eq!(process_name("C:\\Program Files\\PowerShell\\pwsh.exe"), "pwsh.exe");
+        assert_eq!(
+            process_name("C:\\Program Files\\PowerShell\\pwsh.exe"),
+            "pwsh.exe"
+        );
         assert_eq!(process_name("-zsh"), "zsh");
-        assert_eq!(serde_json::to_value(activity).unwrap()["processNames"][0], "node.exe");
+        assert_eq!(
+            serde_json::to_value(activity).unwrap()["processNames"][0],
+            "node.exe"
+        );
     }
 
     #[test]
     fn terminals_have_no_global_cap_but_reject_duplicate_harness_sessions() {
-        let sessions = (0..12).map(|index| format!("task-{index}")).collect::<Vec<_>>();
-        let consoles = sessions.iter().map(|session| (Some(session.as_str()), false)).collect::<Vec<_>>();
+        let sessions = (0..12)
+            .map(|index| format!("task-{index}"))
+            .collect::<Vec<_>>();
+        let consoles = sessions
+            .iter()
+            .map(|session| (Some(session.as_str()), false))
+            .collect::<Vec<_>>();
         assert!(super::check_start(consoles.iter().copied(), Some("next-task")).is_ok());
         assert!(super::check_start(consoles.iter().copied(), None).is_ok());
         assert!(super::check_start(consoles.iter().copied(), Some("task-0")).is_err());
-        let full = consoles.iter().copied().chain(std::iter::repeat_n((None, false), 32));
+        let full = consoles
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n((None, false), 32));
         assert!(super::check_start(full.clone(), Some("next-task")).is_ok());
         assert!(super::check_start(full, None).is_ok());
         assert!(super::check_start([(Some("task-0"), true)].into_iter(), Some("task-0")).is_ok());

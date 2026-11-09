@@ -68,7 +68,7 @@ export function createFileTabs(deps: Deps) {
     if (!entry?.tabs.length) { strip.innerHTML = ''; view.innerHTML = ''; return; }
     const tabButton = (path: string, label: string, glyph: string) => {
       const selected = (entry.active || '') === path;
-      return `<div class="file-tab${selected ? ' selected' : ''}" role="presentation" data-tab="${escape(path)}"><button role="tab" aria-selected="${selected}" aria-controls="${path ? 'file-view' : 'transcript'}" tabindex="${selected ? 0 : -1}" data-file-tab="select" title="${escape(path || label)}">${glyph}<span>${escape(label)}</span></button>${path ? `<button class="icon-button" tabindex="-1" data-file-tab="close" aria-label="Close ${escape(label)}" title="Close (Delete)">${icon('close')}</button>` : ''}</div>`;
+      return `<div class="file-tab${selected ? ' selected' : ''}" role="presentation" data-tab="${escape(path)}"><button role="tab" aria-selected="${selected}" aria-controls="${path ? 'file-view' : 'transcript'}" tabindex="${selected ? 0 : -1}" data-file-tab="select" title="${escape(path || label)}">${glyph}<span>${escape(label)}</span></button>${path ? `<button class="icon-button" data-file-tab="close" aria-label="Close ${escape(label)}" title="Close (Delete)">${icon('close')}</button>` : ''}</div>`;
     };
     strip.innerHTML = tabButton('', 'Conversation', icon('chat')) + entry.tabs.map(tab => tabButton(tab.path, name(tab.path), fileIcon(name(tab.path), false))).join('');
     if (!active) { view.innerHTML = ''; return; }

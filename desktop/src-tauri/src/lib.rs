@@ -1,54 +1,52 @@
 mod agent_tools;
-mod agent_usage;
 mod agent_updates;
+mod agent_usage;
 mod agent_usage_providers;
 mod appearance;
 mod architect;
 mod bots;
-mod chats;
 mod browser;
-mod child_env;
+mod capabilities;
+mod chats;
 mod checks;
+mod child_env;
+mod cloud;
+mod cloud_agents;
 mod code_search;
-mod connections;
 mod command_operations;
+mod connections;
 mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
 mod design;
 mod file_preview;
-mod run_script;
 mod github;
-mod github_pull;
 mod github_hub;
-mod project_icon;
-mod simulator;
-mod vm;
-mod secret_store;
-mod cloud;
-mod cloud_agents;
-mod capabilities;
-mod vsix_themes;
-mod token_saver;
-mod skills;
+mod github_pull;
 mod goal_state;
 #[cfg(test)]
 mod goal_workflow_tests;
 mod integrations;
 mod jev;
 mod jev_decisions;
+mod jj;
 mod local_servers;
 mod local_signing;
 mod message_queue;
 mod moodboards;
-mod prompt_attachments;
 mod overlay;
+mod project_icon;
+mod prompt_attachments;
 mod provider_settings;
-mod remote;
 mod providers;
-mod session_titles;
-mod slash_commands;
 mod recipes;
+mod remote;
+mod run_script;
+mod secret_store;
+mod session_titles;
+mod simulator;
+mod skills;
+mod slash_commands;
 mod storage;
 mod subagent_state;
 mod support;
@@ -56,15 +54,17 @@ mod task_controls;
 mod task_deletion;
 mod terminal;
 mod terminal_preferences;
+mod token_saver;
+mod tray;
 mod turn_changes;
 mod usage_keychain;
 mod usage_ledger;
+mod vm;
+mod vsix_themes;
 mod workspace;
-mod jj;
-mod tray;
 
-pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
+pub use usage_keychain::handle_usage_keychain_helper;
 
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -111,7 +111,9 @@ impl RunningAgent {
     }
 
     pub(crate) fn has_pending_approvals(&self) -> bool {
-        self.approvals.lock().map_or(true, |approvals| !approvals.is_empty())
+        self.approvals
+            .lock()
+            .map_or(true, |approvals| !approvals.is_empty())
     }
 
     fn respond_approval(
@@ -124,7 +126,10 @@ impl RunningAgent {
         // Lock order is registry (caller) -> approvals -> pending requests -> store. A new request
         // cannot become waiting between deciding the status and persisting it.
         let mut approvals = self.approvals.lock().map_err(|error| error.to_string())?;
-        let mut pending_requests = self.pending_requests.lock().map_err(|error| error.to_string())?;
+        let mut pending_requests = self
+            .pending_requests
+            .lock()
+            .map_err(|error| error.to_string())?;
         if self.stopped.load(Ordering::SeqCst) || !approvals.contains(&request_id) {
             return Err("This approval is no longer pending.".into());
         }
@@ -188,8 +193,15 @@ fn save_approval_with_pending(
     let request_id = format!("{run_id}:{request_id}");
     activity.request_id = Some(request_id.clone());
     let mut approvals = approvals.lock().map_err(|error| error.to_string())?;
-    let mut pending_requests = pending_requests.map(|requests| requests.lock().map_err(|error| error.to_string())).transpose()?;
-    update_pending_request(&mut approvals, pending_requests.as_mut().map(|requests| &mut **requests), &request_id, activity);
+    let mut pending_requests = pending_requests
+        .map(|requests| requests.lock().map_err(|error| error.to_string()))
+        .transpose()?;
+    update_pending_request(
+        &mut approvals,
+        pending_requests.as_mut().map(|requests| &mut **requests),
+        &request_id,
+        activity,
+    );
     store.lock().map_err(|error| error.to_string())?.status(
         &activity.session_id,
         if approvals.is_empty() {
@@ -249,7 +261,10 @@ mod pending_request_tests {
         assert_eq!(pending.get(request_id).unwrap().text, "Choose one");
         assert_eq!(pending.get(request_id).unwrap().data, request.data);
 
-        let cancelled = AgentEvent { kind: "input_cancelled".into(), ..request };
+        let cancelled = AgentEvent {
+            kind: "input_cancelled".into(),
+            ..request
+        };
         update_pending_request(&mut approvals, Some(&mut pending), request_id, &cancelled);
         assert!(!approvals.contains(request_id));
         assert!(!pending.contains_key(request_id));
@@ -282,8 +297,14 @@ fn reconcile_inactive_task(
     }
     // A mirror runs on its host; its events keep the status. A cloud run keeps going on its
     // machine until `cloud_agents::resume` re-attaches and finishes it.
-    if matches!(task.status.as_str(), "running" | "waiting") && !agents.contains_key(&task.id) && task.remote_device.is_none()
-        && !cloud_agents::load(store, &task.id).ok().flatten().is_some_and(|cloud| cloud.active()) {
+    if matches!(task.status.as_str(), "running" | "waiting")
+        && !agents.contains_key(&task.id)
+        && task.remote_device.is_none()
+        && !cloud_agents::load(store, &task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|cloud| cloud.active())
+    {
         if let Err(error) = store.finish_task_turn(&task.id, false, true) {
             eprintln!("Could not persist interrupted task state: {error}");
         }
@@ -518,7 +539,15 @@ impl AppState {
 /// Projectless chats have nothing to run, so they skip the run script.
 fn app_instructions(chat: bool) -> String {
     let run = if chat { "" } else { run_script::INSTRUCTIONS };
-    [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI].concat()
+    [
+        session_titles::GUIDANCE,
+        run,
+        turn_changes::instruction(),
+        TURN_ENDS,
+        RICH_QUESTIONS,
+        GENERATIVE_UI,
+    ]
+    .concat()
 }
 
 /// Pantheon closes the harness when a turn ends, so background waits never come back.
@@ -546,7 +575,14 @@ mod instruction_tests {
         assert_eq!(reminded, [1, 9, 17]);
         assert!(!reminder_turn(0));
         let text = app_instructions(false);
-        for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:"] {
+        for part in [
+            "Sidebar titles:",
+            "Run and preview workflow:",
+            "File change tracking:",
+            "Questions you ask through the request_user_input tool",
+            "Your turn ends when you reply",
+            "Generative UI:",
+        ] {
             assert!(text.contains(part), "{part}");
         }
         let chat = app_instructions(true);
@@ -602,28 +638,63 @@ pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
         .collect())
 }
 #[tauri::command]
-async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, enabled: bool) -> Result<Session> {
-    state.store.lock().map_err(|e| e.to_string())?.set_resume_at_reset(&session_id, enabled)
+async fn set_resume_at_reset(
+    state: State<'_, AppState>,
+    session_id: String,
+    enabled: bool,
+) -> Result<Session> {
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .set_resume_at_reset(&session_id, enabled)
 }
 #[tauri::command]
 async fn clear_usage_limit(state: State<'_, AppState>, session_id: String) -> Result<()> {
-    state.store.lock().map_err(|e| e.to_string())?.clear_limited(&session_id)
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clear_limited(&session_id)
 }
 #[tauri::command]
 async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String, u64)>> {
     let since = storage::now() - 366 * 86_400_000;
-    state.store.lock().map_err(|e| e.to_string())?.prompt_activity(since)
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .prompt_activity(since)
 }
 #[tauri::command]
-async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, pinned: bool) -> Result<Session> {
-    let task = state.store.lock().map_err(|e| e.to_string())?.pin_session(&session_id, pinned)?;
+async fn pin_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    pinned: bool,
+) -> Result<Session> {
+    let task = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .pin_session(&session_id, pinned)?;
     let _ = app.emit("sessions-changed", ());
     Ok(task)
 }
 #[tauri::command]
-async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, session_ids: Vec<String>) -> Result<Vec<Session>> {
+async fn reorder_sessions(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_ids: Vec<String>,
+) -> Result<Vec<Session>> {
     let store = state.store.clone();
-    let tasks = blocking(move || store.lock().map_err(|e| e.to_string())?.reorder_sessions(&session_ids)).await?;
+    let tasks = blocking(move || {
+        store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .reorder_sessions(&session_ids)
+    })
+    .await?;
     let _ = app.emit("sessions-changed", ());
     Ok(tasks)
 }
@@ -679,13 +750,22 @@ async fn create_session(
 /// Deletes a New task draft that was left before its first prompt. A task
 /// that has since saved a prompt, or never was a draft, is left untouched.
 #[tauri::command]
-async fn discard_draft(app: tauri::AppHandle, window: tauri::WebviewWindow, session_id: String) -> Result<bool> {
+async fn discard_draft(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    session_id: String,
+) -> Result<bool> {
     if window.label() != "main" {
         return Err("Only the main window can discard new tasks.".into());
     }
     blocking(move || {
         let state = app.state::<AppState>();
-        if !state.store.lock().map_err(|e| e.to_string())?.is_empty_draft(&session_id)? {
+        if !state
+            .store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .is_empty_draft(&session_id)?
+        {
             return Ok(false);
         }
         task_deletion::delete_state(&state, &session_id)?;
@@ -757,7 +837,14 @@ async fn configure_session(
 ) -> Result<Session> {
     if project_id.is_none() {
         remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
-        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
+        remote::route(
+            &app,
+            &state,
+            &session_id,
+            "task.configure",
+            serde_json::json!({"provider": provider, "model": model}),
+        )
+        .await?;
     }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
@@ -777,7 +864,14 @@ async fn set_reasoning_effort(
     session_id: String,
     reasoning_effort: Option<String>,
 ) -> Result<Session> {
-    remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"effort": reasoning_effort})).await?;
+    remote::route(
+        &app,
+        &state,
+        &session_id,
+        "task.configure",
+        serde_json::json!({"effort": reasoning_effort}),
+    )
+    .await?;
     // Match send/configure's lock order so a send cannot capture the old
     // configuration halfway through a settings change.
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
@@ -802,7 +896,14 @@ async fn update_session(
 ) -> Result<()> {
     // A mirror's permissions are its host's; the local row follows below.
     if let Some(mode) = &mode {
-        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"mode": mode})).await?;
+        remote::route(
+            &app,
+            &state,
+            &session_id,
+            "task.configure",
+            serde_json::json!({"mode": mode}),
+        )
+        .await?;
     }
     if let Some(title) = title
         .as_deref()
@@ -897,14 +998,10 @@ fn persist_turn_changes(
     capture: turn_changes::Captured,
 ) {
     let change_id = capture.summary.id.clone();
-    match store
-        .lock()
-        .map_err(|e| e.to_string())
-        .and_then(|store| {
-            let message_id = turn_changes::persist(&store, sid, capture)?;
-            Ok((message_id, turn_changes::summary(&store, sid, &change_id)?))
-        })
-    {
+    match store.lock().map_err(|e| e.to_string()).and_then(|store| {
+        let message_id = turn_changes::persist(&store, sid, capture)?;
+        Ok((message_id, turn_changes::summary(&store, sid, &change_id)?))
+    }) {
         Ok((message_id, summary)) => {
             let mut e = event(sid, "turn_changes", "");
             e.data = Some(serde_json::json!({"messageId":message_id,"turnChanges":summary}));
@@ -1023,7 +1120,13 @@ fn save_agent_activity(
                 .map(|_| ())
         }
         "session" => db.resume(&activity.session_id, &activity.text),
-        "limited" => db.set_limited(&activity.session_id, activity.data.as_ref().and_then(|data| data["resetsAt"].as_i64())),
+        "limited" => db.set_limited(
+            &activity.session_id,
+            activity
+                .data
+                .as_ref()
+                .and_then(|data| data["resetsAt"].as_i64()),
+        ),
         "approval" => db.status(&activity.session_id, "waiting"),
         "usage" => match usage {
             Some(usage) => db.record_context_usage(&activity.session_id, usage),
@@ -1070,31 +1173,69 @@ fn save_agent_activity(
         _ => Ok(()),
     }
 }
-fn recipes_dir(app: &tauri::AppHandle, state: &State<'_, AppState>, project_id: &str, scope: &str) -> Result<PathBuf> {
+fn recipes_dir(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    project_id: &str,
+    scope: &str,
+) -> Result<PathBuf> {
     if scope == "global" {
-        return Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipes"));
+        return Ok(app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("recipes"));
     }
-    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(project_id, None)?;
+    let root = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .workspace_root(project_id, None)?;
     Ok(recipes::project_dir(&root))
 }
 #[tauri::command]
-async fn recipes_list(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String) -> Result<Vec<recipes::Recipe>> {
-    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(&project_id, None).ok();
+async fn recipes_list(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<recipes::Recipe>> {
+    let root = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .workspace_root(&project_id, None)
+        .ok();
     let global = recipes_dir(&app, &state, &project_id, "global")?;
     blocking(move || Ok(recipes::list(root.as_deref(), &global))).await
 }
 #[tauri::command]
-async fn recipes_save(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String, scope: String, recipe: recipes::Recipe) -> Result<()> {
+async fn recipes_save(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    scope: String,
+    recipe: recipes::Recipe,
+) -> Result<()> {
     let dir = recipes_dir(&app, &state, &project_id, &scope)?;
     blocking(move || recipes::save(&dir, &recipe)).await
 }
 #[tauri::command]
-async fn recipes_delete(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String, scope: String, name: String) -> Result<()> {
+async fn recipes_delete(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    scope: String,
+    name: String,
+) -> Result<()> {
     let dir = recipes_dir(&app, &state, &project_id, &scope)?;
     blocking(move || recipes::delete(&dir, &name)).await
 }
 #[tauri::command]
-async fn recipes_dry_run(recipe: recipes::Recipe, provider: String, slash: Vec<String>) -> Result<recipes::Plan> {
+async fn recipes_dry_run(
+    recipe: recipes::Recipe,
+    provider: String,
+    slash: Vec<String>,
+) -> Result<recipes::Plan> {
     recipes::plan(&recipe, &provider, &slash)
 }
 #[tauri::command]
@@ -1226,10 +1367,19 @@ async fn send_message(
         if image_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
             return Err("Images can't be sent to a task on another computer yet.".into());
         }
-        remote::route(&app, &state, &session_id, "task.send", serde_json::json!({"text": text})).await?;
+        remote::route(
+            &app,
+            &state,
+            &session_id,
+            "task.send",
+            serde_json::json!({"text": text}),
+        )
+        .await?;
         return Ok(());
     }
-    if image_ids.as_ref().is_some_and(|ids| !ids.is_empty()) && cloud_agents::transport::is_cloud(&session_id) {
+    if image_ids.as_ref().is_some_and(|ids| !ids.is_empty())
+        && cloud_agents::transport::is_cloud(&session_id)
+    {
         return Err("Images can't be sent to a cloud machine yet.".into());
     }
     launch_task_in_project(
@@ -1501,7 +1651,13 @@ fn prepare_cloud_attach(
         .filter(|cloud| cloud.active())
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
-    store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
+    store
+        .db
+        .execute(
+            "DELETE FROM messages WHERE session_id=?1 AND id>?2",
+            rusqlite::params![session_id, cloud.turn_message],
+        )
+        .map_err(|e| e.to_string())?;
     store.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL WHERE id=?1", [&session_id]).map_err(|e| e.to_string())?;
     let config = RunConfig {
         session_id: session_id.clone(),
@@ -1749,7 +1905,11 @@ async fn launch_operation_admitted(
             config.instructions = instructions;
         } else {
             // In the message: on a new conversation, then as a periodic reminder.
-            let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
+            let turns = store
+                .lock()
+                .ok()
+                .and_then(|db| db.user_turns(&session_id).ok())
+                .unwrap_or(1);
             if config.resume_id.is_none() || reminder_turn(turns) {
                 config.prompt.push_str(&instructions);
             }
@@ -1831,7 +1991,10 @@ async fn launch_operation_admitted(
                     .unwrap_or_else(|poison| poison.into_inner());
                 tool.id = run_tool_id(&run_id, &turn, &tool.id);
             }
-            if let Some(tracker) = tracker_sink.as_ref().filter(|_| e.tool.is_some() || e.kind == "subagent") {
+            if let Some(tracker) = tracker_sink
+                .as_ref()
+                .filter(|_| e.tool.is_some() || e.kind == "subagent")
+            {
                 blocking_snapshot(|| {
                     if let Ok(mut tracker) = tracker.lock() {
                         tracker.observe(&e);
@@ -1853,7 +2016,13 @@ async fn launch_operation_admitted(
                     e.kind.as_str(),
                     "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
                 ) {
-                    let saved = save_approval_with_pending(&store_sink, &pending_approvals, Some(&pending_requests_sink), &run_id, &mut e);
+                    let saved = save_approval_with_pending(
+                        &store_sink,
+                        &pending_approvals,
+                        Some(&pending_requests_sink),
+                        &run_id,
+                        &mut e,
+                    );
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {
                             bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
@@ -1940,16 +2109,35 @@ async fn launch_operation_admitted(
         let host = simulator::tools::with_simulator(host, app.clone(), stopped.clone());
         let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
         let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
-        let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
-        let host = Some(session_titles::with_host(title_run.as_ref(), host, stopped.clone()));
+        let host =
+            cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = Some(agent_tools::with_preview(
+            host,
+            app.clone(),
+            session_id.clone(),
+            stopped.clone(),
+        ));
+        let host = Some(turn_changes::with_host(
+            host,
+            tracker.clone(),
+            stopped.clone(),
+        ));
+        let host = Some(session_titles::with_host(
+            title_run.as_ref(),
+            host,
+            stopped.clone(),
+        ));
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
-        let managed_worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
+        let managed_worker = team
+            .as_ref()
+            .is_some_and(|admission| admission.parent != session_id);
         let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
-            let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
+            let tools = host
+                .as_ref()
+                .map(|host| (host.tools.clone(), host.approval_tools.clone()))
+                .unwrap_or_default();
             (config.clone(), tools)
         });
         let result = if stopped.load(Ordering::SeqCst) {
@@ -2003,10 +2191,16 @@ async fn launch_operation_admitted(
             // so a queued follow-up starts from them. Until that is done the run stays
             // re-attachable (its run ID is kept), so a quit or an outage loses nothing.
             let (cloud_app, cloud_id) = (app.clone(), session_id.clone());
-            if let Err(error) = blocking(move || cloud_agents::tasks::after_run(&cloud_app, &cloud_id)).await {
+            if let Err(error) =
+                blocking(move || cloud_agents::tasks::after_run(&cloud_app, &cloud_id)).await
+            {
                 eprintln!("Cloud agents: could not finish a cloud run yet: {error}");
             }
-            let unfinished = store.lock().ok().and_then(|db| cloud_agents::load(&db, &session_id).ok().flatten()).is_some_and(|cloud| cloud.active());
+            let unfinished = store
+                .lock()
+                .ok()
+                .and_then(|db| cloud_agents::load(&db, &session_id).ok().flatten())
+                .is_some_and(|cloud| cloud.active());
             if unfinished && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
                 if let Ok(mut registry) = agents.lock() {
                     registry.remove(&session_id);
@@ -2162,11 +2356,20 @@ async fn launch_operation_admitted(
         // Read before the team scheduler can start this task's next turn.
         let launch = providers::warm_epoch(&session_id);
         if let Some(registry) = registry.as_ref() {
-            architect::completed(&app, &session_id, team.as_ref(), successful, was_stopped, registry);
+            architect::completed(
+                &app,
+                &session_id,
+                team.as_ref(),
+                successful,
+                was_stopped,
+                registry,
+            );
         }
         drop(registry);
         // Start the next turn's agent now, so a follow-up skips the CLI's own startup.
-        if let (true, Some((mut next, (tools, approvals)))) = (successful && !was_stopped, warm_next) {
+        if let (true, Some((mut next, (tools, approvals)))) =
+            (successful && !was_stopped, warm_next)
+        {
             // A turn that ended without any reply (seen after background commands) may have
             // left the session in a state a spare would inherit: start the next one fresh.
             let replied = store.lock().ok().and_then(|db| db.db.query_row(
@@ -2174,7 +2377,11 @@ async fn launch_operation_admitted(
                 [&session_id],
                 |row| row.get::<_, bool>(0),
             ).ok()).unwrap_or(false);
-            let task = store.lock().ok().filter(|_| replied).and_then(|db| db.session(&session_id).ok());
+            let task = store
+                .lock()
+                .ok()
+                .filter(|_| replied)
+                .and_then(|db| db.session(&session_id).ok());
             if let Some(task) = task {
                 next.resume_id = task.resume_id;
                 next.model = task.model;
@@ -2196,7 +2403,10 @@ async fn stop_session(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<()> {
-    if remote::mirror::stop(&app, &state, &session_id).await?.is_some() {
+    if remote::mirror::stop(&app, &state, &session_id)
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
     let is_team = {
@@ -2229,7 +2439,16 @@ async fn respond_approval(
     request_id: String,
     approved: bool,
 ) -> Result<()> {
-    if remote::route(&app, &state, &session_id, "approval.respond", serde_json::json!({"requestId": request_id, "approve": approved})).await?.is_some() {
+    if remote::route(
+        &app,
+        &state,
+        &session_id,
+        "approval.respond",
+        serde_json::json!({"requestId": request_id, "approve": approved}),
+    )
+    .await?
+    .is_some()
+    {
         return Ok(());
     }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
@@ -2239,7 +2458,11 @@ async fn respond_approval(
     tx.respond_approval(&state.store, &session_id, request_id, approved)
 }
 #[tauri::command]
-async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
+async fn list_providers(
+    app: tauri::AppHandle,
+    force: Option<bool>,
+    device_id: Option<String>,
+) -> Result<serde_json::Value> {
     let force = force.unwrap_or(false);
     if let Some(remote) = remote::catalog::providers(&app, device_id, force).await? {
         return Ok(remote);
@@ -2257,15 +2480,25 @@ pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo>
         .unwrap_or_default()
 }
 #[tauri::command]
-async fn list_provider_models(app: tauri::AppHandle, provider: String, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
+async fn list_provider_models(
+    app: tauri::AppHandle,
+    provider: String,
+    force: Option<bool>,
+    device_id: Option<String>,
+) -> Result<serde_json::Value> {
     let force = force.unwrap_or(false);
     if let Some(remote) = remote::catalog::models(&app, device_id, &provider, force).await? {
         return Ok(remote);
     }
     serde_json::to_value(local_provider_models(&provider, force).await?).map_err(|e| e.to_string())
 }
-pub(crate) async fn local_provider_models(provider: &str, force: bool) -> Result<Vec<providers::ModelInfo>> {
-    if force { providers::acp_catalog::invalidate(provider); }
+pub(crate) async fn local_provider_models(
+    provider: &str,
+    force: bool,
+) -> Result<Vec<providers::ModelInfo>> {
+    if force {
+        providers::acp_catalog::invalidate(provider);
+    }
     providers::list_models(provider).await
 }
 
@@ -2280,7 +2513,16 @@ async fn respond_user_input(
     if response.to_string().len() > 32 * 1024 {
         return Err("Response is too large.".into());
     }
-    if remote::route(&app, &state, &session_id, "input.respond", serde_json::json!({"requestId": request_id, "response": response})).await?.is_some() {
+    if remote::route(
+        &app,
+        &state,
+        &session_id,
+        "input.respond",
+        serde_json::json!({"requestId": request_id, "response": response}),
+    )
+    .await?
+    .is_some()
+    {
         return Ok(());
     }
     let reply = {
@@ -2320,7 +2562,11 @@ async fn respond_user_input(
         remove_pending_request(&mut approvals, Some(&mut pending_requests), &request_id);
         state.store.lock().map_err(|e| e.to_string())?.status(
             &session_id,
-            if approvals.is_empty() { "running" } else { "waiting" },
+            if approvals.is_empty() {
+                "running"
+            } else {
+                "waiting"
+            },
         )?;
     }
     Ok(())
@@ -2385,32 +2631,60 @@ async fn open_external_url(url: String) -> Result<()> {
 }
 
 #[tauri::command]
-async fn jj_status(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<jj::JjStatus> {
+async fn jj_status(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+) -> Result<jj::JjStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || jj::status(&root)).await
 }
 #[tauri::command]
-async fn jj_diff(state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: Option<String>) -> Result<String> {
+async fn jj_diff(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    path: Option<String>,
+) -> Result<String> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || jj::diff(&root, path.as_deref())).await
 }
 #[tauri::command]
-async fn jj_describe(state: State<'_, AppState>, project_id: String, session_id: Option<String>, message: String) -> Result<jj::JjStatus> {
+async fn jj_describe(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    message: String,
+) -> Result<jj::JjStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || jj::describe(&root, &message)).await
 }
 #[tauri::command]
-async fn jj_new(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<jj::JjStatus> {
+async fn jj_new(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+) -> Result<jj::JjStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || jj::new_change(&root)).await
 }
 #[tauri::command]
-async fn jj_commit(state: State<'_, AppState>, project_id: String, session_id: Option<String>, message: String) -> Result<jj::JjStatus> {
+async fn jj_commit(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    message: String,
+) -> Result<jj::JjStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || jj::commit(&root, &message)).await
 }
 #[tauri::command]
-async fn jj_log(state: State<'_, AppState>, project_id: String, session_id: Option<String>, limit: Option<usize>) -> Result<Vec<jj::Change>> {
+async fn jj_log(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<jj::Change>> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || jj::log(&root, limit.unwrap_or(20))).await
 }
@@ -2488,7 +2762,8 @@ fn create_worktree_task_with_defaults(
         if inherit_defaults {
             source.mode = storage::DEFAULT_PERMISSION_MODE.into();
         }
-        let task = store.create_worktree_session_on(&source, &worktree.path, Some(&worktree.branch))?;
+        let task =
+            store.create_worktree_session_on(&source, &worktree.path, Some(&worktree.branch))?;
         if inherit_defaults {
             architect::profiles::apply_default(&store, &task.id)?;
         }
@@ -2514,7 +2789,14 @@ async fn create_worktree(
 ) -> Result<Session> {
     let store = state.store.clone();
     blocking(move || {
-        create_worktree_task_with_defaults(&store, &session_id, branch, base, existing.unwrap_or(false), true)
+        create_worktree_task_with_defaults(
+            &store,
+            &session_id,
+            branch,
+            base,
+            existing.unwrap_or(false),
+            true,
+        )
     })
     .await
 }
@@ -2528,7 +2810,12 @@ async fn attach_worktree(
     base: Option<String>,
     existing: Option<bool>,
 ) -> Result<Session> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if state
+        .agents
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&session_id)
+    {
         return Err("Stop the agent before moving this task into a worktree.".into());
     }
     let store = state.store.clone();
@@ -2536,35 +2823,56 @@ async fn attach_worktree(
         let (source, root) = {
             let store = store.lock().map_err(|e| e.to_string())?;
             if !store.worktree_attachable(&session_id)? {
-                return Err("This conversation already started. Create a new task in a worktree instead.".into());
+                return Err(
+                    "This conversation already started. Create a new task in a worktree instead."
+                        .into(),
+                );
             }
             let source = store.session(&session_id)?;
             let root = store.workspace_root(&source.project_id, Some(&session_id))?;
             (source, root)
         };
-        let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing.unwrap_or(false))?;
+        let worktree = workspace::create_worktree_with(
+            &root,
+            &branch,
+            base.as_deref(),
+            existing.unwrap_or(false),
+        )?;
         let store = store.lock().map_err(|e| e.to_string())?;
-        store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| {
-            format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display())
-        })
+        store
+            .attach_worktree(&source.id, &worktree.path, &worktree.branch)
+            .map_err(|error| {
+                format!(
+                    "Worktree created at {}, but the task could not be updated: {error}",
+                    worktree.path.display()
+                )
+            })
     })
     .await
 }
 
 /// The main checkout and this task's worktree, or an error when it has none.
-fn worktree_paths(store: &Arc<Mutex<Store>>, session_id: &str) -> Result<(PathBuf, PathBuf, Option<String>)> {
+fn worktree_paths(
+    store: &Arc<Mutex<Store>>,
+    session_id: &str,
+) -> Result<(PathBuf, PathBuf, Option<String>)> {
     let store = store.lock().map_err(|e| e.to_string())?;
     let task = store.session(session_id)?;
     if let Some(device) = task.remote_device {
         return Err(format!("This task runs on {}.", device.name));
     }
-    let worktree = task.worktree_path.ok_or("This task uses the main checkout.")?;
+    let worktree = task
+        .worktree_path
+        .ok_or("This task uses the main checkout.")?;
     let main = store.workspace_root(&task.project_id, None)?;
     Ok((main, PathBuf::from(worktree), task.worktree_branch))
 }
 
 #[tauri::command]
-async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeStatus> {
+async fn worktree_status(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<workspace::WorktreeStatus> {
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
@@ -2574,8 +2882,16 @@ async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Resu
 }
 
 #[tauri::command]
-async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+async fn merge_worktree(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<workspace::WorktreeMerge> {
+    if state
+        .agents
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&session_id)
+    {
         return Err("Wait for the agent to finish before merging its worktree.".into());
     }
     let store = state.store.clone();
@@ -2592,13 +2908,23 @@ async fn remove_worktree(
     session_id: String,
     delete_branch: Option<bool>,
 ) -> Result<workspace::WorktreeRemoval> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if state
+        .agents
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&session_id)
+    {
         return Err("Stop the agent before removing its worktree.".into());
     }
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))
+        workspace::remove_worktree(
+            &main,
+            &path,
+            branch.as_deref(),
+            delete_branch.unwrap_or(false),
+        )
     })
     .await
 }
@@ -2609,7 +2935,10 @@ async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Re
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
         workspace::recreate_worktree(&main, &path, branch.as_deref())?;
-        store.lock().map_err(|e| e.to_string())?.session(&session_id)
+        store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .session(&session_id)
     })
     .await
 }
@@ -2690,7 +3019,15 @@ async fn describe_folder(path: String) -> Result<prompt_attachments::FolderSumma
 /// The project's own app icon for its sidebar rows, as a `data:` URL; None shows the default.
 #[tauri::command]
 async fn project_icon(state: State<'_, AppState>, project_id: String) -> Result<Option<String>> {
-    let path = state.store.lock().map_err(|e| e.to_string())?.projects()?.into_iter().find(|project| project.id == project_id).map(|project| project.path).ok_or("This project no longer exists.")?;
+    let path = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .projects()?
+        .into_iter()
+        .find(|project| project.id == project_id)
+        .map(|project| project.path)
+        .ok_or("This project no longer exists.")?;
     blocking(move || Ok(project_icon::find(std::path::Path::new(&path)))).await
 }
 #[tauri::command]
@@ -2717,13 +3054,35 @@ async fn github_run_details(repo: String, id: i64) -> Result<github_hub::RunDeta
 #[tauri::command]
 async fn github_project_repos(state: State<'_, AppState>) -> Result<Vec<github_hub::ProjectRepo>> {
     let projects = state.store.lock().map_err(|e| e.to_string())?.projects()?;
-    blocking(move || Ok(projects.into_iter().filter_map(|project| github_hub::project_repo(std::path::Path::new(&project.path)).map(|repo| github_hub::ProjectRepo { project_id: project.id, repo })).collect())).await
+    blocking(move || {
+        Ok(projects
+            .into_iter()
+            .filter_map(|project| {
+                github_hub::project_repo(std::path::Path::new(&project.path)).map(|repo| {
+                    github_hub::ProjectRepo {
+                        project_id: project.id,
+                        repo,
+                    }
+                })
+            })
+            .collect())
+    })
+    .await
 }
 /// Clones a repository into a folder the user chose and opens it as a project.
 #[tauri::command]
-async fn github_clone_repo(state: State<'_, AppState>, repo: String, parent: String) -> Result<Project> {
-    let destination = blocking(move || github_hub::clone(&repo, std::path::Path::new(&parent))).await?;
-    state.store.lock().map_err(|e| e.to_string())?.add_project(&destination)
+async fn github_clone_repo(
+    state: State<'_, AppState>,
+    repo: String,
+    parent: String,
+) -> Result<Project> {
+    let destination =
+        blocking(move || github_hub::clone(&repo, std::path::Path::new(&parent))).await?;
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .add_project(&destination)
 }
 
 #[tauri::command]
@@ -2777,19 +3136,38 @@ struct LinkedTask {
 
 /// Refresh every linked issue and pull request of a project in one batch.
 #[tauri::command]
-async fn github_refresh_links(state: State<'_, AppState>, project_id: String) -> Result<Vec<LinkedTask>> {
+async fn github_refresh_links(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<LinkedTask>> {
     let root = state.root(&project_id, None)?;
     let store = state.store.clone();
     blocking(move || {
-        let links = store.lock().map_err(|e| e.to_string())?.project_links(&project_id)?;
+        let links = store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .project_links(&project_id)?;
         if !links.is_empty() {
-            let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
-            let wanted: Vec<(String, i64)> = links.iter().map(|(_, link)| (link.kind.clone(), link.number)).collect();
-            let states: Vec<(String, i64, String, String)> = github::link_states(&root, &repo, &wanted)?
-                .into_iter()
-                .map(|state| (state.kind, state.number, state.state, state.title))
+            let repo = github::repository(&root).map_err(|error| {
+                if error.is_empty() {
+                    "This project has no GitHub remote.".to_string()
+                } else {
+                    error
+                }
+            })?;
+            let wanted: Vec<(String, i64)> = links
+                .iter()
+                .map(|(_, link)| (link.kind.clone(), link.number))
                 .collect();
-            store.lock().map_err(|e| e.to_string())?.update_link_states(&project_id, &states)?;
+            let states: Vec<(String, i64, String, String)> =
+                github::link_states(&root, &repo, &wanted)?
+                    .into_iter()
+                    .map(|state| (state.kind, state.number, state.state, state.title))
+                    .collect();
+            store
+                .lock()
+                .map_err(|e| e.to_string())?
+                .update_link_states(&project_id, &states)?;
         }
         Ok(store
             .lock()
@@ -2853,43 +3231,70 @@ async fn github_create_pull_request(
 fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let task = store.session(session_id)?;
-    let number = task.pull_request.as_ref().map(|link| link.number).ok_or("This task has no linked pull request.")?;
-    Ok((store.workspace_root(&task.project_id, Some(session_id))?, number))
+    let number = task
+        .pull_request
+        .as_ref()
+        .map(|link| link.number)
+        .ok_or("This task has no linked pull request.")?;
+    Ok((
+        store.workspace_root(&task.project_id, Some(session_id))?,
+        number,
+    ))
 }
 
 #[tauri::command]
-async fn github_pull_request(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDetail> {
+async fn github_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<github_pull::PullDetail> {
     let (root, number) = linked_pull(&state, &session_id)?;
     blocking(move || github_pull::detail(&root, number)).await
 }
 
 #[tauri::command]
-async fn github_pull_request_diff(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDiff> {
+async fn github_pull_request_diff(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<github_pull::PullDiff> {
     let (root, number) = linked_pull(&state, &session_id)?;
     blocking(move || github_pull::diff(&root, number)).await
 }
 
 /// Merge the task's linked pull request with the chosen method; returns the task with its link updated.
 #[tauri::command]
-async fn github_merge_pull_request(state: State<'_, AppState>, session_id: String, method: String) -> Result<Session> {
+async fn github_merge_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+    method: String,
+) -> Result<Session> {
     let (root, number) = linked_pull(&state, &session_id)?;
     github_pull::merge_flag(&method)?;
     let store = state.store.clone();
     blocking(move || {
         let link = github_pull::merge(&root, number, &method)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .set_task_link(&session_id, "pull", Some(&link))
     })
     .await
 }
 
 /// After a turn, link the pull request the agent opened, if any. Returns the task only when it changed.
 #[tauri::command]
-async fn github_detect_pull_request(state: State<'_, AppState>, session_id: String) -> Result<Option<Session>> {
+async fn github_detect_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Option<Session>> {
     let (root, turn, started) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
         // An open link stays: the user or an earlier turn chose it.
-        if task.pull_request.as_ref().is_some_and(|link| ["open", "draft"].contains(&link.state.as_str())) {
+        if task
+            .pull_request
+            .as_ref()
+            .is_some_and(|link| ["open", "draft"].contains(&link.state.as_str()))
+        {
             return Ok(None);
         }
         let mut turn = Vec::new();
@@ -2904,7 +3309,11 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
         if !turn.iter().any(|text| text.contains("/pull/")) {
             return Ok(None);
         }
-        (store.workspace_root(&task.project_id, Some(&session_id))?, turn, started)
+        (
+            store.workspace_root(&task.project_id, Some(&session_id))?,
+            turn,
+            started,
+        )
     };
     let store = state.store.clone();
     blocking(move || {
@@ -2913,20 +3322,34 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
             Err(error) if error.is_empty() => return Ok(None),
             Err(error) => return Err(error),
         };
-        let branch = workspace::git_status(&root).map(|status| status.branch).unwrap_or_default();
-        let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else { return Ok(None) };
+        let branch = workspace::git_status(&root)
+            .map(|status| status.branch)
+            .unwrap_or_default();
+        let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else {
+            return Ok(None);
+        };
         let store = store.lock().map_err(|e| e.to_string())?;
-        if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
+        if store
+            .session(&session_id)?
+            .pull_request
+            .is_some_and(|current| current.number == link.number)
+        {
             return Ok(None);
         }
-        store.set_task_link(&session_id, "pull", Some(&link)).map(Some)
+        store
+            .set_task_link(&session_id, "pull", Some(&link))
+            .map(Some)
     })
     .await
 }
 
 /// Link an existing pull request, given as a number or URL, to the task.
 #[tauri::command]
-async fn github_link_pull_request(state: State<'_, AppState>, session_id: String, reference: String) -> Result<Session> {
+async fn github_link_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+    reference: String,
+) -> Result<Session> {
     if reference.len() > 512 {
         return Err("Enter a pull request number or its GitHub URL.".into());
     }
@@ -2937,9 +3360,21 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
     };
     let store = state.store.clone();
     blocking(move || {
-        let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
-        let link = github_pull::lookup(&root, github_pull::parse_reference(&reference, &repo.name_with_owner)?)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        let repo = github::repository(&root).map_err(|error| {
+            if error.is_empty() {
+                "This project has no GitHub remote.".to_string()
+            } else {
+                error
+            }
+        })?;
+        let link = github_pull::lookup(
+            &root,
+            github_pull::parse_reference(&reference, &repo.name_with_owner)?,
+        )?;
+        store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .set_task_link(&session_id, "pull", Some(&link))
     })
     .await
 }
@@ -2996,7 +3431,9 @@ async fn read_document_file(
     path: String,
 ) -> Result<tauri::ipc::Response> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::read_document_bytes(&root, &path)).await.map(tauri::ipc::Response::new)
+    blocking(move || workspace::read_document_bytes(&root, &path))
+        .await
+        .map(tauri::ipc::Response::new)
 }
 #[tauri::command]
 async fn workspace_image(
@@ -3010,8 +3447,15 @@ async fn workspace_image(
     let project_id = match project_id {
         Some(id) => id,
         None => {
-            let session_id = session_id.as_deref().ok_or_else(|| "A task is required to show images".to_string())?;
-            state.store.lock().map_err(|e| e.to_string())?.session(session_id)?.project_id
+            let session_id = session_id
+                .as_deref()
+                .ok_or_else(|| "A task is required to show images".to_string())?;
+            state
+                .store
+                .lock()
+                .map_err(|e| e.to_string())?
+                .session(session_id)?
+                .project_id
         }
     };
     let root = state.root(&project_id, session_id.as_deref())?;
@@ -3039,7 +3483,11 @@ async fn prepare_file_preview(
         return Err("Pantheon is shutting down.".into());
     }
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || app.state::<file_preview::FilePreviews>().prepare(&root, &path)).await
+    blocking(move || {
+        app.state::<file_preview::FilePreviews>()
+            .prepare(&root, &path)
+    })
+    .await
 }
 #[tauri::command]
 async fn get_run_script(
@@ -3053,7 +3501,10 @@ async fn get_run_script(
 /// The task checkout's own fast check, run once at the user's request after a
 /// clean turn. Bounded; no plan is a result, not an error.
 #[tauri::command]
-async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Result<serde_json::Value> {
+async fn run_turn_checks(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<serde_json::Value> {
     let project_id = state
         .store
         .lock()
@@ -3082,9 +3533,14 @@ async fn get_run_script_preview(
         return blocking(move || {
             // Builds may not have produced the file yet. FilePreviews performs
             // containment and type checks before creating an authenticated URL.
-            if !root.join(&path).exists() { return Ok(None); }
-            app.state::<file_preview::FilePreviews>().prepare(&root, &path).map(|preview| Some(preview.url))
-        }).await;
+            if !root.join(&path).exists() {
+                return Ok(None);
+            }
+            app.state::<file_preview::FilePreviews>()
+                .prepare(&root, &path)
+                .map(|preview| Some(preview.url))
+        })
+        .await;
     }
     Ok(None)
 }
@@ -3098,18 +3554,24 @@ async fn start_run_script_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<String> {
-    if state.shutdown.load(Ordering::SeqCst) != 0 { return Err("Pantheon is shutting down.".into()); }
+    if state.shutdown.load(Ordering::SeqCst) != 0 {
+        return Err("Pantheon is shutting down.".into());
+    }
     let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
-        let _admission = state.agents.lock().map_err(|_| "Agent state is unavailable.")?;
+        let _admission = state
+            .agents
+            .lock()
+            .map_err(|_| "Agent state is unavailable.")?;
         agent_updates::ensure_not_installing()?;
         if request_id.is_some_and(|id| !agent_tools::agent_ui_request_active(app.state(), id)) {
             return Err("Run request was cancelled before the script could start.".into());
         }
         terminal::start_script(app.clone(), terms, &root, cols, rows)
-    }).await
+    })
+    .await
 }
 #[tauri::command]
 async fn start_terminal(
@@ -3196,13 +3658,18 @@ async fn get_metrics(state: State<'_, AppState>) -> Result<Metrics> {
             * 1024;
         #[cfg(windows)]
         let rss = {
-            use windows::Win32::System::{ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS}, Threading::GetCurrentProcess};
+            use windows::Win32::System::{
+                ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+                Threading::GetCurrentProcess,
+            };
             let mut counters = PROCESS_MEMORY_COUNTERS::default();
             let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
             counters.cb = size;
             if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) }.is_ok() {
                 counters.WorkingSetSize as u64
-            } else { 0 }
+            } else {
+                0
+            }
         };
         #[cfg(not(any(unix, windows)))]
         let rss = 0;
@@ -3269,9 +3736,25 @@ pub fn run() {
             if jev::setup(&dir).is_err() {
                 eprintln!("Jev settings are unavailable; browser testing remains disabled.");
             }
-            // Retain the database filename and bundle identifier so upgrades reuse existing data.
+            // New installs use pantheon.sqlite3. Existing installs keep
+            // their existing database through a one-time rename, including
+            // SQLite sidecars, so the Pantheon rebrand does not orphan them.
+            let database_path = dir.join("pantheon.sqlite3");
+            let legacy_path = dir.join("kingcode.sqlite3");
+            if !database_path.exists() && legacy_path.exists() {
+                let _ = std::fs::rename(&legacy_path, &database_path);
+                let _ = std::fs::rename(
+                    dir.join("kingcode.sqlite3-wal"),
+                    dir.join("pantheon.sqlite3-wal"),
+                );
+                let _ = std::fs::rename(
+                    dir.join("kingcode.sqlite3-shm"),
+                    dir.join("pantheon.sqlite3-shm"),
+                );
+            }
+            // Retain the bundle identifier so upgrades reuse existing data.
             let store =
-                Store::open(&dir.join("kingcode.sqlite3")).map_err(std::io::Error::other)?;
+                Store::open(&database_path).map_err(std::io::Error::other)?;
             if let Err(error) = store.discard_empty_drafts() {
                 eprintln!("Could not clear unsent new tasks: {error}");
             }
@@ -3439,7 +3922,10 @@ pub fn run() {
                 bots::bot_activity,
                 bots::bot_project_ids,
                 bots::bot_message,
-                bots::bot_set_capabilities, bots::bot_assign_task, bots::bot_task_links, bots::bot_task_brief,
+                bots::bot_set_capabilities,
+                bots::bot_assign_task,
+                bots::bot_task_links,
+                bots::bot_task_brief,
                 bots::schedule::bot_schedule_create,
                 bots::schedule::bot_schedule_set_enabled,
                 bots::schedule::bot_schedule_delete,
@@ -3683,7 +4169,14 @@ pub fn run() {
             jev::shutdown();
             app.state::<file_preview::FilePreviews>().shutdown();
             // Cloud runs keep going on their machines; their bridges are killed below.
-            let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
+            let cloud: HashSet<String> = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|store| cloud_agents::active_runs(&store).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
             if let Ok(agents) = state.agents.lock() {
                 for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
                     let _ = tx.send(RunInput::Stop);
@@ -3697,7 +4190,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
                 while tokio::time::Instant::now() < deadline {
-                    if agents.lock().map(|a| a.keys().all(|id| cloud.contains(id))).unwrap_or(true) {
+                    if agents
+                        .lock()
+                        .map(|a| a.keys().all(|id| cloud.contains(id)))
+                        .unwrap_or(true)
+                    {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

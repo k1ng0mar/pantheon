@@ -82,7 +82,8 @@ async function renderHtmlDocument(reader: HTMLElement, path: string, content: st
     else if (local && image) image(local).then(url => { img.src = url; }, () => img.replaceWith(label));
     else if (!src || img.closest('a')) img.replaceWith(label);
     // Remote images link to their address instead, as in the transcript.
-    else img.replaceWith(Object.assign(document.createElement('a'), { className: 'md-media', href: src, textContent: img.alt || 'Image' }));
+    else if (/^https?:\/\//i.test(src)) img.replaceWith(Object.assign(document.createElement('a'), { className: 'md-media', href: src, target: '_blank', rel: 'noopener noreferrer', textContent: img.alt || 'Image' }));
+    else img.replaceWith(label);
   }
   decorateFileLinks(reader, reader);
 }

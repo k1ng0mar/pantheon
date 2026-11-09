@@ -25,13 +25,13 @@ export function pandaSvg(id: string): string {
 
 export function botAvatarHtml(avatar: string, name: string, cls = ''): string {
   const value = avatar.trim();
-  const art = pandaSvg(value) || (IMAGE.test(value) ? `<img alt="" src="${value}">` : '');
+  const art = pandaSvg(value) || (IMAGE.test(value) ? `<img alt="" src="${escape(value)}">` : '');
   const content = art || escape(value || name.trim().slice(0, 1).toUpperCase() || '?');
-  return `<span class="bot-avatar${art ? ' has-art' : ''}${cls ? ` ${cls}` : ''}" aria-hidden="true">${content}</span>`;
+  return `<span class="bot-avatar${art ? ' has-art' : ''}${cls ? ` ${escape(cls)}` : ''}" aria-hidden="true">${content}</span>`;
 }
 
 function customSwatch(url: string, pressed: boolean): string {
-  return `<button type="button" class="avatar-swatch" data-avatar-choice="custom" aria-pressed="${pressed}" aria-label="Uploaded image"><img alt="" src="${url}"></button>`;
+  return `<button type="button" class="avatar-swatch" data-avatar-choice="custom" aria-pressed="${pressed}" aria-label="Uploaded image"><img alt="" src="${escape(url)}"></button>`;
 }
 
 export function avatarPicker(current: string): string {

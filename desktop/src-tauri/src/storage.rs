@@ -190,7 +190,7 @@ fn settle_unfinished_subagents(db: &Connection, sid: Option<&str>, status: &str)
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let mut db = Connection::open(path).map_err(|e| e.to_string())?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-1024; PRAGMA mmap_size=0;
+        db.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-1024; PRAGMA mmap_size=0;
             CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
               title TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
@@ -323,7 +323,9 @@ impl Store {
                 // fixtures rebuild old schemas selectively, so the column add is guarded.
                 let has_branch: i64 = migration.query_row("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='worktree_branch'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
                 if has_branch == 0 {
-                    migration.execute_batch("ALTER TABLE sessions ADD COLUMN worktree_branch TEXT;").map_err(|e| e.to_string())?;
+                    migration
+                        .execute_batch("ALTER TABLE sessions ADD COLUMN worktree_branch TEXT;")
+                        .map_err(|e| e.to_string())?;
                 }
                 migration.execute_batch("CREATE TABLE IF NOT EXISTS task_links(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN ('issue','pull')),number INTEGER NOT NULL,url TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT '',checked_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,kind)); CREATE INDEX IF NOT EXISTS task_links_number ON task_links(kind,number); PRAGMA user_version=18;").map_err(|e|e.to_string())?;
             }
@@ -331,7 +333,9 @@ impl Store {
                 // Guard the column because migration fixtures selectively rebuild older schemas.
                 let has_prompt: i64 = migration.query_row("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='last_prompt_at'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
                 if has_prompt == 0 {
-                    migration.execute_batch("ALTER TABLE sessions ADD COLUMN last_prompt_at INTEGER;").map_err(|e| e.to_string())?;
+                    migration
+                        .execute_batch("ALTER TABLE sessions ADD COLUMN last_prompt_at INTEGER;")
+                        .map_err(|e| e.to_string())?;
                 }
                 migration.execute_batch("UPDATE sessions SET last_prompt_at=(SELECT MAX(created_at) FROM messages WHERE session_id=sessions.id AND role='user' AND trim(content)<>'');
                   CREATE TRIGGER IF NOT EXISTS messages_record_prompt AFTER INSERT ON messages
@@ -347,17 +351,26 @@ impl Store {
                 if has_origin == 0 {
                     migration.execute_batch("ALTER TABLE sessions ADD COLUMN title_origin TEXT NOT NULL DEFAULT 'legacy' CHECK(title_origin IN ('legacy','auto','manual'));").map_err(|e| e.to_string())?;
                 }
-                migration.execute_batch("PRAGMA user_version=20;").map_err(|e| e.to_string())?;
+                migration
+                    .execute_batch("PRAGMA user_version=20;")
+                    .map_err(|e| e.to_string())?;
             }
             if version < 21 {
                 // Older migration fixtures may already retain these columns.
                 for (name, definition) in [
-                    ("pinned", "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))"),
+                    (
+                        "pinned",
+                        "INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))",
+                    ),
                     ("sidebar_order", "INTEGER CHECK(sidebar_order >= 0)"),
                 ] {
                     let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
                     if !exists {
-                        migration.execute_batch(&format!("ALTER TABLE sessions ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                        migration
+                            .execute_batch(&format!(
+                                "ALTER TABLE sessions ADD COLUMN {name} {definition};"
+                            ))
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 migration.execute_batch(&format!("CREATE INDEX IF NOT EXISTS sessions_sidebar ON sessions({SIDEBAR_ORDER}); PRAGMA user_version=21;")).map_err(|e| e.to_string())?;
@@ -394,11 +407,18 @@ impl Store {
                 for (name, definition) in [
                     ("limited_at", "INTEGER"),
                     ("limited_until", "INTEGER"),
-                    ("resume_at_reset", "INTEGER NOT NULL DEFAULT 0 CHECK(resume_at_reset IN (0,1))"),
+                    (
+                        "resume_at_reset",
+                        "INTEGER NOT NULL DEFAULT 0 CHECK(resume_at_reset IN (0,1))",
+                    ),
                 ] {
                     let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
                     if !exists {
-                        migration.execute_batch(&format!("ALTER TABLE sessions ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                        migration
+                            .execute_batch(&format!(
+                                "ALTER TABLE sessions ADD COLUMN {name} {definition};"
+                            ))
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 migration.execute_batch("CREATE TRIGGER IF NOT EXISTS messages_clear_limit AFTER INSERT ON messages
@@ -410,16 +430,28 @@ impl Store {
             }
             if version < 25 {
                 // Bots: always-on agents reachable from channels (docs/bots.md).
-                migration.execute_batch(crate::bots::SCHEMA).map_err(|e| e.to_string())?;
-                migration.execute_batch("PRAGMA user_version=25;").map_err(|e| e.to_string())?;
+                migration
+                    .execute_batch(crate::bots::SCHEMA)
+                    .map_err(|e| e.to_string())?;
+                migration
+                    .execute_batch("PRAGMA user_version=25;")
+                    .map_err(|e| e.to_string())?;
             }
             if version < 26 {
                 // Mirrors: a task that runs on another computer, and the last of its
                 // messages copied here (docs/remote-access.md).
-                for (name, definition) in [("remote_device", "TEXT"), ("remote_session", "TEXT"), ("remote_synced_id", "INTEGER NOT NULL DEFAULT 0")] {
+                for (name, definition) in [
+                    ("remote_device", "TEXT"),
+                    ("remote_session", "TEXT"),
+                    ("remote_synced_id", "INTEGER NOT NULL DEFAULT 0"),
+                ] {
                     let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
                     if !exists {
-                        migration.execute_batch(&format!("ALTER TABLE sessions ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                        migration
+                            .execute_batch(&format!(
+                                "ALTER TABLE sessions ADD COLUMN {name} {definition};"
+                            ))
+                            .map_err(|e| e.to_string())?;
                     }
                 }
                 migration.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS sessions_remote ON sessions(remote_device,remote_session) WHERE remote_session IS NOT NULL; PRAGMA user_version=26;").map_err(|e| e.to_string())?;
@@ -430,17 +462,23 @@ impl Store {
                 if !exists {
                     migration.execute_batch("ALTER TABLE sessions ADD COLUMN cloud TEXT CHECK(cloud IS NULL OR json_valid(cloud));").map_err(|e| e.to_string())?;
                 }
-                migration.execute_batch("PRAGMA user_version=27;").map_err(|e| e.to_string())?;
+                migration
+                    .execute_batch("PRAGMA user_version=27;")
+                    .map_err(|e| e.to_string())?;
             }
             if version < 28 {
                 // Bots: an optional personality (soul.md) kept apart from instructions (docs/bots.md).
                 crate::bots::migrate_soul(&migration)?;
-                migration.execute_batch("PRAGMA user_version=28;").map_err(|e| e.to_string())?;
+                migration
+                    .execute_batch("PRAGMA user_version=28;")
+                    .map_err(|e| e.to_string())?;
             }
             if version < 29 {
                 // Bots: skill and MCP references, and the bot a project task was started with (docs/bots.md).
                 crate::bots::migrate_capabilities(&migration)?;
-                migration.execute_batch("PRAGMA user_version=29;").map_err(|e| e.to_string())?;
+                migration
+                    .execute_batch("PRAGMA user_version=29;")
+                    .map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -489,19 +527,36 @@ impl Store {
     fn backfill_legacy_prompt_activity(db: &Connection) -> Result<()> {
         Self::record_legacy_prompt_cutoff(db)?;
         let mut teams = db.prepare("SELECT session_id FROM architect_teams WHERE COALESCE(json_extract(content,'$.legacyPromptThroughId'),0)>0").map_err(|e| e.to_string())?;
-        let ids = teams.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        let ids = teams
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
         let mut messages = db.prepare("SELECT id,content,created_at FROM messages WHERE session_id=?1 AND role='user' AND trim(content)<>'' ORDER BY created_at DESC,id DESC").map_err(|e| e.to_string())?;
         for sid in ids {
             let sid = sid.map_err(|e| e.to_string())?;
-            let rows = messages.query_map([&sid], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))).map_err(|e| e.to_string())?;
+            let rows = messages
+                .query_map([&sid], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
             let mut prompt_at = None;
             for row in rows {
                 let (id, content, created_at) = row.map_err(|e| e.to_string())?;
-                if crate::architect::internal_turns::legacy_kind_in_db(db, &sid, id, &content)?.is_none() {
-                    prompt_at = Some(created_at); break;
+                if crate::architect::internal_turns::legacy_kind_in_db(db, &sid, id, &content)?
+                    .is_none()
+                {
+                    prompt_at = Some(created_at);
+                    break;
                 }
             }
-            db.execute("UPDATE sessions SET last_prompt_at=?2 WHERE id=?1", params![sid,prompt_at]).map_err(|e| e.to_string())?;
+            db.execute(
+                "UPDATE sessions SET last_prompt_at=?2 WHERE id=?1",
+                params![sid, prompt_at],
+            )
+            .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -665,8 +720,14 @@ impl Store {
                 .get::<_, Option<String>>(20)?
                 .and_then(|s| serde_json::from_str(&s).ok()),
             worktree_branch: r.get(21)?,
-            remote_device: r.get::<_, Option<String>>(29)?.map(|id| RemoteDevice { name: crate::remote::device_label(&id), id }),
-            cloud: r.get::<_, Option<String>>(30)?.as_deref().and_then(crate::cloud_agents::view),
+            remote_device: r.get::<_, Option<String>>(29)?.map(|id| RemoteDevice {
+                name: crate::remote::device_label(&id),
+                id,
+            }),
+            cloud: r
+                .get::<_, Option<String>>(30)?
+                .as_deref()
+                .and_then(crate::cloud_agents::view),
             issue: None,
             pull_request: None,
         })
@@ -697,18 +758,36 @@ impl Store {
             .prepare("SELECT m.created_at/3600000,s.provider,COUNT(*) FROM messages m JOIN sessions s ON s.id=m.session_id WHERE m.role='user' AND m.created_at>=?1 GROUP BY 1,2 ORDER BY 1")
             .map_err(|e| e.to_string())?;
         let rows = statement
-            .query_map([since_ms], |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)?.max(0) as u64)))
+            .query_map([since_ms], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2)?.max(0) as u64,
+                ))
+            })
             .map_err(|e| e.to_string())?;
-        rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|e| e.to_string())
     }
     /// Tasks in a project whose title or conversation mentions `query`, newest first,
     /// each with a short excerpt around the first match in its messages.
-    pub fn search_tasks(&self, project_id: &str, query: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+    pub fn search_tasks(
+        &self,
+        project_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
         let query = query.trim();
         if query.is_empty() || query.chars().count() > 200 {
             return Err("Search for 1 to 200 characters.".into());
         }
-        let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let pattern = format!(
+            "%{}%",
+            query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
         let mut statement = self.db.prepare(
             "SELECT s.id,s.title,s.updated_at,
                (SELECT m.content FROM messages m WHERE m.session_id=s.id AND m.role IN ('user','assistant') AND m.content LIKE ?2 ESCAPE '\\' ORDER BY m.id DESC LIMIT 1)
@@ -727,13 +806,19 @@ impl Store {
             });
             Ok(serde_json::json!({"taskId": r.get::<_, String>(0)?, "title": r.get::<_, String>(1)?, "updatedAt": r.get::<_, i64>(2)?, "excerpt": excerpt}))
         }).map_err(|e| e.to_string())?;
-        rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// Records a usage limit hit by the task's run.
     pub fn set_limited(&self, sid: &str, until: Option<i64>) -> Result<()> {
         let until = until.filter(|at| *at > 0 && *at < 4_102_444_800_000);
-        self.db.execute("UPDATE sessions SET limited_at=?2,limited_until=?3 WHERE id=?1", params![sid, now(), until]).map_err(|e| e.to_string())?;
+        self.db
+            .execute(
+                "UPDATE sessions SET limited_at=?2,limited_until=?3 WHERE id=?1",
+                params![sid, now(), until],
+            )
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -763,13 +848,37 @@ impl Store {
     /// Adds a conversation started outside Pantheon as a task that continues it:
     /// its history keeps original times, and the agent resumes `resume_id` on the next prompt.
     #[allow(clippy::too_many_arguments)]
-    pub fn import_task(&self, project_id: &str, provider: &str, model: &str, title: &str, resume_id: &str, reasoning_effort: Option<&str>, created_at: i64, entries: &[(&str, String, i64)]) -> Result<Session> {
+    pub fn import_task(
+        &self,
+        project_id: &str,
+        provider: &str,
+        model: &str,
+        title: &str,
+        resume_id: &str,
+        reasoning_effort: Option<&str>,
+        created_at: i64,
+        entries: &[(&str, String, i64)],
+    ) -> Result<Session> {
         let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         let task = self.create_session(project_id, provider, model, DEFAULT_PERMISSION_MODE)?;
-        let title: String = title.chars().filter(|c| !c.is_control()).take(200).collect();
-        let title = if title.trim().is_empty() { "Imported conversation".to_owned() } else { title.trim().to_owned() };
-        let first = entries.first().map_or(created_at, |entry| entry.2).min(created_at.max(1));
-        let last = entries.last().map_or(created_at, |entry| entry.2).max(first);
+        let title: String = title
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(200)
+            .collect();
+        let title = if title.trim().is_empty() {
+            "Imported conversation".to_owned()
+        } else {
+            title.trim().to_owned()
+        };
+        let first = entries
+            .first()
+            .map_or(created_at, |entry| entry.2)
+            .min(created_at.max(1));
+        let last = entries
+            .last()
+            .map_or(created_at, |entry| entry.2)
+            .max(first);
         self.db
             .execute(
                 "UPDATE sessions SET resume_id=?2,title=?3,title_origin='manual',reasoning_effort=?4,task_stage='in_progress',created_at=?5,updated_at=?6 WHERE id=?1",
@@ -778,7 +887,10 @@ impl Store {
             .map_err(|e| e.to_string())?;
         for (role, content, at) in entries {
             self.db
-                .execute("INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,?2,?3,?4)", params![task.id, role, content, at])
+                .execute(
+                    "INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,?2,?3,?4)",
+                    params![task.id, role, content, at],
+                )
                 .map_err(|e| e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())?;
@@ -806,7 +918,9 @@ impl Store {
             "UPDATE sessions SET pinned=?2 WHERE id=?1 AND id NOT IN (SELECT session_id FROM architect_workers)",
             params![sid, pinned],
         ).map_err(|e| e.to_string())?;
-        if changed == 0 { return Err("Conversation not found or is a team worker.".into()); }
+        if changed == 0 {
+            return Err("Conversation not found or is a team worker.".into());
+        }
         self.session(sid)
     }
 
@@ -814,19 +928,30 @@ impl Store {
         if session_ids.is_empty() || session_ids.len() > 500 {
             return Err("Reorder between 1 and 500 conversations at a time.".into());
         }
-        let selected: std::collections::HashSet<&str> = session_ids.iter().map(String::as_str).collect();
+        let selected: std::collections::HashSet<&str> =
+            session_ids.iter().map(String::as_str).collect();
         if selected.len() != session_ids.len() {
             return Err("A conversation may appear only once in the order.".into());
         }
-        let transaction = rusqlite::Transaction::new_unchecked(&self.db, rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.db,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| e.to_string())?;
         // Work from the entire order, not the currently displayed project/search
         // result or the 500-row listing window, so hidden tasks keep their slots.
         let mut ordered = {
             let mut query = transaction.prepare(&format!("SELECT id,pinned FROM sessions WHERE id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER}")).map_err(|e| e.to_string())?;
-            let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))).map_err(|e| e.to_string())?;
-            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            let rows = query
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
         };
-        let included = ordered.iter().filter(|(id, _)| selected.contains(id.as_str())).collect::<Vec<_>>();
+        let included = ordered
+            .iter()
+            .filter(|(id, _)| selected.contains(id.as_str()))
+            .collect::<Vec<_>>();
         if included.len() != selected.len() {
             return Err("A conversation no longer exists or is a team worker.".into());
         }
@@ -835,12 +960,18 @@ impl Store {
         }
         let mut next = session_ids.iter();
         for (id, _) in &mut ordered {
-            if selected.contains(id.as_str()) { *id = next.next().expect("validated selection count").clone(); }
+            if selected.contains(id.as_str()) {
+                *id = next.next().expect("validated selection count").clone();
+            }
         }
         {
-            let mut update = transaction.prepare("UPDATE sessions SET sidebar_order=?2 WHERE id=?1").map_err(|e| e.to_string())?;
+            let mut update = transaction
+                .prepare("UPDATE sessions SET sidebar_order=?2 WHERE id=?1")
+                .map_err(|e| e.to_string())?;
             for (rank, (id, _)) in ordered.iter().enumerate() {
-                update.execute(params![id, rank as i64]).map_err(|e| e.to_string())?;
+                update
+                    .execute(params![id, rank as i64])
+                    .map_err(|e| e.to_string())?;
             }
         }
         transaction.commit().map_err(|e| e.to_string())?;
@@ -890,7 +1021,11 @@ impl Store {
         self.session(sid)?;
         match link {
             Some(link) => {
-                if link.number <= 0 || link.url.len() > 2048 || link.title.len() > 1024 || link.state.len() > 32 {
+                if link.number <= 0
+                    || link.url.len() > 2048
+                    || link.title.len() > 1024
+                    || link.state.len() > 32
+                {
                     return Err("Invalid GitHub link.".into());
                 }
                 self.db.execute("INSERT INTO task_links(session_id,kind,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,kind) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
@@ -898,7 +1033,10 @@ impl Store {
             }
             None => {
                 self.db
-                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2", params![sid, kind])
+                    .execute(
+                        "DELETE FROM task_links WHERE session_id=?1 AND kind=?2",
+                        params![sid, kind],
+                    )
                     .map_err(|e| e.to_string())?;
             }
         }
@@ -926,7 +1064,11 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     /// Record refreshed states without touching which task owns which link.
-    pub fn update_link_states(&self, project_id: &str, states: &[(String, i64, String, String)]) -> Result<()> {
+    pub fn update_link_states(
+        &self,
+        project_id: &str,
+        states: &[(String, i64, String, String)],
+    ) -> Result<()> {
         for (kind, number, state, title) in states {
             self.db.execute("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)",
                 params![kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
@@ -943,21 +1085,40 @@ impl Store {
             params![sid, path.to_string_lossy(), branch, now()],
         ).map_err(|e| e.to_string())?;
         if changed == 0 {
-            return Err("This conversation already started. Create a new task in a worktree instead.".into());
+            return Err(
+                "This conversation already started. Create a new task in a worktree instead."
+                    .into(),
+            );
         }
         self.session(sid)
     }
     /// How many messages the user has sent in a task, including the one being sent.
     pub fn user_turns(&self, sid: &str) -> Result<i64> {
-        self.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user'", [sid], |r| r.get(0)).map_err(|e| e.to_string())
+        self.db
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user'",
+                [sid],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())
     }
     /// Whether a task can still be converted in place.
     pub fn worktree_attachable(&self, sid: &str) -> Result<bool> {
         let session = self.session(sid)?;
-        if session.worktree_path.is_some() || session.resume_id.is_some() || ["running", "waiting"].contains(&session.status.as_str()) {
+        if session.worktree_path.is_some()
+            || session.resume_id.is_some()
+            || ["running", "waiting"].contains(&session.status.as_str())
+        {
             return Ok(false);
         }
-        let messages: i64 = self.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1", [sid], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let messages: i64 = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id=?1",
+                [sid],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
         Ok(messages == 0)
     }
     pub fn record_goal(
@@ -1163,7 +1324,12 @@ impl Store {
         Ok(path)
     }
 
-    pub fn create_worktree_session_on(&self, source: &Session, path: &Path, branch: Option<&str>) -> Result<Session> {
+    pub fn create_worktree_session_on(
+        &self,
+        source: &Session,
+        path: &Path,
+        branch: Option<&str>,
+    ) -> Result<Session> {
         self.project(&source.project_id)?;
         let path = path
             .canonicalize()
@@ -1225,8 +1391,13 @@ impl Store {
         ).map_err(|e| e.to_string())?);
         // New-task creation can already have a transaction. Without history,
         // configuration is still one atomic UPDATE, even if team defaults chose another harness.
-        let transaction = needs_handoff.then(|| self.db.unchecked_transaction()).transpose().map_err(|e| e.to_string())?;
-        if needs_handoff { crate::context_recovery::queue(self, sid)?; }
+        let transaction = needs_handoff
+            .then(|| self.db.unchecked_transaction())
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        if needs_handoff {
+            crate::context_recovery::queue(self, sid)?;
+        }
         let changed = self
             .db
             .execute(
@@ -1272,7 +1443,9 @@ impl Store {
             });
             self.message(sid, "handoff", &notice.to_string())?;
         }
-        if let Some(transaction) = transaction { transaction.commit().map_err(|e| e.to_string())?; }
+        if let Some(transaction) = transaction {
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
         Ok(session)
     }
     pub fn set_reasoning_effort(&self, sid: &str, effort: Option<&str>) -> Result<Session> {
@@ -1404,8 +1577,10 @@ impl Store {
         }
         let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         let session = self.session(sid)?;
-        let title: String = if kind.is_none() && session.title == "New conversation"
-            && crate::session_titles::automatic(self, sid)? {
+        let title: String = if kind.is_none()
+            && session.title == "New conversation"
+            && crate::session_titles::automatic(self, sid)?
+        {
             content
                 .lines()
                 .next()
@@ -1596,7 +1771,10 @@ impl Store {
             "SELECT substr(content,1,4096) FROM messages WHERE session_id=?1 AND role='handoff' AND id>?2 ORDER BY id LIMIT 1",
             params![sid, message_id], |row| row.get(0),
         ).optional().map_err(|e| e.to_string())?;
-        Ok(next.as_deref().and_then(handoff_from_provider).unwrap_or(current))
+        Ok(next
+            .as_deref()
+            .and_then(handoff_from_provider)
+            .unwrap_or(current))
     }
 
     pub fn messages(&self, sid: &str, before: Option<i64>) -> Result<Vec<Message>> {
@@ -1669,7 +1847,9 @@ impl Store {
             // the preceding responses without another database lookup.
             for message in &mut page {
                 if message.role == "handoff" {
-                    if let Some(from) = handoff_from_provider(&message.content) { author = from; }
+                    if let Some(from) = handoff_from_provider(&message.content) {
+                        author = from;
+                    }
                 } else if message.role == "assistant" {
                     message.author_provider = Some(author.clone());
                 }
@@ -1719,7 +1899,9 @@ fn handoff_from_provider(content: &str) -> Option<String> {
                 | "mimo"
                 | "pi"
                 | "deepseek"
-                | "commandcode" | "cline" | "kilo"
+                | "commandcode"
+                | "cline"
+                | "kilo"
                 | "omp"
                 | "github-copilot"
                 | "muse"
@@ -1747,12 +1929,24 @@ mod tests {
     #[test]
     fn new_task_drafts_stay_hidden_until_their_first_prompt() {
         let (store, listed) = empty_session();
-        let draft = store.create_session(&listed.project_id, "codex", "gpt-5", "auto").unwrap();
+        let draft = store
+            .create_session(&listed.project_id, "codex", "gpt-5", "auto")
+            .unwrap();
         let draft = store.mark_draft(&draft.id).unwrap();
         assert!(draft.draft);
-        let ids = |store: &Store| store.sessions().unwrap().into_iter().map(|task| task.id).collect::<Vec<_>>();
+        let ids = |store: &Store| {
+            store
+                .sessions()
+                .unwrap()
+                .into_iter()
+                .map(|task| task.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(&store), vec![listed.id.clone()]);
-        assert!(store.session(&draft.id).unwrap().draft, "the open draft still loads by id");
+        assert!(
+            store.session(&draft.id).unwrap().draft,
+            "the open draft still loads by id"
+        );
         assert!(store.is_empty_draft(&draft.id).unwrap());
         // A reply or tool output alone does not publish it; the first prompt does.
         store.message(&draft.id, "assistant", "hello").unwrap();
@@ -1772,19 +1966,40 @@ mod tests {
     #[test]
     fn usage_limits_record_resets_schedule_resumes_and_clear_on_new_work() {
         let (store, task) = empty_session();
-        store.set_limited(&task.id, Some(1_791_013_800_000)).unwrap();
+        store
+            .set_limited(&task.id, Some(1_791_013_800_000))
+            .unwrap();
         let limited = store.session(&task.id).unwrap();
         assert!(limited.limited_at.is_some());
         assert_eq!(limited.limited_until, Some(1_791_013_800_000));
-        assert!(store.set_resume_at_reset(&task.id, true).unwrap().resume_at_reset);
-        assert!(!store.set_resume_at_reset(&task.id, false).unwrap().resume_at_reset);
+        assert!(
+            store
+                .set_resume_at_reset(&task.id, true)
+                .unwrap()
+                .resume_at_reset
+        );
+        assert!(
+            !store
+                .set_resume_at_reset(&task.id, false)
+                .unwrap()
+                .resume_at_reset
+        );
         store.set_resume_at_reset(&task.id, true).unwrap();
         // Replies do not clear a limit; a new prompt is new work and does.
-        store.message(&task.id, "assistant", "partial reply").unwrap();
+        store
+            .message(&task.id, "assistant", "partial reply")
+            .unwrap();
         assert!(store.session(&task.id).unwrap().limited_at.is_some());
         store.message(&task.id, "user", "Continue").unwrap();
         let cleared = store.session(&task.id).unwrap();
-        assert_eq!((cleared.limited_at, cleared.limited_until, cleared.resume_at_reset), (None, None, false));
+        assert_eq!(
+            (
+                cleared.limited_at,
+                cleared.limited_until,
+                cleared.resume_at_reset
+            ),
+            (None, None, false)
+        );
         // An unknown reset cannot be scheduled, and absurd times are dropped.
         store.set_limited(&task.id, None).unwrap();
         assert!(store.set_resume_at_reset(&task.id, true).is_err());
@@ -1792,27 +2007,66 @@ mod tests {
         assert_eq!(store.session(&task.id).unwrap().limited_until, None);
         store.clear_limited(&task.id).unwrap();
         assert!(store.session(&task.id).unwrap().limited_at.is_none());
-        assert!(store.set_resume_at_reset(&task.id, true).is_err(), "only a limited task can resume at reset");
+        assert!(
+            store.set_resume_at_reset(&task.id, true).is_err(),
+            "only a limited task can resume at reset"
+        );
     }
 
     #[test]
     fn task_search_matches_titles_and_messages_within_the_project() {
         let (store, task) = empty_session();
-        store.update(&task.id, Some("Fix the login redirect".into()), None, None, None).unwrap();
-        let other = store.create_session(&task.project_id, "codex", "gpt-5", "full").unwrap();
-        store.message(&other.id, "user", "Please make the billing page load 100% faster").unwrap();
-        store.message(&other.id, "assistant", "I will profile the billing page first.").unwrap();
+        store
+            .update(
+                &task.id,
+                Some("Fix the login redirect".into()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let other = store
+            .create_session(&task.project_id, "codex", "gpt-5", "full")
+            .unwrap();
+        store
+            .message(
+                &other.id,
+                "user",
+                "Please make the billing page load 100% faster",
+            )
+            .unwrap();
+        store
+            .message(
+                &other.id,
+                "assistant",
+                "I will profile the billing page first.",
+            )
+            .unwrap();
         let folder = std::env::temp_dir().join(format!("pantheon-search-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
         let elsewhere = store.add_project(&folder).unwrap();
         assert_ne!(elsewhere.id, task.project_id);
-        let foreign = store.create_session(&elsewhere.id, "codex", "gpt-5", "full").unwrap();
-        store.message(&foreign.id, "user", "billing secrets").unwrap();
-        let ids = |query: &str| store.search_tasks(&task.project_id, query, 20).unwrap().into_iter().map(|row| row["taskId"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let foreign = store
+            .create_session(&elsewhere.id, "codex", "gpt-5", "full")
+            .unwrap();
+        store
+            .message(&foreign.id, "user", "billing secrets")
+            .unwrap();
+        let ids = |query: &str| {
+            store
+                .search_tasks(&task.project_id, query, 20)
+                .unwrap()
+                .into_iter()
+                .map(|row| row["taskId"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids("LOGIN"), vec![task.id.clone()]);
         let billing = store.search_tasks(&task.project_id, "billing", 20).unwrap();
         assert_eq!(billing.len(), 1, "other projects stay out of the results");
-        assert!(billing[0]["excerpt"].as_str().unwrap().contains("billing page"));
+        assert!(billing[0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("billing page"));
         // LIKE wildcards are literal.
         assert_eq!(ids("100%"), vec![other.id.clone()]);
         assert!(ids("10_%").is_empty());
@@ -1823,15 +2077,25 @@ mod tests {
     #[test]
     fn startup_discards_only_empty_drafts() {
         let (store, board_like) = empty_session();
-        let empty = store.create_session(&board_like.project_id, "codex", "gpt-5", "auto").unwrap();
+        let empty = store
+            .create_session(&board_like.project_id, "codex", "gpt-5", "auto")
+            .unwrap();
         store.mark_draft(&empty.id).unwrap();
-        let replied = store.create_session(&board_like.project_id, "codex", "gpt-5", "auto").unwrap();
+        let replied = store
+            .create_session(&board_like.project_id, "codex", "gpt-5", "auto")
+            .unwrap();
         store.mark_draft(&replied.id).unwrap();
         store.message(&replied.id, "assistant", "partial").unwrap();
         assert_eq!(store.discard_empty_drafts().unwrap(), 1);
         assert!(store.session(&empty.id).is_err());
-        assert!(store.session(&replied.id).is_ok(), "a draft with saved history is kept");
-        assert!(store.session(&board_like.id).is_ok(), "empty non-draft tasks, such as board tasks, are kept");
+        assert!(
+            store.session(&replied.id).is_ok(),
+            "a draft with saved history is kept"
+        );
+        assert!(
+            store.session(&board_like.id).is_ok(),
+            "empty non-draft tasks, such as board tasks, are kept"
+        );
     }
 
     #[test]
@@ -2627,23 +2891,39 @@ mod tests {
     #[test]
     fn message_pages_preserve_authors_across_off_page_handoffs_and_other_tasks() {
         let (store, task) = empty_session();
-        store.message(&task.id, "assistant", "Claude response").unwrap();
+        store
+            .message(&task.id, "assistant", "Claude response")
+            .unwrap();
         let claude_id = store.db.last_insert_rowid();
-        let other = store.create_session(&task.project_id, "grok", "default", "ask").unwrap();
-        store.message(&other.id, "assistant", "Another task").unwrap();
+        let other = store
+            .create_session(&task.project_id, "grok", "default", "ask")
+            .unwrap();
+        store
+            .message(&other.id, "assistant", "Another task")
+            .unwrap();
         store.configure(&other.id, "mimo", "default", None).unwrap();
         // The next switch is farther away than any message page.
-        for _ in 0..110 { store.message(&task.id, "tool", "Completed").unwrap(); }
+        for _ in 0..110 {
+            store.message(&task.id, "tool", "Completed").unwrap();
+        }
         store.configure(&task.id, "codex", "default", None).unwrap();
-        store.message(&task.id, "assistant", "Codex response").unwrap();
+        store
+            .message(&task.id, "assistant", "Codex response")
+            .unwrap();
         let codex_id = store.db.last_insert_rowid();
         store.configure(&task.id, "kimi", "default", None).unwrap();
-        store.message(&task.id, "assistant", "Kimi response").unwrap();
+        store
+            .message(&task.id, "assistant", "Kimi response")
+            .unwrap();
         let recent = serde_json::to_value(store.message_page(&task.id, None).unwrap()).unwrap();
         let recent = recent["messages"].as_array().unwrap();
-        assert_eq!(recent.iter().find(|m| m["id"] == codex_id).unwrap()["authorProvider"], "codex");
+        assert_eq!(
+            recent.iter().find(|m| m["id"] == codex_id).unwrap()["authorProvider"],
+            "codex"
+        );
         assert_eq!(recent.last().unwrap()["authorProvider"], "kimi");
-        let old = serde_json::to_value(store.message_page(&task.id, Some(claude_id + 1)).unwrap()).unwrap();
+        let old = serde_json::to_value(store.message_page(&task.id, Some(claude_id + 1)).unwrap())
+            .unwrap();
         assert_eq!(old["messages"].as_array().unwrap().len(), 1);
         assert_eq!(old["messages"][0]["authorProvider"], "claude");
         let unrelated = serde_json::to_value(store.message_page(&other.id, None).unwrap()).unwrap();
@@ -2654,24 +2934,53 @@ mod tests {
     fn failed_handoff_notice_rolls_back_context_and_provider_together() {
         let (store, task) = empty_session();
         let task = store.configure(&task.id, "codex", "default", None).unwrap();
-        store.message(&task.id, "user", "Keep this conversation").unwrap();
-        store.message(&task.id, "assistant", "Saved response").unwrap();
+        store
+            .message(&task.id, "user", "Keep this conversation")
+            .unwrap();
+        store
+            .message(&task.id, "assistant", "Saved response")
+            .unwrap();
         store.resume(&task.id, "original-native-session").unwrap();
-        store.record_goal(&task.id, Some(&crate::goal_state::GoalState {
-            thread_id: "original-native-session".into(), objective: "Finish the original work".into(),
-            status: "paused".into(), token_budget: Some(10_000), tokens_used: 500,
-            time_used_seconds: 20, created_at: 1, updated_at: 2,
-        })).unwrap();
-        store.db.execute("UPDATE sessions SET codex_settings=?2 WHERE id=?1", params![task.id, r#"{"personality":"friendly"}"#]).unwrap();
+        store
+            .record_goal(
+                &task.id,
+                Some(&crate::goal_state::GoalState {
+                    thread_id: "original-native-session".into(),
+                    objective: "Finish the original work".into(),
+                    status: "paused".into(),
+                    token_budget: Some(10_000),
+                    tokens_used: 500,
+                    time_used_seconds: 20,
+                    created_at: 1,
+                    updated_at: 2,
+                }),
+            )
+            .unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
+                params![task.id, r#"{"personality":"friendly"}"#],
+            )
+            .unwrap();
         let before = serde_json::to_value(store.session(&task.id).unwrap()).unwrap();
         let history = serde_json::to_value(store.messages(&task.id, None).unwrap()).unwrap();
         store.db.execute_batch("CREATE TRIGGER reject_handoff BEFORE INSERT ON messages WHEN NEW.role='handoff' BEGIN SELECT RAISE(ABORT,'injected notice failure'); END;").unwrap();
-        assert!(store.configure(&task.id, "kimi", "default", None).unwrap_err().contains("injected notice failure"));
+        assert!(store
+            .configure(&task.id, "kimi", "default", None)
+            .unwrap_err()
+            .contains("injected notice failure"));
         let restored = store.session(&task.id).unwrap();
         assert_eq!(serde_json::to_value(&restored).unwrap(), before);
-        assert_eq!(serde_json::to_value(store.messages(&task.id, None).unwrap()).unwrap(), history);
+        assert_eq!(
+            serde_json::to_value(store.messages(&task.id, None).unwrap()).unwrap(),
+            history
+        );
         assert!(!crate::context_recovery::pending(&store, &restored).unwrap());
-        store.db.execute_batch("DROP TRIGGER reject_handoff;").unwrap();
+        store
+            .db
+            .execute_batch("DROP TRIGGER reject_handoff;")
+            .unwrap();
         let switched = store.configure(&task.id, "kimi", "default", None).unwrap();
         assert!(switched.resume_id.is_none());
         assert!(switched.goal_state.is_none());
@@ -2795,8 +3104,17 @@ mod tests {
         {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&std::env::temp_dir()).unwrap();
-            sid = store.create_session(&project.id, "codex", "", "full").unwrap().id;
-            for (role, content, time) in [("user", "Earlier prompt", 100), ("assistant", "Reply", 200), ("user", "Newest prompt", 300), ("coordination", "Worker status", 400), ("user", " ", 500)] {
+            sid = store
+                .create_session(&project.id, "codex", "", "full")
+                .unwrap()
+                .id;
+            for (role, content, time) in [
+                ("user", "Earlier prompt", 100),
+                ("assistant", "Reply", 200),
+                ("user", "Newest prompt", 300),
+                ("coordination", "Worker status", 400),
+                ("user", " ", 500),
+            ] {
                 store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,?2,?3,?4)", params![sid,role,content,time]).unwrap();
             }
             store.db.execute_batch("DROP INDEX sessions_sidebar; DROP TRIGGER messages_record_prompt; ALTER TABLE sessions DROP COLUMN last_prompt_at; PRAGMA user_version=18;").unwrap();
@@ -2811,7 +3129,13 @@ mod tests {
         }
         let store = Store::open(&path).unwrap();
         assert_eq!(store.session(&sid).unwrap().last_prompt_at, Some(600));
-        assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            store
+                .db
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2820,15 +3144,27 @@ mod tests {
     fn user_prompt_activity_is_saved_before_any_agent_response() {
         let (store, session) = empty_session();
         let before = now();
-        store.begin_task_turn(&session.id, "Start immediately").unwrap();
+        store
+            .begin_task_turn(&session.id, "Start immediately")
+            .unwrap();
         let saved = serde_json::to_value(store.session(&session.id).unwrap()).unwrap();
-        assert!(saved["lastPromptAt"].as_i64().is_some_and(|time| time >= before));
+        assert!(saved["lastPromptAt"]
+            .as_i64()
+            .is_some_and(|time| time >= before));
         assert!(saved["lastResponseAt"].is_null());
         let prompt_at = saved["lastPromptAt"].clone();
         store.finish_task_turn(&session.id, true, false).unwrap();
-        store.begin_task_turn_with_kind(&session.id, "Internal worker check", Some(crate::architect::internal_turns::CoordinationKind::WorkerUpdate)).unwrap();
+        store
+            .begin_task_turn_with_kind(
+                &session.id,
+                "Internal worker check",
+                Some(crate::architect::internal_turns::CoordinationKind::WorkerUpdate),
+            )
+            .unwrap();
         store.message(&session.id, "tool", "Tool output").unwrap();
-        store.update(&session.id, Some("Renamed".into()), None, None, None).unwrap();
+        store
+            .update(&session.id, Some("Renamed".into()), None, None, None)
+            .unwrap();
         let saved = serde_json::to_value(store.sessions().unwrap().remove(0)).unwrap();
         assert_eq!(saved["lastPromptAt"], prompt_at);
     }
@@ -2946,21 +3282,47 @@ mod tests {
     #[test]
     #[ignore]
     fn opens_the_database_at_pantheon_db_path() {
-        let path = PathBuf::from(std::env::var("PANTHEON_DB_PATH").expect("set PANTHEON_DB_PATH to a copy of the database"));
+        let path = PathBuf::from(
+            std::env::var("PANTHEON_DB_PATH")
+                .expect("set PANTHEON_DB_PATH to a copy of the database"),
+        );
         let store = Store::open(&path).unwrap();
-        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        let version: i64 = store
+            .db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
         let sessions = store.sessions().unwrap();
-        let messages: i64 = store.db.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        let messages: i64 = store
+            .db
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
         println!("user_version={version} projects={} sessions={} (worktrees={}, linked={}) messages={messages}", store.projects().unwrap().len(), sessions.len(), sessions.iter().filter(|s| s.worktree_path.is_some()).count(), sessions.iter().filter(|s| s.issue.is_some() || s.pull_request.is_some()).count());
         for session in sessions.iter().take(5) {
-            println!("  {} · {} · {}", session.title, session.provider, if session.archived { "archived" } else { &session.status });
+            println!(
+                "  {} · {} · {}",
+                session.title,
+                session.provider,
+                if session.archived {
+                    "archived"
+                } else {
+                    &session.status
+                }
+            );
             store.session(&session.id).unwrap();
         }
         // Optionally write the exact IPC payloads so the browser preview can render them.
         if let Ok(dir) = std::env::var("PANTHEON_DUMP_DIR") {
             let dir = PathBuf::from(dir);
-            std::fs::write(dir.join("projects.json"), serde_json::to_vec(&store.projects().unwrap()).unwrap()).unwrap();
-            std::fs::write(dir.join("sessions.json"), serde_json::to_vec(&sessions).unwrap()).unwrap();
+            std::fs::write(
+                dir.join("projects.json"),
+                serde_json::to_vec(&store.projects().unwrap()).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("sessions.json"),
+                serde_json::to_vec(&sessions).unwrap(),
+            )
+            .unwrap();
         }
         assert_eq!(version, SCHEMA_VERSION);
     }
@@ -2970,10 +3332,19 @@ mod tests {
         let source = include_str!("storage.rs");
         let newest = source
             .match_indices("PRAGMA user_version=")
-            .filter_map(|(index, marker)| source[index + marker.len()..].split(|c: char| !c.is_ascii_digit()).next()?.parse::<i64>().ok())
+            .filter_map(|(index, marker)| {
+                source[index + marker.len()..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()?
+                    .parse::<i64>()
+                    .ok()
+            })
             .max()
             .unwrap();
-        assert_eq!(newest, SCHEMA_VERSION, "bump SCHEMA_VERSION with every new migration step");
+        assert_eq!(
+            newest, SCHEMA_VERSION,
+            "bump SCHEMA_VERSION with every new migration step"
+        );
     }
 
     #[test]
@@ -3229,32 +3600,58 @@ mod tests {
     #[test]
     fn configure_provider_change_preserves_history_outside_current_page() {
         let (store, session) = empty_session();
-        store.message(&session.id, "user", "Original prompt").unwrap();
-        store.message(&session.id, "assistant", "Keep the exact code").unwrap();
+        store
+            .message(&session.id, "user", "Original prompt")
+            .unwrap();
+        store
+            .message(&session.id, "assistant", "Keep the exact code")
+            .unwrap();
         store.resume(&session.id, "old-native-id").unwrap();
-        for _ in 0..100 { store.message(&session.id, "tool", "Tool completed").unwrap(); }
-        let updated = store.configure(&session.id, "kimi", "default", None).unwrap();
+        for _ in 0..100 {
+            store
+                .message(&session.id, "tool", "Tool completed")
+                .unwrap();
+        }
+        let updated = store
+            .configure(&session.id, "kimi", "default", None)
+            .unwrap();
         assert_eq!(updated.provider, "kimi");
         assert_eq!(updated.project_id, session.project_id);
         assert!(updated.resume_id.is_none());
         assert!(crate::context_recovery::pending(&store, &updated).unwrap());
-        let (prompt, through) = crate::context_recovery::prepare(&store, &updated, "Continue").unwrap();
+        let (prompt, through) =
+            crate::context_recovery::prepare(&store, &updated, "Continue").unwrap();
         assert!(through.is_some());
         assert!(prompt.contains("Original prompt"));
         assert!(prompt.contains("Keep the exact code"));
         assert!(!prompt.contains("Tool completed"));
-        assert_eq!(store.messages(&session.id, None).unwrap().last().unwrap().role, "handoff");
+        assert_eq!(
+            store
+                .messages(&session.id, None)
+                .unwrap()
+                .last()
+                .unwrap()
+                .role,
+            "handoff"
+        );
         store.resume(&session.id, "new-native-id").unwrap();
-        assert!(crate::context_recovery::pending(&store, &store.session(&session.id).unwrap()).unwrap());
+        assert!(
+            crate::context_recovery::pending(&store, &store.session(&session.id).unwrap()).unwrap()
+        );
     }
 
     #[test]
     fn configure_provider_change_clears_resume_without_inventing_missing_history() {
         let (store, session) = empty_session();
         store.resume(&session.id, "provider-session-1").unwrap();
-        let updated = store.configure(&session.id, "codex", "default", None).unwrap();
+        let updated = store
+            .configure(&session.id, "codex", "default", None)
+            .unwrap();
         assert!(updated.resume_id.is_none());
-        assert_eq!(store.messages(&session.id, None).unwrap()[0].role, "handoff");
+        assert_eq!(
+            store.messages(&session.id, None).unwrap()[0].role,
+            "handoff"
+        );
         assert!(!crate::context_recovery::pending(&store, &updated).unwrap());
     }
 

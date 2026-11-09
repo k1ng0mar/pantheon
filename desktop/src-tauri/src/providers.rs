@@ -87,7 +87,10 @@ fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
 pub fn takes_system_instructions(provider: &str) -> bool {
-    matches!(provider, "pantheon" | "claude" | "glm" | "mimo" | "pi" | "omp")
+    matches!(
+        provider,
+        "pantheon" | "claude" | "glm" | "mimo" | "pi" | "omp"
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -1860,8 +1863,8 @@ impl Protocol {
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline"
-            | "kilo" | "github-copilot" | "pantheon" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo"
+            | "github-copilot" | "pantheon" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2691,9 +2694,14 @@ fn process_registry() -> &'static Mutex<HashSet<u32>> {
 }
 
 pub(crate) fn kill_group(pid: u32) {
+    if pid <= 1 {
+        return;
+    }
     #[cfg(unix)]
     unsafe {
-        libc::kill(-(pid as i32), libc::SIGKILL);
+        if libc::kill(pid as i32, 0) == 0 {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
     }
     #[cfg(windows)]
     {
@@ -2757,9 +2765,11 @@ async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessG
         .is_err()
     {
         #[cfg(unix)]
-        if let Some(pid) = group.0 {
+        if let Some(pid) = group.0.filter(|pid| *pid > 1) {
             unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
+                if libc::kill(pid as i32, 0) == 0 {
+                    libc::kill(-(pid as i32), libc::SIGTERM);
+                }
             }
         }
         if tokio::time::timeout(Duration::from_millis(500), child.wait())

@@ -224,7 +224,11 @@ fn run_bounded(
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     command
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command
@@ -374,17 +378,26 @@ pub(crate) fn turn_snapshot_paths(
 }
 
 fn stop_process_group(process_id: u32) {
+    if process_id <= 1 {
+        return;
+    }
     #[cfg(unix)]
     // Each Git command owns a fresh group, so timeout cleanup includes its hooks.
     unsafe {
-        libc::kill(-(process_id as i32), libc::SIGKILL);
+        if libc::kill(process_id as i32, 0) == 0 {
+            libc::kill(-(process_id as i32), libc::SIGKILL);
+        }
     }
     #[cfg(windows)]
     {
         let mut command = Command::new("taskkill.exe");
         command.creation_flags(0x08000000);
-        let _ = command.args(["/PID", &process_id.to_string(), "/T", "/F"])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let _ = command
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
     #[cfg(not(any(unix, windows)))]
     let _ = process_id;
@@ -619,9 +632,13 @@ pub fn git_commit(root: &Path, message: String) -> Result<String, String> {
 // doing so preserves Windows path semantics; keep canonical paths in storage.
 fn git_path(path: &Path) -> &Path {
     #[cfg(windows)]
-    { dunce::simplified(path) }
+    {
+        dunce::simplified(path)
+    }
     #[cfg(not(windows))]
-    { path }
+    {
+        path
+    }
 }
 
 /// The final branch name for a worktree request: validated and prefixed with the
@@ -640,14 +657,16 @@ pub fn worktree_branch_name(branch: &str) -> Result<String, String> {
         );
     }
     // Keep explicitly named historical branches intact when creating worktrees.
-    Ok(if branch.starts_with("pantheon/")
-        || branch.starts_with("kingcode/")
-        || branch.starts_with("codex/")
-    {
-        branch.to_string()
-    } else {
-        format!("pantheon/{branch}")
-    })
+    Ok(
+        if branch.starts_with("pantheon/")
+            || branch.starts_with("kingcode/")
+            || branch.starts_with("codex/")
+        {
+            branch.to_string()
+        } else {
+            format!("pantheon/{branch}")
+        },
+    )
 }
 
 fn ref_exists(root: &Path, reference: &str) -> Result<bool, String> {
@@ -700,7 +719,9 @@ pub fn create_worktree_with(
     )?)?;
     let branch_exists = ref_exists(root, &format!("refs/heads/{branch}"))?;
     if existing && !branch_exists {
-        return Err(format!("Branch {branch} does not exist yet. Create it instead."));
+        return Err(format!(
+            "Branch {branch} does not exist yet. Create it instead."
+        ));
     }
     if !existing && branch_exists {
         return Err(format!(
@@ -709,7 +730,9 @@ pub fn create_worktree_with(
     }
     let base = match base.map(str::trim).filter(|b| !b.is_empty()) {
         Some(base) if existing => {
-            return Err(format!("{base} cannot be a start point for an existing branch."))
+            return Err(format!(
+                "{base} cannot be a start point for an existing branch."
+            ))
         }
         Some(base) => {
             if !valid_start_point(base) {
@@ -742,7 +765,9 @@ pub fn create_worktree_with(
     if fs::symlink_metadata(&destination).is_ok() {
         return Err("Worktree destination already exists; choose a different branch".into());
     }
-    let destination_text = git_path(&destination).to_str().ok_or("Worktree path is not UTF-8")?;
+    let destination_text = git_path(&destination)
+        .to_str()
+        .ok_or("Worktree path is not UTF-8")?;
     let mut args: Vec<&str> = vec!["worktree", "add"];
     if !existing {
         args.extend(["-b", &branch]);
@@ -768,11 +793,26 @@ pub struct BranchList {
 }
 
 fn default_branch(root: &Path, branches: &[String]) -> String {
-    let remote = run_git(root, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], 8192, false)
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout.bytes).trim().trim_start_matches("origin/").to_string())
-        .unwrap_or_default();
+    let remote = run_git(
+        root,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+        8192,
+        false,
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .map(|output| {
+        String::from_utf8_lossy(&output.stdout.bytes)
+            .trim()
+            .trim_start_matches("origin/")
+            .to_string()
+    })
+    .unwrap_or_default();
     let found = [remote.as_str(), "main", "master"]
         .into_iter()
         .find(|name| !name.is_empty() && branches.iter().any(|branch| branch == name))
@@ -795,10 +835,17 @@ pub fn git_switch(root: &Path, branch: &str) -> Result<BranchList, String> {
 }
 
 fn current_branch(root: &Path) -> Result<String, String> {
-    let output = run_git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], 8192, false)?;
+    let output = run_git(
+        root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        8192,
+        false,
+    )?;
     // A detached HEAD has no branch; that is a state, not a failure.
     Ok(if output.status.success() {
-        String::from_utf8_lossy(&output.stdout.bytes).trim().to_string()
+        String::from_utf8_lossy(&output.stdout.bytes)
+            .trim()
+            .to_string()
     } else {
         String::new()
     })
@@ -897,7 +944,12 @@ pub fn worktree_status(
     if !exists {
         let branch = stored_branch
             .map(str::to_string)
-            .or_else(|| worktree_entry(main, path).ok().flatten().and_then(|e| e.branch))
+            .or_else(|| {
+                worktree_entry(main, path)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.branch)
+            })
             .unwrap_or_default();
         return Ok(WorktreeStatus {
             exists: false,
@@ -926,7 +978,12 @@ pub fn worktree_status(
         .count() as u32;
     let has_upstream = run_git(
         path,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
         8192,
         false,
     )?
@@ -978,7 +1035,12 @@ pub struct WorktreeMerge {
 }
 
 fn tracked_changes(root: &Path) -> Result<bool, String> {
-    let status = checked(run_git(root, &["status", "--porcelain=v1", "--untracked-files=no"], STATUS_LIMIT, false)?)?;
+    let status = checked(run_git(
+        root,
+        &["status", "--porcelain=v1", "--untracked-files=no"],
+        STATUS_LIMIT,
+        false,
+    )?)?;
     Ok(!status.bytes.is_empty())
 }
 
@@ -994,7 +1056,12 @@ pub fn merge_worktree(main: &Path, path: &Path) -> Result<WorktreeMerge, String>
     if branch.is_empty() || branch.starts_with('-') {
         return Err("The worktree is not on a branch, so there is nothing to merge.".into());
     }
-    let uncommitted = checked(run_git(path, &["status", "--porcelain=v1", "--untracked-files=all"], STATUS_LIMIT, false)?)?;
+    let uncommitted = checked(run_git(
+        path,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        STATUS_LIMIT,
+        false,
+    )?)?;
     if !uncommitted.bytes.is_empty() {
         return Err("The worktree has uncommitted changes. Commit or discard them first; only committed work is merged.".into());
     }
@@ -1009,8 +1076,16 @@ pub fn merge_worktree(main: &Path, path: &Path) -> Result<WorktreeMerge, String>
     if tracked_changes(main)? {
         return Err(format!("The project checkout has uncommitted changes. Commit or stash them there before merging into {target}."));
     }
-    let count = checked(run_git(main, &["rev-list", "--count", &format!("{target}..{branch}")], 8192, false)?)?;
-    let commits = String::from_utf8_lossy(&count.bytes).trim().parse().unwrap_or(0);
+    let count = checked(run_git(
+        main,
+        &["rev-list", "--count", &format!("{target}..{branch}")],
+        8192,
+        false,
+    )?)?;
+    let commits = String::from_utf8_lossy(&count.bytes)
+        .trim()
+        .parse()
+        .unwrap_or(0);
     let switched_from = (list.current != target).then(|| list.current.clone());
     if switched_from.is_some() {
         checked(run_git(main, &["switch", &target], 64 * 1024, false)?)?;
@@ -1018,15 +1093,27 @@ pub fn merge_worktree(main: &Path, path: &Path) -> Result<WorktreeMerge, String>
     if commits > 0 {
         let merged = run_git(main, &["merge", "--no-edit", &branch], 64 * 1024, true)?;
         if !merged.status.success() {
-            let conflicts = run_git(main, &["diff", "--name-only", "--diff-filter=U"], 64 * 1024, false)
-                .map(|output| String::from_utf8_lossy(&output.stdout.bytes).lines().map(str::to_string).collect::<Vec<_>>())
-                .unwrap_or_default();
+            let conflicts = run_git(
+                main,
+                &["diff", "--name-only", "--diff-filter=U"],
+                64 * 1024,
+                false,
+            )
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout.bytes)
+                    .lines()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
             let _ = run_git(main, &["merge", "--abort"], 8192, false);
             if let Some(previous) = switched_from.as_deref().filter(|name| !name.is_empty()) {
                 let _ = run_git(main, &["switch", previous], 64 * 1024, false);
             }
             return Err(if conflicts.is_empty() {
-                checked(merged).err().unwrap_or_else(|| "Git could not merge the branch.".into())
+                checked(merged)
+                    .err()
+                    .unwrap_or_else(|| "Git could not merge the branch.".into())
             } else {
                 format!(
                     "Merging {branch} into {target} conflicts in {}. Nothing was changed; merge {target} into the worktree, resolve it there, and try again.",
@@ -1035,7 +1122,12 @@ pub fn merge_worktree(main: &Path, path: &Path) -> Result<WorktreeMerge, String>
             });
         }
     }
-    Ok(WorktreeMerge { branch, target, commits, switched_from })
+    Ok(WorktreeMerge {
+        branch,
+        target,
+        commits,
+        switched_from,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1068,7 +1160,9 @@ pub fn remove_worktree(
         if entry.is_none() {
             return Err("This folder is not a worktree of the project.".into());
         }
-        let path_text = git_path(path).to_str().ok_or("Worktree path is not UTF-8")?;
+        let path_text = git_path(path)
+            .to_str()
+            .ok_or("Worktree path is not UTF-8")?;
         checked(run_git(
             main,
             &["worktree", "remove", "--", path_text],
@@ -1114,13 +1208,17 @@ pub fn recreate_worktree(
         .or_else(|| entry.and_then(|e| e.branch))
         .ok_or("The worktree's branch is unknown; create a new worktree instead.")?;
     if !ref_exists(main, &format!("refs/heads/{branch}"))? {
-        return Err(format!("Branch {branch} no longer exists; create a new worktree instead."));
+        return Err(format!(
+            "Branch {branch} no longer exists; create a new worktree instead."
+        ));
     }
     checked(run_git(main, &["worktree", "prune"], 16 * 1024, false)?)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let path_text = git_path(path).to_str().ok_or("Worktree path is not UTF-8")?;
+    let path_text = git_path(path)
+        .to_str()
+        .ok_or("Worktree path is not UTF-8")?;
     checked(run_git(
         main,
         &["worktree", "add", "--", path_text, &branch],
@@ -1147,12 +1245,19 @@ pub fn git_push(root: &Path) -> Result<String, String> {
         .to_string();
     let output = run_git_bounded(
         root,
-        &["push", "--set-upstream", &remote, &format!("{branch}:{branch}")],
+        &[
+            "push",
+            "--set-upstream",
+            &remote,
+            &format!("{branch}:{branch}"),
+        ],
         64 * 1024,
         true,
         Duration::from_secs(180),
     )?;
-    let combined = String::from_utf8_lossy(&output.stderr.bytes).trim().to_string();
+    let combined = String::from_utf8_lossy(&output.stderr.bytes)
+        .trim()
+        .to_string();
     if !output.status.success() {
         return Err(if combined.is_empty() {
             "Git push failed".into()
@@ -1278,7 +1383,12 @@ const IMAGE_LIMIT: u64 = 8 * 1024 * 1024;
 pub fn image_data_url(root: &Path, path: &str) -> Result<String, String> {
     use base64::Engine;
     let target = scoped_path(root, path)?;
-    let mime = match target.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+    let mime = match target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
@@ -1292,17 +1402,31 @@ pub fn image_data_url(root: &Path, path: &str) -> Result<String, String> {
         return Err("The image is missing or larger than 8 MB".into());
     }
     let mut bytes = Vec::new();
-    file.take(IMAGE_LIMIT + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    file.take(IMAGE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 pub fn read_file(root: &Path, path: String) -> Result<String, String> {
     let target = scoped_path(root, &path)?;
+    let resolved = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    let inside = fs::canonicalize(root)
+        .ok()
+        .and_then(|base| resolved.strip_prefix(base).ok().map(Path::to_path_buf));
+    let in_git =
+        inside.is_none_or(|relative| relative.components().any(|part| part.as_os_str() == ".git"));
+    if in_git || !resolved.is_file() {
+        return Err("Only regular text files can be previewed".into());
+    }
     let metadata = fs::metadata(&target).map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("Only regular text files can be previewed".into());
     }
-    let file = File::open(target).map_err(|e| e.to_string())?;
+    let file = File::open(resolved).map_err(|e| e.to_string())?;
     let metadata = file.metadata().map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("Only regular text files can be previewed".into());
@@ -1333,11 +1457,36 @@ pub fn read_document_bytes(root: &Path, path: &str) -> Result<Vec<u8>, String> {
     // A link named report.pdf must not reach another kind of file, such as .git/config.
     let resolved = fs::canonicalize(&target).map_err(|e| e.to_string())?;
     let document = |file: &Path| {
-        let extension = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-        matches!(extension.as_deref(), Some("pdf" | "docx" | "xlsx" | "xlsm" | "xls" | "ods" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "ico" | "svg"))
+        let extension = file
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        matches!(
+            extension.as_deref(),
+            Some(
+                "pdf"
+                    | "docx"
+                    | "xlsx"
+                    | "xlsm"
+                    | "xls"
+                    | "ods"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "avif"
+                    | "bmp"
+                    | "ico"
+                    | "svg"
+            )
+        )
     };
-    let inside = fs::canonicalize(root).ok().and_then(|base| resolved.strip_prefix(base).ok().map(Path::to_path_buf));
-    let in_git = inside.is_none_or(|relative| relative.components().any(|part| part.as_os_str() == ".git"));
+    let inside = fs::canonicalize(root)
+        .ok()
+        .and_then(|base| resolved.strip_prefix(base).ok().map(Path::to_path_buf));
+    let in_git =
+        inside.is_none_or(|relative| relative.components().any(|part| part.as_os_str() == ".git"));
     if !document(&target) || !document(&resolved) || in_git {
         return Err("Only PDF, Word (.docx), spreadsheet and image files can be shown".into());
     }
@@ -1347,7 +1496,9 @@ pub fn read_document_bytes(root: &Path, path: &str) -> Result<Vec<u8>, String> {
         return Err("The file is missing or larger than 64 MB".into());
     }
     let mut bytes = Vec::new();
-    file.take(DOCUMENT_LIMIT + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    file.take(DOCUMENT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > DOCUMENT_LIMIT {
         return Err("The file is missing or larger than 64 MB".into());
     }
@@ -1364,16 +1515,28 @@ mod tests {
     fn run_process_drains_large_output_and_feeds_stdin() {
         let started = Instant::now();
         let mut flood = Command::new("sh");
-        flood.args(["-c", "head -c 300000 /dev/zero; head -c 100000 /dev/zero >&2"]);
+        flood.args([
+            "-c",
+            "head -c 300000 /dev/zero; head -c 100000 /dev/zero >&2",
+        ]);
         let output = run_process(flood, "sh", 1 << 20, Duration::from_secs(20)).unwrap();
         assert!(output.status.success() && output.stdout.bytes.len() == 300_000);
         assert!(output.stderr.truncated && started.elapsed() < Duration::from_secs(10));
         let input = vec![b'x'; 200_000];
-        let output = run_process_with_input(Command::new("cat"), "cat", 1 << 20, Duration::from_secs(20), Some(&input)).unwrap();
+        let output = run_process_with_input(
+            Command::new("cat"),
+            "cat",
+            1 << 20,
+            Duration::from_secs(20),
+            Some(&input),
+        )
+        .unwrap();
         assert!(output.status.success() && output.stdout.bytes == input);
         let mut sleeper = Command::new("sh");
         sleeper.args(["-c", "sleep 30"]);
-        let err = run_process_with_input(sleeper, "sh", 1024, Duration::from_millis(200), None).err().unwrap();
+        let err = run_process_with_input(sleeper, "sh", 1024, Duration::from_millis(200), None)
+            .err()
+            .unwrap();
         assert!(err.contains("timed out"));
     }
 
@@ -1433,9 +1596,18 @@ mod tests {
         fs::write(f.root.join("chart.png"), [137, 80, 78, 71]).unwrap();
         fs::write(f.root.join("notes.txt"), "hello").unwrap();
         fs::write(f.base.join("outside.png"), [137, 80, 78, 71]).unwrap();
-        assert_eq!(image_data_url(&f.root, "chart.png").unwrap(), "data:image/png;base64,iVBORw==");
-        assert!(image_data_url(&f.root, "notes.txt").is_err(), "not an image");
-        assert!(image_data_url(&f.root, "../outside.png").is_err(), "outside the project");
+        assert_eq!(
+            image_data_url(&f.root, "chart.png").unwrap(),
+            "data:image/png;base64,iVBORw=="
+        );
+        assert!(
+            image_data_url(&f.root, "notes.txt").is_err(),
+            "not an image"
+        );
+        assert!(
+            image_data_url(&f.root, "../outside.png").is_err(),
+            "outside the project"
+        );
         assert!(image_data_url(&f.root, "missing.png").is_err());
     }
 
@@ -1446,18 +1618,35 @@ mod tests {
         fs::write(f.root.join("Report.PDF"), &large).unwrap();
         fs::write(f.root.join("notes.txt"), "hello").unwrap();
         fs::write(f.base.join("outside.docx"), b"PK").unwrap();
-        assert_eq!(read_document_bytes(&f.root, "Report.PDF").unwrap(), large, "beyond the 128 KiB text limit");
-        assert!(read_document_bytes(&f.root, "notes.txt").is_err(), "not a document");
-        assert!(read_document_bytes(&f.root, "../outside.docx").is_err(), "outside the project");
+        assert_eq!(
+            read_document_bytes(&f.root, "Report.PDF").unwrap(),
+            large,
+            "beyond the 128 KiB text limit"
+        );
+        assert!(
+            read_document_bytes(&f.root, "notes.txt").is_err(),
+            "not a document"
+        );
+        assert!(
+            read_document_bytes(&f.root, "../outside.docx").is_err(),
+            "outside the project"
+        );
         assert!(read_document_bytes(&f.root, "missing.xlsx").is_err());
         #[cfg(unix)]
         {
             fs::create_dir_all(f.root.join(".git")).unwrap();
             fs::write(f.root.join(".git/config"), "[core]").unwrap();
-            std::os::unix::fs::symlink(f.root.join(".git/config"), f.root.join("disguised.pdf")).unwrap();
+            std::os::unix::fs::symlink(f.root.join(".git/config"), f.root.join("disguised.pdf"))
+                .unwrap();
             std::os::unix::fs::symlink(f.root.join("notes.txt"), f.root.join("notes.pdf")).unwrap();
-            assert!(read_document_bytes(&f.root, "disguised.pdf").is_err(), "a link into .git");
-            assert!(read_document_bytes(&f.root, "notes.pdf").is_err(), "a link to a non-document");
+            assert!(
+                read_document_bytes(&f.root, "disguised.pdf").is_err(),
+                "a link into .git"
+            );
+            assert!(
+                read_document_bytes(&f.root, "notes.pdf").is_err(),
+                "a link to a non-document"
+            );
         }
     }
 
@@ -1560,7 +1749,10 @@ mod tests {
         let started = Instant::now();
         let result = run_process(command, "Fixture", 1024, Duration::from_millis(100));
         assert!(result.is_err());
-        assert!(started.elapsed() < Duration::from_millis(750), "pipe draining must share the process deadline");
+        assert!(
+            started.elapsed() < Duration::from_millis(750),
+            "pipe draining must share the process deadline"
+        );
     }
 
     #[test]
@@ -1717,18 +1909,39 @@ mod tests {
     fn merging_a_worktree_lands_committed_work_on_main_and_refuses_unsafe_states() {
         let f = Fixture::new(true);
         let path = create_worktree(&f.root, "fast".into()).unwrap();
-        let in_worktree = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(git_path(&path)).args(args).output().unwrap().status.success());
+        let in_worktree = |args: &[&str]| {
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(git_path(&path))
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success())
+        };
         // Uncommitted work in the worktree is never merged.
         fs::write(path.join("speed.txt"), "faster").unwrap();
-        assert!(merge_worktree(&f.root, &path).unwrap_err().contains("uncommitted"));
+        assert!(merge_worktree(&f.root, &path)
+            .unwrap_err()
+            .contains("uncommitted"));
         in_worktree(&["add", "speed.txt"]);
         in_worktree(&["-c", "core.hooksPath=/dev/null", "commit", "-m", "Faster"]);
         // The project checkout moves to main for the merge and gains the commit.
         f.git(&["switch", "-c", "elsewhere"]);
         let merged = merge_worktree(&f.root, &path).unwrap();
-        assert_eq!((merged.branch.as_str(), merged.target.as_str(), merged.commits), ("pantheon/fast", "main", 1));
+        assert_eq!(
+            (
+                merged.branch.as_str(),
+                merged.target.as_str(),
+                merged.commits
+            ),
+            ("pantheon/fast", "main", 1)
+        );
         assert_eq!(merged.switched_from.as_deref(), Some("elsewhere"));
-        assert_eq!(fs::read_to_string(f.root.join("speed.txt")).unwrap(), "faster");
+        assert_eq!(
+            fs::read_to_string(f.root.join("speed.txt")).unwrap(),
+            "faster"
+        );
         assert!(worktree_status(&f.root, &path, None).unwrap().merged);
         // Merging again has nothing left to bring over.
         assert_eq!(merge_worktree(&f.root, &path).unwrap().commits, 0);
@@ -1737,15 +1950,26 @@ mod tests {
         fs::write(f.root.join("speed.txt"), "main's take").unwrap();
         f.git(&["-c", "core.hooksPath=/dev/null", "commit", "-am", "Main"]);
         fs::write(path.join("speed.txt"), "worktree's take").unwrap();
-        in_worktree(&["-c", "core.hooksPath=/dev/null", "commit", "-am", "Worktree"]);
+        in_worktree(&[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-am",
+            "Worktree",
+        ]);
         let error = merge_worktree(&f.root, &path).unwrap_err();
         assert!(error.contains("conflicts in speed.txt"), "{error}");
-        assert_eq!(fs::read_to_string(f.root.join("speed.txt")).unwrap(), "main's take");
+        assert_eq!(
+            fs::read_to_string(f.root.join("speed.txt")).unwrap(),
+            "main's take"
+        );
         assert!(!f.root.join(".git/MERGE_HEAD").exists());
 
         // Uncommitted tracked changes in the project checkout block the merge.
         fs::write(f.root.join("speed.txt"), "edited").unwrap();
-        assert!(merge_worktree(&f.root, &path).unwrap_err().contains("project checkout has uncommitted"));
+        assert!(merge_worktree(&f.root, &path)
+            .unwrap_err()
+            .contains("project checkout has uncommitted"));
     }
 
     #[test]
@@ -1754,8 +1978,12 @@ mod tests {
         f.git(&["branch", "feature"]);
         assert_eq!(git_switch(&f.root, "feature").unwrap().current, "feature");
         assert_eq!(git_switch(&f.root, "main").unwrap().current, "main");
-        assert!(git_switch(&f.root, "--orphan").unwrap_err().contains("no local branch"));
-        assert!(git_switch(&f.root, "missing").unwrap_err().contains("no local branch"));
+        assert!(git_switch(&f.root, "--orphan")
+            .unwrap_err()
+            .contains("no local branch"));
+        assert!(git_switch(&f.root, "missing")
+            .unwrap_err()
+            .contains("no local branch"));
 
         // A change that the other branch would overwrite stops the switch; nothing is lost.
         fs::write(f.root.join("note.txt"), "on main").unwrap();
@@ -1765,7 +1993,10 @@ mod tests {
         fs::write(f.root.join("note.txt"), "draft").unwrap();
         assert!(git_switch(&f.root, "main").is_err());
         assert_eq!(git_branches(&f.root).unwrap().current, "feature");
-        assert_eq!(fs::read_to_string(f.root.join("note.txt")).unwrap(), "draft");
+        assert_eq!(
+            fs::read_to_string(f.root.join("note.txt")).unwrap(),
+            "draft"
+        );
     }
 
     #[test]
@@ -1780,13 +2011,23 @@ mod tests {
         assert_eq!(branches.default_branch, "main");
 
         // A start point is honored, an existing branch can be reused, and a duplicate is explained.
-        let created = create_worktree_with(&f.root, "lifecycle", Some(&branches.current), false).unwrap();
+        let created =
+            create_worktree_with(&f.root, "lifecycle", Some(&branches.current), false).unwrap();
         assert_eq!(created.branch, "pantheon/lifecycle");
         let duplicate = create_worktree_with(&f.root, "lifecycle", None, false).unwrap_err();
         assert!(duplicate.contains("already exists"), "{duplicate}");
-        assert!(create_worktree_with(&f.root, "lifecycle", None, true).is_err(), "branch is checked out");
-        assert!(create_worktree_with(&f.root, "ghost", None, true).unwrap_err().contains("does not exist"));
-        assert!(create_worktree_with(&f.root, "bad-base", Some("nope"), false).unwrap_err().contains("not found"));
+        assert!(
+            create_worktree_with(&f.root, "lifecycle", None, true).is_err(),
+            "branch is checked out"
+        );
+        assert!(create_worktree_with(&f.root, "ghost", None, true)
+            .unwrap_err()
+            .contains("does not exist"));
+        assert!(
+            create_worktree_with(&f.root, "bad-base", Some("nope"), false)
+                .unwrap_err()
+                .contains("not found")
+        );
 
         let status = worktree_status(&f.root, &created.path, Some(&created.branch)).unwrap();
         assert!(status.exists && status.clean && status.merged && !status.has_upstream);
@@ -1804,18 +2045,33 @@ mod tests {
         fs::write(created.path.join("feature.txt"), "feature").unwrap();
         git_stage(&created.path, vec!["feature.txt".into()], true).unwrap();
         git_commit(&created.path, "Feature commit".into()).unwrap();
-        assert!(!worktree_status(&f.root, &created.path, None).unwrap().merged);
-        let removal = remove_worktree(&f.root, &created.path, Some("pantheon/lifecycle"), true).unwrap();
+        assert!(
+            !worktree_status(&f.root, &created.path, None)
+                .unwrap()
+                .merged
+        );
+        let removal =
+            remove_worktree(&f.root, &created.path, Some("pantheon/lifecycle"), true).unwrap();
         assert!(removal.removed && !removal.branch_deleted);
         assert!(removal.note.contains("kept"), "{}", removal.note);
         assert!(!created.path.exists());
         assert!(ref_exists(&f.root, "refs/heads/pantheon/lifecycle").unwrap());
 
         // The branch can come back at the same path, then go for good once merged.
-        let restored = recreate_worktree(&f.root, &created.path, Some("pantheon/lifecycle")).unwrap();
+        let restored =
+            recreate_worktree(&f.root, &created.path, Some("pantheon/lifecycle")).unwrap();
         assert_eq!(restored, created.path);
         assert_eq!(git_status(&restored).unwrap().branch, "pantheon/lifecycle");
-        checked(run_git(&f.root, &["merge", "--no-edit", "pantheon/lifecycle"], 16 * 1024, false).unwrap()).unwrap();
+        checked(
+            run_git(
+                &f.root,
+                &["merge", "--no-edit", "pantheon/lifecycle"],
+                16 * 1024,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert!(worktree_status(&f.root, &restored, None).unwrap().merged);
         let removal = remove_worktree(&f.root, &restored, None, true).unwrap();
         assert!(removal.removed && removal.branch_deleted && removal.note.is_empty());
@@ -1834,11 +2090,17 @@ mod tests {
         let registered = worktree_entry(&f.root, &created.path).unwrap().unwrap();
         assert_eq!(registered.branch.as_deref(), Some("pantheon/vanished"));
         assert!(registered.prunable);
-        let unrelated = f.base.join("unrelated").join(created.path.file_name().unwrap());
+        let unrelated = f
+            .base
+            .join("unrelated")
+            .join(created.path.file_name().unwrap());
         assert!(worktree_entry(&f.root, &unrelated).unwrap().is_none());
         let status = worktree_status(&f.root, &created.path, None).unwrap();
         assert!(!status.exists);
-        assert_eq!(status.branch, "pantheon/vanished", "branch comes from git worktree list");
+        assert_eq!(
+            status.branch, "pantheon/vanished",
+            "branch comes from git worktree list"
+        );
         let restored = recreate_worktree(&f.root, &created.path, None).unwrap();
         assert!(restored.join(".git").is_file());
         let removal = remove_worktree(&f.root, &restored, None, false).unwrap();
