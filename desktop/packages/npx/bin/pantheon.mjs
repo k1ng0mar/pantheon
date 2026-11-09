@@ -4,9 +4,9 @@ import { install, supportedPlatforms } from '../installer.mjs';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: npx pandacode [--dry-run] [--help] [--version]
+  console.log(`Usage: npx pantheon [--dry-run] [--help] [--version]
 
-Downloads the latest PandaCode release from GitHub, verifies its signature and
+Downloads the latest Pantheon release from GitHub, verifies its signature and
 installs it (${supportedPlatforms().join(', ')}).
 
   --dry-run   download and verify only
@@ -15,7 +15,7 @@ installs it (${supportedPlatforms().join(', ')}).
   console.log(JSON.parse(readFileSync(new URL('../package.json', import.meta.url))).version);
 } else {
   install({ dryRun: args.includes('--dry-run') }).catch(error => {
-    console.error(`pandacode: ${error.message}`);
+    console.error(`pantheon: ${error.message}`);
     process.exit(1);
   });
 }

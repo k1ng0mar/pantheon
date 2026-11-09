@@ -16,4 +16,4 @@ export const configProblem =
   : '';
 
 export const build: Build | null = configProblem ? null : { relay, clientId };
-export const NOT_CONFIGURED = 'PandaCode Connect is not configured in this build.';
+export const NOT_CONFIGURED = 'Pantheon Connect is not configured in this build.';

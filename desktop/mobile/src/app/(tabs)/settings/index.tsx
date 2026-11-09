@@ -7,7 +7,7 @@ import { connect } from '../../../connect/client.ts';
 import { useStatus } from '../../../store/index.ts';
 import { mono, useColors } from '../../../ui/theme.ts';
 
-const SOURCE = 'https://github.com/aicodeking/pandacode';
+const SOURCE = 'https://github.com/k1ng0mar/pantheon';
 
 export default function Settings() {
   const colors = useColors();
@@ -33,8 +33,8 @@ export default function Settings() {
       <Section>
         <Pressable onPress={signOut} accessibilityRole="button"><Text style={[styles.value, { color: colors.red }]}>Sign out</Text></Pressable>
       </Section>
-      <Section title="About" footer="PandaCode is open source. This app has no telemetry; it talks only to the PandaCode Connect relay and GitHub sign-in.">
-        <Text style={[styles.value, { color: colors.text }]}>PandaCode {Constants.expoConfig?.version ?? ''}</Text>
+      <Section title="About" footer="Pantheon is open source. This app has no telemetry; it talks only to the Pantheon Connect relay and GitHub sign-in.">
+        <Text style={[styles.value, { color: colors.text }]}>Pantheon {Constants.expoConfig?.version ?? ''}</Text>
         <Pressable onPress={() => void WebBrowser.openBrowserAsync(SOURCE)} accessibilityRole="link"><Text style={[styles.value, { color: colors.tint }]}>Source code</Text></Pressable>
       </Section>
     </ScrollView>

@@ -8,16 +8,16 @@ import { resolve } from 'node:path';
 export const root = fileURLToPath(new URL('../../', import.meta.url));
 
 // One entry per published desktop build. `asset` is the stable file name on a
-// GitHub Release, so https://github.com/aicodeking/pandacode/releases/latest/download/<asset>
+// GitHub Release, so https://github.com/k1ng0mar/pantheon/releases/latest/download/<asset>
 // always points at the newest build for that platform. `updater` is the signed file the
 // in-app updater installs (relative to the bundle directory), published as `updaterAsset`.
 export const targets = Object.freeze({
-  'darwin-aarch64': { platform: 'darwin', arch: 'arm64', triple: 'aarch64-apple-darwin', bundles: 'app,dmg', bundleDir: 'dmg', built: v => `PandaCode_${v}_aarch64.dmg`, asset: 'PandaCode-macOS-arm64.dmg', updater: () => 'macos/PandaCode.app.tar.gz', updaterAsset: 'PandaCode-macOS-arm64.app.tar.gz' },
-  'darwin-x86_64': { platform: 'darwin', arch: 'x64', triple: 'x86_64-apple-darwin', bundles: 'app,dmg', bundleDir: 'dmg', built: v => `PandaCode_${v}_x64.dmg`, asset: 'PandaCode-macOS-x64.dmg', updater: () => 'macos/PandaCode.app.tar.gz', updaterAsset: 'PandaCode-macOS-x64.app.tar.gz' },
-  'windows-x86_64': { platform: 'win32', arch: 'x64', triple: 'x86_64-pc-windows-msvc', bundles: 'nsis', bundleDir: 'nsis', built: v => `PandaCode_${v}_x64-setup.exe`, asset: 'PandaCode-Windows-x64-setup.exe', updater: v => `nsis/PandaCode_${v}_x64-setup.exe`, updaterAsset: 'PandaCode-Windows-x64-setup.exe' },
-  'windows-aarch64': { platform: 'win32', arch: 'arm64', triple: 'aarch64-pc-windows-msvc', bundles: 'nsis', bundleDir: 'nsis', built: v => `PandaCode_${v}_arm64-setup.exe`, asset: 'PandaCode-Windows-arm64-setup.exe', updater: v => `nsis/PandaCode_${v}_arm64-setup.exe`, updaterAsset: 'PandaCode-Windows-arm64-setup.exe' },
-  'linux-x86_64': { platform: 'linux', arch: 'x64', triple: 'x86_64-unknown-linux-gnu', bundles: 'appimage', bundleDir: 'appimage', built: v => `PandaCode_${v}_amd64.AppImage`, asset: 'PandaCode-Linux-x86_64.AppImage', updater: v => `appimage/PandaCode_${v}_amd64.AppImage`, updaterAsset: 'PandaCode-Linux-x86_64.AppImage' },
-  'linux-aarch64': { platform: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-gnu', bundles: 'appimage', bundleDir: 'appimage', built: v => `PandaCode_${v}_aarch64.AppImage`, asset: 'PandaCode-Linux-aarch64.AppImage', updater: v => `appimage/PandaCode_${v}_aarch64.AppImage`, updaterAsset: 'PandaCode-Linux-aarch64.AppImage' },
+  'darwin-aarch64': { platform: 'darwin', arch: 'arm64', triple: 'aarch64-apple-darwin', bundles: 'app,dmg', bundleDir: 'dmg', built: v => `Pantheon_${v}_aarch64.dmg`, asset: 'Pantheon-macOS-arm64.dmg', updater: () => 'macos/Pantheon.app.tar.gz', updaterAsset: 'Pantheon-macOS-arm64.app.tar.gz' },
+  'darwin-x86_64': { platform: 'darwin', arch: 'x64', triple: 'x86_64-apple-darwin', bundles: 'app,dmg', bundleDir: 'dmg', built: v => `Pantheon_${v}_x64.dmg`, asset: 'Pantheon-macOS-x64.dmg', updater: () => 'macos/Pantheon.app.tar.gz', updaterAsset: 'Pantheon-macOS-x64.app.tar.gz' },
+  'windows-x86_64': { platform: 'win32', arch: 'x64', triple: 'x86_64-pc-windows-msvc', bundles: 'nsis', bundleDir: 'nsis', built: v => `Pantheon_${v}_x64-setup.exe`, asset: 'Pantheon-Windows-x64-setup.exe', updater: v => `nsis/Pantheon_${v}_x64-setup.exe`, updaterAsset: 'Pantheon-Windows-x64-setup.exe' },
+  'windows-aarch64': { platform: 'win32', arch: 'arm64', triple: 'aarch64-pc-windows-msvc', bundles: 'nsis', bundleDir: 'nsis', built: v => `Pantheon_${v}_arm64-setup.exe`, asset: 'Pantheon-Windows-arm64-setup.exe', updater: v => `nsis/Pantheon_${v}_arm64-setup.exe`, updaterAsset: 'Pantheon-Windows-arm64-setup.exe' },
+  'linux-x86_64': { platform: 'linux', arch: 'x64', triple: 'x86_64-unknown-linux-gnu', bundles: 'appimage', bundleDir: 'appimage', built: v => `Pantheon_${v}_amd64.AppImage`, asset: 'Pantheon-Linux-x86_64.AppImage', updater: v => `appimage/Pantheon_${v}_amd64.AppImage`, updaterAsset: 'Pantheon-Linux-x86_64.AppImage' },
+  'linux-aarch64': { platform: 'linux', arch: 'arm64', triple: 'aarch64-unknown-linux-gnu', bundles: 'appimage', bundleDir: 'appimage', built: v => `Pantheon_${v}_aarch64.AppImage`, asset: 'Pantheon-Linux-aarch64.AppImage', updater: v => `appimage/Pantheon_${v}_aarch64.AppImage`, updaterAsset: 'Pantheon-Linux-aarch64.AppImage' },
 });
 
 export function targetConfig(value) {
@@ -53,11 +53,11 @@ export function version(value) {
 
 export async function json(path) { return JSON.parse(await readFile(path, 'utf8')); }
 
-/** Cargo.lock text with the `pandacode` package at `next`. Keeps the file's line endings,
+/** Cargo.lock text with the `pantheon` package at `next`. Keeps the file's line endings,
  * so a Windows checkout with CRLF is updated too, and fails instead of leaving it unchanged. */
 export function cargoLockVersion(lock, next) {
-  const entry = /(\[\[package\]\]\r?\nname = "pandacode"\r?\nversion = )"[^"]+"/;
-  if (!entry.test(lock)) throw new Error('No pandacode package in src-tauri/Cargo.lock.');
+  const entry = /(\[\[package\]\]\r?\nname = "pantheon"\r?\nversion = )"[^"]+"/;
+  if (!entry.test(lock)) throw new Error('No pantheon package in src-tauri/Cargo.lock.');
   return lock.replace(entry, `$1"${version(next)}"`);
 }
 
@@ -83,7 +83,7 @@ export function releaseDirectory(releaseVersion) {
  * its signature. `signatures` maps release targets to the contents of their `.sig` files.
  * Files are on the repository that publishes the release (GITHUB_REPOSITORY in Actions),
  * so a fork's release points at its own assets. */
-export function updaterManifest(releaseVersion, notes, signatures, pubDate = new Date().toISOString(), repository = process.env.GITHUB_REPOSITORY || 'aicodeking/pandacode') {
+export function updaterManifest(releaseVersion, notes, signatures, pubDate = new Date().toISOString(), repository = process.env.GITHUB_REPOSITORY || 'k1ng0mar/pantheon') {
   const v = version(releaseVersion);
   if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repository)) throw new Error(`Not a GitHub repository: ${repository}`);
   const platforms = {};

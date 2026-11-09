@@ -66,7 +66,7 @@ export function markdown(report) {
     return `| \`${e.name}\` | ${e.platform} | \`${e.sha256 ?? 'n/a'}\` | ${e.kind} | ${inventory} | ${scan} |`;
   });
   return [
-    `# Security scan coverage for PandaCode ${report.version}`, '',
+    `# Security scan coverage for Pantheon ${report.version}`, '',
     `Commit \`${report.commit}\`. Scanners: ${Object.entries(report.scanners).map(([n, v]) => `${n} ${v}`).join(', ')}. Vulnerability database built: ${report.vulnerabilityDbBuilt}.`, '',
     report.complete ? 'All listed inventories were identified and scanned.' : `**Coverage is incomplete** for: ${report.incomplete.map(n => `\`${n}\``).join(', ')}. An incomplete inventory is not a clean scan.`, '',
     '| Subject | Platform | SHA-256 | Kind | Inventory | Vulnerability scan |', '| --- | --- | --- | --- | --- | --- |', ...rows, '',
@@ -116,8 +116,8 @@ async function main() {
 
   const subjects = [
     ...packagedAssets(await readdir(assets)).map(name => ({ name, kind: 'artifact', platform: platformOf(name), source: [`file:${resolve(assets, name)}`], path: resolve(assets, name) })),
-    { name: 'pandacode-npm', kind: 'npm lockfile', platform: 'all', source: ['dir:.', '--select-catalogers', 'javascript', '--exclude', './website/**', '--exclude', './packages/**', '--exclude', './relay/**', '--exclude', './node_modules/**'] },
-    { name: 'pandacode-rust', kind: 'Cargo.lock', platform: 'all', source: ['dir:.', '--select-catalogers', 'rust'] },
+    { name: 'pantheon-npm', kind: 'npm lockfile', platform: 'all', source: ['dir:.', '--select-catalogers', 'javascript', '--exclude', './website/**', '--exclude', './packages/**', '--exclude', './relay/**', '--exclude', './node_modules/**'] },
+    { name: 'pantheon-rust', kind: 'Cargo.lock', platform: 'all', source: ['dir:.', '--select-catalogers', 'rust'] },
   ];
   const entries = [];
   for (const subject of subjects) {

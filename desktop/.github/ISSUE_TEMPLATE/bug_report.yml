@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in PandaCode does not work as expected.
+description: Something in Pantheon does not work as expected.
 labels: [bug]
 body:
   - type: markdown
@@ -28,7 +28,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: PandaCode version
+      label: Pantheon version
       description: Settings → About shows the version and can copy it with your OS and architecture.
       placeholder: 0.3.0
     validations:

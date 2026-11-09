@@ -50,19 +50,19 @@ test('rejects a tampered trusted comment', () => {
 });
 
 test('picks the asset per platform', () => {
-  assert.equal(assetFor('darwin', 'arm64'), 'PandaCode-macOS-arm64.app.tar.gz');
-  assert.equal(assetFor('win32', 'x64'), 'PandaCode-Windows-x64-setup.exe');
-  assert.equal(assetFor('linux', 'x64'), 'PandaCode-Linux-x86_64.AppImage');
-  assert.equal(assetFor('darwin', 'x64'), 'PandaCode-macOS-x64.app.tar.gz');
+  assert.equal(assetFor('darwin', 'arm64'), 'Pantheon-macOS-arm64.app.tar.gz');
+  assert.equal(assetFor('win32', 'x64'), 'Pantheon-Windows-x64-setup.exe');
+  assert.equal(assetFor('linux', 'x64'), 'Pantheon-Linux-x86_64.AppImage');
+  assert.equal(assetFor('darwin', 'x64'), 'Pantheon-macOS-x64.app.tar.gz');
   assert.throws(() => assetFor('darwin', 'ia32'), /no build/);
-  assert.equal(assetFor('linux', 'arm64'), 'PandaCode-Linux-aarch64.AppImage');
-  assert.equal(assetFor('win32', 'arm64'), 'PandaCode-Windows-arm64-setup.exe');
+  assert.equal(assetFor('linux', 'arm64'), 'Pantheon-Linux-aarch64.AppImage');
+  assert.equal(assetFor('win32', 'arm64'), 'Pantheon-Windows-arm64-setup.exe');
 });
 
 test('writes a desktop entry', () => {
-  const text = desktopEntry('/h/.local/bin/pandacode', '/h/icon.png');
+  const text = desktopEntry('/h/.local/bin/pantheon', '/h/icon.png');
   assert.match(text, /^\[Desktop Entry\]\n/);
-  assert.match(text, /\nExec=\/h\/\.local\/bin\/pandacode\n/);
+  assert.match(text, /\nExec=\/h\/\.local\/bin\/pantheon\n/);
   assert.match(text, /\nIcon=\/h\/icon\.png\n/);
 });
 
@@ -74,7 +74,7 @@ test('the no-build error names every published build', () => {
 });
 
 test('the help text names every published build', () => {
-  const help = execFileSync(process.execPath, [fileURLToPath(new URL('./bin/pandacode.mjs', import.meta.url)), '--help'], { encoding: 'utf8' });
+  const help = execFileSync(process.execPath, [fileURLToPath(new URL('./bin/pantheon.mjs', import.meta.url)), '--help'], { encoding: 'utf8' });
   for (const name of PUBLISHED) assert.ok(help.includes(name), `${name} is missing from the help`);
 });
 

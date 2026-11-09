@@ -63,13 +63,13 @@ test('Developer ID signing requires a real identity and notarization credentials
 });
 
 test('the build selects the exact versioned bundle Tauri produced', () => {
-  for (const [target, file] of [['windows-x86_64', 'PandaCode_1.2.3_x64-setup.exe'], ['linux-x86_64', 'PandaCode_1.2.3_amd64.AppImage'], ['darwin-aarch64', 'PandaCode_1.2.3_aarch64.dmg'], ['darwin-x86_64', 'PandaCode_1.2.3_x64.dmg']]) {
+  for (const [target, file] of [['windows-x86_64', 'Pantheon_1.2.3_x64-setup.exe'], ['linux-x86_64', 'Pantheon_1.2.3_amd64.AppImage'], ['darwin-aarch64', 'Pantheon_1.2.3_aarch64.dmg'], ['darwin-x86_64', 'Pantheon_1.2.3_x64.dmg']]) {
     assert.equal(builtArtifact([file, file.replace('1.2.3', '1.2.2')], '1.2.3', target), file);
     assert.throws(() => builtArtifact([file], '1.2.4', target), /did not produce/);
   }
 });
 
 test('checksum sidecars use the sha256sum format', () => {
-  assert.equal(checksumLine('a'.repeat(64), 'PandaCode-Linux-x86_64.AppImage'), `${'a'.repeat(64)}  PandaCode-Linux-x86_64.AppImage\n`);
+  assert.equal(checksumLine('a'.repeat(64), 'Pantheon-Linux-x86_64.AppImage'), `${'a'.repeat(64)}  Pantheon-Linux-x86_64.AppImage\n`);
   assert.throws(() => checksumLine('nothex', 'x'), /SHA-256/);
 });

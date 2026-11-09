@@ -3,9 +3,9 @@ import test from 'node:test';
 import { coverage, inventoryStatus, markdown, packagedAssets, platformOf, scanStatus } from './sbom.mjs';
 
 test('picks installers and updater archives only', () => {
-  const names = ['PandaCode-macOS-arm64.dmg', 'PandaCode-macOS-arm64.dmg.sha256', 'latest.json', 'PandaCode-macOS-arm64.app.tar.gz.sig', 'PandaCode-Linux-x86_64.AppImage'];
-  assert.deepEqual(packagedAssets(names), ['PandaCode-Linux-x86_64.AppImage', 'PandaCode-macOS-arm64.dmg']);
-  assert.equal(platformOf('PandaCode-Windows-x64-setup.exe'), 'win32/x64');
+  const names = ['Pantheon-macOS-arm64.dmg', 'Pantheon-macOS-arm64.dmg.sha256', 'latest.json', 'Pantheon-macOS-arm64.app.tar.gz.sig', 'Pantheon-Linux-x86_64.AppImage'];
+  assert.deepEqual(packagedAssets(names), ['Pantheon-Linux-x86_64.AppImage', 'Pantheon-macOS-arm64.dmg']);
+  assert.equal(platformOf('Pantheon-Windows-x64-setup.exe'), 'win32/x64');
 });
 
 test('an empty or failed inventory is incomplete, never ok', () => {

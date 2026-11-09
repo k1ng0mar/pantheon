@@ -54,12 +54,12 @@ export default function SignIn() {
     <SafeAreaView style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={styles.top}>
         <Image source={icon} style={styles.icon} accessibilityIgnoresInvertColors />
-        <Text style={[styles.title, { color: colors.text }]}>PandaCode</Text>
+        <Text style={[styles.title, { color: colors.text }]}>Pantheon</Text>
         <Text style={[styles.lead, { color: colors.secondary }]}>See and steer the tasks running on your computers. Tasks never run on this phone.</Text>
       </View>
       {!status.configured ? (
         <Glass style={styles.card}>
-          <Text style={[styles.body, { color: colors.text }]}>PandaCode Connect is not configured in this build.</Text>
+          <Text style={[styles.body, { color: colors.text }]}>Pantheon Connect is not configured in this build.</Text>
           <Text style={[styles.small, { color: colors.secondary }]}>{configProblem} Put PANTHEON_RELAY_URL and PANTHEON_GITHUB_CLIENT_ID in mobile/.env (or the shell), then restart Metro with npx expo start --clear.</Text>
         </Glass>
       ) : code ? (

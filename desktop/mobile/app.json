@@ -1,19 +1,19 @@
 {
   "expo": {
-    "name": "PandaCode",
-    "slug": "pandacode",
+    "name": "Pantheon",
+    "slug": "pantheon",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "pandacode",
+    "scheme": "pantheon",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "app.pandacode.mobile",
+      "bundleIdentifier": "app.pantheon.mobile",
       "supportsTablet": true,
       "icon": "./assets/images/icon.png"
     },
     "android": {
-      "package": "app.pandacode.mobile",
+      "package": "app.pantheon.mobile",
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
         "foregroundImage": "./assets/images/android-icon-foreground.png"

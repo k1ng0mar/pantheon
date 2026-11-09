@@ -154,7 +154,7 @@ async function setTrusted(deviceId: string, trusted: boolean): Promise<void> {
 }
 
 async function revokeDevice(deviceId: string): Promise<void> {
-  if (!token) throw new Error('Sign in to PandaCode Connect first.');
+  if (!token) throw new Error('Sign in to Pantheon Connect first.');
   const used = token;
   await auth.revokeDevice(used, deviceId).catch(error => {
     if (error instanceof auth.SignedOut) signOutIf(error.token);
@@ -166,7 +166,7 @@ async function revokeDevice(deviceId: string): Promise<void> {
 // ---- Calls ----
 
 function callable(deviceId: string): Device {
-  if (!token) throw new Error('Sign in to PandaCode Connect first.');
+  if (!token) throw new Error('Sign in to Pantheon Connect first.');
   const s = state();
   if (deviceId === s.deviceId) throw new Error('That is this phone.');
   const device = s.devices.find(d => d.id === deviceId);

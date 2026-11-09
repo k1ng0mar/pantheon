@@ -1,7 +1,7 @@
-# PandaCode mobile
+# Pantheon mobile
 
 Expo app (iOS + Android) that views and controls tasks running on your computers through
-PandaCode Connect ([docs/remote-access.md](../docs/remote-access.md)). The phone never runs tasks.
+Pantheon Connect ([docs/remote-access.md](../docs/remote-access.md)). The phone never runs tasks.
 
 ```bash
 npm install

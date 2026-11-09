@@ -6,7 +6,7 @@ import { publicKey } from './crypto.ts';
 import * as secrets from './secrets.ts';
 import type { Account, Device } from './types.ts';
 
-export const SIGNED_OUT = 'This phone was signed out of PandaCode Connect.';
+export const SIGNED_OUT = 'This phone was signed out of Pantheon Connect.';
 const KEY_CHANGED = 'The relay has another key for this device.';
 const GITHUB = 'https://github.com';
 const WEEK_S = 7 * 24 * 3600;

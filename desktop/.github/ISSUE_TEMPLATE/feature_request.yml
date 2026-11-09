@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an idea or improvement for PandaCode.
+description: Suggest an idea or improvement for Pantheon.
 labels: [enhancement]
 body:
   - type: textarea
@@ -13,7 +13,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What would you like PandaCode to do?
+      description: What would you like Pantheon to do?
     validations:
       required: true
   - type: textarea

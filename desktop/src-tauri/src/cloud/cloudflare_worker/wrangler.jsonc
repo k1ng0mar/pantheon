@@ -1,6 +1,6 @@
 {
   // Deployed by Pantheon to your Cloudflare account: one sandbox container per name.
-  "name": "pandacode-sandbox",
+  "name": "pantheon-sandbox",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-02",
   "compatibility_flags": ["nodejs_compat"],

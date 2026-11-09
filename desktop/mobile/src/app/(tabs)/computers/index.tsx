@@ -45,7 +45,7 @@ export default function Computers() {
       onRefresh={refresh}
       refreshing={false}
       ItemSeparatorComponent={() => <View style={styles.gap} />}
-      ListEmptyComponent={<Text style={[styles.empty, { color: colors.secondary }]}>{connected ? 'No other devices on this account yet. Sign in to PandaCode Connect on your computer.' : 'Connecting…'}</Text>}
+      ListEmptyComponent={<Text style={[styles.empty, { color: colors.secondary }]}>{connected ? 'No other devices on this account yet. Sign in to Pantheon Connect on your computer.' : 'Connecting…'}</Text>}
       ListFooterComponent={
         <Text style={[styles.footer, { color: colors.secondary }]}>
           Trust a computer here and trust this phone on that computer too (Settings → Remote access): computers answer only devices they trust. Compare the fingerprints on both screens.

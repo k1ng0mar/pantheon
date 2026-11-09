@@ -4,7 +4,7 @@ import { installNotes, macosNote, UNQUARANTINE } from './install-notes.mjs';
 
 test('an unsigned macOS build says how to clear the quarantine attribute', () => {
   const notes = installNotes();
-  assert.match(notes, /xattr -dr com\.apple\.quarantine \/Applications\/PandaCode\.app/);
+  assert.match(notes, /xattr -dr com\.apple\.quarantine \/Applications\/Pantheon\.app/);
   assert.match(notes, /not signed with a Developer ID/);
   assert.match(notes, /Open Anyway/);
 });
@@ -18,7 +18,7 @@ test('a notarized build does not ask for the workaround', () => {
 
 test('both builds offer the terminal install, which signs locally on macOS', () => {
   for (const notes of [installNotes(), installNotes({ signed: true })]) {
-    assert.match(notes, /npx pandacode/);
+    assert.match(notes, /npx pantheon/);
     assert.match(notes, /signs it locally on macOS/);
   }
 });
@@ -26,19 +26,19 @@ test('both builds offer the terminal install, which signs locally on macOS', () 
 test('every published asset is named once', () => {
   const notes = installNotes();
   for (const asset of [
-    'PandaCode-macOS-arm64.dmg',
-    'PandaCode-macOS-x64.dmg',
-    'PandaCode-Windows-x64-setup.exe',
-    'PandaCode-Windows-arm64-setup.exe',
-    'PandaCode-Linux-x86_64.AppImage',
-    'PandaCode-Linux-aarch64.AppImage',
+    'Pantheon-macOS-arm64.dmg',
+    'Pantheon-macOS-x64.dmg',
+    'Pantheon-Windows-x64-setup.exe',
+    'Pantheon-Windows-arm64-setup.exe',
+    'Pantheon-Linux-x86_64.AppImage',
+    'Pantheon-Linux-aarch64.AppImage',
   ]) {
     assert.equal(notes.split(asset).length - 1, 1, asset);
   }
 });
 
 test('the macOS note names the same command the uninstaller uses', () => {
-  assert.equal(UNQUARANTINE, 'xattr -dr com.apple.quarantine /Applications/PandaCode.app');
+  assert.equal(UNQUARANTINE, 'xattr -dr com.apple.quarantine /Applications/Pantheon.app');
   assert.ok(macosNote(false).includes(UNQUARANTINE));
 });
 

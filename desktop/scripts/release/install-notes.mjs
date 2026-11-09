@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /// The command that clears the quarantine attribute on an installed app.
-export const UNQUARANTINE = 'xattr -dr com.apple.quarantine /Applications/PandaCode.app';
+export const UNQUARANTINE = 'xattr -dr com.apple.quarantine /Applications/Pantheon.app';
 
 /// What a macOS user is told before the app opens for the first time.
 export function macosNote(signed) {
@@ -27,7 +27,7 @@ export function macosNote(signed) {
     `  ${UNQUARANTINE}`,
     '  ```',
     '',
-    '  then open PandaCode again.',
+    '  then open Pantheon again.',
   ].join('\n');
 }
 
@@ -36,13 +36,13 @@ export function installNotes({ signed = false } = {}) {
   return [
     '## Installing',
     '',
-    '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. ' + macosNote(signed),
-    '- **macOS (Intel):** the same, with `PandaCode-macOS-x64.dmg`.',
-    '- **Windows x64:** run `PandaCode-Windows-x64-setup.exe`. If SmartScreen warns about an unknown publisher, choose **More info > Run anyway**.',
-    '- **Windows arm64:** run `PandaCode-Windows-arm64-setup.exe` (same SmartScreen step).',
-    '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.',
-    '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.',
-    '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.',
+    '- **macOS (Apple silicon):** open `Pantheon-macOS-arm64.dmg` and drag Pantheon to Applications. ' + macosNote(signed),
+    '- **macOS (Intel):** the same, with `Pantheon-macOS-x64.dmg`.',
+    '- **Windows x64:** run `Pantheon-Windows-x64-setup.exe`. If SmartScreen warns about an unknown publisher, choose **More info > Run anyway**.',
+    '- **Windows arm64:** run `Pantheon-Windows-arm64-setup.exe` (same SmartScreen step).',
+    '- **Linux x64:** `chmod +x Pantheon-Linux-x86_64.AppImage` and run it.',
+    '- **Linux arm64:** `chmod +x Pantheon-Linux-aarch64.AppImage` and run it.',
+    '- **Any of the above, from a terminal:** `npx pantheon` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.',
     '',
     'Each file has a `.sha256` checksum beside it. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
     '',

@@ -10,8 +10,8 @@ for (const [expo, desktop] of Object.entries(ALIASES)) {
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: config.name ?? 'PandaCode',
-  slug: config.slug ?? 'pandacode',
+  name: config.name ?? 'Pantheon',
+  slug: config.slug ?? 'pantheon',
   extra: {
     ...config.extra,
     relayUrl: process.env.EXPO_PUBLIC_PANTHEON_RELAY_URL ?? '',

@@ -99,7 +99,7 @@ jobs:
         run: node scripts/release/ci-startup-smoke.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pandacode-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
+          name: pantheon-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
           path: release/${{ needs.prepare.outputs.version }}/
           if-no-files-found: error
           retention-days: 14
@@ -125,7 +125,7 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: assets
-          pattern: pandacode-${{ needs.prepare.outputs.version }}-*
+          pattern: pantheon-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Install syft and grype (pinned, checksum verified)
         run: |
@@ -147,7 +147,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: pandacode-sbom-${{ needs.prepare.outputs.version }}
+          name: pantheon-sbom-${{ needs.prepare.outputs.version }}
           path: sbom/
           if-no-files-found: warn
           retention-days: 14
@@ -167,14 +167,14 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: assets
-          pattern: pandacode-${{ needs.prepare.outputs.version }}-*
+          pattern: pantheon-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Download SBOMs and scan coverage
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: assets
-          name: pandacode-sbom-${{ needs.prepare.outputs.version }}
+          name: pantheon-sbom-${{ needs.prepare.outputs.version }}
       - name: Write release notes
         env:
           # A Developer ID signed build is notarized; an ad-hoc one is not, and
@@ -197,7 +197,7 @@ jobs:
         run: |
           ls -l assets
           gh release create "v$VERSION" assets/* \
-            --title "PandaCode $VERSION" \
+            --title "Pantheon $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             --target "$GITHUB_SHA"
 
@@ -216,11 +216,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22', registry-url: 'https://registry.npmjs.org' }
-      - name: Publish npx pandacode
+      - name: Publish npx pantheon
         working-directory: packages/npx
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::warning::NPM_TOKEN is not set; skipping the npm publish of pandacode."
+            echo "::warning::NPM_TOKEN is not set; skipping the npm publish of pantheon."
             exit 0
           fi
           npm version "$VERSION" --no-git-tag-version --allow-same-version

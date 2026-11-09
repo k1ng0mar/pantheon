@@ -9,7 +9,7 @@ import { Markdown } from './Markdown.tsx';
 import { mono, useColors } from './theme.ts';
 
 // Same blocks the desktop folds behind a user message (CONTEXT_BOUNDARY in src/main.ts).
-const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
+const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(Pantheon token saver)/;
 const MAX_OUTPUT = 6000;
 
 function parseTool(content: string): ToolActivity {

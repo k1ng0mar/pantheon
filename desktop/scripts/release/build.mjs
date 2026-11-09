@@ -121,7 +121,7 @@ async function verifyMacApp(app, mode) {
 
 async function verifyDmg(path, app, releaseVersion) {
   await run('/usr/bin/hdiutil', ['verify', path, '-quiet']);
-  const scratch = await mkdtemp(resolve(tmpdir(), 'pandacode-dmg-verify-'));
+  const scratch = await mkdtemp(resolve(tmpdir(), 'pantheon-dmg-verify-'));
   const mount = resolve(scratch, 'volume');
   await mkdir(mount);
   let mounted = false;
@@ -129,10 +129,10 @@ async function verifyDmg(path, app, releaseVersion) {
     await run('/usr/bin/hdiutil', ['attach', path, '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, '-quiet']);
     mounted = true;
     if (await readlink(resolve(mount, 'Applications')) !== '/Applications') throw new Error('The disk image is missing its Applications shortcut.');
-    const installed = resolve(mount, 'PandaCode.app');
+    const installed = resolve(mount, 'Pantheon.app');
     await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', installed]);
     const installedVersion = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', resolve(installed, 'Contents/Info.plist')], { encoding: 'utf8' }).trim();
-    if (installedVersion !== releaseVersion || await digest(resolve(installed, 'Contents/MacOS/pandacode')) !== await digest(resolve(app, 'Contents/MacOS/pandacode'))) throw new Error('The disk image contains a different app build.');
+    if (installedVersion !== releaseVersion || await digest(resolve(installed, 'Contents/MacOS/pantheon')) !== await digest(resolve(app, 'Contents/MacOS/pantheon'))) throw new Error('The disk image contains a different app build.');
   } finally {
     if (mounted) await run('/usr/bin/hdiutil', ['detach', mount, '-quiet']);
     // Only remove empty mount directories; never recursively delete a volume.
@@ -153,7 +153,7 @@ async function main() {
   const bundleDir = resolve(bundleRoot, config.bundleDir);
   const source = resolve(bundleDir, builtArtifact(await readdir(bundleDir), releaseVersion, releaseTarget));
   if (releaseTarget.startsWith('darwin-')) {
-    const app = resolve(bundleRoot, 'macos/PandaCode.app');
+    const app = resolve(bundleRoot, 'macos/Pantheon.app');
     await verifyMacApp(app, build.signing.mode);
     await verifyDmg(source, app, releaseVersion);
   }
