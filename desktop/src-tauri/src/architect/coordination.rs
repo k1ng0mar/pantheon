@@ -81,7 +81,7 @@ fn mailbox(
     latest: bool,
 ) -> Result<Value> {
     let order = if latest { "DESC" } else { "ASC" };
-    let mut query = store.db.prepare(&format!("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 ORDER BY id {order} LIMIT ?4")).map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare(&format!("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 ORDER BY id {order} LIMIT ?4")).map_err(|e| e.to_string())?;
     let mut messages = query
         .query_map(params![parent, actor, after, (limit + 1) as i64], |r| {
             Ok(Message {
@@ -148,7 +148,7 @@ pub async fn architect_team_messages(
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     load(&store, &session_id)?.ok_or("Team unavailable.")?;
-    let mut query = store.db.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e|e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e|e.to_string())?;
     let mut messages = query
         .query_map(params![session_id, after, (limit + 1) as i64], |r| {
             Ok(Message {
@@ -191,9 +191,7 @@ pub(super) fn dispatch_state(
     if session.archived || session.task_stage == "completed" {
         return Err("Restore the parent task before coordinating work.".into());
     }
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let mut changed = false;
     let result = match name {
@@ -243,7 +241,7 @@ pub(super) fn dispatch_state(
             {
                 return Err("Recipient does not belong to this active team.".into());
             }
-            let existing = store.db.query_row("SELECT id,recipient,content FROM architect_messages WHERE parent_session_id=?1 AND sender=?2 AND request_key=?3", params![parent,actor.id(),send.key], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
+            let existing = store.db.lock().unwrap().query_row("SELECT id,recipient,content FROM architect_messages WHERE parent_session_id=?1 AND sender=?2 AND request_key=?3", params![parent,actor.id(),send.key], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
             let (id, duplicate) = if let Some((id, recipient, content)) = existing {
                 if recipient != send.recipient || content != send.message {
                     return Err("This message key already has different arguments.".into());
@@ -251,8 +249,7 @@ pub(super) fn dispatch_state(
                 (id, true)
             } else {
                 let count: i64 = store
-                    .db
-                    .query_row(
+                    .db.lock().unwrap().query_row(
                         "SELECT COUNT(*) FROM architect_messages WHERE parent_session_id=?1",
                         [parent],
                         |r| r.get(0),
@@ -263,12 +260,12 @@ pub(super) fn dispatch_state(
                         "Team message limit reached. Continue with compact worker results.".into(),
                     );
                 }
-                store.db.execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![parent,actor.id(),send.recipient,send.key,send.message,storage::now()]).map_err(|e|e.to_string())?;
+                store.db.lock().unwrap().execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![parent,actor.id(),send.recipient,send.key,send.message,storage::now()]).map_err(|e|e.to_string())?;
                 if send.recipient == "architect" {
                     team.coordination_revision = team.coordination_revision.saturating_add(1);
                 }
                 changed = true;
-                (store.db.last_insert_rowid(), false)
+                (store.db.lock().unwrap().last_insert_rowid(), false)
             };
             json!({"messageId":id,"recipient":send.recipient,"saved":true,"duplicate":duplicate,"mailbox":mailbox(&store,parent,actor.id(),0,6,true)?})
         }
@@ -304,7 +301,7 @@ pub(super) fn dispatch_state(
                 .find(|w| w.id == *id)
                 .ok_or("Worker unavailable.")?;
             if !duplicate {
-                let count: i64 = store.db.query_row("SELECT COUNT(*) FROM architect_requests WHERE parent_session_id=?1 AND kind='checkpoint' AND worker_id=?2",params![parent,id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                let count: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM architect_requests WHERE parent_session_id=?1 AND kind='checkpoint' AND worker_id=?2",params![parent,id],|r|r.get(0)).map_err(|e|e.to_string())?;
                 if count >= 200 {
                     return Err("Worker checkpoint limit reached.".into());
                 }

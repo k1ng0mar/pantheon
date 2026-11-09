@@ -284,8 +284,7 @@ impl TeamConfig {
 }
 pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
     store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT content FROM architect_teams WHERE session_id=?1",
             [sid],
             |r| r.get::<_, String>(0),
@@ -302,7 +301,7 @@ fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
     if content.len() > 1024 * 1024 {
         return Err("Team history reached its storage limit.".into());
     }
-    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",params![team.session_id,content]).map_err(|e|e.to_string())?;
+    store.db.lock().unwrap().execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",params![team.session_id,content]).map_err(|e|e.to_string())?;
     Ok(())
 }
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
@@ -311,8 +310,7 @@ fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
 }
 pub(crate) fn parent_of(store: &Store, sid: &str) -> Result<Option<String>> {
     store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
             [sid],
             |r| r.get(0),
@@ -363,8 +361,7 @@ pub(crate) fn validate_admission(
         }
         // Revoking Full access while paused must affect retries and follow-ups too.
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET mode=?2 WHERE id=?1",
                 params![sid, parent.mode],
             )
@@ -374,10 +371,11 @@ pub(crate) fn validate_admission(
         // snapshot. Refresh only the architect: worker tool schemas are unchanged.
         // Queue its own history before clearing the native ID, atomically with the
         // version marker, so interrupted startup retries keep their handoff.
-        let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let conn = store.db.lock().unwrap();
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         if parent.provider == "codex" {
             crate::context_recovery::queue(store, sid)?;
-            store.db.execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
+            store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
         }
         team.tool_catalog_version = TOOL_CATALOG_VERSION;
         save(store, &mut team)?;
@@ -561,9 +559,7 @@ pub(super) fn configure_state(
     {
         return Err("Wait for workers to stop before changing the team.".into());
     }
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let Some(config) = config else {
         // Keep completed worker transcripts addressable if the team is enabled again.
@@ -573,8 +569,7 @@ pub(super) fn configure_state(
             );
         }
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "DELETE FROM architect_teams WHERE session_id=?1",
                 [session_id],
             )
@@ -585,7 +580,7 @@ pub(super) fn configure_state(
         // existing context remains valid. Saving ordinary mode is a no-op.
         if existing.is_some() && session.provider == "codex" {
             crate::context_recovery::queue(&store, session_id)?;
-            store.db.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
+            store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
         }
         profiles::remember(&store, None, None)?;
         transaction.commit().map_err(|e| e.to_string())?;
@@ -601,8 +596,7 @@ pub(super) fn configure_state(
     };
     setup.validate()?;
     let used: bool = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1)",
             [session_id],
             |r| r.get(0),
@@ -628,7 +622,7 @@ pub(super) fn configure_state(
     team.error = None;
     if fresh && selection.provider == "codex" {
         crate::context_recovery::queue(&store, session_id)?;
-        store.db.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
+        store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
         if session.resume_id.is_some() {
             store.message(
                 session_id,
@@ -661,7 +655,7 @@ fn apply_setup(store: &Store, team: &mut TeamSnapshot, setup: &profiles::TeamSet
     let session = store.session(&team.session_id)?;
     if setup.architect.provider != session.provider {
         crate::context_recovery::queue(store, &team.session_id)?;
-        store.db.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1", [&team.session_id]).map_err(|e|e.to_string())?;
+        store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1", [&team.session_id]).map_err(|e|e.to_string())?;
     }
     if setup.architect != profiles::ModelSelection::from_session(&session) {
         profiles::apply_selection(store, &team.session_id, &setup.architect)?;
@@ -677,9 +671,7 @@ fn apply_pending_setup(store: &Store, team: &mut TeamSnapshot) -> Result<bool> {
     let Some(setup) = team.pending_setup.clone() else {
         return Ok(false);
     };
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     apply_setup(store, team, &setup)?;
     save(store, team)?;
@@ -767,8 +759,7 @@ pub(crate) fn start_state(
     // Keys dedupe retries within one objective; a new request may reuse a key like
     // "run-tests" and must get a new worker, not the finished one from last time.
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "DELETE FROM architect_requests WHERE parent_session_id=?1 AND kind IN ('dispatch','followup')",
             [&team.session_id],
         )
@@ -1189,9 +1180,7 @@ fn dispatch_state(
     }
     let parent = store.session(sid)?;
     let mut changed = false;
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let result = match name {
         "pantheon_dispatch_workers" => {
@@ -1258,9 +1247,9 @@ fn dispatch_state(
                     &profile.model,
                     &parent.mode,
                 )?;
-                store.db.execute("UPDATE sessions SET title=?2,task_description=?3,worktree_path=?4,reasoning_effort=?5 WHERE id=?1",params![session.id,assignment.name,assignment.prompt,parent.worktree_path,profile.reasoning_effort]).map_err(|e|e.to_string())?;
+                store.db.lock().unwrap().execute("UPDATE sessions SET title=?2,task_description=?3,worktree_path=?4,reasoning_effort=?5 WHERE id=?1",params![session.id,assignment.name,assignment.prompt,parent.worktree_path,profile.reasoning_effort]).map_err(|e|e.to_string())?;
                 let id = storage::id();
-                store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?3)",params![sid,id,session.id]).map_err(|e|e.to_string())?;
+                store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?3)",params![sid,id,session.id]).map_err(|e|e.to_string())?;
                 record_request(&store, sid, &assignment.key, "dispatch", &request, &id)?;
                 let now = storage::now();
                 ids.push(id.clone());
@@ -1320,7 +1309,7 @@ fn dispatch_state(
         }
         "pantheon_read_worker" => {
             let worker = worker_arg(&team, &args)?;
-            let response=store.db.query_row("SELECT substr(content,1,12001) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",[&worker.session_id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default();
+            let response=store.db.lock().unwrap().query_row("SELECT substr(content,1,12001) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",[&worker.session_id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default();
             json!({"id":worker.id,"status":worker.status,"summary":worker.summary,"response":bounded(&response,12000),"truncated":response.chars().count()>12000,"checkpoint":worker.checkpoint,"files":worker.files,"readOnly":worker.read_only,"dependsOn":worker.depends_on,"queueReason":queue_reason(&team,worker)})
         }
         "pantheon_followup_worker" => {
@@ -1438,7 +1427,7 @@ fn request_duplicate(
     kind: &str,
     content: &str,
 ) -> Result<Option<String>> {
-    let existing=store.db.query_row("SELECT kind,content,worker_id FROM architect_requests WHERE parent_session_id=?1 AND key=?2",params![sid,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
+    let existing=store.db.lock().unwrap().query_row("SELECT kind,content,worker_id FROM architect_requests WHERE parent_session_id=?1 AND key=?2",params![sid,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
     match existing {
         Some((saved_kind, saved_content, id)) if saved_kind == kind && saved_content == content => {
             Ok(Some(id))
@@ -1455,7 +1444,7 @@ fn record_request(
     content: &str,
     worker: &str,
 ) -> Result<()> {
-    store.db.execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,?2,?3,?4,?5)",params![sid,key,kind,content,worker]).map_err(|e|e.to_string())?;
+    store.db.lock().unwrap().execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,?2,?3,?4,?5)",params![sid,key,kind,content,worker]).map_err(|e|e.to_string())?;
     Ok(())
 }
 fn worker_arg<'a>(team: &'a TeamSnapshot, args: &Value) -> Result<&'a Worker> {
@@ -1572,7 +1561,8 @@ fn next_action_state(
         return Ok(None);
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let mut query=store.db.prepare("SELECT content FROM architect_teams WHERE json_extract(content,'$.status') IN ('running','waiting') OR EXISTS(SELECT 1 FROM architect_workers aw JOIN sessions s ON s.id=aw.session_id WHERE aw.parent_session_id=architect_teams.session_id AND s.status IN ('running','waiting')) ORDER BY json_extract(content,'$.updatedAt')").map_err(|e|e.to_string())?;
+    let conn = store.db.lock().unwrap();
+    let mut query=conn.prepare("SELECT content FROM architect_teams WHERE json_extract(content,'$.status') IN ('running','waiting') OR EXISTS(SELECT 1 FROM architect_workers aw JOIN sessions s ON s.id=aw.session_id WHERE aw.parent_session_id=architect_teams.session_id AND s.status IN ('running','waiting')) ORDER BY json_extract(content,'$.updatedAt')").map_err(|e|e.to_string())?;
     let teams = query
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
@@ -2016,7 +2006,7 @@ fn completed_with_agents(
                             }
                             .into();
                         }
-                        worker.summary=store.db.query_row("SELECT substr(content,1,?2+1) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",params![sid,team.config.summary_limit as i64],|r|r.get::<_,String>(0)).optional().ok().flatten().map(|s|bounded(&s,team.config.summary_limit)).unwrap_or_default();
+                        worker.summary=store.db.lock().unwrap().query_row("SELECT substr(content,1,?2+1) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",params![sid,team.config.summary_limit as i64],|r|r.get::<_,String>(0)).optional().ok().flatten().map(|s|bounded(&s,team.config.summary_limit)).unwrap_or_default();
                         if !successful && !worker.abandoned {
                             worker.error = Some(if worker.timed_out {
                                 watchdog::worker_note()
@@ -2054,7 +2044,7 @@ fn completed_with_agents(
                                 }
                             }
                         }
-                        let _ = store.db.execute(
+                        let _ = store.db.lock().unwrap().execute(
                             "UPDATE sessions SET task_stage=?2 WHERE id=?1",
                             params![
                                 sid,

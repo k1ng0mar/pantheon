@@ -69,7 +69,8 @@ pub(crate) fn dangerous(text: &str) -> bool {
 }
 
 pub(crate) fn rules(store: &Store, bot_id: &str) -> Result<Vec<Rule>> {
-    let mut statement = store.db.prepare("SELECT id,pattern,decision,created_at FROM bot_rules WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap();
+    let mut statement = conn.prepare("SELECT id,pattern,decision,created_at FROM bot_rules WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([bot_id], |r| Ok(Rule { id: r.get(0)?, pattern: r.get(1)?, decision: r.get(2)?, created_at: r.get(3)? }))
         .map_err(|e| e.to_string())?;
@@ -109,13 +110,13 @@ pub(crate) fn add_rule(store: &Store, bot_id: &str, pattern: &str, decision: &st
     super::get(store, bot_id)?;
     let id = crate::storage::id();
     let now = crate::storage::now();
-    store.db.execute("INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at) VALUES(?1,?2,?3,?4,?5)", params![id, bot_id, pattern, decision, now]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at) VALUES(?1,?2,?3,?4,?5)", params![id, bot_id, pattern, decision, now]).map_err(|e| e.to_string())?;
     super::log(store, bot_id, "rule", &format!("Rule: {decision} \"{pattern}\""), serde_json::json!({}))?;
     Ok(Rule { id, pattern, decision: decision.into(), created_at: now })
 }
 
 pub(crate) fn delete_rule(store: &Store, bot_id: &str, id: &str) -> Result<()> {
-    store.db.execute("DELETE FROM bot_rules WHERE id=?1 AND bot_id=?2", params![id, bot_id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("DELETE FROM bot_rules WHERE id=?1 AND bot_id=?2", params![id, bot_id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 

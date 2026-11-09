@@ -460,9 +460,7 @@ fn bounded(text: &str, bytes: usize) -> String {
 
 fn project_page(state: &AppState) -> Result<Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let mut query = store
-        .db
-        .prepare("SELECT id,substr(name,1,200) FROM projects ORDER BY name,id LIMIT 101")
+    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare("SELECT id,substr(name,1,200) FROM projects ORDER BY name,id LIMIT 101")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([], |row| {
@@ -482,7 +480,7 @@ fn task_page(state: &AppState, project_id: &str, offset: u64, archived: bool) ->
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let offset = offset.min(1_000_000) as i64;
     // Filter the project before LIMIT: global recent-task lists cannot paginate a project.
-    let mut query = store.db.prepare("SELECT id,substr(title,1,200),status,task_stage,worktree_path IS NOT NULL FROM sessions WHERE project_id=?1 AND archived=?2 ORDER BY updated_at DESC,id DESC LIMIT 51 OFFSET ?3").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,substr(title,1,200),status,task_stage,worktree_path IS NOT NULL FROM sessions WHERE project_id=?1 AND archived=?2 ORDER BY updated_at DESC,id DESC LIMIT 51 OFFSET ?3").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![project_id,archived,offset], |row| {
         let id:String = row.get(0)?;
         let mut status:String = row.get(2)?;
@@ -508,7 +506,7 @@ fn read_task_page(
     let store = state.store.lock().map_err(|e| e.to_string())?;
     // Project validation and the complete read share a lock. SQL bounds previews
     // before allocation, including a large latest response and task description.
-    let task = store.db.query_row("SELECT id,project_id,substr(title,1,200),provider,model,mode,status,task_stage,substr(task_description,1,4096),length(CAST(task_description AS BLOB)),worktree_path IS NOT NULL,updated_at FROM sessions WHERE id=?1 AND project_id=?2",params![sid,project_id],|row| {
+    let task = store.db.lock().unwrap().query_row("SELECT id,project_id,substr(title,1,200),provider,model,mode,status,task_stage,substr(task_description,1,4096),length(CAST(task_description AS BLOB)),worktree_path IS NOT NULL,updated_at FROM sessions WHERE id=?1 AND project_id=?2",params![sid,project_id],|row| {
         let description = bounded(&row.get::<_,String>(8)?,4096);
         let description_truncated = row.get::<_,i64>(9)? > description.len() as i64;
         let mut status:String = row.get(6)?;
@@ -516,7 +514,7 @@ fn read_task_page(
         if matches!(status.as_str(),"running"|"waiting") && !agents.contains_key(sid) {status="interrupted".into(); stage="in_progress".into();}
         Ok(json!({"id":row.get::<_,String>(0)?,"projectId":row.get::<_,String>(1)?,"title":row.get::<_,String>(2)?,"provider":row.get::<_,String>(3)?,"model":row.get::<_,String>(4)?,"mode":row.get::<_,String>(5)?,"status":status,"stage":stage,"description":description,"descriptionTruncated":description_truncated,"worktree":row.get::<_,bool>(10)?,"updatedAt":row.get::<_,i64>(11)?}))
     }).optional().map_err(|e| e.to_string())?.ok_or("Task is unavailable in the current project.")?;
-    let mut query = store.db.prepare("SELECT id,substr(role,1,24),CASE WHEN role='coordination' THEN CASE WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_update' THEN 'Checking worker updates' WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_review' THEN 'Reviewing worker results' ELSE 'Coordinating team' END ELSE substr(content,1,4096) END,CASE WHEN role='coordination' THEN 0 ELSE length(CAST(content AS BLOB)) END,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT 50").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,substr(role,1,24),CASE WHEN role='coordination' THEN CASE WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_update' THEN 'Checking worker updates' WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_review' THEN 'Reviewing worker results' ELSE 'Coordinating team' END ELSE substr(content,1,4096) END,CASE WHEN role='coordination' THEN 0 ELSE length(CAST(content AS BLOB)) END,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT 50").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![sid,before_id.unwrap_or(i64::MAX)],|row| {
         let content = bounded(&row.get::<_,String>(2)?,4096);
         Ok(json!({"id":row.get::<_,i64>(0)?,"role":row.get::<_,String>(1)?,"truncated":row.get::<_,i64>(3)? > content.len() as i64,"content":content,"createdAt":row.get::<_,i64>(4)?,"turnDurationMs":row.get::<_,Option<i64>>(5)?}))
@@ -539,8 +537,7 @@ fn read_task_page(
     let oldest = messages.last().and_then(|message| message["id"].as_i64());
     let has_older = match oldest {
         Some(oldest) => store
-            .db
-            .query_row(
+            .db.lock().unwrap().query_row(
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id<?2)",
                 params![sid, oldest],
                 |row| row.get::<_, bool>(0),
@@ -1068,8 +1065,7 @@ mod tests {
         {
             let store = state.store.lock().unwrap();
             store
-                .db
-                .execute(
+                .db.lock().unwrap().execute(
                     "INSERT INTO projects(id,name,path) VALUES ('other','Other','/fixture/other')",
                     [],
                 )
@@ -1118,8 +1114,7 @@ mod tests {
         {
             let store = state.store.lock().unwrap();
             store
-                .db
-                .execute(
+                .db.lock().unwrap().execute(
                     "UPDATE sessions SET task_description=?1 WHERE id=?2",
                     params!["🦀".repeat(32768), current.id],
                 )
@@ -1132,7 +1127,7 @@ mod tests {
             store
                 .message(&current.id, "assistant", &"large response ".repeat(6000))
                 .unwrap();
-            last = store.db.last_insert_rowid();
+            last = store.db.lock().unwrap().last_insert_rowid();
         }
         let page = read_task_page(&state, &current.project_id, &current.id, None).unwrap();
         let messages = page["messages"].as_array().unwrap();
@@ -1164,8 +1159,7 @@ mod tests {
             let store = state.store.lock().unwrap();
             for index in 0..105 {
                 store
-                    .db
-                    .execute(
+                    .db.lock().unwrap().execute(
                         "INSERT INTO projects(id,name,path) VALUES (?1,?2,?3)",
                         params![
                             format!("project-{index}"),

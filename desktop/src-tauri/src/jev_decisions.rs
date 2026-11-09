@@ -44,7 +44,7 @@ pub(crate) fn active_for_tasks(ids: &[String]) -> Result<bool> {
 pub(crate) fn active_for_store(store: &Store) -> Result<bool> {
     let tasks = in_flight().lock().map_err(|_| "Jev assessments are unavailable.")?;
     for sid in tasks.keys() {
-        let exists: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [sid], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let exists: bool = store.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [sid], |r| r.get(0)).map_err(|e| e.to_string())?;
         if exists { return Ok(true); }
     }
     Ok(false)
@@ -254,8 +254,7 @@ fn evidence(
 
 fn saved_rules(store: &Store, project_id: &str) -> Result<Vec<String>> {
     let content: Option<String> = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT rules FROM jev_project_rules WHERE project_id=?1",
             [project_id],
             |row| row.get(0),
@@ -275,12 +274,12 @@ fn save_rules(store: &Store, sid: &str, rules: &[String]) -> Result<Vec<String>>
     let project = store.session(sid)?.project_id;
     let clean = validate_rules(rules)?;
     let content = serde_json::to_string(&clean).map_err(|e| e.to_string())?;
-    store.db.execute("INSERT INTO jev_project_rules(project_id,rules) VALUES(?1,?2) ON CONFLICT(project_id) DO UPDATE SET rules=excluded.rules", params![project, content]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("INSERT INTO jev_project_rules(project_id,rules) VALUES(?1,?2) ON CONFLICT(project_id) DO UPDATE SET rules=excluded.rules", params![project, content]).map_err(|e| e.to_string())?;
     Ok(clean)
 }
 
 fn transcript(store: &Store, sid: &str, count: usize) -> Result<(Vec<Evidence>, bool)> {
-    let mut query = store.db.prepare("SELECT id,role,substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND content<>'' ORDER BY id DESC LIMIT ?2").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,role,substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND content<>'' ORDER BY id DESC LIMIT ?2").map_err(|e| e.to_string())?;
     let rows = query
         .query_map(params![sid, (count + 1) as i64], |row| {
             Ok((
@@ -303,7 +302,7 @@ fn transcript(store: &Store, sid: &str, count: usize) -> Result<(Vec<Evidence>, 
                 "A teammate sent a message or reported a blocker for this objective: ",
             ) || content.starts_with("Review the settled workers for this objective: "));
         if legacy_prefix {
-            let provenance: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1 AND COALESCE(json_extract(content,'$.legacyPromptThroughId'),0)>=?2)",params![sid,id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            let provenance: bool = store.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1 AND COALESCE(json_extract(content,'$.legacyPromptThroughId'),0)>=?2)",params![sid,id],|r|r.get(0)).map_err(|e|e.to_string())?;
             if provenance {
                 omitted = true;
                 continue;
@@ -326,7 +325,7 @@ fn transcript(store: &Store, sid: &str, count: usize) -> Result<(Vec<Evidence>, 
 }
 
 fn tool_evidence(store: &Store, sid: &str) -> Result<Vec<Evidence>> {
-    let mut query = store.db.prepare("SELECT id,substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'Tool') ELSE 'Tool' END,1,200),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.status'),'unknown') ELSE 'unknown' END,1,40),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.input'),'') ELSE '' END,1,501),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END,1,2401),length(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END) FROM messages WHERE session_id=?1 AND role IN ('tool','error') AND (CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'') ELSE '' END) NOT LIKE '%jev_%' ORDER BY id DESC LIMIT 3").map_err(|e|e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'Tool') ELSE 'Tool' END,1,200),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.status'),'unknown') ELSE 'unknown' END,1,40),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.input'),'') ELSE '' END,1,501),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END,1,2401),length(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END) FROM messages WHERE session_id=?1 AND role IN ('tool','error') AND (CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'') ELSE '' END) NOT LIKE '%jev_%' ORDER BY id DESC LIMIT 3").map_err(|e|e.to_string())?;
     let rows = query
         .query_map([sid], |row| {
             Ok((
@@ -362,16 +361,16 @@ fn saved_diff(
     selected: Option<&str>,
 ) -> Result<(Vec<Evidence>, Option<String>, bool)> {
     let selected: Option<(String, i64, bool, bool)> = if let Some(id) = selected {
-        Some(store.db.query_row("SELECT id,json_array_length(summary,'$.files'),COALESCE(json_extract(summary,'$.truncated'),0),COALESCE(json_extract(summary,'$.concurrent'),0) FROM turn_changes WHERE id=?1 AND session_id=?2",params![id,sid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?.ok_or("This saved change summary does not belong to this task.")?)
+        Some(store.db.lock().unwrap().query_row("SELECT id,json_array_length(summary,'$.files'),COALESCE(json_extract(summary,'$.truncated'),0),COALESCE(json_extract(summary,'$.concurrent'),0) FROM turn_changes WHERE id=?1 AND session_id=?2",params![id,sid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?.ok_or("This saved change summary does not belong to this task.")?)
     } else {
-        store.db.query_row("SELECT id,json_array_length(summary,'$.files'),COALESCE(json_extract(summary,'$.truncated'),0),COALESCE(json_extract(summary,'$.concurrent'),0) FROM turn_changes WHERE session_id=?1 ORDER BY message_id DESC LIMIT 1",[sid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?
+        store.db.lock().unwrap().query_row("SELECT id,json_array_length(summary,'$.files'),COALESCE(json_extract(summary,'$.truncated'),0),COALESCE(json_extract(summary,'$.concurrent'),0) FROM turn_changes WHERE session_id=?1 ORDER BY message_id DESC LIMIT 1",[sid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?
     };
     let Some((id, count, truncated, concurrent)) = selected else {
         return Ok((Vec::new(), None, false));
     };
     let mut result = vec![evidence("saved_changes", "Saved change summary", format!("{count} changed files. Shared checkout includes overlapping tasks: {concurrent}. This is an immutable saved diff, not a live workspace scan."), 800)];
     result[0].change_id = Some(id.clone());
-    let mut query = store.db.prepare("SELECT json_extract(f.value,'$.path'),COALESCE(json_extract(f.value,'$.binary'),0),COALESCE(json_extract(f.value,'$.truncated'),0) FROM turn_changes t,json_each(t.summary,'$.files') f WHERE t.id=?1 AND t.session_id=?2 LIMIT 8").map_err(|e|e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT json_extract(f.value,'$.path'),COALESCE(json_extract(f.value,'$.binary'),0),COALESCE(json_extract(f.value,'$.truncated'),0) FROM turn_changes t,json_each(t.summary,'$.files') f WHERE t.id=?1 AND t.session_id=?2 LIMIT 8").map_err(|e|e.to_string())?;
     let files = query
         .query_map(params![id, sid], |r| {
             Ok((
@@ -385,7 +384,7 @@ fn saved_diff(
         .map_err(|e| e.to_string())?;
     let mut incomplete = truncated || count > files.len() as i64;
     for (index, (path, binary, file_truncated)) in files.into_iter().enumerate() {
-        let patch:Option<(String,i64,bool)> = store.db.query_row("SELECT substr(COALESCE(json_extract(detail,'$.patch'),''),1,4097),length(COALESCE(json_extract(detail,'$.patch'),'')),COALESCE(json_extract(detail,'$.truncated'),0) FROM turn_change_files WHERE change_id=?1 AND path=?2",params![id,path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+        let patch:Option<(String,i64,bool)> = store.db.lock().unwrap().query_row("SELECT substr(COALESCE(json_extract(detail,'$.patch'),''),1,4097),length(COALESCE(json_extract(detail,'$.patch'),'')),COALESCE(json_extract(detail,'$.truncated'),0) FROM turn_change_files WHERE change_id=?1 AND path=?2",params![id,path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
         let (text, length, trimmed) = patch.unwrap_or_else(|| {
             (
                 "Saved diff content is unavailable; no file contents were read.".into(),
@@ -493,7 +492,7 @@ fn preparation(
                 ),
                 2400,
             ));
-            let objective: Option<(String,i64)> = store.db.query_row("SELECT substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role='user' AND content<>'' ORDER BY id LIMIT 1",[sid],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
+            let objective: Option<(String,i64)> = store.db.lock().unwrap().query_row("SELECT substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role='user' AND content<>'' ORDER BY id LIMIT 1",[sid],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
             if let Some((text, length)) = objective {
                 let mut item = evidence("objective", "Original user request", text, 3000);
                 item.truncated |= length > item.text.chars().count() as i64;
@@ -821,9 +820,7 @@ fn persist(store: &Store, report: &Report) -> Result<()> {
     if content.len() > REPORT_BYTES {
         return Err("The Jev report exceeds its local storage limit.".into());
     }
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     transaction
         .execute(
@@ -837,7 +834,7 @@ fn persist(store: &Store, report: &Report) -> Result<()> {
 }
 fn list(store: &Store, sid: &str) -> Result<Vec<Report>> {
     store.session(sid)?;
-    let mut query = store.db.prepare("SELECT report FROM jev_assessments WHERE session_id=?1 AND length(CAST(report AS BLOB))<=?2 ORDER BY created_at DESC,id DESC LIMIT 20").map_err(|e|e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT report FROM jev_assessments WHERE session_id=?1 AND length(CAST(report AS BLOB))<=?2 ORDER BY created_at DESC,id DESC LIMIT 20").map_err(|e|e.to_string())?;
     let rows = query
         .query_map(params![sid, REPORT_BYTES as i64], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
@@ -1164,8 +1161,7 @@ mod tests {
         };
         let team = architect::new_team(task.id.clone(), config);
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                 params![task.id, serde_json::to_string(&team).unwrap()],
             )
@@ -1360,8 +1356,7 @@ mod tests {
             team.workers.push(worker);
         }
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE architect_teams SET content=?2 WHERE session_id=?1",
                 params![task.id, serde_json::to_string(&team).unwrap()],
             )
@@ -1459,7 +1454,7 @@ mod tests {
         let (store, task) = fixture();
         configure_workers(&store, &task);
         let old = prepared(&store, &task, "route").preview.fingerprint;
-        store.db.execute("UPDATE architect_teams SET content=json_set(content,'$.config.workers[0].id','replacement-id') WHERE session_id=?1",[&task.id]).unwrap();
+        store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_set(content,'$.config.workers[0].id','replacement-id') WHERE session_id=?1",[&task.id]).unwrap();
         assert_ne!(old, prepared(&store, &task, "route").preview.fingerprint);
         let other = store
             .create_session(&task.project_id, "codex", "test", "ask")
@@ -1522,8 +1517,7 @@ mod tests {
         }
         assert_eq!(
             store
-                .db
-                .query_row("SELECT COUNT(*) FROM jev_assessments", [], |row| row
+                .db.lock().unwrap().query_row("SELECT COUNT(*) FROM jev_assessments", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
             200
@@ -1554,7 +1548,7 @@ mod tests {
             store
                 .message(&sid, "user", "Original task remains")
                 .unwrap();
-            store.db.execute_batch("DROP TABLE jev_assessments;DROP TABLE jev_project_rules;PRAGMA user_version=16;").unwrap();
+            store.db.lock().unwrap().execute_batch("DROP TABLE jev_assessments;DROP TABLE jev_project_rules;PRAGMA user_version=16;").unwrap();
         }
         {
             let store = Store::open(&path).unwrap();
@@ -1575,14 +1569,12 @@ mod tests {
             let scored = evaluation(&prepared, 0.9);
             persist(&store, &build_report(&sid, prepared, scored)).unwrap();
             store
-                .db
-                .execute("DELETE FROM projects WHERE id=?1", [task.project_id])
+                .db.lock().unwrap().execute("DELETE FROM projects WHERE id=?1", [task.project_id])
                 .unwrap();
             for table in ["jev_assessments", "jev_project_rules"] {
                 assert_eq!(
                     store
-                        .db
-                        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                        .db.lock().unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
                             .get::<_, i64>(0))
                         .unwrap(),
                     0

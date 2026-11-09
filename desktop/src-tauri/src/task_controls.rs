@@ -288,8 +288,7 @@ pub(super) async fn set_task_preference(
     }
     let settings = merge_preference(current.codex_settings, &delta)?;
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
             rusqlite::params![session_id, settings.to_string()],
         )
@@ -454,9 +453,7 @@ pub(super) async fn fork_codex_task(
     {
         return Err("The source task changed projects. Open its commands again.".into());
     }
-    let tx = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let tx = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let task = store.create_session(
         &source.project_id,
@@ -464,7 +461,7 @@ pub(super) async fn fork_codex_task(
         fork.model.as_deref().unwrap_or(&source.model),
         &source.mode,
     )?;
-    store.db.execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task.id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task.id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
     for (role, content) in history {
         store.message(&task.id, &role, &content)?;
     }
@@ -482,7 +479,7 @@ pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> R
     if source == target {
         return Err("A task cannot be forked into itself.".into());
     }
-    let mut query = store.db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id").map_err(|e|e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id").map_err(|e|e.to_string())?;
     let messages = query
         .query_map([source], |row| {
             Ok((
@@ -505,13 +502,13 @@ pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> R
                 role = "coordination".into();
             }
         }
-        store.db.execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES(?1,?2,?3,?4,?5)",rusqlite::params![target,role,content,created_at,duration]).map_err(|e|e.to_string())?;
+        store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES(?1,?2,?3,?4,?5)",rusqlite::params![target,role,content,created_at,duration]).map_err(|e|e.to_string())?;
     }
     Ok(())
 }
 
 fn existing_codex_task(store: &Store, remote_id: &str) -> Result<Option<String>> {
-    store.db.query_row("SELECT id FROM sessions WHERE provider='codex' AND resume_id=?1 ORDER BY updated_at DESC LIMIT 1",[remote_id],|row|row.get(0)).optional().map_err(|e|e.to_string())
+    store.db.lock().unwrap().query_row("SELECT id FROM sessions WHERE provider='codex' AND resume_id=?1 ORDER BY updated_at DESC LIMIT 1",[remote_id],|row|row.get(0)).optional().map_err(|e|e.to_string())
 }
 
 #[tauri::command]
@@ -541,9 +538,7 @@ pub(super) async fn export_task(state: State<'_, AppState>, session_id: String) 
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let task = store.session(&session_id)?;
     let mut output = format!("# {}\n\n", task.title);
-    let mut query = store
-        .db
-        .prepare("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
+    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([&session_id], |r| {
@@ -781,7 +776,7 @@ mod command_tests {
         let task = store
             .create_session(&project.id, "codex", "default", "ask")
             .unwrap();
-        store.db.execute("UPDATE sessions SET resume_id='remote-existing',created_at=0,updated_at=0,archived=1 WHERE id=?1",[&task.id]).unwrap();
+        store.db.lock().unwrap().execute("UPDATE sessions SET resume_id='remote-existing',created_at=0,updated_at=0,archived=1 WHERE id=?1",[&task.id]).unwrap();
         for _ in 0..501 {
             store
                 .create_session(&project.id, "codex", "default", "ask")

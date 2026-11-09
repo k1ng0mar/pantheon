@@ -89,8 +89,7 @@ pub struct TeamLibrary {
 
 pub(crate) fn initialize(store: &Store) -> Result<()> {
     let exists: bool = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT EXISTS(SELECT 1 FROM architect_library WHERE id=1)",
             [],
             |r| r.get(0),
@@ -100,7 +99,7 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
         return Ok(());
     }
     // Only a missing library is seeded. Explicitly disabling defaults is durable.
-    let previous=store.db.query_row("SELECT s.provider,s.model,s.reasoning_effort,json_extract(t.content,'$.config') FROM architect_teams t JOIN sessions s ON s.id=t.session_id ORDER BY json_extract(t.content,'$.updatedAt') DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional().map_err(|e|e.to_string())?;
+    let previous=store.db.lock().unwrap().query_row("SELECT s.provider,s.model,s.reasoning_effort,json_extract(t.content,'$.config') FROM architect_teams t JOIN sessions s ON s.id=t.session_id ORDER BY json_extract(t.content,'$.updatedAt') DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional().map_err(|e|e.to_string())?;
     let mut library = TeamLibrary::default();
     if let Some((provider, model, reasoning_effort, config)) = previous {
         let setup = TeamSetup {
@@ -117,8 +116,7 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
     }
     let content = serde_json::to_string(&library).map_err(|e| e.to_string())?;
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "INSERT OR IGNORE INTO architect_library(id,content) VALUES(1,?1)",
             [content],
         )
@@ -127,8 +125,7 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
 }
 pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
     let content = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT content FROM architect_library WHERE id=1",
             [],
             |r| r.get::<_, String>(0),
@@ -142,8 +139,7 @@ fn write(store: &Store, library: &TeamLibrary) -> Result<()> {
         return Err("Saved team setups exceed their storage limit.".into());
     }
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "UPDATE architect_library SET content=?1 WHERE id=1",
             [content],
         )
@@ -165,9 +161,7 @@ pub(crate) fn save_profile(
 ) -> Result<TeamLibrary> {
     setup.validate()?;
     let name = validate_name(&name)?;
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let mut library = read(store)?;
     if library
@@ -212,9 +206,7 @@ pub(crate) fn save_profile(
     Ok(library)
 }
 pub(crate) fn delete_profile(store: &Store, id: &str) -> Result<TeamLibrary> {
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let mut library = read(store)?;
     let index = library
@@ -261,7 +253,7 @@ pub(super) fn remember(
 }
 pub(super) fn apply_selection(store: &Store, sid: &str, selection: &ModelSelection) -> Result<()> {
     selection.validate()?;
-    store.db.execute("UPDATE sessions SET provider=?2,model=?3,reasoning_effort=?4,context_used_tokens=NULL,context_window=NULL WHERE id=?1",params![sid,selection.provider,selection.model,selection.reasoning_effort]).map_err(|e|e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE sessions SET provider=?2,model=?3,reasoning_effort=?4,context_used_tokens=NULL,context_window=NULL WHERE id=?1",params![sid,selection.provider,selection.model,selection.reasoning_effort]).map_err(|e|e.to_string())?;
     Ok(())
 }
 /// Called only by user-facing new-task entrypoints, inside their creation transaction.
@@ -275,8 +267,7 @@ pub(crate) fn apply_default(store: &Store, sid: &str) -> Result<Option<TeamSnaps
         .ok_or("The saved default team setup is missing.")?;
     setup.validate()?;
     let has_history: bool = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1)",
             [sid],
             |r| r.get(0),
@@ -302,9 +293,7 @@ pub(crate) fn create_user_task(
     mode: Option<&str>,
     details: Option<(&str, &str)>,
 ) -> Result<Session> {
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let task = store.create_session(
         project_id,

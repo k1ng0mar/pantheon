@@ -19,9 +19,7 @@ pub(crate) fn before_message(store: &Store, source_id: &str, message_id: i64) ->
 }
 
 fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Result<Session> {
-    let transaction = store
-        .db
-        .unchecked_transaction()
+    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let source = store.session(source_id)?;
     store.message_content(source_id, message_id)?;
@@ -39,7 +37,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
         "{} (fork)",
         source.title.chars().take(193).collect::<String>()
     );
-    store.db.execute(
+    store.db.lock().unwrap().execute(
         "UPDATE sessions SET title=?2,worktree_path=?3,reasoning_effort=?4,codex_settings=?5,task_stage='in_progress',worktree_branch=?6 WHERE id=?1",
         params![target.id, title, source.worktree_path, source.reasoning_effort, source.codex_settings.map(|v| v.to_string()), source.worktree_branch],
     ).map_err(|e| e.to_string())?;
@@ -47,7 +45,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
         // Read raw storage rather than the paginated, display-truncated API.
         // Runtime durations and source checkout change records are not copied:
         // they can describe execution after the chosen message boundary.
-        let mut query = store.db.prepare(
+        let conn = store.db.lock().unwrap(); let mut  query = conn.prepare(
             "SELECT id,role,content,created_at FROM messages WHERE session_id=?1 AND id<=?2 AND role NOT IN ('internal','changes') ORDER BY id",
         ).map_err(|e| e.to_string())?;
         let rows = query
@@ -75,7 +73,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
             } else {
                 None
             };
-            store.db.execute(
+            store.db.lock().unwrap().execute(
                 "INSERT INTO messages(session_id,role,content,created_at,tool_id) VALUES(?1,?2,?3,?4,?5)",
                 params![target.id, role, content, created_at, tool_id],
             ).map_err(|e| e.to_string())?;
@@ -90,7 +88,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
         });
         store.message(&target.id, "handoff", &notice.to_string())?;
     }
-    store.db.execute(
+    store.db.lock().unwrap().execute(
         "UPDATE sessions SET task_description=COALESCE((SELECT content FROM messages WHERE session_id=?1 AND role='user' ORDER BY id LIMIT 1),'') WHERE id=?1",
         [&target.id],
     ).map_err(|e| e.to_string())?;

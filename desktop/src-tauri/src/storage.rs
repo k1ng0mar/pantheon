@@ -154,7 +154,7 @@ pub struct MessagePage {
 }
 
 pub struct Store {
-    pub db: Connection,
+    pub db: std::sync::Mutex<Connection>,
     pub path: PathBuf,
 }
 type Result<T> = std::result::Result<T, String>;
@@ -510,7 +510,7 @@ impl Store {
             WHERE json_extract(content,'$.status') IN ('running','waiting');").map_err(|e|e.to_string())?;
         recovery.commit().map_err(|e| e.to_string())?;
         let store = Self {
-            db,
+            db: db.into(),
             path: path.to_path_buf(),
         };
         crate::architect::profiles::initialize(&store)?;
@@ -597,7 +597,7 @@ impl Store {
     }
 
     pub fn projects(&self) -> Result<Vec<Project>> {
-        Self::read_projects(&self.db)
+        Self::read_projects(&self.db.lock().unwrap())
     }
     fn read_projects(db: &Connection) -> Result<Vec<Project>> {
         let mut stmt = db
@@ -627,14 +627,12 @@ impl Store {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| path_str.clone());
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "INSERT OR IGNORE INTO projects(id,name,path) VALUES (?1,?2,?3)",
                 params![id(), name, path_str],
             )
             .map_err(|e| e.to_string())?;
-        self.db
-            .query_row(
+        self.db.lock().unwrap().query_row(
                 "SELECT id,name,path FROM projects WHERE path=?1",
                 [path_str],
                 |r| {
@@ -648,8 +646,7 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     pub fn project(&self, project_id: &str) -> Result<Project> {
-        self.db
-            .query_row(
+        self.db.lock().unwrap().query_row(
                 "SELECT id,name,path FROM projects WHERE id=?1",
                 [project_id],
                 |r| {
@@ -665,8 +662,7 @@ impl Store {
             .ok_or_else(|| "Project not found.".into())
     }
     pub fn remove_project(&self, project_id: &str) -> Result<()> {
-        self.db
-            .execute("DELETE FROM projects WHERE id=?1", [project_id])
+        self.db.lock().unwrap().execute("DELETE FROM projects WHERE id=?1", [project_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -735,27 +731,28 @@ impl Store {
     pub fn sessions(&self) -> Result<Vec<Session>> {
         // Lists only need a card preview. Full details remain in SQLite and are
         // fetched for the selected task or directly for an agent's Start prompt.
-        let mut stmt=self.db.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
+        let mut conn = self.db.lock().unwrap();
+        let mut stmt = conn.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map([], Self::session_row)
             .map_err(|e| e.to_string())?;
         let mut sessions = rows
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        
         self.attach_links(&mut sessions)?;
         Ok(sessions)
     }
     pub fn session(&self, sid: &str) -> Result<Session> {
-        let mut session = self.db.query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
+        let mut session = self.db.lock().unwrap().query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
         self.attach_links(std::slice::from_mut(&mut session))?;
         Ok(session)
     }
 
     /// Prompts sent from Pantheon per hour and agent since `since_ms`, for the usage calendar.
     pub fn prompt_activity(&self, since_ms: i64) -> Result<Vec<(i64, String, u64)>> {
-        let mut statement = self
-            .db
-            .prepare("SELECT m.created_at/3600000,s.provider,COUNT(*) FROM messages m JOIN sessions s ON s.id=m.session_id WHERE m.role='user' AND m.created_at>=?1 GROUP BY 1,2 ORDER BY 1")
+        let conn = self.db.lock().unwrap();
+        let mut statement = conn.prepare("SELECT m.created_at/3600000,s.provider,COUNT(*) FROM messages m JOIN sessions s ON s.id=m.session_id WHERE m.role='user' AND m.created_at>=?1 GROUP BY 1,2 ORDER BY 1")
             .map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([since_ms], |row| {
@@ -785,12 +782,13 @@ impl Store {
             "%{}%",
             query
                 .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
+                .replace('%', r"\%")
+                .replace('_', r"\_")
         );
-        let mut statement = self.db.prepare(
+        let mut conn = self.db.lock().unwrap();
+        let mut statement = conn.prepare(
             "SELECT s.id,s.title,s.updated_at,
-               (SELECT m.content FROM messages m WHERE m.session_id=s.id AND m.role IN ('user','assistant') AND m.content LIKE ?2 ESCAPE '\\' ORDER BY m.id DESC LIMIT 1)
+               (SELECT m.content FROM messages m WHERE m.session_id=s.id AND m.role IN ('user','assistant') AND m.content LIKE ?2 ESCAPE '\\' ORDER by m.id DESC LIMIT 1)
              FROM sessions s
              WHERE s.project_id=?1 AND s.draft=0 AND s.id NOT IN (SELECT session_id FROM architect_workers)
                AND (s.title LIKE ?2 ESCAPE '\\' OR EXISTS(SELECT 1 FROM messages m WHERE m.session_id=s.id AND m.role IN ('user','assistant') AND m.content LIKE ?2 ESCAPE '\\'))
@@ -806,15 +804,15 @@ impl Store {
             });
             Ok(serde_json::json!({"taskId": r.get::<_, String>(0)?, "title": r.get::<_, String>(1)?, "updatedAt": r.get::<_, i64>(2)?, "excerpt": excerpt}))
         }).map_err(|e| e.to_string())?;
-        rows.collect::<std::result::Result<_, _>>()
-            .map_err(|e| e.to_string())
+        let result = rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string());
+        
+        result
+    
     }
-
-    /// Records a usage limit hit by the task's run.
     pub fn set_limited(&self, sid: &str, until: Option<i64>) -> Result<()> {
         let until = until.filter(|at| *at > 0 && *at < 4_102_444_800_000);
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET limited_at=?2,limited_until=?3 WHERE id=?1",
                 params![sid, now(), until],
             )
@@ -824,7 +822,7 @@ impl Store {
 
     /// Turns automatic continuation at the reset on or off for a limited task.
     pub fn set_resume_at_reset(&self, sid: &str, enabled: bool) -> Result<Session> {
-        let changed = self.db.execute("UPDATE sessions SET resume_at_reset=?2 WHERE id=?1 AND limited_at IS NOT NULL AND (?2=0 OR limited_until IS NOT NULL)", params![sid, enabled]).map_err(|e| e.to_string())?;
+        let changed = self.db.lock().unwrap().execute("UPDATE sessions SET resume_at_reset=?2 WHERE id=?1 AND limited_at IS NOT NULL AND (?2=0 OR limited_until IS NOT NULL)", params![sid, enabled]).map_err(|e| e.to_string())?;
         if changed == 0 && enabled {
             return Err("This task has no usage limit with a known reset time.".into());
         }
@@ -833,14 +831,13 @@ impl Store {
 
     /// Clears a limit once it has been handled (resumed, archived or dismissed).
     pub fn clear_limited(&self, sid: &str) -> Result<()> {
-        self.db.execute("UPDATE sessions SET limited_at=NULL,limited_until=NULL,resume_at_reset=0 WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
+        self.db.lock().unwrap().execute("UPDATE sessions SET limited_at=NULL,limited_until=NULL,resume_at_reset=0 WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
         Ok(())
     }
 
     /// The Pantheon task already continuing an agent conversation, if any.
     pub fn imported_task(&self, provider: &str, resume_id: &str) -> Result<Option<String>> {
-        self.db
-            .query_row("SELECT id FROM sessions WHERE provider=?1 AND resume_id=?2 ORDER BY updated_at DESC LIMIT 1", params![provider, resume_id], |row| row.get(0))
+        self.db.lock().unwrap().query_row("SELECT id FROM sessions WHERE provider=?1 AND resume_id=?2 ORDER BY updated_at DESC LIMIT 1", params![provider, resume_id], |row| row.get(0))
             .optional()
             .map_err(|e| e.to_string())
     }
@@ -859,7 +856,7 @@ impl Store {
         created_at: i64,
         entries: &[(&str, String, i64)],
     ) -> Result<Session> {
-        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let mut conn = self.db.lock().unwrap(); let transaction = conn.transaction().map_err(|e| e.to_string())?;
         let task = self.create_session(project_id, provider, model, DEFAULT_PERMISSION_MODE)?;
         let title: String = title
             .chars()
@@ -879,15 +876,13 @@ impl Store {
             .last()
             .map_or(created_at, |entry| entry.2)
             .max(first);
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET resume_id=?2,title=?3,title_origin='manual',reasoning_effort=?4,task_stage='in_progress',created_at=?5,updated_at=?6 WHERE id=?1",
                 params![task.id, resume_id, title, reasoning_effort, first, last],
             )
             .map_err(|e| e.to_string())?;
         for (role, content, at) in entries {
-            self.db
-                .execute(
+            self.db.lock().unwrap().execute(
                     "INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,?2,?3,?4)",
                     params![task.id, role, content, at],
                 )
@@ -899,22 +894,22 @@ impl Store {
 
     /// Hides a task opened from New task until its first prompt is saved.
     pub fn mark_draft(&self, sid: &str) -> Result<Session> {
-        self.db.execute("UPDATE sessions SET draft=1 WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1)", [sid]).map_err(|e| e.to_string())?;
+        self.db.lock().unwrap().execute("UPDATE sessions SET draft=1 WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1)", [sid]).map_err(|e| e.to_string())?;
         self.session(sid)
     }
 
     /// Whether a task is still an unsent draft with no saved history.
     pub fn is_empty_draft(&self, sid: &str) -> Result<bool> {
-        self.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND draft=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1))", [sid], |r| r.get(0)).map_err(|e| e.to_string())
+        self.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND draft=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1))", [sid], |r| r.get(0)).map_err(|e| e.to_string())
     }
 
     /// Removes drafts left from an earlier launch; none can be open yet.
     pub fn discard_empty_drafts(&self) -> Result<usize> {
-        self.db.execute("DELETE FROM sessions WHERE draft=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id) AND id NOT IN (SELECT session_id FROM architect_workers) AND id NOT IN (SELECT parent_session_id FROM architect_workers)", []).map_err(|e| e.to_string())
+        self.db.lock().unwrap().execute("DELETE FROM sessions WHERE draft=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id) AND id NOT IN (SELECT session_id FROM architect_workers) AND id NOT IN (SELECT parent_session_id FROM architect_workers)", []).map_err(|e| e.to_string())
     }
 
     pub fn pin_session(&self, sid: &str, pinned: bool) -> Result<Session> {
-        let changed = self.db.execute(
+        let changed = self.db.lock().unwrap().execute(
             "UPDATE sessions SET pinned=?2 WHERE id=?1 AND id NOT IN (SELECT session_id FROM architect_workers)",
             params![sid, pinned],
         ).map_err(|e| e.to_string())?;
@@ -933,13 +928,8 @@ impl Store {
         if selected.len() != session_ids.len() {
             return Err("A conversation may appear only once in the order.".into());
         }
-        let transaction = rusqlite::Transaction::new_unchecked(
-            &self.db,
-            rusqlite::TransactionBehavior::Immediate,
-        )
-        .map_err(|e| e.to_string())?;
-        // Work from the entire order, not the currently displayed project/search
-        // result or the 500-row listing window, so hidden tasks keep their slots.
+        let mut conn = self.db.lock().unwrap();
+        let transaction = conn.transaction().map_err(|e| e.to_string())?;
         let mut ordered = {
             let mut query = transaction.prepare(&format!("SELECT id,pinned FROM sessions WHERE id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER}")).map_err(|e| e.to_string())?;
             let rows = query
@@ -975,15 +965,16 @@ impl Store {
             }
         }
         transaction.commit().map_err(|e| e.to_string())?;
+        
         self.sessions()
+    
     }
     fn attach_links(&self, sessions: &mut [Session]) -> Result<()> {
         if sessions.is_empty() {
             return Ok(());
         }
-        let mut stmt = self
-            .db
-            .prepare("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
+        let conn = self.db.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
             .map_err(|e| e.to_string())?;
         let links = stmt
             .query_map([], |r| {
@@ -1028,12 +1019,11 @@ impl Store {
                 {
                     return Err("Invalid GitHub link.".into());
                 }
-                self.db.execute("INSERT INTO task_links(session_id,kind,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,kind) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
+                self.db.lock().unwrap().execute("INSERT INTO task_links(session_id,kind,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,kind) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
                     params![sid, kind, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
             }
             None => {
-                self.db
-                    .execute(
+                self.db.lock().unwrap().execute(
                         "DELETE FROM task_links WHERE session_id=?1 AND kind=?2",
                         params![sid, kind],
                     )
@@ -1044,7 +1034,8 @@ impl Store {
     }
     /// Linked numbers for one project, so states can be refreshed in one batch.
     pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, TaskLink)>> {
-        let mut stmt = self.db.prepare("SELECT l.session_id,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
+        let conn = self.db.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT l.session_id,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([project_id], |r| {
                 Ok((
@@ -1070,7 +1061,7 @@ impl Store {
         states: &[(String, i64, String, String)],
     ) -> Result<()> {
         for (kind, number, state, title) in states {
-            self.db.execute("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)",
+            self.db.lock().unwrap().execute("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)",
                 params![kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -1080,7 +1071,7 @@ impl Store {
         let path = path
             .canonicalize()
             .map_err(|e| format!("Worktree folder is unavailable: {e}"))?;
-        let changed = self.db.execute(
+        let changed = self.db.lock().unwrap().execute(
             "UPDATE sessions SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE id=?1 AND worktree_path IS NULL AND resume_id IS NULL AND status NOT IN ('running','waiting') AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id=?1)",
             params![sid, path.to_string_lossy(), branch, now()],
         ).map_err(|e| e.to_string())?;
@@ -1094,8 +1085,7 @@ impl Store {
     }
     /// How many messages the user has sent in a task, including the one being sent.
     pub fn user_turns(&self, sid: &str) -> Result<i64> {
-        self.db
-            .query_row(
+        self.db.lock().unwrap().query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user'",
                 [sid],
                 |r| r.get(0),
@@ -1112,8 +1102,7 @@ impl Store {
             return Ok(false);
         }
         let messages: i64 = self
-            .db
-            .query_row(
+            .db.lock().unwrap().query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id=?1",
                 [sid],
                 |r| r.get(0),
@@ -1138,8 +1127,7 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| e.to_string())?;
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET goal_state=?2 WHERE id=?1",
                 params![sid, data],
             )
@@ -1152,7 +1140,7 @@ impl Store {
         if task.archived || task.task_stage == "completed" {
             return Err("Reopen this task first.".into());
         }
-        self.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,updated_at=?2 WHERE id=?1", params![sid,now()]).map_err(|e|e.to_string())?;
+        self.db.lock().unwrap().execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,updated_at=?2 WHERE id=?1", params![sid,now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
 
@@ -1194,7 +1182,7 @@ impl Store {
         }
         let sid = id();
         let t = now();
-        self.db.execute("INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,title_origin) VALUES (?1,?2,'New conversation',?3,?4,?5,'idle',?6,?6,'auto')",params![sid,project_id,provider,model,mode,t]).map_err(|e|e.to_string())?;
+        self.db.lock().unwrap().execute("INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,title_origin) VALUES (?1,?2,'New conversation',?3,?4,?5,'idle',?6,?6,'auto')",params![sid,project_id,provider,model,mode,t]).map_err(|e|e.to_string())?;
         self.session(&sid)
     }
 
@@ -1210,10 +1198,9 @@ impl Store {
         Self::validate_task_details(title, description)?;
         // Validation happens before inserting, and rollback prevents orphaned
         // empty tasks if writing the description fails.
-        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let mut conn = self.db.lock().unwrap(); let transaction = conn.transaction().map_err(|e| e.to_string())?;
         let task = self.create_session(project_id, provider, model, mode)?;
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET title=?2,title_origin='manual',task_description=?3 WHERE id=?1",
                 params![task.id, title.trim(), description.trim()],
             )
@@ -1242,8 +1229,7 @@ impl Store {
         Self::validate_task_details(title, description)?;
         self.session(sid)?;
         let changed = self
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET title=?2,title_origin='manual',task_description=?3,updated_at=?4
              WHERE id=?1 AND status NOT IN ('running','waiting') AND archived=0",
                 params![sid, title.trim(), description.trim(), now()],
@@ -1265,8 +1251,7 @@ impl Store {
         }
         self.session(sid)?;
         let changed = self
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET task_stage=?2,
                completed_at=CASE WHEN ?2='completed' THEN COALESCE(completed_at,?3) ELSE NULL END,
                updated_at=?3 WHERE id=?1 AND status NOT IN ('running','waiting') AND archived=0",
@@ -1282,8 +1267,7 @@ impl Store {
     /// Archive deadlines depend on completion time, never unrelated task edits.
     /// The partial index keeps the once-per-minute sweep bounded to completed tasks.
     pub fn archive_completed(&self, timestamp: i64) -> Result<usize> {
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET archived=1,updated_at=?1
              WHERE archived=0 AND task_stage='completed' AND completed_at<=?2
                AND status NOT IN ('running','waiting')",
@@ -1339,7 +1323,7 @@ impl Store {
         }
         let sid = id();
         let t = now();
-        self.db.execute("INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,worktree_path,reasoning_effort,worktree_branch,title_origin)
+        self.db.lock().unwrap().execute("INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,worktree_path,reasoning_effort,worktree_branch,title_origin)
             VALUES (?1,?2,'New conversation',?3,?4,?8,'idle',?5,?5,?6,?7,?9,'auto')",
             params![sid,source.project_id,source.provider,source.model,t,path.to_string_lossy(),source.reasoning_effort,source.mode,branch])
             .map_err(|e| e.to_string())?;
@@ -1386,21 +1370,21 @@ impl Store {
         // Queue the handoff and replace the native context atomically. Keep the
         // project fixed once a conversation exists, but let another harness continue it.
         let switching = current.provider != provider;
-        let needs_handoff = switching && (current.resume_id.is_some() || self.db.query_row(
+        let needs_handoff = switching && (current.resume_id.is_some() || self.db.lock().unwrap().query_row(
             "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role IN ('user','assistant','coordination'))", [sid], |r| r.get::<_, bool>(0)
         ).map_err(|e| e.to_string())?);
         // New-task creation can already have a transaction. Without history,
         // configuration is still one atomic UPDATE, even if team defaults chose another harness.
+        let mut conn = self.db.lock().unwrap();
         let transaction = needs_handoff
-            .then(|| self.db.unchecked_transaction())
+            .then(|| conn.transaction())
             .transpose()
             .map_err(|e| e.to_string())?;
         if needs_handoff {
             crate::context_recovery::queue(self, sid)?;
         }
         let changed = self
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET provider=?2,model=?3,project_id=COALESCE(?5,project_id),
                resume_id=CASE WHEN provider<>?2 THEN NULL ELSE resume_id END,
                goal_state=CASE WHEN provider<>?2 THEN NULL ELSE goal_state END,
@@ -1453,7 +1437,7 @@ impl Store {
         let session = self.session(sid)?;
         let effort = effort.map(str::trim).filter(|effort| !effort.is_empty());
         crate::providers::validate_reasoning_effort(&session.provider, effort)?;
-        let changed = self.db.execute(
+        let changed = self.db.lock().unwrap().execute(
             "UPDATE sessions SET reasoning_effort=?2,updated_at=?3 WHERE id=?1 AND status NOT IN ('running','waiting')",
             params![sid, effort, now()],
         ).map_err(|e| e.to_string())?;
@@ -1468,8 +1452,7 @@ impl Store {
             return Err("Invalid context usage metadata.".into());
         }
         let changed = self
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET context_used_tokens=?2,context_window=?3 WHERE id=?1",
                 params![
                     sid,
@@ -1510,7 +1493,7 @@ impl Store {
         {
             return Err("Stop the agent before changing its model or approval behavior.".into());
         }
-        let changed = self.db.execute("UPDATE sessions SET title=COALESCE(?2,title),title_origin=CASE WHEN ?2 IS NOT NULL THEN 'manual' ELSE title_origin END,archived=COALESCE(?3,archived),model=COALESCE(?4,model),mode=COALESCE(?5,mode),
+        let changed = self.db.lock().unwrap().execute("UPDATE sessions SET title=COALESCE(?2,title),title_origin=CASE WHEN ?2 IS NOT NULL THEN 'manual' ELSE title_origin END,archived=COALESCE(?3,archived),model=COALESCE(?4,model),mode=COALESCE(?5,mode),
             completed_at=CASE WHEN archived=1 AND ?3=0 AND task_stage='completed' THEN ?6 ELSE completed_at END,
             reasoning_effort=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE reasoning_effort END,
             context_used_tokens=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE context_used_tokens END,
@@ -1522,8 +1505,7 @@ impl Store {
         Ok(())
     }
     pub fn status(&self, sid: &str, status: &str) -> Result<()> {
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET status=?2,updated_at=?3 WHERE id=?1",
                 params![sid, status, now()],
             )
@@ -1531,8 +1513,7 @@ impl Store {
         Ok(())
     }
     pub fn resume(&self, sid: &str, resume_id: &str) -> Result<()> {
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET resume_id=?2,goal_state=CASE WHEN resume_id=?2 THEN goal_state ELSE NULL END WHERE id=?1",
                 params![sid, resume_id],
             )
@@ -1540,8 +1521,7 @@ impl Store {
         Ok(())
     }
     pub fn message(&self, sid: &str, role: &str, content: &str) -> Result<()> {
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,?2,?3,?4)",
                 params![sid, role, content, now()],
             )
@@ -1550,8 +1530,7 @@ impl Store {
     }
     /// RETURNING ties the timer to this exact insert even with concurrent tasks.
     pub fn start_turn_message(&self, sid: &str, content: &str) -> Result<i64> {
-        self.db
-            .query_row(
+        self.db.lock().unwrap().query_row(
                 "INSERT INTO messages(session_id,role,content,created_at)
             VALUES (?1,'user',?2,?3) RETURNING id",
                 params![sid, content, now()],
@@ -1575,7 +1554,7 @@ impl Store {
         if content.trim().is_empty() || content.len() > 128 * 1024 {
             return Err("Write a message under 128 KiB first.".into());
         }
-        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let mut conn = self.db.lock().unwrap(); let transaction = conn.transaction().map_err(|e| e.to_string())?;
         let session = self.session(sid)?;
         let title: String = if kind.is_none()
             && session.title == "New conversation"
@@ -1592,8 +1571,7 @@ impl Store {
             session.title
         };
         let claimed = self
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,
                 title=?2,updated_at=?3 WHERE id=?1 AND archived=0 AND task_stage<>'completed'
                 AND status NOT IN ('running','waiting')",
@@ -1605,7 +1583,7 @@ impl Store {
         }
         let message_id = if let Some(kind) = kind {
             let saved = crate::architect::internal_turns::encode(kind, content)?;
-            self.db.query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'coordination',?2,?3) RETURNING id",params![sid,saved,now()],|row|row.get(0)).map_err(|e|e.to_string())?
+            self.db.lock().unwrap().query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'coordination',?2,?3) RETURNING id",params![sid,saved,now()],|row|row.get(0)).map_err(|e|e.to_string())?
         } else {
             self.start_turn_message(sid, content)?
         };
@@ -1635,8 +1613,7 @@ impl Store {
         } else {
             "error"
         };
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "UPDATE sessions SET status=?2,
                task_stage=CASE WHEN json_valid(goal_state) AND json_extract(goal_state,'$.status')<>'complete' THEN 'in_progress' ELSE COALESCE(?5, CASE WHEN ?3 THEN 'review' ELSE 'in_progress' END) END,
                completed_at=NULL,updated_at=?4 WHERE id=?1",
@@ -1651,8 +1628,7 @@ impl Store {
             return Err("Turn duration cannot be negative.".into());
         }
         let changed = self
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE messages SET turn_duration_ms=COALESCE(turn_duration_ms,?3)
             WHERE session_id=?1 AND id=?2 AND role IN ('user','coordination')",
                 params![sid, message_id, duration_ms],
@@ -1669,8 +1645,7 @@ impl Store {
         if tool_id.is_empty() || tool_id.len() > 512 || content.len() > 96 * 1024 {
             return Err("Tool activity exceeded its storage limit.".into());
         }
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "INSERT INTO messages(session_id,role,content,created_at,tool_id)
           VALUES (?1,'tool',?2,?3,?4)
           ON CONFLICT(session_id,tool_id) DO UPDATE SET content=excluded.content",
@@ -1681,7 +1656,7 @@ impl Store {
     }
     pub fn finish_tools(&self, sid: &str) -> Result<()> {
         settle_unfinished_tools(
-            &self.db,
+            &self.db.lock().unwrap(),
             Some(sid),
             "\n\n[The turn ended before this tool reported a result.]",
         )
@@ -1697,13 +1672,12 @@ impl Store {
         if activity.id.is_empty() || activity.id.len() > 1024 || content.len() > 1024 * 1024 {
             return Err("Subagent activity exceeded its storage limit.".into());
         }
-        self.db.execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES (?1,?2,?3,?4)
+        self.db.lock().unwrap().execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES (?1,?2,?3,?4)
             ON CONFLICT(session_id,id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
             params![sid,activity.id,content,activity.updated_at]).map_err(|error| error.to_string())?;
         // Keep current work regardless of age; older terminal snapshots give
         // way to the newest 64 entries without growing every parent turn.
-        self.db
-            .execute(
+        self.db.lock().unwrap().execute(
                 "DELETE FROM subagents WHERE session_id=?1
             AND json_extract(content,'$.status') NOT IN ('running','waiting')
             AND id NOT IN (SELECT id FROM subagents WHERE session_id=?1
@@ -1717,8 +1691,8 @@ impl Store {
 
     pub fn subagents(&self, sid: &str) -> Result<Vec<crate::providers::SubagentActivity>> {
         self.session(sid)?;
-        let mut query = self
-            .db
+        let mut conn = self.db.lock().unwrap();
+        let mut query = conn
             .prepare(
                 "SELECT content FROM subagents WHERE session_id=?1
             ORDER BY updated_at DESC,id DESC LIMIT 64",
@@ -1727,23 +1701,24 @@ impl Store {
         let rows = query
             .query_map([sid], |row| row.get::<_, String>(0))
             .map_err(|error| error.to_string())?;
-        rows.map(|row| {
+        let result = rows.map(|row| {
             let content = row.map_err(|error| error.to_string())?;
             serde_json::from_str(&content).map_err(|error| error.to_string())
         })
-        .collect()
+        .collect::<std::result::Result<Vec<_>, _>>();
+        
+        result
+    
     }
-
     pub fn finish_subagents(&self, sid: &str, status: &str) -> Result<()> {
-        settle_unfinished_subagents(&self.db, Some(sid), status)
+        settle_unfinished_subagents(&self.db.lock().unwrap(), Some(sid), status)
     }
 
     /// Fetch one complete saved conversation message on demand. App-origin
     /// coordination prompts stay private even if older versions stored them as user text.
     pub fn message_content(&self, sid: &str, message_id: i64) -> Result<String> {
         let selected: Option<(String, String)> = self
-            .db
-            .query_row(
+            .db.lock().unwrap().query_row(
                 "SELECT role,content FROM messages WHERE session_id=?1 AND id=?2",
                 params![sid, message_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1759,7 +1734,7 @@ impl Store {
         {
             return Err("Choose a saved user message or assistant response.".into());
         }
-        Ok(content)
+        Ok(content.to_string())
     }
 
     /// The next saved switch identifies the provider at this point, even when
@@ -1767,7 +1742,7 @@ impl Store {
     /// index visits only handoffs and reads at most one small app-owned notice.
     pub(crate) fn provider_at_message(&self, sid: &str, message_id: i64) -> Result<String> {
         let current = self.session(sid)?.provider;
-        let next: Option<String> = self.db.query_row(
+        let next: Option<String> = self.db.lock().unwrap().query_row(
             "SELECT substr(content,1,4096) FROM messages WHERE session_id=?1 AND role='handoff' AND id>?2 ORDER BY id LIMIT 1",
             params![sid, message_id], |row| row.get(0),
         ).optional().map_err(|e| e.to_string())?;
@@ -1779,10 +1754,8 @@ impl Store {
 
     pub fn messages(&self, sid: &str, before: Option<i64>) -> Result<Vec<Message>> {
         self.session(sid)?;
-        // Read only the assistant preview before allocating the saved response.
-        // BLOB substr preserves embedded NUL; four extra bytes keep any partial
-        // UTF-8 code point beyond the existing byte-safe display truncation.
-        let mut stmt=self.db.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
+        let mut conn = self.db.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map(params![sid, before.unwrap_or(i64::MAX)], |r| {
                 let role: String = r.get(2)?;
@@ -1816,10 +1789,13 @@ impl Store {
                 })
             })
             .map_err(|e| e.to_string())?;
+        let result_rows = rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        
         let mut page = Vec::new();
         let mut bytes = 0;
-        for row in rows {
-            let mut message = row.map_err(|e| e.to_string())?;
+        for row in result_rows {
+            let mut message = row;
             crate::architect::internal_turns::project_message(self, &mut message)?;
             const NOTICE:&str="\n\n[Message preview truncated at 128 KiB. The provider retains the complete conversation.]";
             if message.content.len() > 128 * 1024 {
@@ -1843,8 +1819,6 @@ impl Store {
         }
         if let Some(last) = page.first() {
             let mut author = self.provider_at_message(sid, last.id)?;
-            // Rows are newest first. An in-page switch changes the author of
-            // the preceding responses without another database lookup.
             for message in &mut page {
                 if message.role == "handoff" {
                     if let Some(from) = handoff_from_provider(&message.content) {
@@ -1857,6 +1831,7 @@ impl Store {
         }
         page.reverse();
         Ok(page)
+    
     }
     pub fn message_page(&self, sid: &str, before: Option<i64>) -> Result<MessagePage> {
         let messages = self.messages(sid, before)?;
@@ -1865,8 +1840,7 @@ impl Store {
         // this lookup bounded even when the returned page hit its byte limit.
         let has_older = match messages.first() {
             Some(first) => self
-                .db
-                .query_row(
+                .db.lock().unwrap().query_row(
                     "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id<?2)",
                     params![sid, first.id],
                     |row| row.get(0),
@@ -2203,13 +2177,12 @@ mod tests {
         let (store, task) = empty_session();
         store.set_task_stage(&task.id, "completed").unwrap();
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET created_at=0,updated_at=0,completed_at=?2 WHERE id=?1",
                 params![task.id, now() - COMPLETED_ARCHIVE_DELAY_MS],
             )
             .unwrap();
-        store.db.execute("WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<501)
+        store.db.lock().unwrap().execute("WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<501)
             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
             SELECT 'filler-'||value,?1,'Recent task','codex','default','ask','idle',1,1 FROM n", [&task.project_id]).unwrap();
         let recent = store.sessions().unwrap();
@@ -2222,7 +2195,7 @@ mod tests {
     #[test]
     fn starting_a_task_claims_running_and_message_atomically() {
         let (store, task) = empty_session();
-        store.db.execute_batch("CREATE TRIGGER reject_prompt BEFORE INSERT ON messages WHEN NEW.role='user' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_prompt BEFORE INSERT ON messages WHEN NEW.role='user' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
         assert!(store.begin_task_turn(&task.id, "Build a game").is_err());
         let unchanged = store.session(&task.id).unwrap();
         assert_eq!(unchanged.task_stage, "pending");
@@ -2304,8 +2277,7 @@ mod tests {
         store.set_task_stage(&task.id, "completed").unwrap();
         let completed_at = now() - COMPLETED_ARCHIVE_DELAY_MS;
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET completed_at=?2 WHERE id=?1",
                 params![task.id, completed_at],
             )
@@ -2394,8 +2366,7 @@ mod tests {
             assert_eq!(store.session(&failed).unwrap().task_stage, "in_progress");
             store.set_task_stage(&answered, "completed").unwrap();
             store
-                .db
-                .execute(
+                .db.lock().unwrap().execute(
                     "UPDATE sessions SET completed_at=?2 WHERE id=?1",
                     params![answered, now() - COMPLETED_ARCHIVE_DELAY_MS],
                 )
@@ -2453,8 +2424,7 @@ mod tests {
             .unwrap();
         for (used, window) in [(-1, 200_000), (100, -1), (100, 0)] {
             store
-                .db
-                .execute(
+                .db.lock().unwrap().execute(
                     "UPDATE sessions SET context_used_tokens=?2,context_window=?3 WHERE id=?1",
                     params![session.id, used, window],
                 )
@@ -2894,7 +2864,7 @@ mod tests {
         store
             .message(&task.id, "assistant", "Claude response")
             .unwrap();
-        let claude_id = store.db.last_insert_rowid();
+        let claude_id = store.db.lock().unwrap().last_insert_rowid();
         let other = store
             .create_session(&task.project_id, "grok", "default", "ask")
             .unwrap();
@@ -2910,7 +2880,7 @@ mod tests {
         store
             .message(&task.id, "assistant", "Codex response")
             .unwrap();
-        let codex_id = store.db.last_insert_rowid();
+        let codex_id = store.db.lock().unwrap().last_insert_rowid();
         store.configure(&task.id, "kimi", "default", None).unwrap();
         store
             .message(&task.id, "assistant", "Kimi response")
@@ -2957,15 +2927,14 @@ mod tests {
             )
             .unwrap();
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
                 params![task.id, r#"{"personality":"friendly"}"#],
             )
             .unwrap();
         let before = serde_json::to_value(store.session(&task.id).unwrap()).unwrap();
         let history = serde_json::to_value(store.messages(&task.id, None).unwrap()).unwrap();
-        store.db.execute_batch("CREATE TRIGGER reject_handoff BEFORE INSERT ON messages WHEN NEW.role='handoff' BEGIN SELECT RAISE(ABORT,'injected notice failure'); END;").unwrap();
+        store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_handoff BEFORE INSERT ON messages WHEN NEW.role='handoff' BEGIN SELECT RAISE(ABORT,'injected notice failure'); END;").unwrap();
         assert!(store
             .configure(&task.id, "kimi", "default", None)
             .unwrap_err()
@@ -3115,9 +3084,9 @@ mod tests {
                 ("coordination", "Worker status", 400),
                 ("user", " ", 500),
             ] {
-                store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,?2,?3,?4)", params![sid,role,content,time]).unwrap();
+                store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,?2,?3,?4)", params![sid,role,content,time]).unwrap();
             }
-            store.db.execute_batch("DROP INDEX sessions_sidebar; DROP TRIGGER messages_record_prompt; ALTER TABLE sessions DROP COLUMN last_prompt_at; PRAGMA user_version=18;").unwrap();
+            store.db.lock().unwrap().execute_batch("DROP INDEX sessions_sidebar; DROP TRIGGER messages_record_prompt; ALTER TABLE sessions DROP COLUMN last_prompt_at; PRAGMA user_version=18;").unwrap();
         }
         {
             let store = Store::open(&path).unwrap();
@@ -3125,7 +3094,7 @@ mod tests {
             assert_eq!(task.last_prompt_at, Some(300));
             assert_eq!(task.last_response_at, Some(200));
             assert_eq!(store.sessions().unwrap()[0].last_prompt_at, Some(300));
-            store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user','Newest send',600)", [&sid]).unwrap();
+            store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user','Newest send',600)", [&sid]).unwrap();
         }
         let store = Store::open(&path).unwrap();
         assert_eq!(store.session(&sid).unwrap().last_prompt_at, Some(600));
@@ -3210,8 +3179,7 @@ mod tests {
             .unwrap();
         let response = store.session(&session.id).unwrap().last_response_at;
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET updated_at=0 WHERE id=?1",
                 [&session.id],
             )
@@ -3293,8 +3261,7 @@ mod tests {
             .unwrap();
         let sessions = store.sessions().unwrap();
         let messages: i64 = store
-            .db
-            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .db.lock().unwrap().query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
             .unwrap();
         println!("user_version={version} projects={} sessions={} (worktrees={}, linked={}) messages={messages}", store.projects().unwrap().len(), sessions.len(), sessions.iter().filter(|s| s.worktree_path.is_some()).count(), sessions.iter().filter(|s| s.issue.is_some() || s.pull_request.is_some()).count());
         for session in sessions.iter().take(5) {
@@ -3390,8 +3357,8 @@ mod tests {
                     .unwrap(),
                 SCHEMA_VERSION
             );
-            store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('answered','assistant','New response',15000)", []).unwrap();
-            store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('answered','assistant','Older imported response',14000)", []).unwrap();
+            store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('answered','assistant','New response',15000)", []).unwrap();
+            store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('answered','assistant','Older imported response',14000)", []).unwrap();
             assert_eq!(
                 store.session("answered").unwrap().last_response_at,
                 Some(15000)
@@ -3399,8 +3366,7 @@ mod tests {
             // A reopened current schema must retain the recorded activity even if
             // old transcript rows have been pruned, rather than rerun a backfill.
             store
-                .db
-                .execute("DELETE FROM messages WHERE session_id='answered'", [])
+                .db.lock().unwrap().execute("DELETE FROM messages WHERE session_id='answered'", [])
                 .unwrap();
         }
         {
@@ -3430,8 +3396,7 @@ mod tests {
             )
             .unwrap();
         store
-            .db
-            .execute(
+            .db.lock().unwrap().execute(
                 "UPDATE sessions SET updated_at=0 WHERE id=?1",
                 [&session.id],
             )
@@ -3470,8 +3435,7 @@ mod tests {
                 .update(&task.id, Some("Draft task".into()), Some(true), None, None)
                 .unwrap();
             store
-                .db
-                .execute("UPDATE sessions SET updated_at=0 WHERE id=?1", [&task.id])
+                .db.lock().unwrap().execute("UPDATE sessions SET updated_at=0 WHERE id=?1", [&task.id])
                 .unwrap();
             let before = store.session(&task.id).unwrap();
             let moved = store
@@ -3772,8 +3736,7 @@ mod tests {
                 message.content.capacity()
             );
             let saved: String = store
-                .db
-                .query_row(
+                .db.lock().unwrap().query_row(
                     "SELECT content FROM messages WHERE id=?1",
                     [message.id],
                     |row| row.get(0),

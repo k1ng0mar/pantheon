@@ -54,9 +54,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMessage> {
 const COLUMNS: &str = "id,session_id,position,text,attachments,created_at,updated_at";
 
 pub(crate) fn list(store: &Store, session_id: Option<&str>) -> Result<Vec<QueuedMessage>> {
-    let mut statement = store
-        .db
-        .prepare(&format!("SELECT {COLUMNS} FROM queued_messages WHERE ?1 IS NULL OR session_id=?1 ORDER BY session_id,position,created_at"))
+    let conn = store.db.lock().unwrap(); let mut  statement = conn.prepare(&format!("SELECT {COLUMNS} FROM queued_messages WHERE ?1 IS NULL OR session_id=?1 ORDER BY session_id,position,created_at"))
         .map_err(|e| e.to_string())?;
     let rows = statement.query_map([session_id], row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
@@ -64,8 +62,7 @@ pub(crate) fn list(store: &Store, session_id: Option<&str>) -> Result<Vec<Queued
 
 fn get(store: &Store, id: &str) -> Result<QueuedMessage> {
     store
-        .db
-        .query_row(&format!("SELECT {COLUMNS} FROM queued_messages WHERE id=?1"), [id], row)
+        .db.lock().unwrap().query_row(&format!("SELECT {COLUMNS} FROM queued_messages WHERE id=?1"), [id], row)
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This queued message was already sent or removed.".into())
@@ -74,15 +71,14 @@ fn get(store: &Store, id: &str) -> Result<QueuedMessage> {
 pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &serde_json::Value) -> Result<QueuedMessage> {
     store.session(session_id)?;
     let encoded = validate(text, attachments)?;
-    let count: i64 = store.db.query_row("SELECT COUNT(*) FROM queued_messages WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let count: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM queued_messages WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if count >= MAX_PER_TASK {
         return Err(format!("A task can queue up to {MAX_PER_TASK} messages."));
     }
     let id = crate::storage::id();
     let now = crate::storage::now();
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "INSERT INTO queued_messages(id,session_id,position,text,attachments,created_at,updated_at) VALUES(?1,?2,(SELECT COALESCE(MAX(position),-1)+1 FROM queued_messages WHERE session_id=?2),?3,?4,?5,?5)",
             params![id, session_id, text, encoded, now],
         )
@@ -93,8 +89,7 @@ pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &ser
 pub(crate) fn update(store: &Store, id: &str, text: &str, attachments: &serde_json::Value) -> Result<QueuedMessage> {
     let encoded = validate(text, attachments)?;
     let changed = store
-        .db
-        .execute("UPDATE queued_messages SET text=?2,attachments=?3,updated_at=?4 WHERE id=?1", params![id, text, encoded, crate::storage::now()])
+        .db.lock().unwrap().execute("UPDATE queued_messages SET text=?2,attachments=?3,updated_at=?4 WHERE id=?1", params![id, text, encoded, crate::storage::now()])
         .map_err(|e| e.to_string())?;
     if changed == 0 {
         return Err("This queued message was already sent or removed.".into());
@@ -103,13 +98,14 @@ pub(crate) fn update(store: &Store, id: &str, text: &str, attachments: &serde_js
 }
 
 pub(crate) fn remove(store: &Store, id: &str) -> Result<()> {
-    store.db.execute("DELETE FROM queued_messages WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("DELETE FROM queued_messages WHERE id=?1", [id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Reorders a task's queue to `ids`, which must name exactly its current entries.
 pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result<Vec<QueuedMessage>> {
-    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap();
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut current: Vec<String> = list(store, Some(session_id))?.into_iter().map(|entry| entry.id).collect();
     let mut requested = ids.to_vec();
     current.sort();
@@ -118,7 +114,7 @@ pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result
         return Err("The queue changed. Try reordering again.".into());
     }
     for (position, id) in ids.iter().enumerate() {
-        store.db.execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;
+        store.db.lock().unwrap().execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;
     }
     transaction.commit().map_err(|e| e.to_string())?;
     list(store, Some(session_id))
@@ -138,8 +134,7 @@ pub(crate) fn restore(store: &Store, entry: &QueuedMessage) -> Result<QueuedMess
     store.session(&entry.session_id)?;
     let encoded = validate(&entry.text, &entry.attachments)?;
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "INSERT INTO queued_messages(id,session_id,position,text,attachments,created_at,updated_at) VALUES(?1,?2,(SELECT COALESCE(MIN(position),1)-1 FROM queued_messages WHERE session_id=?2),?3,?4,?5,?6)",
             params![entry.id, entry.session_id, entry.text, encoded, entry.created_at, crate::storage::now()],
         )
@@ -292,7 +287,7 @@ mod tests {
             add(&store, &task, &format!("m{i}"), &json!([])).unwrap();
         }
         assert!(add(&store, &task, "one too many", &json!([])).is_err());
-        store.db.execute("DELETE FROM sessions WHERE id=?1", [&task]).unwrap();
+        store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&task]).unwrap();
         assert!(list(&store, None).unwrap().is_empty(), "deleting a task removes its queue");
     }
 }

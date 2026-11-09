@@ -347,8 +347,7 @@ pub(crate) fn set_capabilities(store: &Store, id: &str, skills: &[String], mcp: 
     let (skills, mcp) = (references(skills, true)?, references(mcp, false)?);
     get(store, id)?;
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "UPDATE bots SET skills=?2,mcp=?3,memory_version=memory_version+1,updated_at=?4 WHERE id=?1",
             params![id, serde_json::to_string(&skills).map_err(|e| e.to_string())?, serde_json::to_string(&mcp).map_err(|e| e.to_string())?, crate::storage::now()],
         )
@@ -365,26 +364,25 @@ pub(crate) fn assign_task(store: &Store, session_id: &str, bot_id: Option<&str>)
         return Err("A bot's own conversations already use that bot.".into());
     }
     let Some(bot_id) = bot_id else {
-        store.db.execute("DELETE FROM bot_tasks WHERE session_id=?1", [session_id]).map_err(|e| e.to_string())?;
+        store.db.lock().unwrap().execute("DELETE FROM bot_tasks WHERE session_id=?1", [session_id]).map_err(|e| e.to_string())?;
         return Ok(None);
     };
     let bot = get(store, bot_id)?;
     store
-        .db
-        .execute("INSERT INTO bot_tasks(session_id,bot_id) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET bot_id=excluded.bot_id,brief_version=-1", params![session_id, bot_id])
+        .db.lock().unwrap().execute("INSERT INTO bot_tasks(session_id,bot_id) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET bot_id=excluded.bot_id,brief_version=-1", params![session_id, bot_id])
         .map_err(|e| e.to_string())?;
     Ok(Some(bot))
 }
 
 /// The bot an ordinary task was started with, and the brief version that task has seen.
 pub(crate) fn task_bot(store: &Store, session_id: &str) -> Result<Option<(Bot, i64)>> {
-    let found: Option<(String, i64)> = store.db.query_row("SELECT bot_id,brief_version FROM bot_tasks WHERE session_id=?1", [session_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+    let found: Option<(String, i64)> = store.db.lock().unwrap().query_row("SELECT bot_id,brief_version FROM bot_tasks WHERE session_id=?1", [session_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
     found.map(|(bot, seen)| Ok((get(store, &bot)?, seen))).transpose()
 }
 
 /// Every task-to-bot link, for the window's context bar.
 pub(crate) fn task_links(store: &Store) -> Result<std::collections::HashMap<String, String>> {
-    let mut statement = store.db.prepare("SELECT session_id,bot_id FROM bot_tasks").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut statement = conn.prepare("SELECT session_id,bot_id FROM bot_tasks").map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
@@ -402,15 +400,14 @@ pub(crate) fn workspace_root() -> PathBuf {
 
 pub(crate) fn get(store: &Store, id: &str) -> Result<Bot> {
     store
-        .db
-        .query_row(&format!("SELECT {BOT_COLUMNS} FROM bots WHERE id=?1"), [id], bot_row)
+        .db.lock().unwrap().query_row(&format!("SELECT {BOT_COLUMNS} FROM bots WHERE id=?1"), [id], bot_row)
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This bot no longer exists.".into())
 }
 
 pub(crate) fn list(store: &Store) -> Result<Vec<Bot>> {
-    let mut statement = store.db.prepare(&format!("SELECT {BOT_COLUMNS} FROM bots ORDER BY created_at")).map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut statement = conn.prepare(&format!("SELECT {BOT_COLUMNS} FROM bots ORDER BY created_at")).map_err(|e| e.to_string())?;
     let rows = statement.query_map([], bot_row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
@@ -423,11 +420,10 @@ pub(crate) fn create(store: &Store, input: &BotInput, root: &std::path::Path) ->
     std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create the bot's workspace: {e}"))?;
     let project = store.add_project(&folder)?;
     // The sidebar shows the bot's name, not its folder's.
-    store.db.execute("UPDATE projects SET name=?2 WHERE id=?1", params![project.id, input.name]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE projects SET name=?2 WHERE id=?1", params![project.id, input.name]).map_err(|e| e.to_string())?;
     let now = crate::storage::now();
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "INSERT INTO bots(id,name,role,instructions,goals,avatar,project_id,provider,model,mode,heartbeat_minutes,next_heartbeat_at,created_at,updated_at,soul) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13,?14)",
             params![id, input.name, input.role, input.instructions, input.goals, input.avatar, project.id, input.provider, input.model, input.mode, input.heartbeat_minutes, schedule::heartbeat_after(input.heartbeat_minutes, now), now, input.soul],
         )
@@ -444,21 +440,20 @@ pub(crate) fn update(store: &Store, id: &str, input: &BotInput) -> Result<Bot> {
     // Identity, instructions, goals and soul are part of the brief; bump the version so open threads get them.
     let brief_changed = before.instructions != input.instructions || before.goals != input.goals || before.role != input.role || before.name != input.name || before.soul != input.soul;
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "UPDATE bots SET name=?2,role=?3,instructions=?4,goals=?5,avatar=?6,provider=?7,model=?8,mode=?9,heartbeat_minutes=?10,next_heartbeat_at=?11,memory_version=memory_version+?12,updated_at=?13,soul=?14 WHERE id=?1",
             params![id, input.name, input.role, input.instructions, input.goals, input.avatar, input.provider, input.model, input.mode, input.heartbeat_minutes, next, brief_changed as i64, now, input.soul],
         )
         .map_err(|e| e.to_string())?;
     if before.name != input.name {
-        store.db.execute("UPDATE projects SET name=?2 WHERE id=?1", params![before.project_id, input.name]).map_err(|e| e.to_string())?;
+        store.db.lock().unwrap().execute("UPDATE projects SET name=?2 WHERE id=?1", params![before.project_id, input.name]).map_err(|e| e.to_string())?;
     }
     log(store, id, "updated", "Settings changed", json!({}))?;
     get(store, id)
 }
 
 pub(crate) fn set_paused(store: &Store, id: &str, paused: bool) -> Result<Bot> {
-    store.db.execute("UPDATE bots SET paused=?2,updated_at=?3 WHERE id=?1", params![id, paused, crate::storage::now()]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bots SET paused=?2,updated_at=?3 WHERE id=?1", params![id, paused, crate::storage::now()]).map_err(|e| e.to_string())?;
     log(store, id, if paused { "paused" } else { "resumed" }, if paused { "Paused" } else { "Resumed" }, json!({}))?;
     get(store, id)
 }
@@ -466,12 +461,13 @@ pub(crate) fn set_paused(store: &Store, id: &str, paused: bool) -> Result<Bot> {
 /// Reset deletes the bot's conversations, memories, schedules and activity together.
 pub(crate) fn reset(store: &Store, id: &str) -> Result<Bot> {
     let bot = get(store, id)?;
-    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
-    store.db.execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap();
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
     for table in ["bot_memories", "bot_schedules", "bot_activity"] {
-        store.db.execute(&format!("DELETE FROM {table} WHERE bot_id=?1"), [id]).map_err(|e| e.to_string())?;
+        store.db.lock().unwrap().execute(&format!("DELETE FROM {table} WHERE bot_id=?1"), [id]).map_err(|e| e.to_string())?;
     }
-    store.db.execute("UPDATE bots SET memory_version=memory_version+1,notify_thread=NULL,updated_at=?2 WHERE id=?1", params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bots SET memory_version=memory_version+1,notify_thread=NULL,updated_at=?2 WHERE id=?1", params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
     transaction.commit().map_err(|e| e.to_string())?;
     log(store, id, "reset", &format!("{} was reset", bot.name), json!({}))?;
     get(store, id)
@@ -479,36 +475,32 @@ pub(crate) fn reset(store: &Store, id: &str) -> Result<Bot> {
 
 /// Deletes the bot and its records. Its workspace folder stays on disk.
 pub(crate) fn delete(store: &Store, id: &str) -> Result<()> {
-    store.db.execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
     let channels: Vec<String> = {
-        let mut statement = store.db.prepare("SELECT id FROM bot_channels WHERE bot_id=?1").map_err(|e| e.to_string())?;
+        let conn = store.db.lock().unwrap(); let mut statement = conn.prepare("SELECT id FROM bot_channels WHERE bot_id=?1").map_err(|e| e.to_string())?;
         let rows = statement.query_map([id], |r| r.get(0)).map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
     };
     for channel in channels {
         secrets::remove_all(&channel);
     }
-    store.db.execute("DELETE FROM bots WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("DELETE FROM bots WHERE id=?1", [id]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub(crate) fn log(store: &Store, bot_id: &str, kind: &str, summary: &str, detail: Value) -> Result<()> {
     store
-        .db
-        .execute("INSERT INTO bot_activity(bot_id,kind,summary,detail,at) VALUES(?1,?2,?3,?4,?5)", params![bot_id, kind, clean(summary, 300), detail.to_string(), crate::storage::now()])
+        .db.lock().unwrap().execute("INSERT INTO bot_activity(bot_id,kind,summary,detail,at) VALUES(?1,?2,?3,?4,?5)", params![bot_id, kind, clean(summary, 300), detail.to_string(), crate::storage::now()])
         .map_err(|e| e.to_string())?;
     // Keep the audit trail bounded per bot.
     store
-        .db
-        .execute("DELETE FROM bot_activity WHERE bot_id=?1 AND id <= (SELECT id FROM bot_activity WHERE bot_id=?1 ORDER BY id DESC LIMIT 1 OFFSET 5000)", [bot_id])
+        .db.lock().unwrap().execute("DELETE FROM bot_activity WHERE bot_id=?1 AND id <= (SELECT id FROM bot_activity WHERE bot_id=?1 ORDER BY id DESC LIMIT 1 OFFSET 5000)", [bot_id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub(crate) fn activity(store: &Store, bot_id: &str, before: Option<i64>, limit: i64) -> Result<Vec<Activity>> {
-    let mut statement = store
-        .db
-        .prepare("SELECT id,kind,summary,detail,at FROM bot_activity WHERE bot_id=?1 AND (?2 IS NULL OR id < ?2) ORDER BY id DESC LIMIT ?3")
+    let conn = store.db.lock().unwrap(); let mut  statement = conn.prepare("SELECT id,kind,summary,detail,at FROM bot_activity WHERE bot_id=?1 AND (?2 IS NULL OR id < ?2) ORDER BY id DESC LIMIT ?3")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map(params![bot_id, before, limit.clamp(1, 200)], |r| {
@@ -519,7 +511,7 @@ pub(crate) fn activity(store: &Store, bot_id: &str, before: Option<i64>, limit: 
 }
 
 pub(crate) fn memories(store: &Store, bot_id: &str) -> Result<Vec<Memory>> {
-    let mut statement = store.db.prepare("SELECT id,content,source,created_at FROM bot_memories WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut statement = conn.prepare("SELECT id,content,source,created_at FROM bot_memories WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([bot_id], |r| Ok(Memory { id: r.get(0)?, content: r.get(1)?, source: r.get(2)?, created_at: r.get(3)? }))
         .map_err(|e| e.to_string())?;
@@ -532,33 +524,33 @@ pub(crate) fn remember(store: &Store, bot_id: &str, content: &str, source: &str)
     if content.is_empty() {
         return Err("A memory needs some text.".into());
     }
-    let count: i64 = store.db.query_row("SELECT COUNT(*) FROM bot_memories WHERE bot_id=?1", [bot_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let count: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM bot_memories WHERE bot_id=?1", [bot_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if count >= MAX_MEMORIES {
         return Err(format!("A bot keeps up to {MAX_MEMORIES} memories. Remove some first."));
     }
-    let duplicate: Option<String> = store.db.query_row("SELECT id FROM bot_memories WHERE bot_id=?1 AND lower(content)=lower(?2)", params![bot_id, content], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+    let duplicate: Option<String> = store.db.lock().unwrap().query_row("SELECT id FROM bot_memories WHERE bot_id=?1 AND lower(content)=lower(?2)", params![bot_id, content], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
     if let Some(existing) = duplicate {
         return memories(store, bot_id)?.into_iter().find(|memory| memory.id == existing).ok_or_else(|| "Memory not found.".into());
     }
     let id = crate::storage::id();
     let now = crate::storage::now();
-    store.db.execute("INSERT INTO bot_memories(id,bot_id,content,source,created_at) VALUES(?1,?2,?3,?4,?5)", params![id, bot_id, content, source, now]).map_err(|e| e.to_string())?;
-    store.db.execute("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1", [bot_id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("INSERT INTO bot_memories(id,bot_id,content,source,created_at) VALUES(?1,?2,?3,?4,?5)", params![id, bot_id, content, source, now]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1", [bot_id]).map_err(|e| e.to_string())?;
     log(store, bot_id, "memory", &format!("Remembered: {}", content.chars().take(120).collect::<String>()), json!({"source": source}))?;
     Ok(Memory { id, content, source: source.into(), created_at: now })
 }
 
 pub(crate) fn forget(store: &Store, bot_id: &str, memory_id: &str) -> Result<()> {
-    let removed = store.db.execute("DELETE FROM bot_memories WHERE id=?1 AND bot_id=?2", params![memory_id, bot_id]).map_err(|e| e.to_string())?;
+    let removed = store.db.lock().unwrap().execute("DELETE FROM bot_memories WHERE id=?1 AND bot_id=?2", params![memory_id, bot_id]).map_err(|e| e.to_string())?;
     if removed == 0 {
         return Err("That memory was already removed.".into());
     }
-    store.db.execute("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1", [bot_id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1", [bot_id]).map_err(|e| e.to_string())?;
     log(store, bot_id, "memory", "Forgot a memory", json!({}))
 }
 
 pub(crate) fn threads(store: &Store, bot_id: &str) -> Result<Vec<Thread>> {
-    let mut statement = store.db.prepare("SELECT channel_id,external_id,session_id,updated_at FROM bot_threads WHERE bot_id=?1 ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut statement = conn.prepare("SELECT channel_id,external_id,session_id,updated_at FROM bot_threads WHERE bot_id=?1 ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([bot_id], |r| Ok(Thread { channel_id: r.get(0)?, external_id: r.get(1)?, session_id: r.get(2)?, updated_at: r.get(3)? }))
         .map_err(|e| e.to_string())?;
@@ -568,8 +560,7 @@ pub(crate) fn threads(store: &Store, bot_id: &str) -> Result<Vec<Thread>> {
 /// The bot that owns a task, if the task is a bot conversation.
 pub(crate) fn owner_of(store: &Store, session_id: &str) -> Result<Option<(Bot, Thread)>> {
     let found: Option<(String, Thread)> = store
-        .db
-        .query_row("SELECT bot_id,channel_id,external_id,session_id,updated_at FROM bot_threads WHERE session_id=?1", [session_id], |r| {
+        .db.lock().unwrap().query_row("SELECT bot_id,channel_id,external_id,session_id,updated_at FROM bot_threads WHERE session_id=?1", [session_id], |r| {
             Ok((r.get(0)?, Thread { channel_id: r.get(1)?, external_id: r.get(2)?, session_id: r.get(3)?, updated_at: r.get(4)? }))
         })
         .optional()
@@ -583,45 +574,43 @@ pub(crate) fn owner_of(store: &Store, session_id: &str) -> Result<Option<(Bot, T
 /// The task for a conversation thread, created on first use in the bot's workspace.
 pub(crate) fn thread_session(store: &Store, bot: &Bot, channel_id: &str, external_id: &str, title: &str) -> Result<(String, bool)> {
     let existing: Option<String> = store
-        .db
-        .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", params![bot.id, channel_id, external_id], |r| r.get(0))
+        .db.lock().unwrap().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", params![bot.id, channel_id, external_id], |r| r.get(0))
         .optional()
         .map_err(|e| e.to_string())?;
     if let Some(session) = existing {
         if store.session(&session).is_ok() {
-            store.db.execute("UPDATE bot_threads SET updated_at=?2 WHERE session_id=?1", params![session, crate::storage::now()]).map_err(|e| e.to_string())?;
+            store.db.lock().unwrap().execute("UPDATE bot_threads SET updated_at=?2 WHERE session_id=?1", params![session, crate::storage::now()]).map_err(|e| e.to_string())?;
             return Ok((session, false));
         }
-        store.db.execute("DELETE FROM bot_threads WHERE session_id=?1", [session]).map_err(|e| e.to_string())?;
+        store.db.lock().unwrap().execute("DELETE FROM bot_threads WHERE session_id=?1", [session]).map_err(|e| e.to_string())?;
     }
     let task = store.create_session(&bot.project_id, &bot.provider, &bot.model, &bot.mode)?;
     store.update(&task.id, Some(clean(title, 120)), None, None, None)?;
     store
-        .db
-        .execute("INSERT INTO bot_threads(bot_id,channel_id,external_id,session_id,updated_at) VALUES(?1,?2,?3,?4,?5)", params![bot.id, channel_id, external_id, task.id, crate::storage::now()])
+        .db.lock().unwrap().execute("INSERT INTO bot_threads(bot_id,channel_id,external_id,session_id,updated_at) VALUES(?1,?2,?3,?4,?5)", params![bot.id, channel_id, external_id, task.id, crate::storage::now()])
         .map_err(|e| e.to_string())?;
     Ok((task.id, true))
 }
 
 /// Records that a thread has seen the current brief.
 pub(crate) fn mark_briefed(store: &Store, session_id: &str, version: i64) -> Result<()> {
-    store.db.execute("UPDATE bot_threads SET brief_version=?2 WHERE session_id=?1", params![session_id, version]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bot_threads SET brief_version=?2 WHERE session_id=?1", params![session_id, version]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub(crate) fn brief_version_of(store: &Store, session_id: &str) -> Result<i64> {
-    store.db.query_row("SELECT brief_version FROM bot_threads WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())
+    store.db.lock().unwrap().query_row("SELECT brief_version FROM bot_threads WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())
 }
 
 /// Where proactive messages go: the bot's chosen channel thread, else its latest thread.
 pub(crate) fn set_notify_target(store: &Store, bot_id: &str, channel_id: Option<&str>, thread: Option<&str>) -> Result<()> {
-    store.db.execute("UPDATE bots SET notify_channel_id=?2,notify_thread=?3 WHERE id=?1", params![bot_id, channel_id, thread]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bots SET notify_channel_id=?2,notify_thread=?3 WHERE id=?1", params![bot_id, channel_id, thread]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Project IDs that belong to bots, so ordinary task lists can leave them out.
 pub(crate) fn project_ids(store: &Store) -> Result<Vec<String>> {
-    let mut statement = store.db.prepare("SELECT project_id FROM bots").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut statement = conn.prepare("SELECT project_id FROM bots").map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
@@ -684,8 +673,7 @@ fn preview(content: &str) -> String {
 
 fn last_message(store: &Store, session: &str) -> Result<Option<LastMessage>> {
     store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT role, substr(content,1,4096), created_at FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND trim(content)<>'' ORDER BY id DESC LIMIT 1",
             params![session],
             |r| Ok(LastMessage { role: r.get(0)?, text: preview(&r.get::<_, String>(1)?), at: r.get(2)? }),
@@ -699,8 +687,7 @@ pub(crate) fn summaries(store: &Store) -> Result<Vec<BotSummary>> {
         .into_iter()
         .map(|bot| {
             let desktop_session = store
-                .db
-                .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2", params![bot.id, DESKTOP], |r| r.get(0))
+                .db.lock().unwrap().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2", params![bot.id, DESKTOP], |r| r.get(0))
                 .optional()
                 .map_err(|e| e.to_string())?;
             let last_message = match desktop_session.as_deref() { Some(session) => last_message(store, session)?, None => None };
@@ -860,7 +847,7 @@ pub(crate) fn task_brief(store: &Store, library: Option<&crate::skills::Library>
     let installed: Vec<String> = resolved.iter().filter(|r| files && r.provenance != "bot").map(|r| format!("{} ({})", r.id, if r.provenance == "both" { "bot and project" } else { "project" })).collect();
     let (text, skipped) = library.map(|l| l.prompt_text(&inline)).unwrap_or_default();
     let memories = memories(store, &bot.id)?;
-    store.db.execute("UPDATE bot_tasks SET brief_version=?2 WHERE session_id=?1", params![session_id, bot.memory_version]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE bot_tasks SET brief_version=?2 WHERE session_id=?1", params![session_id, bot.memory_version]).map_err(|e| e.to_string())?;
     Ok(Some(format!("{}{}", brief::compose(&bot, &memories, brief::TASK, ""), brief::skills(&text, &installed, &skipped))))
 }
 

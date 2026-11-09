@@ -9,9 +9,7 @@ pub(super) fn merge(store: &Store, sid: &str, capture: &mut Captured) -> Result<
     if !capture.summary.attributed {
         return Ok(vec![]);
     }
-    let mut query = store
-        .db
-        .prepare(
+    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare(
             "SELECT child.id,child.session_id,child.summary FROM turn_changes child
          JOIN architect_workers relation ON relation.session_id=child.session_id
          JOIN architect_teams team ON team.session_id=relation.parent_session_id
@@ -230,11 +228,10 @@ mod tests {
                 .create_session(&project.id, "codex", "default", "ask")
                 .unwrap()
                 .id;
-            store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent,worker]).unwrap();
+            store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent,worker]).unwrap();
             let content = json!({"workers":[{"id":"worker","sessionId":worker,"status":"completed","abandoned":false}]}).to_string();
             store
-                .db
-                .execute(
+                .db.lock().unwrap().execute(
                     "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                     params![parent, content],
                 )
@@ -248,7 +245,7 @@ mod tests {
             }
         }
         fn state(&self, status: &str, abandoned: bool) {
-            self.store.db.execute("UPDATE architect_teams SET content=json_set(content,'$.workers[0].status',?2,'$.workers[0].abandoned',?3) WHERE session_id=?1", params![self.parent,status,abandoned]).unwrap();
+            self.store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_set(content,'$.workers[0].status',?2,'$.workers[0].abandoned',?3) WHERE session_id=?1", params![self.parent,status,abandoned]).unwrap();
         }
     }
 
@@ -306,8 +303,7 @@ mod tests {
         assert_eq!(summary(&f.store, &f.parent, &id).unwrap().files.len(), 1);
         let source_count: i64 = f
             .store
-            .db
-            .query_row(
+            .db.lock().unwrap().query_row(
                 "SELECT json_array_length(summary,'$.teamSources') FROM turn_changes WHERE id=?1",
                 [&id],
                 |r| r.get(0),

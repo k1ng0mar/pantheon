@@ -262,7 +262,8 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
         Call::Messages { session_id, after_id } => {
             local_task(&state, &session_id)?;
             let store = state.store.lock().map_err(|e| e.to_string())?;
-            messages_page(&store.db, &session_id, after_id)
+            let conn = store.db.lock().unwrap();
+            messages_page(&conn, &session_id, after_id)
         }
         Call::Send { session_id, text } => {
             local_task(&state, &session_id)?;
@@ -432,8 +433,7 @@ fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<Vec<Value>> {
     let mut tasks = Vec::new();
     for id in ids {
         let row: Option<(String, String, i64)> = store
-            .db
-            .query_row("SELECT status,title,(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1) FROM sessions WHERE id=?1 AND remote_device IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .db.lock().unwrap().query_row("SELECT status,title,(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1) FROM sessions WHERE id=?1 AND remote_device IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()
             .map_err(|e| e.to_string())?;
         let Some((status, title, last_id)) = row else { continue };

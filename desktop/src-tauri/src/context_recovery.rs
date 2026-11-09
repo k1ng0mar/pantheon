@@ -12,7 +12,7 @@ const HISTORY_MESSAGES: usize = 200;
 pub(crate) const RECOVERY_REQUIRED: &str = "This task's earlier conversation needs to be restored. Send a normal message in the conversation first, then retry this command.";
 
 pub(crate) fn pending(store: &Store, session: &Session) -> Result<bool> {
-    store.db.query_row(
+    store.db.lock().unwrap().query_row(
         "SELECT EXISTS(SELECT 1 FROM context_recovery WHERE session_id=?1) OR (?2 AND EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role IN ('user','assistant','coordination') AND content<>''))",
         params![session.id, session.resume_id.as_deref().is_none_or(|id| id.trim().is_empty())],
         |row| row.get(0),
@@ -22,7 +22,7 @@ pub(crate) fn pending(store: &Store, session: &Session) -> Result<bool> {
 /// Queue before clearing a resume ID, in the caller's configuration transaction.
 pub(crate) fn queue(store: &Store, sid: &str) -> Result<()> {
     store.session(sid)?;
-    store.db.execute(
+    store.db.lock().unwrap().execute(
         "INSERT INTO context_recovery(session_id,through_message_id) SELECT ?1,MAX(id) FROM messages WHERE session_id=?1 AND role IN ('user','assistant','coordination') AND content<>'' HAVING MAX(id) IS NOT NULL ON CONFLICT(session_id) DO UPDATE SET through_message_id=MAX(through_message_id,excluded.through_message_id)",
         [sid],
     ).map_err(|e| e.to_string())?;
@@ -42,8 +42,7 @@ pub(crate) fn prepare(
     // intervening failed requests too, so a later “try again” keeps its referent.
     queue(store, &session.id)?;
     let through: Option<i64> = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT through_message_id FROM context_recovery WHERE session_id=?1",
             [&session.id],
             |r| r.get(0),
@@ -54,7 +53,7 @@ pub(crate) fn prepare(
         return Ok((original.into(), None));
     };
     // Fetch newest entries first without materializing an unbounded transcript.
-    let mut stmt = store.db.prepare("SELECT role,CASE WHEN role='coordination' THEN substr(content,1,786432) ELSE substr(content,1,65536) END,length(CAST(content AS BLOB)) FROM messages WHERE session_id=?1 AND id<=?2 AND role IN ('user','assistant','coordination') AND content<>'' ORDER BY id DESC LIMIT 201").map_err(|e| e.to_string())?;
+    let conn = store.db.lock().unwrap(); let mut  stmt = conn.prepare("SELECT role,CASE WHEN role='coordination' THEN substr(content,1,786432) ELSE substr(content,1,65536) END,length(CAST(content AS BLOB)) FROM messages WHERE session_id=?1 AND id<=?2 AND role IN ('user','assistant','coordination') AND content<>'' ORDER BY id DESC LIMIT 201").map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![session.id, through], |r| {
             Ok((
@@ -131,8 +130,7 @@ pub(crate) fn prepare(
 /// A failed startup, cancelled turn, or failed persistence must leave recovery pending.
 pub(crate) fn acknowledge(store: &Store, sid: &str, through: i64) -> Result<()> {
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "DELETE FROM context_recovery WHERE session_id=?1 AND through_message_id=?2",
             params![sid, through],
         )
