@@ -138,20 +138,20 @@ impl RunningAgent {
             .ok_or("This approval belongs to an earlier run.")?
             .to_string();
         let store = store.lock().map_err(|error| error.to_string())?;
-        self.send(RunInput::Approval {
-            request_id: original_id,
-            approved,
-        })
-        .map_err(|_| "Agent has stopped.".to_string())?;
+        let next_status = if approvals.len() == 1 { "running" } else { "waiting" };
+        store.status(session_id, next_status)?;
+        if self
+            .send(RunInput::Approval {
+                request_id: original_id,
+                approved,
+            })
+            .is_err()
+        {
+            let _ = store.status(session_id, "waiting");
+            return Err("Agent has stopped.".into());
+        }
         remove_pending_request(&mut approvals, Some(&mut pending_requests), &request_id);
-        store.status(
-            session_id,
-            if approvals.is_empty() {
-                "running"
-            } else {
-                "waiting"
-            },
-        )
+        Ok(())
     }
 
     fn send(

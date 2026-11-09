@@ -1,4 +1,4 @@
-# Remote access (PandaCode Connect)
+# Remote access (Pantheon Connect)
 
 Opt-in. Off by default. Signing in lets a task *run on another computer*: one of the user's
 computers signed in to the same account, trusted, with **Allow remote control of this computer**
@@ -57,7 +57,7 @@ Sign in with GitHub using the OAuth **device flow** (no client secret anywhere):
 atomically (temp file in the same folder, fsync, rename). Each install's data folder is its own
 scope, so a dev build and the installed app never share secrets. A missing, unreadable or
 corrupt file means none (signed out). Connect never uses the OS keychain: macOS pins each item
-to the exact code hash of the build that made it, and PandaCode has no Apple Team ID, so every
+to the exact code hash of the build that made it, and Pantheon has no Apple Team ID, so every
 update asked for the login password on every read. Other app secrets moved the same way, to
 `secrets.json` (see `secret_store.rs`). Nothing is migrated from the keychain for Connect
 (reading it is what prompted); users from before this change sign in once more, and the `409`
@@ -88,7 +88,7 @@ device, later expiry) in the secrets file and in memory. A failure is left for t
 missing (or expired) token means signed out. Nothing prompts and nothing touches the network
 unless signed in.
 
-Build config is `option_env!("PANDACODE_RELAY_URL")` and `option_env!("PANDACODE_GITHUB_CLIENT_ID")`.
+Build config is `option_env!("PANTHEON_RELAY_URL")` and `option_env!("PANTHEON_GITHUB_CLIENT_ID")`.
 Environment variables of the same names override them at run time. If either is missing, remote
 access is shown as "not configured in this build".
 
@@ -218,7 +218,7 @@ A host refuses a session id that is itself a mirror, so tasks never hop twice.
 2. With `projectId`, uses that registered project directly (bot workspaces are refused). With
    `repo`, it finds a project whose `origin` is that GitHub repository (as
    `github_project_repos`, case insensitive). With none, it clones it with `gh` (as
-   `github_clone_repo`, at most 6 minutes) into `~/PandaCode/<name>`, or `<name>-2`, `-3`… when
+   `github_clone_repo`, at most 6 minutes) into `Pantheon/<name>`, or `<name>-2`, `-3`… when
    taken, and adds the project.
 3. Fetches `origin` (at most 90 s), then uses the viewer's branch if origin has it, otherwise
    origin's default branch. With a worktree it creates `pandacode/remote-<id>` from

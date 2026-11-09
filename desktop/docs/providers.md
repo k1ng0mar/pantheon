@@ -1,10 +1,10 @@
 # Provider integrations
 
-PandaCode launches each installed CLI directly. Claude, Codex, Kimi, OpenCode,
+Pantheon launches each installed CLI directly. Claude, Codex, Kimi, OpenCode,
 Antigravity, and Grok Build own their authentication; sign in using their official
 CLI or extension.
 The optional Z.AI Coding Plan and MiMo Token Plan API keys are stored as separate
-entries in PandaCode's secrets store (see [secret storage](#secret-storage)) and injected only into their isolated Claude subprocesses. The app discovers executable paths
+entries in Pantheon's secrets store (see [secret storage](#secret-storage)) and injected only into their isolated Claude subprocesses. The app discovers executable paths
 from PATH and common per-user installation folders; provider settings report the
 actual path and version. The `default` model delegates model selection to the CLI.
 
@@ -44,7 +44,7 @@ that read one, a config folder: `CLAUDE_CONFIG_DIR` (Claude Code, GLM, MiMo),
 (OpenCode). Other harnesses take their folder variable under Environment.
 
 Connections live in `connections.json` beside the provider settings
-(`src-tauri/src/connections.rs`). Variables marked Secret are stored in PandaCode's
+(`src-tauri/src/connections.rs`). Variables marked Secret are stored in Pantheon's
 secrets store (service `app.pandacode.connections`, one account per connection
 and variable); the file and the webview only see their names, and an edit that
 leaves a secret empty keeps the saved value. Deleting a connection removes its
@@ -69,14 +69,14 @@ computer use that computer's setup.
 
 ## GitHub Copilot CLI
 
-Install GitHub Copilot CLI using [GitHub's installation guide](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli), then sign in in a terminal with `copilot login`. PandaCode discovers or uses the configured `copilot` executable and starts its local ACP stdio server with `copilot --no-auto-update --acp --stdio`. The CLI owns GitHub authentication; PandaCode does not store GitHub credentials or add a separate login flow. ACP support is a public preview; see [GitHub's ACP reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server).
+Install GitHub Copilot CLI using [GitHub's installation guide](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli), then sign in in a terminal with `copilot login`. Pantheon discovers or uses the configured `copilot` executable and starts its local ACP stdio server with `copilot --no-auto-update --acp --stdio`. The CLI owns GitHub authentication; Pantheon does not store GitHub credentials or add a separate login flow. ACP support is a public preview; see [GitHub's ACP reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server).
 
-The model picker reads only ACP metadata. It offers the models Copilot advertises and keeps **Default** available if the catalog is empty or unavailable. A model override is sent only when Copilot advertises that setting; the picker does not accept arbitrary model IDs for this provider. Copilot CLI 1.0.82 advertised task modes Agent, Plan and Autopilot, plus an Allow All setting, but no model catalog. PandaCode maps Agent with Allow All off to **Standard**, Plan with Allow All off to **Plan mode**, and Agent with Allow All on to **Full access**. Autopilot is not exposed because it does not map to a PandaCode permission mode. In Plan mode, read, search and think requests can proceed while other permission requests are declined. No prompt is sent during catalog discovery.
+The model picker reads only ACP metadata. It offers the models Copilot advertises and keeps **Default** available if the catalog is empty or unavailable. A model override is sent only when Copilot advertises that setting; the picker does not accept arbitrary model IDs for this provider. Copilot CLI 1.0.82 advertised task modes Agent, Plan and Autopilot, plus an Allow All setting, but no model catalog. Pantheon maps Agent with Allow All off to **Standard**, Plan with Allow All off to **Plan mode**, and Agent with Allow All on to **Full access**. Autopilot is not exposed because it does not map to a Pantheon permission mode. In Plan mode, read, search and think requests can proceed while other permission requests are declined. No prompt is sent during catalog discovery.
 
 ## Claude login and environment credentials
 
 Open **Settings → Agents → Set up → Claude Code** to see the credential source
-detected in PandaCode's environment. **Check login** separately checks Claude's
+detected in Pantheon's environment. **Check login** separately checks Claude's
 saved login using `claude auth status --json`; it sends no prompt. The card shows
 credential variable names and the origin of a custom endpoint, never keys,
 tokens, account details, URL paths, or URL query values.
@@ -101,7 +101,7 @@ and [environment variable reference](https://code.claude.com/docs/en/env-vars).
 ## Conversation continuity
 
 An idle task can switch harnesses from the model picker without changing its
-project, checkout, or saved transcript. PandaCode starts a fresh native session for
+project, checkout, or saved transcript. Pantheon starts a fresh native session for
 the chosen harness and transfers bounded text history with the next normal
 message, using the recovery mechanism below. A **Conversation carried forward**
 disclosure explains the transfer. Earlier replies retain their original provider
@@ -117,7 +117,7 @@ supports registering dynamic tools when a thread is created; enabling or disabli
 its team therefore queues a conversation transfer before replacing its native ID.
 Saving the same setup or selecting single-agent mode again does not reset anything.
 
-If a task has history but lacks a native session ID, PandaCode also queues that
+If a task has history but lacks a native session ID, Pantheon also queues that
 history automatically. Schema 14 repairs tasks affected by the earlier architect
 reset notice, including tasks that already received a replacement native ID.
 The next normal prompt includes the earlier user/assistant messages as historical
@@ -150,7 +150,7 @@ effort levels, this adapter cannot apply them. The app waits for configuration
 acknowledgement before prompting. See [Kimi ACP](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp)
 and [model configuration](https://moonshotai.github.io/kimi-code/en/configuration/config-files).
 
-**Default** sends no PandaCode override. The harness retains control, including any
+**Default** sends no Pantheon override. The harness retains control, including any
 saved effort in a resumed session. It does not promise to reset external harness
 settings. Claude can resolve capabilities for its default alias; an unresolved
 Codex/Kimi default requires choosing a catalog model to expose effort choices.
@@ -169,7 +169,7 @@ process; the next turn resumes the saved provider session. Stop sends the provid
 interruption message, then terminates its process group after a short grace period.
 Closing the app also drops the input channel and stops the group. Runtime output
 uses bounded frames (4 MiB maximum) and a 16 KiB stderr tail. No Node/Python SDK host
-or network bridge runs inside PandaCode.
+or network bridge runs inside Pantheon.
 
 ## Response streaming
 
@@ -202,7 +202,7 @@ filters notifications by active thread and turn so child events cannot contamina
 or prematurely finish the parent response.
 
 Kimi honors ACP `messageId` when supplied. The installed Kimi 0.26 adapter omits it
-and already filters child-agent events, so PandaCode derives boundaries when text
+and already filters child-agent events, so Pantheon derives boundaries when text
 resumes after a new tool call or thinking segment. Late updates to an existing tool
 do not split subsequent text; history replay during session loading is excluded.
 See [Claude streaming](https://code.claude.com/docs/en/agent-sdk/streaming-output),
@@ -240,7 +240,7 @@ Codex uses newline-delimited app-server requests and item notifications. The nat
 adapter covers thread creation/resumption, text streaming, tool events, and file,
 command, and permission approval requests. Ask and Auto both use `workspace-write`
 with `on-request` approvals routed to the user: operations allowed by Codex's sandbox
-can run, while escalation requests appear in PandaCode. Neither mode disables its
+can run, while escalation requests appear in Pantheon. Neither mode disables its
 sandbox. Codex's own rules still apply. The protocol was checked against the installed
 CLI's generated schemas, version 0.150.1. See [official app-server documentation](https://developers.openai.com/codex/app-server).
 
@@ -259,7 +259,7 @@ Kimi performs those operations through its own tools. The adapter explicitly sel
 ACP's `default` mode, which maps to manual permissions, before each prompt; it fails
 if that mode is unavailable. Auto currently keeps Kimi's manual
 approval behavior: its `--auto` flag enables unattended approval of far more than
-file edits, so PandaCode does not map to it. Permission responses select an option ID
+file edits, so Pantheon does not map to it. Permission responses select an option ID
 actually offered by the server. Kimi 0.26.0 is the newer Kimi Code executable, distinct
 from the legacy Python Kimi CLI and its Wire protocol. See
 [Kimi ACP](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp),
@@ -280,7 +280,7 @@ Run `cargo test` for parser and permission tests. Live integration tests are ign
 by default because they consume provider usage. To explicitly exercise a provider:
 
 ```sh
-PANDACODE_SMOKE_PROVIDER=codex cargo test smoke_provider_from_env -- --ignored --nocapture
+PANTHEON_SMOKE_PROVIDER=codex cargo test smoke_provider_from_env -- --ignored --nocapture
 ```
 
 Use `claude` or `kimi` for the other providers. The test creates a temporary Git
@@ -289,7 +289,7 @@ provider remembers that token. It rejects all tool approval requests and validat
 that the same provider session is reused. Successful output prints only the fixed
 token, event count, and presence of a session ID.
 
-Set `PANDACODE_SMOKE_MODEL` to test a specific model without modifying the user's
+Set `PANTHEON_SMOKE_MODEL` to test a specific model without modifying the user's
 provider settings. Live checks on September 12, 2026 verified successful Claude
 `sonnet` and Codex `gpt-5.6-sol` generation and resumption across both turns. The
 configured Codex default required a newer CLI. Claude's configured default reported
@@ -300,7 +300,7 @@ handling but does not establish successful Kimi generation or resumption.
 A read-only `model/list` query against Codex 0.150.1 returned `gpt-5.6-sol`
 (catalog default), `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and
 `gpt-5.3-codex-spark`. This catalog differs from the user's configured default;
-PandaCode leaves that configuration intact and accepts explicit model IDs.
+Pantheon leaves that configuration intact and accepts explicit model IDs.
 
 Read-only catalog checks do not consume model inference usage:
 
@@ -320,7 +320,7 @@ parent run and persists child history separately from the parent's messages.
 
 - **Codex:** the installed executable's generated app-server schema includes
   `collabAgentToolCall`, `subAgentActivity`, and child `thread/started` source
-  linkage. PandaCode records those identities, routes their text/tool notifications
+  linkage. Pantheon records those identities, routes their text/tool notifications
   into isolated parsers, and uses `agentsStates.message` to recover results when
   child notifications are absent. Completing a spawn call does not complete its
   child. Child failures/completions never terminate the parent's turn. Source:
@@ -338,7 +338,7 @@ parent run and persists child history separately from the parent's messages.
 - **Kimi:** identifiable `Agent` calls expose their prompt, progress, and returned
   result. The current Kimi Code ACP implementation subscribes only to the main
   agent, so live child-internal messages/tools and independent background-child
-  completion are unavailable through this transport. PandaCode does not invent
+  completion are unavailable through this transport. Pantheon does not invent
   those details, parse terminal text for fake identities, or start another server.
   Calls remain correlated after ACP replaces the tool title with its description.
   Sources: [ACP session subscriptions](https://github.com/MoonshotAI/kimi-code/blob/main/packages/acp-server/src/session.ts),
@@ -364,7 +364,7 @@ OpenCode launches `opencode acp` using ACP v1. Models come from its installed
 `models --verbose` catalog with real display names, provider/model IDs, context
 limits, and variant IDs. Catalog output is bounded and whitelisted so provider
 headers and arbitrary options never reach the UI. Live `configOptions` are
-authoritative: PandaCode selects mode, then model, then advertised reasoning effort,
+authoritative: Pantheon selects mode, then model, then advertised reasoning effort,
 waiting for each acknowledgement before sending the prompt. Session loading
 suppresses replayed history, and resumption uses the advertised `resume` or
 `loadSession` capability. Unsupported capabilities fail before prompting.
@@ -391,9 +391,9 @@ Explicit `--model` choices override the default environment value.
 inherited shell environment. Therefore GLM uses `--setting-sources ""` and
 non-secret command-line settings to prevent user/project Claude credentials or
 endpoints replacing the Coding Plan connection. It does not inherit those settings
-files' hooks/plugins/permissions; PandaCode's explicitly supplied MCP tools remain
+files' hooks/plugins/permissions; Pantheon's explicitly supplied MCP tools remain
 available. Claude-managed enterprise policies still apply. The key is never
-written into argv or a settings file; it is resolved from PandaCode's secrets store or
+written into argv or a settings file; it is resolved from Pantheon's secrets store or
 `ZAI_API_KEY`. Competing Anthropic/cloud auth variables are removed, and Claude's
 subprocess credential scrubbing is enabled.
 
@@ -439,7 +439,7 @@ and [Antigravity authentication](https://antigravity.google/docs/ide/extensions)
 
 ## MiMo Token Plan
 
-Xiaomi's MiMo models reach PandaCode the same way GLM does: through the installed
+Xiaomi's MiMo models reach Pantheon the same way GLM does: through the installed
 Claude Code, pointed at MiMo's Anthropic-compatible endpoint with a MiMo key
 (documented at https://mimo.mi.com/docs/en-US/tokenplan/integration/claudecode).
 The Token Plan is a fixed subscription with a dedicated cluster per account —
@@ -447,7 +447,7 @@ The Token Plan is a fixed subscription with a dedicated cluster per account —
 `ttp-…` (team); the pay-as-you-go API is `https://api.xiaomimimo.com/anthropic` with
 `sk-…` keys. Settings → Agents → Provider connections has one MiMo card: a cluster
 picker (the four endpoints above, nothing free-form — the URL is shown for the chosen
-one) and the key. The key goes into PandaCode's secrets store under its own account
+one) and the key. The key goes into Pantheon's secrets store under its own account
 (`mimo-token-plan`) or comes from `MIMO_API_KEY`; the cluster choice is a plain
 setting (`mimoEndpoint`). Unknown cluster IDs are dropped on load and refused on save.
 
@@ -472,16 +472,16 @@ the MiMo docs on 2026-09-22.
 ## Grok Build
 
 xAI's Grok Build CLI (`grok`, installed with `curl -fsSL https://x.ai/cli/install.sh | bash`)
-exposes ACP v1 on `grok agent stdio`, which PandaCode drives with the shared ACP
+exposes ACP v1 on `grok agent stdio`, which Pantheon drives with the shared ACP
 adapter. The launch line is `grok --no-auto-update --permission-mode <mode> agent
 [--always-approve] [--model ID] [--reasoning-effort E] stdio`: global flags precede
 `agent`, agent flags precede the `stdio` transport, and the permission mode
-overrides whatever the user's `~/.grok/config.toml` saved for the TUI (a saved
+overrides whatever the user's `Pantheon/.grok/config.toml` saved for the TUI (a saved
 `always-approve` would otherwise silence every prompt).
 
 **Sign-in.** Grok Build requires `authenticate` before any session call, even with
-cached credentials. PandaCode picks the advertised `defaultAuthMethodId` (normally
-`cached_token`, backed by `~/.grok/auth.json`) and only then sends `session/new`
+cached credentials. Pantheon picks the advertised `defaultAuthMethodId` (normally
+`cached_token`, backed by `Pantheon/.grok/auth.json`) and only then sends `session/new`
 or `session/resume`. Without a cached method, or when it fails, the turn stops with
 “Grok Build is not signed in. Run `grok login` in a terminal, then send again.” No
 browser sign-in is ever triggered from the app.
@@ -496,7 +496,7 @@ does not re-advertise options keeps them. Custom models from `config.toml` appea
 with their configured names.
 
 **Approvals.** Standard → `--permission-mode default` (Grok asks through
-`session/request_permission`; PandaCode shows the request). Accept edits →
+`session/request_permission`; Pantheon shows the request). Accept edits →
 `acceptEdits` plus automatic approval of `edit` requests. Full access →
 `bypassPermissions` with `--always-approve`. Grok's ACP agent has no read-only
 session mode, so **Plan mode** launches in `default` mode, prefixes the prompt with a
@@ -512,7 +512,7 @@ currently held), which feeds the context indicator against the active model's
 model current, and the `session/prompt` result's `_meta.totalTokens` closes the turn.
 Other `_x.ai/*` notifications (queue, settings, announcements, hooks) are ignored.
 Tool calls, diffs, slash commands (`available_commands_update`, including installed
-skills), HTTP MCP for PandaCode tools, cancel, and resume all use the common ACP paths.
+skills), HTTP MCP for Pantheon tools, cancel, and resume all use the common ACP paths.
 
 **Not yet.** The agent advertises `promptCapabilities.image: false`, so the composer
 offers documents and folders but refuses images for Grok tasks with a note; the
@@ -529,12 +529,12 @@ real handshake up to the prompt boundary without spending tokens.
 
 Command Code (`command-code`, installed with `npm i -g command-code`, Node 22 or
 newer) exposes ACP v1 on `command-code acp` — the transport OpenCode also uses — so
-PandaCode drives it with the shared ACP adapter. The launch line is
+Pantheon drives it with the shared ACP adapter. The launch line is
 `command-code acp`. Its npm package also ships the aliases `cmd`, `commandcode` and,
-on Windows, `cmdc`; PandaCode looks for `command-code`.
+on Windows, `cmdc`; Pantheon looks for `command-code`.
 
 **Sign-in.** Command Code keeps its own login (`command-code login`, stored in
-`~/.commandcode/auth.json`). A key saved in Settings → Agents, or
+`Pantheon/.commandcode/auth.json`). A key saved in Settings → Agents, or
 `COMMAND_CODE_API_KEY`, authenticates the same account and is injected into the ACP
 process; the CLI reads the environment variable ahead of its own file, so a key-only
 setup never needs the CLI login. The same key also authenticates Command Code's
@@ -550,7 +550,7 @@ sending the prompt. ACP reports reasoning efforts for the model the session curr
 holds, so they are attached to that model only, and the catalog is whatever the
 account's plan can reach (Command Code's own models plus any BYOK providers).
 
-**Approvals.** Command Code's ACP modes are its permission modes, so each PandaCode
+**Approvals.** Command Code's ACP modes are its permission modes, so each Pantheon
 choice maps onto one directly: Standard → `default`, Accept edits → `auto-accept`,
 Plan → `plan` (read-only: no edits or commands), Full access → `bypass`. A mode the
 server stops advertising fails the turn instead of silently running in a different
@@ -558,7 +558,7 @@ one; plan mode needs no prompt prefix, because the harness enforces it.
 
 **Turn data.** Streaming text, tool calls, context usage (`usage_update`), slash
 commands (`available_commands_update`, including installed skills), cancel, resume
-(`session/resume`) and HTTP MCP for PandaCode tools all use the common ACP paths.
+(`session/resume`) and HTTP MCP for Pantheon tools all use the common ACP paths.
 `loadSession` is advertised, so a task keeps its native session across turns.
 
 **Not yet.** The harness console is not offered for Command Code, and a mid-turn
@@ -573,7 +573,7 @@ without spending tokens.
 ## Cline
 
 Cline (`cline`, installed with `npm i -g cline`) exposes ACP v1 with
-`cline --acp`, so PandaCode drives it with the shared ACP adapter. The npm package's
+`cline --acp`, so Pantheon drives it with the shared ACP adapter. The npm package's
 `bin/cline` is a Node launcher for a bundled native binary. On Windows the npm
 `cline.cmd` shim resolves to that declared entry.
 
@@ -581,7 +581,7 @@ Cline (`cline`, installed with `npm i -g cline`) exposes ACP v1 with
 subscription), or reads `CLINE_API_KEY` from the environment. Without either,
 `session/new` fails with ACP `-32000` (“Authentication required: Call authenticate
 before starting a session”), and the turn stops with “Cline is not signed in. Run
-`cline auth` in a terminal, then send again.” PandaCode never starts Cline's browser
+`cline auth` in a terminal, then send again.” Pantheon never starts Cline's browser
 OAuth itself.
 
 **Models and effort.** `session/new` returns `configOptions` (`provider`, `model`,
@@ -600,7 +600,7 @@ session only after it has received a prompt. It has no `session/resume`.
 **Not available from Cline's ACP server (3.0.73).** Images: `image: true` is
 advertised, but the prompt keeps only text blocks, so screenshots are sent as
 file paths that its `read_files` tool opens. Cline ignores the ACP `mcpServers`
-list and does not advertise HTTP MCP, so PandaCode tools (titles, run/preview,
+list and does not advertise HTTP MCP, so Pantheon tools (titles, run/preview,
 team tools) are unavailable, and a task that requires them fails at startup.
 There are also no `available_commands_update` (slash commands), no `usage_update`
 (context meter) and no usage limits. Mid-turn messages stay queued.
@@ -612,9 +612,9 @@ spending tokens.
 
 ## Kilo Code
 
-Kilo Code (`npm i -g @kilocode/cli`) exposes ACP v1 with `kilo acp`, so PandaCode
+Kilo Code (`npm i -g @kilocode/cli`) exposes ACP v1 with `kilo acp`, so Pantheon
 uses its shared ACP adapter. Sign in with `kilo auth login` (or `/connect` in
-Kilo). Credentials and provider configuration stay with Kilo; PandaCode adds no
+Kilo). Credentials and provider configuration stay with Kilo; Pantheon adds no
 separate account or key store. See the [official CLI docs](https://kilo.ai/docs/code-with-ai/platforms/cli).
 
 **Models and effort.** Discovery opens an empty session without sending a prompt
@@ -626,14 +626,14 @@ before the prompt is sent. Missing advertised choices fail the turn.
 **Approvals.** Standard, Accept edits and Full access select Kilo's `code` agent;
 Plan selects `plan`. A process-local `KILO_CONFIG_CONTENT` sets global and
 code/plan wildcard permissions to `ask` in both `agent` and legacy `mode`
-settings; the inherited `KILO_PERMISSION` override is removed. PandaCode allows read/search/fetch/think
+settings; the inherited `KILO_PERMISSION` override is removed. Pantheon allows read/search/fetch/think
 requests, approves edits in Accept edits, and declines all other requests in Plan
 (cancelling if no rejection option is offered). Full access uses `allow` instead.
 Kilo's own configuration and managed restrictions still apply. These are tool
 permissions, not an OS sandbox. Kilo auto-updates are disabled for
 these subprocesses; update the CLI yourself.
 
-**Turn data.** Images, streaming text, tool calls, HTTP MCP for PandaCode tools,
+**Turn data.** Images, streaming text, tool calls, HTTP MCP for Pantheon tools,
 advertised slash commands, cancellation and session resume use the shared ACP
 paths. Kilo advertises both `session/resume` and `session/load`; older servers
 with only `loadSession` use `session/load`. Mid-turn messages remain queued for
@@ -652,20 +652,20 @@ opt-in smoke test that reads the installed CLI's catalog without prompting.
 ## Muse Code
 
 Muse Code (Meta's coding agent CLI, `muse`, installed by its launcher into
-`~/.local/bin`) has no ACP mode. Its machine interface is MSP, a newline-delimited
+`Pantheon/.local/bin`) has no ACP mode. Its machine interface is MSP, a newline-delimited
 JSON-RPC protocol served by `muse serve` over stdio, so `providers/muse.rs` is a
 native MSP client (the schema comes from `muse schema generate-ts --out DIR`). The
 launch line is `muse serve`, plus the sandbox flags below; `MUSE_LOGIN=0` keeps the
-launcher from starting a device login on PandaCode's pipes. MSP commands carry a
+launcher from starting a device login on Pantheon's pipes. MSP commands carry a
 client-minted UUIDv7 `commandId`; Muse refuses any other version.
 
-**Sign-in.** Muse keeps its own login (`muse login`, `~/.config/muse/auth.json`).
-Without it the turn ends `failed` with error kind `authRequired`, and PandaCode stops
+**Sign-in.** Muse keeps its own login (`muse login`, `Pantheon/.config/muse/auth.json`).
+Without it the turn ends `failed` with error kind `authRequired`, and Pantheon stops
 with “Muse Code is not signed in. Run `muse login` in a terminal, then send again.”
 
 **Session flow.** `initialize` (requesting the `sessionMcp` capability) →
 `initialized` → `session/start` with the workspace root, approval mode, model and
-PandaCode's tool server as a per-session `streamableHttp` MCP server, or
+Pantheon's tool server as a per-session `streamableHttp` MCP server, or
 `session/resume` with the saved MSP session ID followed by
 `session/setApprovalMode` and `session/setModel` (resume takes neither). The session
 ID is the task's resume ID. `turn/start` carries the prompt parts and the reasoning
@@ -688,7 +688,7 @@ arguments; the `/` menu lists those skills, read from a memory-only host
 context limit) and never prompts.
 
 **Approvals and questions.** `approval/request` and `userInput/request` are
-server requests: PandaCode acknowledges presentation at once (`{}`), then answers
+server requests: Pantheon acknowledges presentation at once (`{}`), then answers
 with `approval/decide` (the offered `approved` choice, or `denied`/`abort` to
 decline) or `userInput/answer` (an offered label as `selectedLabel`, anything else as
 `freeText`; an empty or stopped form sends `userInput/cancel`). Questions use the
@@ -710,7 +710,7 @@ Stop sends `turn/interrupt`, and the run ends at the cancelled `turn/completed`.
 **Approval modes.** Approval mode is selected on the wire; sandbox posture is fixed
 by process flags, so both are set for each run:
 
-| PandaCode | MSP approval mode | `muse serve` flags |
+| Pantheon | MSP approval mode | `muse serve` flags |
 | --- | --- | --- |
 | Standard | `promptUnmatched` | — (sandbox on, network proxy-only) |
 | Accept edits | `onRequest` | — |
@@ -718,12 +718,12 @@ by process flags, so both are set for each run:
 | Full access | `allowAll` | `--disable-sandbox` |
 
 **What Muse cannot express.** Muse's LLM approval judge reviews prompt-bound calls
-before they reach PandaCode and approves those it considers safe; `muse serve` has no
+before they reach Pantheon and approves those it considers safe; `muse serve` has no
 flag to turn it off (only `muse exec --approval-judge off`), so Standard and Accept
 edits show only the calls the judge escalates and sandbox escalations. Plan mode has
-no native equivalent: PandaCode makes the host read-only and prefixes the prompt with
+no native equivalent: Pantheon makes the host read-only and prefixes the prompt with
 the plan instruction. Muse does not load a workspace's own skills and rules unless the
-workspace is trusted in Muse (PandaCode does not pass `--trust-workspace`). Account
+workspace is trusted in Muse (Pantheon does not pass `--trust-workspace`). Account
 usage windows (`usage/read`) are known only inside a running host, so Agent usage
 shows Muse as unsupported. Subagent transcripts, goals, workflows, `/compact` and
 background tasks are not wired; `muse exec --json` is not used.
@@ -736,7 +736,7 @@ Verified against Muse Code 1.4.7 (launcher; the host reported 1.4.12) on 2026-10
 by driving `muse serve` directly. The recorded frames back the unit tests in
 `providers/muse.rs` and `slash_commands/muse.rs`; an ignored test
 (`installed_muse_catalog`) reads the real catalog without prompting, and
-`PANDACODE_SMOKE_PROVIDER=muse cargo test smoke_provider_from_env -- --ignored` runs
+`PANTHEON_SMOKE_PROVIDER=muse cargo test smoke_provider_from_env -- --ignored` runs
 two real turns (start, then resume).
 
 ## omp (Oh My Pi)
@@ -751,7 +751,7 @@ differences, read from omp 18.12's `modes/rpc/rpc-types.ts` and CLI flag table:
 - Resume uses `--resume <id>` (omp has no `--session-id`); it looks in the task
   folder first and fails rather than prompting when stdin is not a terminal.
 - `--approval-mode yolo` turns omp's own approvals off: the same bridge extension
-  as Pi enforces PandaCode's modes, and registers app tools as `essential` so
+  as Pi enforces Pantheon's modes, and registers app tools as `essential` so
   omp does not hide them behind tool discovery.
 - Model discovery skips Pi-only flags (`--offline`, `--no-mcp`, …); slash
   commands come from `get_available_commands`.
@@ -763,13 +763,13 @@ Accounts, models and thinking levels are omp's own. Live check:
 
 ## Custom OpenAI-compatible endpoints (Ollama, FreeLLMAPI, local models)
 
-PandaCode has no "custom provider" box; it launches harnesses, and a harness
+Pantheon has no "custom provider" box; it launches harnesses, and a harness
 brings its own model list. For any server that speaks the OpenAI chat API
 (Ollama, LM Studio, [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi),
 a self-hosted gateway), add it to OpenCode's own config and pick its models in
-PandaCode.
+Pantheon.
 
-1. Add the provider to `~/.config/opencode/opencode.json` (or a project
+1. Add the provider to `Pantheon/.config/opencode/opencode.json` (or a project
    `opencode.json`). Ollama:
 
    ```json
@@ -802,9 +802,9 @@ PandaCode.
    button), refresh, tick the new models and save.
 3. Pick the model from the composer's OpenCode group.
 
-PandaCode only lists what `opencode models --verbose` reports, so a model that
+Pantheon only lists what `opencode models --verbose` reports, so a model that
 is missing there is a config problem; check it with `opencode models` in a
-terminal. At launch PandaCode sets only the permission policy through
+terminal. At launch Pantheon sets only the permission policy through
 `OPENCODE_CONFIG_CONTENT` (`providers/acp.rs`); your `opencode.json` is read by
 OpenCode as usual and never rewritten. To keep a separate config per setup, add
 a [named connection](#named-connections) for OpenCode with its config folder

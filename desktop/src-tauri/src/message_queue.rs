@@ -204,6 +204,14 @@ pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, sessi
     if let Some(reply) = crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await? {
         return Ok(reply);
     }
+    // Save the steering message before the agent can accept it, so a
+    // later insert failure cannot leave an accepted steer without a
+    // transcript row or cause a retry to deliver the same text twice.
+    let _message_id = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .start_turn_message(&session_id, &text)?;
     let reply = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
         let agent = agents.get(&session_id).ok_or("The agent is not running; the message stays queued.")?;
@@ -216,8 +224,6 @@ pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, sessi
         .await
         .map_err(|_| "The agent did not accept the message in time; it stays queued.".to_owned())?
         .map_err(|_| "The agent stopped before taking the message.".to_owned())??;
-    // ponytail: saved on acceptance; a steer later reported `failed` stays in the transcript.
-    state.store.lock().map_err(|e| e.to_string())?.message(&session_id, "user", &text)?;
     Ok(reply)
 }
 
