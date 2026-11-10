@@ -1,11 +1,11 @@
 /**
  * Keep preferences from earlier releases without replacing newer choices.
  *
- * Scope-in-key rule (docs/desktop-app-plan.md §12): every persisted key says
- * where it applies. Prefixes: `pantheon.` global window state; keys that
- * belong to a narrower scope embed it (`pantheon.project.<id>.…`,
- * `pantheon.model.<session>.…`). Anything cross-surface (connections,
- * provider settings) lives in the backend, never here.
+ * Scope-in-key rule: every persisted key says where it applies. Prefixes:
+ * `pantheon.` global window state; keys that belong to a narrower scope embed
+ * it (`pantheon.project.<id>.…`, `pantheon.model.<session>....`). Anything
+ * cross-surface (connections, provider settings) lives in the backend, never
+ * here.
  */
 export function migratePreferences(storage: Storage): void {
   const marker = 'pantheon.preferences-migrated';

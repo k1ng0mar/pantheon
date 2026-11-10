@@ -33,3 +33,9 @@ desktop/node_modules/
 desktop/src-tauri/target/
 desktop/dist/
 desktop/src-tauri/gen/
+
+# Working documents. Plans, audits, proposals, research dumps and verification
+# reports are scratch: keep them under docs/working/ (untracked) while in
+# progress and delete them when the work lands. Nothing here belongs on the repo.
+/docs/working/
+/desktop/docs/working/

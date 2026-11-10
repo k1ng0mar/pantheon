@@ -117,7 +117,7 @@ jobs:
       # `desktop/.github/workflows/ci.yml` is inert in this monorepo:
       # GitHub only reads the workflow directory at the repository root.
       # Without this job the desktop's TypeScript is never typechecked
-      # and its 137 unit tests never run (M4 in docs/execution-ledger.md).
+      # and its 137 unit tests never run.
       - uses: actions/setup-node@v4
         with:
           # Type stripping (needed: the tests import src/*.ts directly) is

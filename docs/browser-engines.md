@@ -9,7 +9,7 @@ headless operation). Nothing else gets added without Umar's explicit call.
 
 | # | Backend | Role | Drive model from Rust | Weight | License / cost | Live status |
 |---|---------|------|----------------------|--------|----------------|-------------|
-| 1 | **GSD Browser** | Default interactive | Subprocess CLI (`--json`), daemon over `--cdp-url` or its own Chrome launch | Full Chromium + tiny Rust daemon | MIT/Apache-2.0, free | ✅ Verified live 2026-09-29 (gsd-browser 0.1.24): navigate, snapshot, extract, act, wait-for, daemon stop - see [verification](browser-verification.md) |
+| 1 | **GSD Browser** | Default interactive | Subprocess CLI (`--json`), daemon over `--cdp-url` or its own Chrome launch | Full Chromium + tiny Rust daemon | MIT/Apache-2.0, free | ✅ Verified live 2026-09-29 (gsd-browser 0.1.24): navigate, snapshot, extract, act, wait-for, daemon stop |
 | 2 | **`chromiumoxide` 0.9** | Native CDP fallback | Native Rust crate, CDP websocket, tokio | Chrome's footprint only | Apache-2.0/MIT, free | ✅ Verified live 2026-09-29 (Chrome 152): navigate, snapshot, extract, wait-for, stale refs - no schema-drift breakage |
 | 3 | **Steel** | Cloud / self-host | REST + raw CDP websocket; official Rust SDK (`steel-rs`) | Self-host: ~4GB base, ~200-500MB/session; cloud: zero | Apache-2.0 core; cloud Launch $0 + usage ($0.10/hr browser) | ⛔ Blocked: no API key on 2026-09-29 |
 | 4 | **Browserbase** | Cloud | `POST /v1/sessions` → raw CDP `wss://` URL; no SDK needed | Cloud only | Free tier (1 browser-hr); Dev $20/mo (100 hrs, then $0.12/hr) | ⛔ Blocked: no API key on 2026-09-29 |

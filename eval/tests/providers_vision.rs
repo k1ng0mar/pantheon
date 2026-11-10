@@ -315,8 +315,7 @@ fn upload_attach_serialize_end_to_end() {
 /// (vision gate -> adapter serialization -> response parsing), which the
 /// unit-level `body_value` tests above do not. A live variant (real pixels
 /// to a real vision model) still wants a key in hand; the sandbox has no
-/// `NVIDIA_API_KEY` and no direct egress, so that stays a manual step
-/// (see docs/live-test-report-nim.md for the harness used last time).
+/// `NVIDIA_API_KEY` and no direct egress, so that stays a manual step.
 struct CaptureTransport {
     body: Arc<Mutex<Option<String>>>,
 }

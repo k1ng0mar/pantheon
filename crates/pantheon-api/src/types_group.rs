@@ -3256,7 +3256,7 @@ pub mod mcp_catalog {
     }
 
     /// One catalog row. Pins verified 2026-09-29 against official
-    /// docs/registries (`docs/bundled-mcp-research.md`).
+    /// docs/registries.
     ///
     /// Canonical decisions, made once here (previously the two copies
     /// disagreed): every `npx` invocation carries `-y` (without it npx
