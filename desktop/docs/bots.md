@@ -1,15 +1,15 @@
 # Bots: always-on agents on your own computer
 
-A **bot** is a named, persistent agent that lives in PandaCode and keeps working when you are away. You talk to it from the desktop app, a local web page, Telegram, Slack, Discord or WhatsApp. It remembers what matters, runs on schedules, acts through the same harnesses, browser, terminal and tools PandaCode already has, and asks before anything risky.
+A **bot** is a named, persistent agent that lives in Pantheon and keeps working when you are away. You talk to it from the desktop app, a local web page, Telegram, Slack, Discord or WhatsApp. It remembers what matters, runs on schedules, acts through the same harnesses, browser, terminal and tools Pantheon already has, and asks before anything risky.
 
 It combines the ideas behind xAI's Grok Bot, Meta's Muse and OpenAI's Dots, with one deliberate difference: **the bot runs on the user's own computer, not on a vendor's cloud machine.** Files, browser sessions, credentials and memory stay local.
 
 ## What each product contributes
 
-| Idea | From | PandaCode form |
+| Idea | From | Pantheon form |
 | --- | --- | --- |
 | Named bots with a job (research, triage, chief of staff), several bots | Grok Bot | `bots` table: name, role, instructions, goals, an optional soul (personality), avatar, harness and model per bot. |
-| A persistent computer: browser, terminal, files that carry over | Grok Bot, Muse, Dots | The user's machine through PandaCode's harnesses, browser and terminals, in a per-bot workspace folder. |
+| A persistent computer: browser, terminal, files that carry over | Grok Bot, Muse, Dots | The user's machine through Pantheon's harnesses, browser and terminals, in a per-bot workspace folder. |
 | Schedules and triggers | Grok Bot, Dots | `bot_schedules`: every N minutes, daily at a time, weekdays, with a prompt. Runs survive restarts. |
 | Standing goals and proactive check-ins | Dots, Muse | Per-bot goals plus an optional heartbeat that reviews them read-only and reports or proposes. |
 | Memory that learns from conversations and feedback | Dots, Muse | `bot_memories`, written by the bot (`bot_remember`) or the user; shown, edited and deleted in the app. |
@@ -18,7 +18,7 @@ It combines the ideas behind xAI's Grok Bot, Meta's Muse and OpenAI's Dots, with
 | A second check on anything risky | Muse (Sentinel) | **Guard**: every approval request is matched against the bot's rules; a fixed list of risky actions (sudo, force push, `rm -rf`, piping downloads to a shell, passwords, money transfers) always asks, even under a broad allow rule. |
 | Complete audit trail and Activity View | Muse, Dots | `bot_activity`: inbound messages, replies, notifications, approvals and rule decisions, memory changes, schedule runs, channel and pairing changes, errors. |
 | Monitoring that pauses suspicious work; kill switch | Dots | Pause a bot or all bots from the app or with `/stop` in any paired channel. |
-| A credential store the agent cannot see | Muse | Channel tokens live in PandaCode's secrets store and never enter prompts. |
+| A credential store the agent cannot see | Muse | Channel tokens live in Pantheon's secrets store and never enter prompts. |
 | Reset deletes conversations, memories and schedules together | Dots | **Reset bot**. |
 
 Out of scope: vendor cloud VMs, one-time card numbers and payment rails, health and smart-home connectors, voice calls.
@@ -26,7 +26,7 @@ Out of scope: vendor cloud VMs, one-time card numbers and payment rails, health 
 ## Architecture
 
 ```
- channels ──► gateway ──► bot router ──► PandaCode task (harness run) ──► reply ──► gateway ──► channel
+ channels ──► gateway ──► bot router ──► Pantheon task (harness run) ──► reply ──► gateway ──► channel
  (web, Telegram,   pairing,      per-thread        existing providers, tools,        captured at the
   Slack, Discord,  allowlists,   conversation      approvals, queue, steering        native "done" hook
   WhatsApp)        approvals
@@ -34,10 +34,10 @@ Out of scope: vendor cloud VMs, one-time card numbers and payment rails, health 
  scheduler ──────────────┘  (due schedules and heartbeats start runs the same way)
 ```
 
-- **Conversations are ordinary PandaCode tasks** in the bot's workspace project, so streaming, approvals, the queue, steering, usage limits and history all work unchanged. `bot_threads` maps `(bot, channel, external thread)` to a task.
+- **Conversations are ordinary Pantheon tasks** in the bot's workspace project, so streaming, approvals, the queue, steering, usage limits and history all work unchanged. `bot_threads` maps `(bot, channel, external thread)` to a task.
 - **The bot brief** (identity, role, instructions, goals, personality, memories, channel etiquette) is sent as a folded context block at the start of each conversation, and again when the profile or memories change.
 - **Profile fields** keep who the bot is apart from what it does: **Name** (Leo), **Role** (Chief of staff), **Goals** (Make sure I don't miss a ship date), **Instructions** (duties, workflows, escalation thresholds, report formats) and an optional **Soul**: Markdown for tone, values and conversational style. **Import soul.md…** copies the file's text into the bot once (UTF-8, at most 64 KB; anything else is refused with an error), so editing, moving or deleting the file later never changes the bot; edit or **Remove** it in Profile. It is stored in `bots.soul` (schema 28) and appears in the brief as a labelled "Personality" section that states it never grants tools, permissions, credentials or authority. A bot without a soul gets the same brief as before.
-- **Skills and MCP servers** (Settings → Skills, schema 29): a bot references library skills by id (`bots.skills`) and MCP servers by name (`bots.mcp`), never copies or credentials. In the bot's own conversations the skills are turned on through the skills adapter at project scope in the bot's workspace for that conversation's harness (`skills::scoped::sync_project`; never user scope), or ride in the brief for harnesses without a skill folder; skills with unreviewed safety findings are left out and logged. MCP servers are not passed per run: PandaCode only injects its own server, so a chosen server works when the bot's harness already has it in its own config (the panel shows "From …") and shows **Unsupported for this bot's harness** otherwise. The brief names the chosen servers.
+- **Skills and MCP servers** (Settings → Skills, schema 29): a bot references library skills by id (`bots.skills`) and MCP servers by name (`bots.mcp`), never copies or credentials. In the bot's own conversations the skills are turned on through the skills adapter at project scope in the bot's workspace for that conversation's harness (`skills::scoped::sync_project`; never user scope), or ride in the brief for harnesses without a skill folder; skills with unreviewed safety findings are left out and logged. MCP servers are not passed per run: Pantheon only injects its own server, so a chosen server works when the bot's harness already has it in its own config (the panel shows "From …") and shows **Unsupported for this bot's harness** otherwise. The brief names the chosen servers.
 - **Project tasks with a bot**: the context bar of a New task in an ordinary project has a Bot chip (`botTaskControl` in `main.ts`; No bot by default). Choosing a bot links the task (`bot_tasks`, `bot_assign_task`) and applies the bot's harness and model; the task keeps its own project and checkout. Its first message (and the next one after the bot changes) carries the bot's brief from `bot_task_brief`, with skills resolved as the bot's plus the project's activations, deduplicated by id (`skills::scoped::resolve`, provenance bot/project/both). Bot skills ride in that task's brief and are never written into the checkout, so tasks sharing a checkout stay isolated. Bot tools, channels and the Guard apply only to the bot's own conversations.
 - **Replies** are captured when a bot task's run finishes and sent back to the thread it came from. Long replies are split per channel limits.
 - **Bot tools** (MCP host, scoped to the bot): `bot_remember`, `bot_forget`, `bot_recall`, `bot_schedule`, `bot_list_schedules`, `bot_cancel_schedule`, `bot_notify`. They are registered only in a bot's own tasks and act only on that bot, so they never ask for approval (`bots::tools::self_scoped`, honored by the Claude permission bridge; Codex hosts leave them out of `approval_tools`).
@@ -57,7 +57,7 @@ A bot can run commands on the user's computer and can be messaged from outside i
 
 ## Channels
 
-All connections are outbound or local, so nothing is exposed unless you choose to. Third-party tokens (Telegram, Slack, Discord, WhatsApp) are saved in PandaCode's secrets store (`app.pandacode.bots`, one account per channel and secret: a 0600 `secrets.json` on macOS, the Secret Service on Linux, Credential Manager on Windows; see [secret storage](providers.md#secret-storage)) and are never sent to the webview or the agent; the channel row records only which names were saved, so listing channels never reads a secret. The web chat link's token is PandaCode's own and guards a page on this computer only, so it lives in the database next to the conversations it protects: a keychain access prompt after an update (ad-hoc builds change signature) would otherwise break every open link. **New link** replaces it and revokes old links.
+All connections are outbound or local, so nothing is exposed unless you choose to. Third-party tokens (Telegram, Slack, Discord, WhatsApp) are saved in Pantheon's secrets store (`app.pantheon.bots`, one account per channel and secret: a 0600 `secrets.json` on macOS, the Secret Service on Linux, Credential Manager on Windows; see [secret storage](providers.md#secret-storage)) and are never sent to the webview or the agent; the channel row records only which names were saved, so listing channels never reads a secret. The web chat link's token is Pantheon's own and guards a page on this computer only, so it lives in the database next to the conversations it protects: a keychain access prompt after an update (ad-hoc builds change signature) would otherwise break every open link. **New link** replaces it and revokes old links.
 
 Adding a channel is a guided flow (`src/bots-connect.ts`): numbered steps with buttons that open the exact page, copy buttons for every command and value, a **Test** button, and **Connect**, which checks the credentials with the service before saving (`channels::verify`). Common mistakes are caught before any request (`channels::check_format`): a truncated Telegram token, swapped Slack tokens, a Discord client secret pasted as the token, a WhatsApp phone number instead of its ID. Once connected, each channel shows what to do next.
 
@@ -80,14 +80,14 @@ Unknown senders get a four-digit pairing code and wait until approved in **Bots 
 | Hooks in `lib.rs` | `bots::start` at setup, `bots::approval_requested` in the event sink, `bots::run_finished` after `done`, `bots::tools::with_bot` in the tool host chain |
 | UI | `src/bots.ts`, `src/bots-panels.ts`, `src/bots.css`, preview mock `src/preview-bots.ts`, tests `tests/bots.spec.ts` |
 
-Bot tasks deliver their queued messages natively when a run ends, so the window skips `dispatchQueue` for bot projects. Bots run while PandaCode is running. Quitting stops their work; a schedule that came due while the app was closed runs once at the next start, and its missed repeats are skipped.
+Bot tasks deliver their queued messages natively when a run ends, so the window skips `dispatchQueue` for bot projects. Bots run while Pantheon is running. Quitting stops their work; a schedule that came due while the app was closed runs once at the next start, and its missed repeats are skipped.
 
 ## Testing
 
 - `cargo test --lib bots::tests::live_services_reject_fake_credentials_clearly -- --ignored --nocapture` sends made-up credentials to the real Telegram, Slack, Discord and Graph APIs and checks each rejection is a clear message (no account needed).
 - `cargo test --lib bots::` covers storage, memory, schedules, rules, pairing, the brief, channel parsers, signatures and the HTTP parser.
 - `tests/bots.spec.ts` covers the Bots window against the preview mock; `tests/bots-web.spec.ts` runs the real served chat page (extracted from `web.rs`) against a scripted API, in Chrome and WebKit.
-- A live run against the native app was done with an isolated identifier (`npx tauri dev --config '{"identifier":"ai.pandacode.botsmoke","build":{"beforeDevCommand":""}}'` and a seeded bot with a web channel): a real Claude turn, the brief, memory via the bot tool, approval from the page, Always allow creating a rule that then auto-approves, the native queue, a self-scheduled run reporting back, `/help`, `/new`, `/stop` and pause. Never point a dev build at the default identifier: it would migrate your real database.
+- A live run against the native app was done with an isolated identifier (`npx tauri dev --config '{"identifier":"ai.pantheon.botsmoke","build":{"beforeDevCommand":""}}'` and a seeded bot with a web channel): a real Claude turn, the brief, memory via the bot tool, approval from the page, Always allow creating a rule that then auto-approves, the native queue, a self-scheduled run reporting back, `/help`, `/new`, `/stop` and pause. Never point a dev build at the default identifier: it would migrate your real database.
 
 ## Not yet built
 

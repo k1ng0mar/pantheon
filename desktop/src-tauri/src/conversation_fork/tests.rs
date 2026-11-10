@@ -14,7 +14,7 @@ fn fixture(provider: &str) -> (Store, Session) {
 
 fn append(store: &Store, sid: &str, role: &str, content: &str) -> i64 {
     store.message(sid, role, content).unwrap();
-    store.db.last_insert_rowid()
+    store.db.lock().unwrap().last_insert_rowid()
 }
 
 fn all_messages(store: &Store, sid: &str) -> Vec<Message> {
@@ -202,8 +202,7 @@ fn copies_full_saved_response_and_keeps_a_bounded_context_handoff() {
     assert!(store.messages(&source.id, None).unwrap()[1].content.len() < response.len());
     let fork = at_message(&store, &source.id, boundary).unwrap();
     let saved: String = store
-        .db
-        .query_row(
+        .db.lock().unwrap().query_row(
             "SELECT content FROM messages WHERE session_id=?1 AND role='assistant'",
             [&fork.id],
             |row| row.get(0),
@@ -280,14 +279,13 @@ fn wrong_missing_and_internal_boundaries_leave_no_task_or_history() {
     }
     assert!(at_message(&store, "missing-task", foreign).is_err());
     let boundary = append(&store, &source.id, "user", "Fork me");
-    store.db.execute_batch(&format!("CREATE TRIGGER reject_fork_message BEFORE INSERT ON messages WHEN NEW.session_id <> '{}' AND NEW.session_id <> '{}' BEGIN SELECT RAISE(ABORT, 'injected fork failure'); END;", source.id, other.id)).unwrap();
+    store.db.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_fork_message BEFORE INSERT ON messages WHEN NEW.session_id <> '{}' AND NEW.session_id <> '{}' BEGIN SELECT RAISE(ABORT, 'injected fork failure'); END;", source.id, other.id)).unwrap();
     assert!(at_message(&store, &source.id, boundary)
         .unwrap_err()
         .contains("injected fork failure"));
     assert_eq!(store.sessions().unwrap().len(), 2);
     let queued: i64 = store
-        .db
-        .query_row("SELECT COUNT(*) FROM context_recovery", [], |row| {
+        .db.lock().unwrap().query_row("SELECT COUNT(*) FROM context_recovery", [], |row| {
             row.get(0)
         })
         .unwrap();
@@ -303,15 +301,14 @@ fn running_team_and_worker_forks_preserve_preferences_without_execution_state() 
         .unwrap();
     let child_message = append(&store, &child.id, "assistant", "Worker answer");
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')",
             [&source.id],
         )
         .unwrap();
-    store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker-1',?2)", params![source.id, child.id]).unwrap();
-    store.db.execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'native-child','{}',1)", [&source.id]).unwrap();
-    store.db.execute("UPDATE sessions SET status='running',resume_id='source-context',reasoning_effort='high',context_used_tokens=500,context_window=1000,goal_state='{}',codex_settings=?2,task_description='FUTURE_DESCRIPTION',task_stage='completed',completed_at=1,archived=1 WHERE id=?1", params![source.id, json!({"personality":"friendly"}).to_string()]).unwrap();
+    store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker-1',?2)", params![source.id, child.id]).unwrap();
+    store.db.lock().unwrap().execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'native-child','{}',1)", [&source.id]).unwrap();
+    store.db.lock().unwrap().execute("UPDATE sessions SET status='running',resume_id='source-context',reasoning_effort='high',context_used_tokens=500,context_window=1000,goal_state='{}',codex_settings=?2,task_description='FUTURE_DESCRIPTION',task_stage='completed',completed_at=1,archived=1 WHERE id=?1", params![source.id, json!({"personality":"friendly"}).to_string()]).unwrap();
     let source_before = serde_json::to_value(store.session(&source.id).unwrap()).unwrap();
     for (source_id, boundary) in [(&source.id, first), (&child.id, child_message)] {
         let original = store.session(source_id).unwrap();
@@ -333,7 +330,7 @@ fn running_team_and_worker_forks_preserve_preferences_without_execution_state() 
         );
         assert!(!fork.task_description.contains("FUTURE_DESCRIPTION"));
         assert!(store.subagents(&fork.id).unwrap().is_empty());
-        let active: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1) OR EXISTS(SELECT 1 FROM architect_workers WHERE session_id=?1 OR parent_session_id=?1) OR EXISTS(SELECT 1 FROM architect_requests WHERE parent_session_id=?1)", [&fork.id], |row| row.get(0)).unwrap();
+        let active: bool = store.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1) OR EXISTS(SELECT 1 FROM architect_workers WHERE session_id=?1 OR parent_session_id=?1) OR EXISTS(SELECT 1 FROM architect_requests WHERE parent_session_id=?1)", [&fork.id], |row| row.get(0)).unwrap();
         assert!(!active);
     }
     assert_eq!(
@@ -354,7 +351,7 @@ fn tool_snapshots_and_metadata_cannot_update_or_reference_the_source() {
     append(&store, &source.id, "internal", "Hidden source state");
     append(&store, &source.id, "changes", "Source change summary");
     let change_id = storage::id();
-    store.db.execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at) VALUES(?1,?2,?3,?4,1)", params![change_id, source.id, first, json!({"id":change_id,"files":[],"additions":0,"deletions":0,"truncated":false,"concurrent":false}).to_string()]).unwrap();
+    store.db.lock().unwrap().execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at) VALUES(?1,?2,?3,?4,1)", params![change_id, source.id, first, json!({"id":change_id,"files":[],"additions":0,"deletions":0,"truncated":false,"concurrent":false}).to_string()]).unwrap();
     let boundary = append(&store, &source.id, "assistant", "Current response");
     let fork = at_message(&store, &source.id, boundary).unwrap();
     let copied = all_messages(&store, &fork.id);
@@ -385,8 +382,7 @@ fn worktree_forks_share_the_existing_checkout_and_reject_missing_metadata() {
     std::fs::write(root.join(".git"), "gitdir: /unmodified/source/worktree").unwrap();
     std::fs::write(root.join("uncommitted.txt"), "Keep current checkout bytes").unwrap();
     store
-        .db
-        .execute(
+        .db.lock().unwrap().execute(
             "UPDATE sessions SET worktree_path=?2 WHERE id=?1",
             params![source.id, root.to_str()],
         )

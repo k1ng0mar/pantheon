@@ -38,7 +38,7 @@ fn creates_a_bot_with_its_own_workspace_project() {
     assert_eq!(bot.name, "Scout");
     assert!(!bot.paused);
     assert_eq!(project_ids(&f.store).unwrap(), vec![bot.project_id.clone()]);
-    let name: String = f.store.db.query_row("SELECT name FROM projects WHERE id=?1", [&bot.project_id], |r| r.get(0)).unwrap();
+    let name: String = f.store.db.lock().unwrap().query_row("SELECT name FROM projects WHERE id=?1", [&bot.project_id], |r| r.get(0)).unwrap();
     assert_eq!(name, "Scout");
     assert!(std::fs::read_dir(&f.root).unwrap().count() == 1);
     assert_eq!(list(&f.store).unwrap().len(), 1);
@@ -396,7 +396,7 @@ fn summaries_carry_a_one_line_preview_of_the_latest_message() {
     assert!(summaries(&f.store).unwrap()[0].last_message.is_none());
     let (session, _) = thread_session(&f.store, &bot, DESKTOP, DESKTOP, "Scout · You").unwrap();
     let insert = |role: &str, content: &str, at: i64| {
-        f.store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,?2,?3,?4)", params![session, role, content, at]).unwrap();
+        f.store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,?2,?3,?4)", params![session, role, content, at]).unwrap();
     };
     insert("user", "What changed today?", 10);
     insert("assistant", "## Done\n\nInbox at **zero**.   Two `replies` ready.", 20);
@@ -414,7 +414,7 @@ fn summaries_carry_a_one_line_preview_of_the_latest_message() {
 #[test]
 fn schema_version_includes_bots() {
     let f = fixture();
-    let version: i64 = f.store.db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    let version: i64 = f.store.db.lock().unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
     assert_eq!(version, crate::storage::SCHEMA_VERSION);
 }
 

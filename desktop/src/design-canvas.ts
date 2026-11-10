@@ -106,7 +106,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   function board(name: string): Board {
     const el = document.createElement('article');
     el.className = 'design-board';
-    el.innerHTML = `<header class="design-board-name">${escape(name)}</header><div class="design-board-body"><iframe sandbox="allow-same-origin" referrerpolicy="no-referrer" tabindex="-1" title="${escape(name)}"></iframe><div class="design-hit" data-board="${escape(name)}"></div></div>`;
+    el.innerHTML = `<header class="design-board-name">${escape(name)}</header><div class="design-board-body"><iframe referrerpolicy="no-referrer" tabindex="-1" title="${escape(name)}"></iframe><div class="design-hit" data-board="${escape(name)}"></div></div>`;
     const frame = el.querySelector('iframe')!;
     const made: Board = { name, size: -1, modified: -1, html: '', x: 0, width: WIDTH, height: HEIGHT, el, frame };
     frame.addEventListener('load', () => measure(made));

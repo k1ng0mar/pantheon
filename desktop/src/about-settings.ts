@@ -8,7 +8,9 @@ export const PROJECT_LINKS = {
   issues: 'https://github.com/k1ng0mar/pantheon/issues',
   releases: 'https://github.com/k1ng0mar/pantheon/releases',
   license: 'https://github.com/k1ng0mar/pantheon/blob/master/desktop/LICENSE',
-  attribution: 'https://github.com/k1ng0mar/pantheon',
+  // Required by the inherited PandaCode License: a public fork must credit
+  // PandaCode with a link its users can readily see (here, the About screen).
+  upstream: 'https://github.com/aicodeking/pandacode',
 } as const;
 
 const link = (label: string, url: string) =>
@@ -19,6 +21,7 @@ export function aboutSettingsHtml(): string {
   return `<div class="settings-group settings-about" aria-labelledby="settings-about-heading">
     <div class="setting-row"><div><strong id="settings-about-heading">About Pantheon</strong><small class="settings-about-version">Version … · Pantheon desktop</small></div></div>
     <div class="setting-row"><div><strong>License</strong><small>Open source (MIT-based). No account, no telemetry.</small></div>${link('Pantheon License', PROJECT_LINKS.license)}</div>
+    <div class="setting-row"><div><strong>Attribution</strong><small>Pantheon Desktop is a fork of PandaCode.</small></div>${link('PandaCode', PROJECT_LINKS.upstream)}</div>
     <div class="setting-row settings-updates"><div><strong>Updates</strong><small class="settings-update-status" aria-live="polite">Checks GitHub Releases automatically.</small></div><div class="settings-row-actions"><button type="button" class="secondary-button settings-update-action" hidden></button>${link('Releases', PROJECT_LINKS.releases)}</div></div>
     <div class="setting-row settings-updates-auto"><div><strong>Install updates automatically</strong><small>Downloads in the background and restarts when no agent is working.</small></div><input type="checkbox" class="settings-switch" data-update-automatic aria-label="Install updates automatically"></div>
     <div class="setting-row"><div><strong>Source code</strong><small>Report bugs and follow development.</small></div><div class="settings-row-actions">${link('GitHub repository', PROJECT_LINKS.repository)}${link('Issues', PROJECT_LINKS.issues)}</div></div>

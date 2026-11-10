@@ -44,5 +44,5 @@ Pantheon repo) — discovery picks it up from the checkout path or PATH.
 
 ## License
 
-PandaCode License (MIT with an attribution requirement) — see `LICENSE`.
+Pantheon License (MIT with an attribution requirement) — see `LICENSE`.
 This fork keeps that license and carries the attribution notice above.

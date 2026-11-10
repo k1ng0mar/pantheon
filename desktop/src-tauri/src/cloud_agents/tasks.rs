@@ -152,7 +152,7 @@ pub(crate) fn before_run(app: &tauri::AppHandle, sid: &str, harness: &str, attac
         ready.sandbox.keep_alive(&ready.native, ready.sandbox.info().max_unattended_minutes)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let turn = with_store(app, |store| {
-            store.db.query_row("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')", [sid], |r| r.get(0)).map_err(|e| e.to_string())
+            store.db.lock().unwrap().query_row("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')", [sid], |r| r.get(0)).map_err(|e| e.to_string())
         })?;
         let state = update(app, sid, |state| {
             state.run_id = Some(run_id.clone());
@@ -354,7 +354,7 @@ pub(crate) async fn cloud_agent_start(
                 Ok(worktree) => worktree,
                 Err(error) => {
                     if created {
-                        let _ = store.db.execute("DELETE FROM sessions WHERE id=?1", [&id]);
+                        let _ = store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&id]);
                     }
                     return Err(error);
                 }
@@ -362,7 +362,7 @@ pub(crate) async fn cloud_agent_start(
             store.attach_worktree(&id, &worktree.path, &worktree.branch)?;
             let state = State { provider: provider.clone(), stage: "creating".into(), detail: Some(format!("Creating a {} machine…", label(&provider))), pending_prompt: Some(prompt), ..State::default() };
             super::save(store, &id, Some(&state))?;
-            store.db.execute("UPDATE sessions SET draft=0,updated_at=?2 WHERE id=?1", rusqlite::params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
+            store.db.lock().unwrap().execute("UPDATE sessions SET draft=0,updated_at=?2 WHERE id=?1", rusqlite::params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
             store.session(&id)
         })
     })
@@ -484,7 +484,7 @@ mod tests {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let draft = store.create_session(&project.id, "claude", "default", "ask").unwrap();
-        store.db.execute("UPDATE sessions SET draft=1 WHERE id=?1", [&draft.id]).unwrap();
+        store.db.lock().unwrap().execute("UPDATE sessions SET draft=1 WHERE id=?1", [&draft.id]).unwrap();
         let (id, created) = task_row(&store, Some(&draft.id), &project.id, "codex", "gpt", Some("full"), None).unwrap();
         assert_eq!((id.as_str(), created), (draft.id.as_str(), false));
         let task = store.session(&id).unwrap();

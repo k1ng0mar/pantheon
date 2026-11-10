@@ -30,12 +30,12 @@ Full access maps to the following supported native mechanisms:
 | Claude Code | `--permission-mode bypassPermissions` with `--allow-dangerously-skip-permissions` |
 | GLM Coding Plan | The same Claude Code permission flags, with the isolated Z.AI provider configuration |
 | Codex | `danger-full-access` sandbox, `never` approval policy, and `dangerFullAccess` on each turn |
-| Kimi Code | Its advertised ACP `auto` mode (unattended execution); PandaCode waits for mode acknowledgement |
+| Kimi Code | Its advertised ACP `auto` mode (unattended execution); Pantheon waits for mode acknowledgement |
 | OpenCode | Process-local `permission: { "*": "allow" }` for the selected built-in agent and matching ACP approvals |
 | Antigravity | Accepts the offered ACP one-time tool permission; the server's own policy remains authoritative |
 
 Antigravity has no universal ACP setting that can disable server-side sandboxing
-or managed restrictions. PandaCode does not invent one. Structured questions still
+or managed restrictions. Pantheon does not invent one. Structured questions still
 require an answer; Full access does not choose answers on the user's behalf.
 
 These policies are applied through native flags or the harness protocol. The UI
@@ -52,7 +52,7 @@ reviewer and sandbox settings on thread start/resume and each turn. Kimi must
 advertise the required ACP mode and acknowledge `session/set_mode` before the
 prompt is sent.
 
-Pi has no native approval system, so a PandaCode extension enforces the modes
+Pi has no native approval system, so a Pantheon extension enforces the modes
 in Pi's RPC session: Standard asks before edits, commands and other non-read
 tools; Accept edits allows edit/write and asks for the rest; Plan mode allows
 read-only tools and declines everything else; Full access runs every tool without
@@ -65,12 +65,12 @@ escalate past the sandbox, never before each workspace edit. Standard runs
 approves escalations from dsh's edit/write/str_replace_editor tools; Plan mode runs
 `read-only`, declines every escalation and prefixes the prompt with the plan
 instruction; Full access runs `danger-full-access`, which never asks. A dsh session
-keeps the sandbox it was created with, so after a mode change PandaCode starts a
+keeps the sandbox it was created with, so after a mode change Pantheon starts a
 fresh dsh session (dsh's own history of the task does not carry over). A
 `permission.defaultPreset` in `~/.dsh/settings.yaml` overrides the environment for
 new sessions.
 
-Command Code's ACP session modes are its own permission modes, so each PandaCode choice
+Command Code's ACP session modes are its own permission modes, so each Pantheon choice
 maps to one of them: Standard is `default` ("Ask before running tools that change
 anything"), Accept edits is `auto-accept` (file edits are accepted, riskier actions still
 ask), Plan is `plan` (read-only: no edits or commands), and Full access is `bypass` (every
@@ -100,13 +100,13 @@ Standard is `promptUnmatched`, Accept edits `onRequest`, Plan `denyUnmatched` wi
 `--disable-write --disable-shell` (read-only, plus a plan instruction in the prompt),
 and Full access `allowAll` with `--disable-sandbox`. Muse's own LLM approval judge
 reviews calls first and approves those it considers safe; `muse serve` cannot turn it
-off, so PandaCode is asked only about escalated calls. See
+off, so Pantheon is asked only about escalated calls. See
 [providers.md](providers.md#muse-code).
 
 Kimi's actual mode behaviour is verified against its installed engine source:
 `default` is manual, `yolo` auto-approves routine operations, and `auto` is fully
 unattended. Its ACP mode descriptions can lag behind those engine semantics, so
-PandaCode supplies clearer labels.
+Pantheon supplies clearer labels.
 
 References: [Claude permission modes](https://code.claude.com/docs/en/permissions),
 [Kimi interaction modes](https://moonshotai.github.io/kimi-code/en/guides/interaction.html).
@@ -132,7 +132,7 @@ Plan mode blocks implementation, not research. Per harness:
 
 | Harness | Reads and web lookups in Plan mode |
 | --- | --- |
-| Claude Code, GLM, MiMo | `Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch` and `WebSearch` run without asking, also outside the project. Paths that look like credentials (`.ssh`, `.aws`, `.env`, keys, PandaCode's app data, …) still ask; Claude's own deny rules apply first. Edits stay blocked by Claude's plan mode, and commands ask. |
+| Claude Code, GLM, MiMo | `Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch` and `WebSearch` run without asking, also outside the project. Paths that look like credentials (`.ssh`, `.aws`, `.env`, keys, Pantheon's app data, …) still ask; Claude's own deny rules apply first. Edits stay blocked by Claude's plan mode, and commands ask. |
 | Codex | Its `read-only` sandbox already reads anywhere; shell network stays off. Codex's own web search is unchanged. |
 | OpenCode | Plan permission adds `webfetch`, `websearch` and `list`; `external_directory` asks; everything else is denied. |
 | Cline | Plan mode also allows `fetch` requests; edits, deletes and moves are declined, commands ask. |

@@ -1,11 +1,11 @@
-# PandaCode website
+# Pantheon website
 
-The static PandaCode website: the landing page, the changelog,
-the privacy policy and the PandaCode License (MIT-based). PandaCode is free, open source and collects nothing,
+The static Pantheon website: the landing page, the changelog,
+the privacy policy and the Pantheon License (MIT-based). Pantheon is free, open source and collects nothing,
 and the site follows suit: no cookies, no analytics, no remote fonts or scripts, and no
 third-party requests of any kind. Downloads link to
-[GitHub Releases](https://github.com/aicodeking/pandacode/releases/latest); the source is at
-[github.com/aicodeking/pandacode](https://github.com/aicodeking/pandacode).
+[GitHub Releases](https://github.com/aicodeking/pantheon/releases/latest); the source is at
+[github.com/aicodeking/pantheon](https://github.com/aicodeking/pantheon).
 
 ## Development
 
@@ -63,7 +63,7 @@ signatures and checksum files in static assets: **builds belong on GitHub Releas
 never in `website/public` or `website/dist`.**
 
 The site deploys as a static-assets-only Cloudflare Worker (`wrangler.jsonc`, Worker
-name `pandacode-site`, serving `./dist` with `_headers` applied). From `website/`:
+name `pantheon-site`, serving `./dist` with `_headers` applied). From `website/`:
 
 ```sh
 ASTRO_TELEMETRY_DISABLED=1 npm run build
@@ -88,4 +88,4 @@ page's controls and copy, download and source links, the What's New scenes, the 
 pages, pages without JavaScript, phone-width overflow, and that every request the site
 makes is same-origin. Set `PANTHEON_SITE_URL` to test another server (for example a
 production preview or a dev server on another port). Screenshots and traces go under
-`/private/tmp/pandacode-landing-checks`.
+`/private/tmp/pantheon-landing-checks`.

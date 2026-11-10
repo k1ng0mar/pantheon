@@ -45,7 +45,7 @@ that read one, a config folder: `CLAUDE_CONFIG_DIR` (Claude Code, GLM, MiMo),
 
 Connections live in `connections.json` beside the provider settings
 (`src-tauri/src/connections.rs`). Variables marked Secret are stored in Pantheon's
-secrets store (service `app.pandacode.connections`, one account per connection
+secrets store (service `app.pantheon.connections`, one account per connection
 and variable); the file and the webview only see their names, and an edit that
 leaves a secret empty keeps the saved value. Deleting a connection removes its
 secrets and returns its tasks to the harness's own setup.
@@ -817,8 +817,8 @@ under Environment; the model name comes from that gateway.
 ## Secret storage
 
 `src-tauri/src/secret_store.rs` holds every app secret: provider keys
-(`app.pandacode.providers`), connection secrets (`app.pandacode.connections`), cloud keys
-and settings (`app.pandacode.cloud`) and bot channel tokens (`app.pandacode.bots`).
+(`app.pantheon.providers`), connection secrets (`app.pantheon.connections`), cloud keys
+and settings (`app.pantheon.cloud`) and bot channel tokens (`app.pantheon.bots`).
 
 - **macOS:** one JSON file, `secrets.json` in the app data folder, keyed
   `"<service>/<account>"`, mode 0600, written atomically (0600 temp file in the same folder,

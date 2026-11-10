@@ -12,7 +12,7 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 6_000 },
   reporter: 'list',
-  outputDir: '/private/tmp/pandacode-landing-checks/results',
+  outputDir: '/private/tmp/pantheon-landing-checks/results',
   use: {
     baseURL: siteUrl ?? 'http://127.0.0.1:4173',
     headless: true,

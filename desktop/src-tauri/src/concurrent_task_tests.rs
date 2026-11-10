@@ -273,7 +273,7 @@ fn recovery_admission_insert_failure_keeps_history_pending_without_claiming_the_
         store
             .message(&task.id, "assistant", "Must remain available")
             .unwrap();
-        store.db.execute_batch("CREATE TRIGGER reject_recovery_prompt BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
+        store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_recovery_prompt BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
         task
     };
     let (tx, _rx) = unbounded_channel();
@@ -403,7 +403,7 @@ fn failed_start_releases_admission_and_shutdown_does_not_enqueue_a_prompt() {
         .unwrap()
         .create_session(&project_id, "codex", "default", "ask")
         .unwrap();
-    state.store.lock().unwrap().db.execute_batch("CREATE TRIGGER reject_prompt BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+    state.store.lock().unwrap().db.lock().unwrap().execute_batch("CREATE TRIGGER reject_prompt BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
     let (tx, _rx) = unbounded_channel();
     assert!(prepare_task_run(
         &state,

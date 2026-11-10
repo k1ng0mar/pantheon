@@ -2413,8 +2413,7 @@ mod tests {
                     let yo_project = store.add_project(&yo_path).unwrap();
                     if old_version == 3 {
                         store
-                            .db
-                            .execute(
+                            .db.lock().unwrap().execute(
                                 "UPDATE projects SET name=?2 WHERE id=?1",
                                 [
                                     new_project.id.as_str(),
@@ -2424,8 +2423,7 @@ mod tests {
                             .unwrap();
                     }
                     store
-                        .db
-                        .execute(
+                        .db.lock().unwrap().execute(
                             "UPDATE projects SET name=?2 WHERE id=?1",
                             [
                                 yo_project.id.as_str(),
@@ -2444,13 +2442,12 @@ mod tests {
                         .unwrap();
                     store.resume(&yo_task.id, "nested-resume").unwrap();
                     if old_version == 3 {
-                        store.db.execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;").unwrap();
+                        store.db.lock().unwrap().execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;").unwrap();
                     } else {
                         // Match an installed v4 build: New is already a task,
                         // while its nested Yo checkout remains a project.
                         store
-                            .db
-                            .execute(
+                            .db.lock().unwrap().execute(
                                 "UPDATE sessions SET worktree_path=?2 WHERE id=?1",
                                 [&new_task.id, new_path.to_str().unwrap()],
                             )
@@ -2459,7 +2456,7 @@ mod tests {
                             .db
                             .execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms;")
                             .unwrap();
-                        store.db.pragma_update(None, "user_version", 4).unwrap();
+                        store.db.lock().unwrap().pragma_update(None, "user_version", 4).unwrap();
                     }
                 }
                 {

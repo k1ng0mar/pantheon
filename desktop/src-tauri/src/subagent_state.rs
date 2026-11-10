@@ -456,13 +456,11 @@ mod tests {
         assert_eq!(merged.len(), 64);
         assert!(merged.iter().take(2).all(|a| a.status == "running"));
         store
-            .db
-            .execute("DELETE FROM sessions WHERE id=?1", [&sid])
+            .db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&sid])
             .unwrap();
         assert_eq!(
             store
-                .db
-                .query_row("SELECT COUNT(*) FROM subagents", [], |row| row
+                .db.lock().unwrap().query_row("SELECT COUNT(*) FROM subagents", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
             0
@@ -474,13 +472,13 @@ mod tests {
         let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
         let sid = task(&store.lock().unwrap());
         let mut state = SubagentState::default();
-        store.lock().unwrap().db.execute_batch("CREATE TRIGGER reject_child BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;").unwrap();
+        store.lock().unwrap().db.lock().unwrap().execute_batch("CREATE TRIGGER reject_child BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;").unwrap();
         let mut event = crate::event(&sid, "subagent", "");
         event.data = Some(serde_json::to_value(child("worker", "running")).unwrap());
         assert!(state.record(&store, "run", &mut event).is_err());
         assert_eq!(state.merge_history(Vec::new())[0].response, "Reading");
         let db = store.lock().unwrap();
-        db.db.execute_batch("DROP TRIGGER reject_child;").unwrap();
+        db.db.lock().unwrap().execute_batch("DROP TRIGGER reject_child;").unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();
         assert_eq!(db.subagents(&sid).unwrap()[0].response, "Reading");
     }
@@ -549,7 +547,7 @@ mod tests {
         let mut state = SubagentState::default();
         record(&mut state, &store, &sid, "run", child("worker", "running"));
         let db = store.lock().unwrap();
-        db.db.execute_batch("CREATE TRIGGER reject_final_insert BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;
+        db.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_final_insert BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;
             CREATE TRIGGER reject_final_update BEFORE UPDATE ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;").unwrap();
         let (changed, saved) = state.finish(&db, &sid, "stopped");
         assert!(

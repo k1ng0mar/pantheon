@@ -306,7 +306,7 @@ pub(crate) fn tray_resize(app: AppHandle, height: f64) {
 fn refresh_usage(app: &AppHandle, refresh_now: bool) {
     let mut providers: BTreeSet<String> = ["claude", "codex"].map(String::from).into();
     if let Ok(store) = app.state::<AppState>().store.lock() {
-        if let Ok(mut statement) = store.db.prepare("SELECT DISTINCT provider FROM sessions") {
+        if let Ok(mut statement) = store.db.lock().unwrap().prepare("SELECT DISTINCT provider FROM sessions") {
             if let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) {
                 providers.extend(rows.flatten());
             }

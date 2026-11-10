@@ -1,6 +1,6 @@
-// Where PandaCode lives. Builds are published on GitHub Releases; update the notes
+// Where Pantheon lives. Builds are published on GitHub Releases; update the notes
 // below once release builds are signed (Apple notarization, Authenticode).
-const repoUrl = 'https://github.com/aicodeking/pandacode';
+const repoUrl = 'https://github.com/k1ng0mar/pantheon';
 
 export const project = {
   repo: repoUrl,
@@ -27,6 +27,6 @@ export const distribution = {
   isUnsignedPreview: true,
   requirements: 'Apple silicon or Intel · macOS 12+',
   previewNotice: 'Not notarized by Apple. macOS blocks the first launch.',
-  unblockCommand: 'xattr -dr com.apple.quarantine /Applications/PandaCode.app',
+  unblockCommand: 'xattr -dr com.apple.quarantine /Applications/Pantheon.app',
   appleSupportUrl: 'https://support.apple.com/en-us/102445',
 };

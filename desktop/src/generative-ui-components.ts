@@ -470,7 +470,7 @@ async function cleanCustom(html: string): Promise<DocumentFragment> {
     USE_PROFILES: { html: true, svg: true },
     FORBID_TAGS: ['script', 'style', 'form', 'input', 'textarea', 'select', 'iframe', 'frame', 'object', 'embed', 'link', 'meta', 'base', 'video', 'audio', 'source', 'track', 'foreignObject'],
     FORBID_ATTR: ['srcset', 'action', 'formaction', 'background', 'ping'],
-    ALLOW_DATA_ATTR: true, RETURN_DOM_FRAGMENT: true,
+    ALLOW_DATA_ATTR: false, RETURN_DOM_FRAGMENT: true,
   });
   for (const element of clean.querySelectorAll('*')) {
     for (const attribute of [...element.attributes]) {

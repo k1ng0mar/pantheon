@@ -1,24 +1,24 @@
 # Homebrew
 
-PandaCode has an official tap,
-[aicodeking/homebrew-pandacode](https://github.com/aicodeking/homebrew-pandacode).
+Pantheon has an official tap,
+[aicodeking/homebrew-pantheon](https://github.com/aicodeking/homebrew-pantheon).
 
 ```sh
-brew install --cask aicodeking/pandacode/pandacode   # macOS 12+, Apple silicon or Intel
-brew install aicodeking/pandacode/pandacode          # Linux x86_64 or aarch64
+brew install --cask aicodeking/pantheon/pantheon   # macOS 12+, Apple silicon or Intel
+brew install aicodeking/pantheon/pantheon          # Linux x86_64 or aarch64
 ```
 
 ## What it installs
 
-- `Casks/pandacode.rb` installs `PandaCode.app` from the release's
-  `PandaCode-macOS-arm64.dmg` or `PandaCode-macOS-x64.dmg`, checked against the
-  sha256 in the cask. It sets `auto_updates true` because PandaCode updates itself,
+- `Casks/pantheon.rb` installs `Pantheon.app` from the release's
+  `Pantheon-macOS-arm64.dmg` or `Pantheon-macOS-x64.dmg`, checked against the
+  sha256 in the cask. It sets `auto_updates true` because Pantheon updates itself,
   so `brew upgrade` leaves it alone unless you pass `--greedy`.
-  `brew uninstall --zap --cask pandacode` also removes PandaCode's own data under
-  `~/Library` (the `ai.pandacode.desktop` folders, caches, preferences and WebKit
-  storage). It never touches your projects or `~/PandaCode Chats`.
-- `Formula/pandacode.rb` installs `PandaCode-Linux-x86_64.AppImage` or
-  `PandaCode-Linux-aarch64.AppImage` as `bin/pandacode`. It is Linux-only
+  `brew uninstall --zap --cask pantheon` also removes Pantheon's own data under
+  `~/Library` (the `ai.pantheon.desktop` folders, caches, preferences and WebKit
+  storage). It never touches your projects or `~/Pantheon Chats`.
+- `Formula/pantheon.rb` installs `Pantheon-Linux-x86_64.AppImage` or
+  `Pantheon-Linux-aarch64.AppImage` as `bin/pantheon`. It is Linux-only
   (`depends_on :linux`); on macOS use the cask. AppImages may need FUSE 2 (`libfuse2`).
 
 The cask has no preflight or postflight scripts and does not remove the quarantine
@@ -26,11 +26,11 @@ flag, so macOS shows its usual first-launch prompt for an unsigned app.
 
 ## How it stays current
 
-The tap updates itself, so releasing PandaCode needs no change here and no secret in
+The tap updates itself, so releasing Pantheon needs no change here and no secret in
 this repository. Its `.github/workflows/update.yml` runs every 3 hours, on demand
-(`workflow_dispatch`) and on a `pandacode-release` repository dispatch. It:
+(`workflow_dispatch`) and on a `pantheon-release` repository dispatch. It:
 
-1. reads the latest release tag of `aicodeking/pandacode` with `gh api` and stops
+1. reads the latest release tag of `aicodeking/pantheon` with `gh api` and stops
    unless it matches `^v\d+\.\d+\.\d+$`;
 2. downloads the four macOS and Linux `.sha256` files from that release and checks
    that each holds a 64-character hex digest;

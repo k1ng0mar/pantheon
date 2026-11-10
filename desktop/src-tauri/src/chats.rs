@@ -34,7 +34,7 @@ pub(crate) fn create(store: &Store, root: &Path, provider: &str, model: &str, mo
     let folder = root.join(format!("chat-{}", &id[..8]));
     std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create the chat's folder: {e}"))?;
     let project = store.add_project(&folder)?;
-    store.db.execute("UPDATE projects SET name='Chat' WHERE id=?1", params![project.id]).map_err(|e| e.to_string())?;
+    store.db.lock().unwrap().execute("UPDATE projects SET name='Chat' WHERE id=?1", params![project.id]).map_err(|e| e.to_string())?;
     crate::architect::profiles::create_user_task(store, &project.id, provider, model, mode, None)
 }
 
@@ -46,7 +46,7 @@ pub(crate) fn cleanup(store: &Store, root: &Path, project_id: &str) -> Result<bo
     if !in_root(&folder, root) {
         return Ok(false);
     }
-    let used: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1)", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let used: bool = store.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1)", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if used {
         return Ok(false);
     }
@@ -93,7 +93,7 @@ mod tests {
         assert!(in_root(Path::new(&project.path), &root));
         // A task still uses the chat: nothing is removed.
         assert!(!cleanup(&store, &root, &project.id).unwrap());
-        store.db.execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
+        store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
         std::fs::create_dir(Path::new(&project.path).join(".pantheon")).unwrap();
         assert!(cleanup(&store, &root, &project.id).unwrap());
         assert!(store.project(&project.id).is_err());
@@ -107,7 +107,7 @@ mod tests {
         let task = create(&store, &root, "claude", "default", None).unwrap();
         let folder = PathBuf::from(store.project(&task.project_id).unwrap().path);
         std::fs::write(folder.join("notes.md"), "keep").unwrap();
-        store.db.execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
+        store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
         assert!(cleanup(&store, &root, &task.project_id).unwrap());
         assert!(folder.join("notes.md").exists());
 

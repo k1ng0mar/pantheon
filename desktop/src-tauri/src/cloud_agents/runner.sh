@@ -1,5 +1,5 @@
 #!/bin/sh
-# PandaCode cloud agent runner (docs/cloud-agents.md, step 5). Started detached with
+# Pantheon cloud agent runner (docs/cloud-agents.md, step 5). Started detached with
 # `exec sh ./runner.sh` in its run directory, so $$ leads the process group.
 # Runs cmd.sh (the harness) with stdin from the append-only file `inbox`, stdout in `out`,
 # stderr in `err`; writes `pid` first and `exit` last. Touching `eof` (after the last

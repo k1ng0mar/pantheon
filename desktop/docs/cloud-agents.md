@@ -6,7 +6,7 @@ context bar's computer menu ("This computer", other Connect computers) also list
 AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel,
 Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and sending starts the task there. The
 task then reads like any other task: streaming transcript, approvals, questions, steering,
-queue, model picker. It keeps running when the laptop sleeps or PandaCode quits, and
+queue, model picker. It keeps running when the laptop sleeps or Pantheon quits, and
 catches up when it comes back.
 
 ## How it works
@@ -14,10 +14,10 @@ catches up when it comes back.
 1. **Machine.** `cloud::sandbox::connected(provider)` returns a `Box<dyn Sandbox>`
    (`src-tauri/src/cloud/sandbox.rs`: list/create/power/state/exec/keep_alive/spawn/
    upload/download). One machine per cloud task, named `pc-<first 8 of task id>`. Machine
-   IDs stay `provider:native`, so the VM panel and `pandacode_vm_*` tools see it too.
+   IDs stay `provider:native`, so the VM panel and `pantheon_vm_*` tools see it too.
 2. **Runtime.** `cloud_agents::setup::ensure_runtime` installs what the harness needs
    (git, Node when needed, the harness CLI) idempotently, with a version marker in
-   `~/.pandacode/runtime/<harness>`. Supported harnesses: `claude`, `glm`, `mimo`
+   `~/.pantheon/runtime/<harness>`. Supported harnesses: `claude`, `glm`, `mimo`
    (Claude Code relays), `codex`, `opencode`. Others refuse with a clear message.
 3. **Credentials.** `cloud_agents::credentials::push` copies the local logins the harness
    needs (files written 0600, never logged, re-pushed before every run so the remote copy
@@ -25,27 +25,27 @@ catches up when it comes back.
    relays, `GH_TOKEN` from `gh auth token`, git identity). Claude: a long-lived token
    from `claude setup-token` stored in Settings → Cloud is preferred
    (`CLAUDE_CODE_OAUTH_TOKEN`); otherwise the local Claude Code credentials are copied.
-4. **Checkout.** The local task gets its own worktree on branch `pandacode/cloud-<short>`
+4. **Checkout.** The local task gets its own worktree on branch `pantheon/cloud-<short>`
    (the "mirror worktree"), created from the current branch, uncommitted changes
    included as a first commit. `cloud_agents::sync::upload_checkout` sends it as a git
-   bundle to `$HOME/pandacode/<task id>` on the machine. After every run,
+   bundle to `$HOME/pantheon/<task id>` on the machine. After every run,
    `sync::pull_changes` commits the machine's changes there, fetches them back as a
    bundle and fast-forwards the mirror worktree, so the inspector's Changes tab, PR flow
    and Run script work locally. If the mirror worktree has local edits, the cloud commits
-   stay on `refs/pandacode/cloud/<task id>` and the task says so. Before a run, local
+   stay on `refs/pantheon/cloud/<task id>` and the task says so. Before a run, local
    commits the machine lacks go up first (`sync::push_local`).
 5. **Run.** The agent runs detached on the machine under a small runner
    (`cloud_agents/runner.sh`): its stdin is the append-only file `inbox`, its stdout and
    stderr go to `out` and `err`, and `exit` holds the exit code, in
-   `~/.pandacode/runs/<run id>/`. Locally the run uses the ordinary provider pipeline
+   `~/.pantheon/runs/<run id>/`. Locally the run uses the ordinary provider pipeline
    (`providers::run_with_tools`, the same `Protocol`, sink, persistence, approvals and
-   steering): only the transport differs. Lines PandaCode writes to the agent are
+   steering): only the transport differs. Lines Pantheon writes to the agent are
    appended to `inbox`; `out` is polled from a byte offset (adaptive: fast while output
    flows, slower when idle, backing off on network errors with a "Reconnecting…"
-   status). PandaCode's local MCP host tools are not offered to cloud runs.
+   status). Pantheon's local MCP host tools are not offered to cloud runs.
 6. **Sleep, quit, resume.** Closing the laptop pauses only the local poller; the run
    continues because `keep_alive` asked the provider to keep the machine up (capped by
-   `Info::max_unattended_minutes`). Quitting PandaCode leaves the remote run alone. At
+   `Info::max_unattended_minutes`). Quitting Pantheon leaves the remote run alone. At
    startup, and when a poll succeeds again, every cloud task whose run was active
    re-attaches: the log is replayed from offset 0 into a fresh `Protocol`, lines already
    in `inbox` are not written again, and the run ends normally (messages saved, queue

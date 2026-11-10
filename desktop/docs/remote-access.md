@@ -152,7 +152,7 @@ sockets cost no duration. Device rows live in the Durable Object's SQLite storag
 Each device has an X25519 key pair. The private key stays in `connect-secrets.json`, and the public key is
 registered with the device. For a pair of devices:
 
-`key = HKDF-SHA256(ikm = X25519(mine, theirs), salt = sorted(idA, idB).join("|"), info = "pandacode-remote v1")`.
+`key = HKDF-SHA256(ikm = X25519(mine, theirs), salt = sorted(idA, idB).join("|"), info = "pantheon-remote v1")`.
 
 `body = base64(nonce24 || XChaCha20-Poly1305(key, nonce24, plaintext, aad = from + "|" + to))`.
 Pair keys are cached by `(deviceId, publicKey)`, so a key change derives a new one.
@@ -221,7 +221,7 @@ A host refuses a session id that is itself a mirror, so tasks never hop twice.
    `github_clone_repo`, at most 6 minutes) into `Pantheon/<name>`, or `<name>-2`, `-3`… when
    taken, and adds the project.
 3. Fetches `origin` (at most 90 s), then uses the viewer's branch if origin has it, otherwise
-   origin's default branch. With a worktree it creates `pandacode/remote-<id>` from
+   origin's default branch. With a worktree it creates `pantheon/remote-<id>` from
    `origin/<branch>` the normal way. Without one, a fresh clone is checked out on that branch;
    an existing checkout is never switched: it runs in place only when it is clean, has no local
    agent running in it and is already on that branch (then it is fast-forwarded to origin when

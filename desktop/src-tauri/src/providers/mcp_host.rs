@@ -1098,7 +1098,7 @@ mod protocol_tests {
     async fn claude_and_kimi_fixture_processes_invoke_the_authenticated_native_bridge() {
         let _lock = concurrent_process_tests::process_test_lock().lock().await;
         const FIXTURE: &str = r#"
-import sys,json,urllib.request
+import sys,json,urllib.request,os
 provider=sys.argv[1]
 def receive():
     return json.loads(sys.stdin.readline())
@@ -1107,7 +1107,7 @@ def emit(value):
 receive()
 if provider == 'claude':
     assert '--strict-mcp-config' not in sys.argv
-    server=json.loads(sys.argv[sys.argv.index('--mcp-config')+1])['mcpServers']['pantheon_architect']
+    server=json.loads(os.environ.get('PANTHEON_MCP_CONFIG', '{}'))['mcpServers']['pantheon_architect']
     headers=server['headers']
     emit({'type':'control_response','response':{'request_id':'pantheon-init','subtype':'success','response':{}}})
     receive()

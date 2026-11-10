@@ -66,7 +66,7 @@ pub(crate) fn reserve_install(state: &crate::AppState) -> Result<InstallGuard> {
         return Err("Finish Jev assessments before updating an agent.".into());
     }
     let busy = |sql: &str, what: &str| -> Result<bool> {
-        store.db.query_row(sql, [], |row| row.get(0)).map_err(|_| format!("{what} state is unavailable."))
+        store.db.lock().unwrap().query_row(sql, [], |row| row.get(0)).map_err(|_| format!("{what} state is unavailable."))
     };
     if busy("SELECT EXISTS(SELECT 1 FROM sessions WHERE json_valid(goal_state) AND json_extract(goal_state,'$.status')='active')", "Goal")? {
         return Err("Pause active goals before updating an agent.".into());

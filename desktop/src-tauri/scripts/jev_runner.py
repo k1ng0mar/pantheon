@@ -323,7 +323,7 @@ class LivePreview:
 
     def start(self):
         if self.directory is not None:
-            self.thread = threading.Thread(target=self.loop, name="pandacode-jev-preview", daemon=True)
+            self.thread = threading.Thread(target=self.loop, name="pantheon-jev-preview", daemon=True)
             self.thread.start()
 
     def loop(self):
@@ -415,7 +415,7 @@ class Runtime:
             raise RuntimeError("chrome_start")
         isolated = {
             "BU_CDP_WS": websocket, "BU_CDP_URL": "", "BU_BROWSER_ID": "", "BU_API_KEY": "",
-            "BU_NAME": "pandacode-" + self.request["runId"][:40], "BH_NAME": "pandacode",
+            "BU_NAME": "pantheon-" + self.request["runId"][:40], "BH_NAME": "pantheon",
             "BH_HOME": str(root / "home"), "BH_RUNTIME_DIR": str(root / "ipc"),
             "BH_CONFIG_DIR": str(root / "config"), "BH_TMP_DIR": str(root / "tmp"),
             "BH_AGENT_WORKSPACE": str(root / "workspace"), "BH_RUNTIME_DIR_SHARED": "0",
