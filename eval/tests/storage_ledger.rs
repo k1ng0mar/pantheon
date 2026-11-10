@@ -443,30 +443,37 @@ fn prune_events_before_drops_old_and_keeps_new() {
         })
         .unwrap();
     ledger
+        .append(&Event::RunCompleted {
+            run_id: "r_old".into(),
+        })
+        .unwrap();
+    ledger
         .append(&Event::RunStarted {
             run_id: "r_new".into(),
         })
         .unwrap();
-    // Age the first run's event through a second connection; the ledger API
+    // Age the first run's events through a second connection; the ledger API
     // itself always stamps `now`, so a mixed-age history needs this.
     {
         let raw = Connection::open(&path).unwrap();
         raw.execute("UPDATE events SET ts_ms = 1 WHERE run_id = 'r_old'", [])
             .unwrap();
     }
-    let pruned = ledger.prune_events_before(1_000).unwrap();
-    assert_eq!(pruned, 1);
+    // Only a finished run loses old history; an open run keeps it.
+    let pruned = ledger.prune_events_before_active_safe(1_000).unwrap();
+    assert_eq!(pruned, 2, "the old run's two events");
     assert!(
         ledger.replay("r_old").unwrap().is_empty(),
-        "old event must be gone"
+        "old events must be gone"
     );
+    assert_eq!(ledger.status("r_old").unwrap().as_deref(), Some("completed"));
     assert_eq!(
         ledger.replay("r_new").unwrap().len(),
         1,
         "new event must survive"
     );
     // A cutoff in the past prunes nothing.
-    assert_eq!(ledger.prune_events_before(0).unwrap(), 0);
+    assert_eq!(ledger.prune_events_before_active_safe(0).unwrap(), 0);
 }
 
 #[test]

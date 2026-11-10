@@ -65,7 +65,7 @@ fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
     let mut state = TuiState::default();
     state.session_id = "sess-1".to_string();
     state.title = Some("my chat".to_string());
-    state.queued_message = Some("queued".to_string());
+    state.queue_message("sess-1", "queued".to_string());
     state.ready = false;
     state.active_run = Some("run-9".to_string());
     state.status_line = "working".to_string();
@@ -79,7 +79,7 @@ fn reset_ephemeral_clears_turn_state_but_keeps_identity() {
     assert!(state.reset_ephemeral(), "a turn was in flight");
 
     assert!(state.blocks.is_empty(), "transcript cleared");
-    assert!(state.queued_message.is_none(), "queue dropped");
+    assert!(state.queued_message().is_none(), "queue dropped");
     assert!(state.ready, "ready for the next turn");
     assert_eq!(state.status_line, "ready");
     assert!(state.active_run.is_none());
