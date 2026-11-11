@@ -33,7 +33,7 @@ fn candidates_with_conn(conn: &rusqlite::Connection, sid: &str) -> Result<Vec<St
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    if team_status.as_deref().is_some_and(|s| architect::active(s)) {
+    if team_status.as_deref().is_some_and(architect::active) {
         return Err("Pause the architect team before changing this task.".into());
     }
     let mut ids = vec![sid.to_owned()];

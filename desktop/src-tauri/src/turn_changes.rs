@@ -1526,7 +1526,7 @@ pub fn persist(store: &Store, sid: &str, mut capture: Captured) -> Result<i64> {
     }
     // The message, its summary, and the retained-diff eviction commit together.
     // A duplicate summary id rolls the message back instead of orphaning it.
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let message_id:i64=tx.query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id",params![sid,storage::now()],|r|r.get(0)).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at,diff_bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![capture.summary.id,sid,message_id,summary,storage::now(),bytes]).map_err(|e|e.to_string())?;

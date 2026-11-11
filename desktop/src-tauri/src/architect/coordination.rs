@@ -203,7 +203,7 @@ pub(super) fn dispatch_state(
     }
     // The tool call commits or rolls back together: a rejected message or a
     // failed team save leaves no partial mailbox entry behind.
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut changed = false;
     let result = match name {

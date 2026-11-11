@@ -455,7 +455,7 @@ pub(super) async fn fork_codex_task(
     }
     store.project(&source.project_id)?;
     let task_id = {
-        let mut conn = store.db.lock().unwrap();
+        let conn = store.db.lock().unwrap();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let task_id = storage::Store::insert_new_session(
             &tx,
@@ -478,11 +478,13 @@ pub(super) async fn fork_codex_task(
     store.session(&task_id)
 }
 
-/// A fork has no team provenance. Preserve recognized historical app turns as
-/// typed records while their original team IDs and cutoff are still available.
+/// Test-only entry point for `copy_task_messages_on`: takes the store lock itself.
+#[cfg(test)]
 pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> Result<()> {
     copy_task_messages_on(&store.db.lock().unwrap(), source, target)
 }
+/// A fork has no team provenance. Preserve recognized historical app turns as
+/// typed records while their original team IDs and cutoff are still available.
 pub(crate) fn copy_task_messages_on(
     conn: &rusqlite::Connection,
     source: &str,

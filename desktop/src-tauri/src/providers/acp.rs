@@ -1127,6 +1127,17 @@ impl Protocol {
     }
 }
 
+/// Human notice for a non-end_turn ACP stop reason; `None` for normal ends.
+fn acp_stop_notice(reason: &str) -> Option<String> {
+    match reason {
+        "" | "end_turn" | "cancelled" => None,
+        "max_tokens" => Some("Paused: the model hit its output limit for this turn.".into()),
+        "max_turn_requests" => Some("Paused: the run reached its request limit for this turn.".into()),
+        "refusal" => Some("The agent declined to continue (refusal).".into()),
+        other => Some(format!("The agent stopped ({other}).")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tests::config;
@@ -2090,13 +2101,3 @@ mod tests {
     }
 }
 
-/// Human notice for a non-end_turn ACP stop reason; `None` for normal ends.
-fn acp_stop_notice(reason: &str) -> Option<String> {
-    match reason {
-        "" | "end_turn" | "cancelled" => None,
-        "max_tokens" => Some("Paused: the model hit its output limit for this turn.".into()),
-        "max_turn_requests" => Some("Paused: the run reached its request limit for this turn.".into()),
-        "refusal" => Some("The agent declined to continue (refusal).".into()),
-        other => Some(format!("The agent stopped ({other}).")),
-    }
-}

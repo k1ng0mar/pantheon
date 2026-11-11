@@ -198,7 +198,7 @@ fn save_approval_with_pending(
         .transpose()?;
     update_pending_request(
         &mut approvals,
-        pending_requests.as_mut().map(|requests| &mut **requests),
+        pending_requests.as_deref_mut(),
         &request_id,
         activity,
     );
@@ -2758,7 +2758,7 @@ fn create_worktree_task_with_defaults(
         }
         store.project(&source.project_id)?;
         let task_id = {
-            let mut conn = store.db.lock().unwrap();
+            let conn = store.db.lock().unwrap();
             let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
             let task_id = storage::Store::create_worktree_session_on_conn(
                 &tx,

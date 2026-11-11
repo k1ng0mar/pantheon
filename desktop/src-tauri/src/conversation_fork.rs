@@ -33,8 +33,8 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
 
     // Write phase: create the fork and copy its history in one transaction.
     let target_id = {
-        let mut db = store.db.lock().unwrap();
-        let mut transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let db = store.db.lock().unwrap();
+        let transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
         let target_id = Store::insert_new_session(
             &transaction,
             &source.project_id,

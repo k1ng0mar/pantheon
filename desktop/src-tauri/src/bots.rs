@@ -462,7 +462,7 @@ pub(crate) fn set_paused(store: &Store, id: &str, paused: bool) -> Result<Bot> {
 pub(crate) fn reset(store: &Store, id: &str) -> Result<Bot> {
     let bot = get(store, id)?;
     {
-        let mut conn = store.db.lock().unwrap();
+        let conn = store.db.lock().unwrap();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
         for table in ["bot_memories", "bot_schedules", "bot_activity"] {

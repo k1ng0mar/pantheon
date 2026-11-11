@@ -112,7 +112,7 @@ pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result
         return Err("The queue changed. Try reordering again.".into());
     }
     {
-        let mut conn = store.db.lock().unwrap();
+        let conn = store.db.lock().unwrap();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         for (position, id) in ids.iter().enumerate() {
             tx.execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;

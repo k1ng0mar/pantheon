@@ -1006,7 +1006,7 @@ fn create_launch_task(
     crate::providers::validate_reasoning_effort(&context.provider, effort)?;
     store.project(project_id)?;
     let task_id = {
-        let mut conn = store.db.lock().unwrap();
+        let conn = store.db.lock().unwrap();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let task_id = storage::Store::insert_new_session(
             &tx,

@@ -166,7 +166,7 @@ pub(crate) fn save_profile(
 ) -> Result<TeamLibrary> {
     setup.validate()?;
     let name = validate_name(&name)?;
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut library = read_on(&tx)?;
     if library
@@ -211,7 +211,7 @@ pub(crate) fn save_profile(
     Ok(library)
 }
 pub(crate) fn delete_profile(store: &Store, id: &str) -> Result<TeamLibrary> {
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut library = read_on(&tx)?;
     let index = library
@@ -227,7 +227,9 @@ pub(crate) fn delete_profile(store: &Store, id: &str) -> Result<TeamLibrary> {
     tx.commit().map_err(|e| e.to_string())?;
     Ok(library)
 }
-/// Must share the task configuration transaction so Save setup is all-or-nothing.
+/// Test-only entry point for `remember_on`: takes the store lock itself so a test
+/// does not have to hold a transaction.
+#[cfg(test)]
 pub(super) fn remember(
     store: &Store,
     setup: Option<TeamSetup>,
@@ -235,6 +237,7 @@ pub(super) fn remember(
 ) -> Result<()> {
     remember_on(&store.db.lock().unwrap(), setup, profile_id)
 }
+/// Must share the task configuration transaction so Save setup is all-or-nothing.
 pub(super) fn remember_on(
     conn: &rusqlite::Connection,
     setup: Option<TeamSetup>,
@@ -283,6 +286,8 @@ pub(super) fn check_remember_on(
     }
     Ok(())
 }
+/// Test-only entry point for `apply_selection_on`: takes the store lock itself.
+#[cfg(test)]
 pub(super) fn apply_selection(store: &Store, sid: &str, selection: &ModelSelection) -> Result<()> {
     apply_selection_on(&store.db.lock().unwrap(), sid, selection)
 }
@@ -340,7 +345,7 @@ pub(crate) fn create_user_task(
     }
     store.project(project_id)?;
     let sid = {
-        let mut conn = store.db.lock().unwrap();
+        let conn = store.db.lock().unwrap();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let sid = Store::insert_new_session(
             &tx,

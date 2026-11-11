@@ -478,13 +478,8 @@ mod tests {
     #[test]
     fn a_steer_step_is_supported_only_where_the_turn_takes_a_message() {
         let r = recipe(vec![step("check", Some("npm test"), None, &["steer"])]);
-        for provider in ["pantheon"] {
-            let reports = dry_run(&r, provider, &[]).unwrap();
-            assert_eq!(
-                reports[0].status, "supported",
-                "{provider} takes a message mid-turn"
-            );
-        }
+        let reports = dry_run(&r, "pantheon", &[]).unwrap();
+        assert_eq!(reports[0].status, "supported", "pantheon takes a message mid-turn");
         for provider in [
             "kimi",
             "grok",

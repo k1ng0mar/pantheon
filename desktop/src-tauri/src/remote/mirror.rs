@@ -226,7 +226,7 @@ pub(crate) async fn sync(app: &tauri::AppHandle, local: &str) -> Result<()> {
 /// position, all or nothing. Returns whether to ask for the next page. A page that no
 /// longer starts at the stored position (another sync got there first) is skipped.
 pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -> Result<bool> {
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let current: i64 = tx.query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
     if current != after {

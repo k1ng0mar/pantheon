@@ -732,7 +732,7 @@ impl Store {
         // Lists only need a card preview. Full details remain in SQLite and are
         // fetched for the selected task or directly for an agent's Start prompt.
         let mut sessions = {
-            let mut conn = self.db.lock().unwrap();
+            let conn = self.db.lock().unwrap();
             let mut stmt = conn.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
             let rows = stmt
                 .query_map([], Self::session_row)
@@ -786,7 +786,7 @@ impl Store {
                 .replace('%', r"\%")
                 .replace('_', r"\_")
         );
-        let mut conn = self.db.lock().unwrap();
+        let conn = self.db.lock().unwrap();
         let mut statement = conn.prepare(
             "SELECT s.id,s.title,s.updated_at,
                (SELECT m.content FROM messages m WHERE m.session_id=s.id AND m.role IN ('user','assistant') AND m.content LIKE ?2 ESCAPE '\\' ORDER by m.id DESC LIMIT 1)
@@ -805,10 +805,10 @@ impl Store {
             });
             Ok(serde_json::json!({"taskId": r.get::<_, String>(0)?, "title": r.get::<_, String>(1)?, "updatedAt": r.get::<_, i64>(2)?, "excerpt": excerpt}))
         }).map_err(|e| e.to_string())?;
-        let result = rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string());
         
-        result
+        
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     
     }
     pub fn set_limited(&self, sid: &str, until: Option<i64>) -> Result<()> {
@@ -860,7 +860,7 @@ impl Store {
         self.project(project_id)?;
         let sid = {
             let mut conn = self.db.lock().unwrap();
-            let mut transaction = conn.transaction().map_err(|e| e.to_string())?;
+            let transaction = conn.transaction().map_err(|e| e.to_string())?;
             let sid =
                 Self::insert_new_session(&transaction, project_id, provider, model, DEFAULT_PERMISSION_MODE)?;
             let title: String = title
@@ -935,7 +935,7 @@ impl Store {
             return Err("A conversation may appear only once in the order.".into());
         }
         let mut conn = self.db.lock().unwrap();
-        let mut transaction = conn.transaction().map_err(|e| e.to_string())?;
+        let transaction = conn.transaction().map_err(|e| e.to_string())?;
         let mut ordered = {
             let mut query = transaction.prepare(&format!("SELECT id,pinned FROM sessions WHERE id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER}")).map_err(|e| e.to_string())?;
             let rows = query
@@ -1228,7 +1228,7 @@ impl Store {
         // transaction; rollback prevents orphaned empty tasks if the write fails.
         let sid = {
             let mut conn = self.db.lock().unwrap();
-            let mut transaction = conn.transaction().map_err(|e| e.to_string())?;
+            let transaction = conn.transaction().map_err(|e| e.to_string())?;
             let sid = Self::insert_new_session(&transaction, project_id, provider, model, mode)?;
             transaction
                 .execute(
@@ -1341,6 +1341,9 @@ impl Store {
         Ok(path)
     }
 
+    /// Test-only entry point for `create_worktree_session_on_conn`: takes the
+    /// store lock itself so a test does not have to hold a transaction.
+    #[cfg(test)]
     pub fn create_worktree_session_on(
         &self,
         source: &Session,
@@ -1348,12 +1351,8 @@ impl Store {
         branch: Option<&str>,
     ) -> Result<Session> {
         self.project(&source.project_id)?;
-        let sid = Self::create_worktree_session_on_conn(
-            &self.db.lock().unwrap(),
-            source,
-            path,
-            branch,
-        )?;
+        let sid =
+            Self::create_worktree_session_on_conn(&self.db.lock().unwrap(), source, path, branch)?;
         self.session(&sid)
     }
     pub(crate) fn create_worktree_session_on_conn(
@@ -1466,7 +1465,7 @@ impl Store {
             // Switch provider, queue the handoff cutoff, and write the notice in
             // one transaction so a failed notice rolls the switch back.
             let mut db = self.db.lock().unwrap();
-            let mut tx = db.transaction().map_err(|e| e.to_string())?;
+            let tx = db.transaction().map_err(|e| e.to_string())?;
             let changed = update(&tx)?;
             if changed == 0 {
                 tx.rollback().map_err(|e| e.to_string())?;
@@ -1644,7 +1643,7 @@ impl Store {
         // from enqueuing a second run.
         let message_id = {
             let mut db = self.db.lock().unwrap();
-            let mut tx = db.transaction().map_err(|e| e.to_string())?;
+            let tx = db.transaction().map_err(|e| e.to_string())?;
             let claimed = tx
                 .execute(
                     "UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,\n                title=?2,updated_at=?3 WHERE id=?1 AND archived=0 AND task_stage<>'completed'\n                AND status NOT IN ('running','waiting')",
@@ -1777,7 +1776,7 @@ impl Store {
 
     pub fn subagents(&self, sid: &str) -> Result<Vec<crate::providers::SubagentActivity>> {
         self.session(sid)?;
-        let mut conn = self.db.lock().unwrap();
+        let conn = self.db.lock().unwrap();
         let mut query = conn
             .prepare(
                 "SELECT content FROM subagents WHERE session_id=?1
@@ -1787,13 +1786,13 @@ impl Store {
         let rows = query
             .query_map([sid], |row| row.get::<_, String>(0))
             .map_err(|error| error.to_string())?;
-        let result = rows.map(|row| {
+        
+        
+        rows.map(|row| {
             let content = row.map_err(|error| error.to_string())?;
             serde_json::from_str(&content).map_err(|error| error.to_string())
         })
-        .collect::<std::result::Result<Vec<_>, _>>();
-        
-        result
+        .collect::<std::result::Result<Vec<_>, _>>()
     
     }
     pub fn finish_subagents(&self, sid: &str, status: &str) -> Result<()> {
@@ -1841,7 +1840,7 @@ impl Store {
     pub fn messages(&self, sid: &str, before: Option<i64>) -> Result<Vec<Message>> {
         self.session(sid)?;
         let result_rows: Vec<Message> = {
-            let mut conn = self.db.lock().unwrap();
+            let conn = self.db.lock().unwrap();
         let mut stmt = conn.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map(params![sid, before.unwrap_or(i64::MAX)], |r| {
@@ -1876,9 +1875,9 @@ impl Store {
                 })
             })
             .map_err(|e| e.to_string())?;
-            let result_rows = rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            result_rows
+            
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
         };
 
         let mut page = Vec::new();

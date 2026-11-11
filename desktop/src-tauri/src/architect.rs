@@ -378,7 +378,7 @@ pub(crate) fn validate_admission(
         // snapshot. Refresh only the architect: worker tool schemas are unchanged.
         // Queue its own history before clearing the native ID, atomically with the
         // version marker, so interrupted startup retries keep their handoff.
-        let mut conn = store.db.lock().unwrap();
+        let conn = store.db.lock().unwrap();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         if parent.provider == "codex" {
             crate::context_recovery::queue_on(&tx, sid)?;
@@ -566,7 +566,7 @@ pub(super) fn configure_state(
     {
         return Err("Wait for workers to stop before changing the team.".into());
     }
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let Some(config) = config else {
         // Keep completed worker transcripts addressable if the team is enabled again.
@@ -695,7 +695,7 @@ fn apply_pending_setup(store: &Store, team: &mut TeamSnapshot) -> Result<bool> {
     let Some(setup) = team.pending_setup.clone() else {
         return Ok(false);
     };
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     apply_setup_on(&tx, team, &setup)?;
     save_on(&tx, team)?;
@@ -1206,7 +1206,7 @@ fn dispatch_state(
     let mut changed = false;
     // The whole tool call commits or rolls back together: a rejected batch or a
     // failed team save leaves no reserved session, worker, or request behind.
-    let mut conn = store.db.lock().unwrap();
+    let conn = store.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let result = match name {
         "pantheon_dispatch_workers" => {
