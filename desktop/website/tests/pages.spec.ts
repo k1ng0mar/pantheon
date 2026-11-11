@@ -85,14 +85,14 @@ test('privacy policy says Pantheon collects nothing, with a contents rail', asyn
 
 test('license page carries LICENSE word for word, including the fork credit, and the agent permissions note', async ({ page }) => {
   await page.goto('/license/');
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('The Pantheon License.');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('The PandaCode License.');
   // Same paragraphs as the repository's LICENSE; only quote marks are typeset.
   const normalize = (text: string) => text.replace(/[“”]/g, '"').replace(/’/g, "'").replace(/\s+/g, ' ').trim();
   const license = (await readFile(new URL('../../LICENSE', import.meta.url), 'utf8')).split(/\n\s*\n/).map(normalize).filter(Boolean);
   const shown = (await page.locator('.license-text p').allTextContents()).map(normalize);
   expect(shown).toEqual(license);
-  expect(license.join(' ')).toContain('"This is a fork of Pantheon" together with a link to https://github.com/aicodeking/pantheon');
-  await expect(page.locator('#summary')).toContainText('This is a fork of Pantheon');
+  expect(license.join(' ')).toContain('"This is a fork of PandaCode" together with a link to https://github.com/aicodeking/pandacode');
+  await expect(page.locator('#summary')).toContainText('This is a fork of PandaCode');
   await expect(page.locator('#agents')).toContainText('act with the permissions you grant');
   await expect(page.locator('.legal-prose').getByRole('link', { name: 'GitHub issues' })).toHaveAttribute('href', `${repo}/issues`);
   await expect(page.locator('.legal-prose').getByRole('link', { name: 'Privacy Policy' })).toHaveAttribute('href', '/privacy/');
