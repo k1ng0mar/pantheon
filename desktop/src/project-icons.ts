@@ -20,6 +20,3 @@ export function projectIconHtml(projectId: string, name: string, load: (projectI
   const initial = (name.trim()[0] ?? '·').toUpperCase();
   return `<span class="task-app-icon task-app-default" data-initial="${escape(initial)}" aria-hidden="true"></span>`;
 }
-
-/** Forget a project's icon so it is looked up again (after it changes on disk). */
-export function forgetProjectIcon(projectId: string): void { icons.delete(projectId); }

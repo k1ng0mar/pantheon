@@ -14,4 +14,3 @@ export function providerLogo(id: ProviderId, cls = ''): string {
 }
 export const providerLogoUrl = (id: ProviderId): string | null => logos[id] ?? null;
 export const hasProviderLogo = (id: ProviderId): boolean => Boolean(logos[id]);
-export const providerLogoInline = (_id: ProviderId): string | null => null;
