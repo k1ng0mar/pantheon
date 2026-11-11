@@ -1,8 +1,7 @@
 # Pantheon Desktop — working notes
 
-> Fork of Pantheon (attribution in README/LICENSE). Pantheon-specific rules
-> live in the first section; upstream Pantheon conventions follow and stay
-> in force where they don't conflict.
+> Pantheon-specific rules live in the first section; upstream conventions
+> follow and stay in force where they don't conflict.
 
 ## Pantheon fork rules (from the studied-desktops synthesis)
 
@@ -51,7 +50,7 @@ One primitive per concern; style lives in the primitive; flat over boxed.
 ---
 
 ## Project and releases
-- Pantheon is open source (the MIT-based Pantheon License in `LICENSE`, which requires forks to credit Pantheon) with no accounts, license checks or telemetry; keep it that way. Never add code that phones home, and never commit secrets or personal paths.
+- Pantheon is open source under the license in `LICENSE`, with no accounts, license checks or telemetry; keep it that way. Never add code that phones home, and never commit secrets or personal paths.
 - Follow [docs/releasing.md](docs/releasing.md) for shipping: `npm run release:version X.Y.Z`, write `releases/X.Y.Z.md`, push tag `vX.Y.Z`. `.github/workflows/release.yml` builds macOS (Apple silicon), Windows x64 and Linux x64 and attaches them to a GitHub Release; signing is optional. Only release when the user asks.
 - Contributor setup and PR process: [CONTRIBUTING.md](CONTRIBUTING.md). CI is `.github/workflows/ci.yml`.
 
