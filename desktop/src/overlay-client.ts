@@ -129,4 +129,10 @@ export async function overlayCall<T = unknown>(command: string, args?: unknown):
   return {} as T;
 }
 
-export function syncOverlayContext(_ctx: LaunchContext): void {}
+export function syncOverlayContext(ctx: LaunchContext): void {
+  // The overlay is a separate webview, so the main window has to push its
+  // session down. `sync_context` no-ops when nothing changed, and a rejected
+  // context just leaves the overlay on its previous session until the next
+  // turn, so a failure here is never worth interrupting the main UI for.
+  void overlayCall('overlay_sync_context', { context: ctx }).catch(() => {});
+}
