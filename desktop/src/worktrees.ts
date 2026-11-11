@@ -53,7 +53,7 @@ export function suggestBranch(session: Session | undefined, draft: string): stri
 }
 export function finalBranchName(name: string): string {
   const trimmed = name.trim();
-  return /^(pantheon|kingcode|codex)\//.test(trimmed) ? trimmed : trimmed ? `pantheon/${trimmed}` : '';
+  return /^(pantheon|codex)\//.test(trimmed) ? trimmed : trimmed ? `pantheon/${trimmed}` : '';
 }
 const BRANCH_PATTERN = /^(?!.*\.\.)[A-Za-z0-9_/-]+$/;
 

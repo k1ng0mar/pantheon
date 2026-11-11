@@ -1,7 +1,4 @@
-import { migratePreferences } from './preferences';
 import { applyPantheonTheme } from './pantheon-theme';
-
-try { migratePreferences(localStorage); } catch { /* Retry next launch if storage is unavailable. */ }
 
 export type Theme = 'light' | 'dark';
 

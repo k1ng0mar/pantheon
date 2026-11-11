@@ -432,66 +432,6 @@ test('uses dark mode for missing or invalid preferences without writing a prefer
   expect(await page.evaluate(() => localStorage.getItem('pantheon.theme'))).toBeNull();
 });
 
-for (const theme of ['light', 'dark']) {
-  test(`migrates legacy preferences before initializing the ${theme} theme`, async ({ page }) => {
-    const preferences = {
-      theme, compact: 'true', view: 'board', project: 'project-2', projectFilter: 'project-2',
-      inactiveCollapsed: 'true', provider: 'codex', 'model.codex': 'gpt-6-astra',
-    };
-    await page.evaluate(preferences => {
-      localStorage.clear();
-      for (const [key, value] of Object.entries(preferences)) localStorage.setItem(`kingcode.${key}`, value);
-      localStorage.setItem('another-app.theme', 'unrelated');
-    }, preferences);
-    await page.reload();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await expect(page.locator('html')).toHaveCSS('color-scheme', theme);
-    await expect(page.getByRole('button', { name: 'Board view', exact: true })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('body')).toHaveClass(/compact/);
-    expect(await page.evaluate(keys => Object.fromEntries(keys.map(key => [key, localStorage.getItem(`pantheon.${key}`)])), Object.keys(preferences))).toEqual(preferences);
-    expect(await page.evaluate(() => localStorage.getItem('another-app.theme'))).toBe('unrelated');
-    await page.reload();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-  });
-
-  test(`keeps existing Pantheon preferences and the ${theme} theme during migration`, async ({ page }) => {
-    await page.evaluate(theme => {
-      localStorage.clear();
-      localStorage.setItem('kingcode.theme', theme === 'light' ? 'dark' : 'light');
-      localStorage.setItem('kingcode.compact', 'true');
-      localStorage.setItem('kingcode.projectFilter', 'project-2');
-      localStorage.setItem('kingcode.model.codex', 'legacy-model');
-      localStorage.setItem('pantheon.theme', theme);
-      localStorage.setItem('pantheon.compact', 'false');
-      localStorage.setItem('pantheon.projectFilter', '');
-      localStorage.setItem('pantheon.model.codex', 'current-model');
-    }, theme);
-    await page.reload();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await expect(page.getByRole('button', { name: 'Dark mode', exact: true })).toHaveAttribute('aria-pressed', String(theme === 'dark'));
-    await expect(page.locator('body')).not.toHaveClass(/compact/);
-    expect(await page.evaluate(() => ['compact', 'projectFilter', 'model.codex'].map(key => localStorage.getItem(`pantheon.${key}`)))).toEqual(['false', '', 'current-model']);
-  });
-}
-
-test('does not restore removed Pantheon preferences from legacy storage on later launches', async ({ page }) => {
-  await page.evaluate(() => {
-    localStorage.clear();
-    localStorage.setItem('kingcode.theme', 'light');
-    localStorage.setItem('kingcode.compact', 'true');
-  });
-  await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(page.locator('body')).toHaveClass(/compact/);
-  await page.evaluate(() => {
-    localStorage.removeItem('pantheon.theme');
-    localStorage.removeItem('pantheon.compact');
-  });
-  await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('body')).not.toHaveClass(/compact/);
-  expect(await page.evaluate(() => [localStorage.getItem('pantheon.theme'), localStorage.getItem('pantheon.compact')])).toEqual([null, null]);
-});
 
 test('loads full model names, searches names or IDs, and saves the harness invocation ID', async ({ page }) => {
   await prompt(page).fill('Keep the draft while loading model names');

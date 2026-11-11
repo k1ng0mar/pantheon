@@ -104,25 +104,6 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 
 **Transactional migration.** Importing state (detect → plan → approve → apply → validate) runs as stage → validate → atomic commit, with automatic rollback and byte/file budgets. *Trust:* migrating from another harness is a transaction, not a hope - a failed import leaves your existing state untouched.
 
-## Honest comparison
-
-| | Pantheon | Hermes Agent | OpenClaw | Claude Code |
-|---|---|---|---|---|
-| Language | Rust, single binary | Python | TypeScript/Node | Proprietary CLI |
-| Core thesis | Runtime authority over model authority | Self-improving loop (agent authors its own skills) | Personal assistant on every channel | Top coding agent |
-| Durable state | SQLite event ledger; runs resume after crashes | SQLite `state.db` + markdown memories with char caps | Local files / gateway state | Session resume within the CLI |
-| Policy enforcement | Capability gate at execution; approvals pause/resume | Deny globs + hardline blocklist (vendor: "not a security boundary") | Allowlist-based tool config | Per-tool permission prompts |
-| Sandbox | Fail-closed when a backend is available; LSP and plugin spawns go through the sandbox gate | Documented as not containment | Process-level | Sandboxed tool execution |
-| Cost control | Turn and tool-call budgets enforced; **no spend cap yet** | Usage summaries per model | Varies | Usage dashboard |
-| Memory | Trust-tiered, provenance-aware, secret-scanned | Self-authored skills + curated memory | Persistent memory files | Project memory files |
-| Messaging | Discord + Telegram gateways (real REST outbound, dead-letter) | Telegram gateway | WhatsApp, Telegram, Discord, Slack, Signal, ... | None (terminal only) |
-| Scheduler | Durable cron/one-shot/interval with claims | Cron jobs | Cron | None built in |
-| MCP | Client (stdio, capability-gated `tools/call`) - **server: planned** | MCP support via skills | MCP support | MCP client |
-| Browser control | **Built, not live-verified** (six backends, keyless and cloud) | Via skills | First-class browser tool | None |
-| Model choice | OpenAI, Anthropic, custom endpoints + fallbacks | Configurable providers | Local + cloud providers | Anthropic models |
-
-Hermes/OpenClaw cells summarize their public docs and positioning as of September 2026; details move fast, verify before deciding. This is an unsourced snapshot: the competitor cells carry no per-row citation, so treat them as a starting point for your own comparison rather than a sourced claim. Rows marked "planned" are not built; the browser row is built but not live-verified on every backend, which is a different claim and is stated as such.
-
 ## Crate map
 
 | Crate | One line |

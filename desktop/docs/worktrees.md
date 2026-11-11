@@ -17,7 +17,7 @@ current harness and model and the default permission mode.
 
 The dialog suggests a branch name from the task title, the draft, or a linked
 issue (`128-search-index-rebuilds`), shows the final name (`pantheon/<name>`;
-`pantheon/`, `kingcode/`, and `codex/` prefixes are kept as typed) and its
+`pantheon/` and `codex/` prefixes are kept as typed) and its
 folder, and lets you start from any local branch instead of the current one. If
 the branch already exists, the dialog says so and offers to check it out into
 the new worktree instead of creating it. Names use letters, numbers, hyphens,

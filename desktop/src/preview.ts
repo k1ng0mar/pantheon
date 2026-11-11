@@ -156,7 +156,7 @@ function previewWorktree(source: Session, args: Record<string, any>): { path: st
   const parent = projects.find(p => p.id === source.projectId)!;
   const name = String(args.branch ?? '').trim();
   if (!name || name.length > 120 || name.includes('..') || !/^[A-Za-z0-9_/-]+$/.test(name)) throw new Error('Use a branch name with letters, numbers, hyphens, underscores, and slashes');
-  const branch = /^(codex|pantheon|kingcode)\//.test(name) ? name : 'pantheon/' + name;
+  const branch = /^(codex|pantheon)\//.test(name) ? name : 'pantheon/' + name;
   const exists = previewBranches.has(branch);
   if (args.existing && !exists) throw new Error(`Branch ${branch} does not exist yet. Create it instead.`);
   if (!args.existing && exists) throw new Error(`Branch ${branch} already exists. Use the existing branch or choose another name.`);

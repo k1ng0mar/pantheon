@@ -658,10 +658,7 @@ pub fn worktree_branch_name(branch: &str) -> Result<String, String> {
     }
     // Keep explicitly named historical branches intact when creating worktrees.
     Ok(
-        if branch.starts_with("pantheon/")
-            || branch.starts_with("kingcode/")
-            || branch.starts_with("codex/")
-        {
+        if branch.starts_with("pantheon/") || branch.starts_with("codex/") {
             branch.to_string()
         } else {
             format!("pantheon/{branch}")
@@ -1277,10 +1274,7 @@ pub fn legacy_worktree_parent(path: &Path, registered: &[PathBuf]) -> Option<Pat
     for _ in 0..16 {
         let leaf = checkout.file_name()?.to_str()?;
         // Existing installations may still have either historical prefix on disk.
-        if !leaf.starts_with("pantheon-")
-            && !leaf.starts_with("kingcode-")
-            && !leaf.starts_with("codex-")
-        {
+        if !leaf.starts_with("pantheon-") && !leaf.starts_with("codex-") {
             return None;
         }
         let container = checkout.parent()?;
@@ -2111,8 +2105,8 @@ mod tests {
     #[test]
     fn worktree_preserves_explicit_current_and_legacy_prefixes() {
         let f = Fixture::new(true);
-        // Historical branch and path prefixes remain supported after a rename.
-        for prefix in ["pantheon", "kingcode", "codex"] {
+        // Explicit branch and path prefixes remain supported.
+        for prefix in ["pantheon", "codex"] {
             let branch = format!("{prefix}/existing-convention");
             let path = create_worktree(&f.root, branch.clone()).unwrap();
             assert_eq!(git_status(&path).unwrap().branch, branch);
@@ -2317,8 +2311,8 @@ mod tests {
     fn legacy_worktree_projects_migrate_without_losing_history_or_touching_files() {
         use crate::storage::Store;
         let fixture = Fixture::new(true);
-        let first_path = create_worktree(&fixture.root, "kingcode/legacy-task".into()).unwrap();
-        let empty_path = create_worktree(&fixture.root, "kingcode/empty-task".into()).unwrap();
+        let first_path = create_worktree(&fixture.root, "pantheon/legacy-task".into()).unwrap();
+        let empty_path = create_worktree(&fixture.root, "pantheon/empty-task".into()).unwrap();
         fs::write(first_path.join("unsaved.txt"), "keep uncommitted work").unwrap();
         let database = fixture.base.join("legacy.sqlite");
         let (main, task, legacy_id);
@@ -2346,7 +2340,7 @@ mod tests {
             store.resume(&task.id, "keep-provider-resume").unwrap();
             // Recreate the last released schema to exercise the real upgrade.
             store
-                .db
+                .db.lock().unwrap()
                 .execute_batch(
                     "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;",
                 )
@@ -2382,7 +2376,7 @@ mod tests {
             );
             assert_eq!(
                 git_status(&empty_path).unwrap().branch,
-                "kingcode/empty-task"
+                "pantheon/empty-task"
             );
         }
         let reopened = Store::open(&database).unwrap();
@@ -2397,8 +2391,8 @@ mod tests {
         for old_version in [3, 4] {
             for reverse_order in [false, true] {
                 let fixture = Fixture::new(true);
-                let new_path = create_worktree(&fixture.root, "kingcode/New".into()).unwrap();
-                let yo_path = create_worktree(&new_path, "kingcode/Yo".into()).unwrap();
+                let new_path = create_worktree(&fixture.root, "pantheon/New".into()).unwrap();
+                let yo_path = create_worktree(&new_path, "pantheon/Yo".into()).unwrap();
                 fs::write(yo_path.join("draft.txt"), "preserve nested changes").unwrap();
                 let database = fixture.base.join("nested.sqlite");
                 let (main, new_task, yo_task);
@@ -2453,7 +2447,7 @@ mod tests {
                             )
                             .unwrap();
                         store
-                            .db
+                            .db.lock().unwrap()
                             .execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms;")
                             .unwrap();
                         store.db.lock().unwrap().pragma_update(None, "user_version", 4).unwrap();
@@ -2491,7 +2485,7 @@ mod tests {
                     );
                     assert_eq!(
                         store
-                            .db
+                            .db.lock().unwrap()
                             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                             .unwrap(),
                         crate::storage::SCHEMA_VERSION
@@ -2520,7 +2514,7 @@ mod tests {
         assert!(
             legacy_worktree_parent(&nested_custom, std::slice::from_ref(&fixture.root)).is_none()
         );
-        let unrelated = fixture.base.join("project-worktrees/kingcode-unrelated");
+        let unrelated = fixture.base.join("project-worktrees/pantheon-unrelated");
         let other = Fixture::new(true);
         other.git(&[
             "worktree",
