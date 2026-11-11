@@ -1,26 +1,43 @@
-name: Release
-# Pushing a tag vX.Y.Z builds macOS (Apple silicon and Intel), Windows x64 and arm64, Linux x64 and Linux arm64
-# installers and publishes them on a GitHub Release whose notes come from
-# releases/X.Y.Z.md. A manual run builds the installers as workflow artifacts
-# and publishes only when `publish` is checked. See docs/releasing.md.
+name: desktop release
+
+# App installers only. `release.yml` publishes the CLI on `v*`, and both used to
+# claim `v*` and create one Release for the same tag. Tags here are
+# `desktop-vX.Y.Z`, which `v*` cannot match, so the two never collide.
+#
+# GitHub's `/releases/latest` belongs to the CLI: `install.sh` resolves its tag
+# from that redirect. So these Releases are published with `--latest=false`, and
+# the in-app updater reads `latest.json` from the fixed `desktop-latest` Release
+# instead of `/releases/latest`. A CLI tag landing later cannot shadow it.
+#
+# Pushing a `desktop-vX.Y.Z` tag builds macOS (Apple silicon and Intel), Windows
+# x64 and arm64, Linux x64 and Linux arm64 installers and publishes them on a
+# GitHub Release whose notes come from `releases/X.Y.Z.md`. A manual run builds
+# the installers as workflow artifacts and publishes only when `publish` is
+# checked. See docs/releasing.md.
+#
+# Every `run:` below starts in `desktop/`; the desktop release scripts resolve
+# their own paths from there. `path:` inputs on actions/ are workspace-relative.
 on:
   push:
-    tags: ['v*']
+    tags: ['desktop-v*']
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Create the GitHub Release (tags vX.Y.Z at this commit if needed)'
+        description: 'Create the GitHub Release (tags desktop-vX.Y.Z at this commit if needed)'
         type: boolean
         default: false
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: desktop
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -30,8 +47,9 @@ jobs:
         run: |
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match the app version $version. Run npm run release:version first."
+          # The tag carries a `desktop-` prefix; the version in tauri.conf.json does not.
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "desktop-v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version $version. Run npm run release:version first and tag desktop-v$version."
             exit 1
           fi
           if [ ! -s "releases/$version.md" ]; then
@@ -54,6 +72,9 @@ jobs:
           - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: desktop
     env:
       RELEASE_TARGET: ${{ matrix.target }}
       # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
@@ -62,7 +83,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22', cache: npm }
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           targets: ${{ matrix.triple }}
@@ -100,7 +124,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: pantheon-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
-          path: release/${{ needs.prepare.outputs.version }}/
+          path: desktop/release/${{ needs.prepare.outputs.version }}/
           if-no-files-found: error
           retention-days: 14
       - name: Remove Apple signing keychain
@@ -114,6 +138,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
+    defaults:
+      run:
+        working-directory: desktop
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       SYFT_VERSION: '1.55.0'
@@ -124,7 +151,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          path: assets
+          path: desktop/assets
           pattern: pantheon-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Install syft and grype (pinned, checksum verified)
@@ -148,7 +175,7 @@ jobs:
         if: always()
         with:
           name: pantheon-sbom-${{ needs.prepare.outputs.version }}
-          path: sbom/
+          path: desktop/sbom/
           if-no-files-found: warn
           retention-days: 14
 
@@ -159,6 +186,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    defaults:
+      run:
+        working-directory: desktop
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ github.token }}
@@ -166,14 +196,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          path: assets
+          path: desktop/assets
           pattern: pantheon-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Download SBOMs and scan coverage
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          path: assets
+          path: desktop/assets
           name: pantheon-sbom-${{ needs.prepare.outputs.version }}
       - name: Write release notes
         env:
@@ -194,12 +224,31 @@ jobs:
             echo "::warning::No signed update files; this release will not update installed apps."
           fi
       - name: Create GitHub Release
+        # --latest=false: `install.sh` reads the CLI tag from /releases/latest, so an
+        # app release must never take that slot.
         run: |
           ls -l assets
-          gh release create "v$VERSION" assets/* \
+          gh release create "desktop-v$VERSION" assets/* \
             --title "Pantheon $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            --target "$GITHUB_SHA"
+            --target "$GITHUB_SHA" \
+            --latest=false
+      - name: Refresh the updater manifest release
+        # The app's updater endpoint is pinned to
+        # .../releases/download/desktop-latest/latest.json rather than /releases/latest,
+        # so a CLI release published later cannot shadow the manifest. The Release is
+        # created once and only its latest.json is replaced afterwards.
+        run: |
+          if [ ! -f assets/latest.json ]; then
+            echo "::warning::No latest.json was built (unsigned release); the manifest is unchanged."
+            exit 0
+          fi
+          gh release view desktop-latest >/dev/null 2>&1 ||
+            gh release create desktop-latest \
+              --title "Pantheon desktop updater manifest" \
+              --notes "Fixed location for latest.json, the desktop app's update manifest. No installers here." \
+              --latest=false
+          gh release upload desktop-latest assets/latest.json --clobber
 
   npm:
     needs: [prepare, publish]
@@ -215,7 +264,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with: { node-version: '22', registry-url: 'https://registry.npmjs.org' }
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
       - name: Publish npx pantheon
         working-directory: packages/npx
         run: |

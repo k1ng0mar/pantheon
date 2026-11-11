@@ -2,10 +2,16 @@
 
 Pantheon releases are GitHub Releases on
 [k1ng0mar/pantheon](https://github.com/k1ng0mar/pantheon/releases). There
-are no private servers: pushing a `vX.Y.Z` tag runs
-[`.github/workflows/release.yml`](../.github/workflows/release.yml), which builds
-the desktop installers on GitHub-hosted runners and attaches them to a
+are no private servers: pushing a `desktop-vX.Y.Z` tag runs
+[`.github/workflows/desktop-release.yml`](../../.github/workflows/desktop-release.yml),
+which builds the desktop installers on GitHub-hosted runners and attaches them to a
 release whose notes come from `releases/X.Y.Z.md`.
+
+The CLI ships from the same repository, so the two need separate tag namespaces:
+`release.yml` owns `v*` and this workflow owns `desktop-v*`. App releases are also
+published `--latest=false`, because `install.sh` resolves its version from the
+`/releases/latest` redirect and an app release taking that slot would break CLI
+installs.
 
 Instructions for agents: a request to write or review release instructions does
 not authorize a release. Ship only what the user asked for, and preserve their
@@ -24,8 +30,9 @@ uncommitted work.
 
 Each asset has a `NAME.sha256` file beside it (`sha256sum` format). Asset names
 do not contain the version, so
-`https://github.com/k1ng0mar/pantheon/releases/latest/download/<asset>`
-always serves the newest build. There is no Windows ARM release target. The Intel Mac build runs natively on
+`https://github.com/k1ng0mar/pantheon/releases/download/desktop-vX.Y.Z/<asset>`
+serves one specific build. There is no `/releases/latest` shortcut for the app:
+that redirect belongs to the CLI. There is no Windows ARM release target. The Intel Mac build runs natively on
 `macos-15-intel` because `build.mjs` refuses to cross-build.
 
 ## Automatic updates
@@ -40,8 +47,10 @@ also carries:
 - `latest.json`, written by `scripts/release/updater-manifest.mjs`, naming the version,
   notes and each platform's file and signature.
 
-The app reads `releases/latest/download/latest.json`, so publishing a release is what
-ships the update. Signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY`
+The app reads a fixed manifest URL,
+`releases/download/desktop-latest/latest.json`, from a Release that the publish job
+updates on every release, so publishing is what ships the update. It is deliberately
+not `/releases/latest`, which a later CLI release would take over. Signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY`
 and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; without them the installers still build but
 the release updates nobody. The matching public key is in `tauri.conf.json`.
 
@@ -133,8 +142,8 @@ npx playwright test    # or a focused subset; see AGENTS.md
 git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml \
   src-tauri/Cargo.lock website/src/data/release-dates.json "releases/$release_version.md"
 git commit -m "chore: release $release_version"
-git tag "v$release_version"
-git push origin main "v$release_version"
+git tag "desktop-v$release_version"
+git push origin main "desktop-v$release_version"
 ```
 
 The workflow refuses a tag that does not match the version in
@@ -142,16 +151,16 @@ The workflow refuses a tag that does not match the version in
 published tag; fix problems in a higher version.
 
 To try the build without publishing, run the workflow manually (Actions →
-Release → Run workflow) and leave **publish** unchecked: the installers are kept
+desktop release → Run workflow) and leave **publish** unchecked: the installers are kept
 as workflow artifacts for 14 days. Checking **publish** on a manual run creates
-the release and the `vX.Y.Z` tag at the selected commit.
+the release and the `desktop-vX.Y.Z` tag at the selected commit.
 
 ## 4. Watch and verify
 
 ```sh
-gh run list --workflow release.yml --limit 5
+gh run list --workflow desktop-release.yml --limit 5
 gh run watch RUN_ID
-gh release view "v$release_version"
+gh release view "desktop-v$release_version"
 ```
 
 The Windows and Linux jobs install or launch the packaged app on the runner and
