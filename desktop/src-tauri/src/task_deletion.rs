@@ -69,12 +69,12 @@ fn candidates_with_conn(conn: &rusqlite::Connection, sid: &str) -> Result<Vec<St
 }
 
 fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     candidates_with_conn(&conn, sid)
 }
 
 fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
-    let binding = store.db.lock().unwrap();
+    let binding = store.conn();
     let transaction = rusqlite::Transaction::new_unchecked(&binding, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
     // Revalidate inside the transaction, including any changes made while the
@@ -169,7 +169,7 @@ mod tests {
 
     fn owned_worker(store: &Store, parent: &str, project: &str) -> String {
         let child = task(store, project);
-        store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?2)", params![parent, child]).unwrap();
+        store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?2)", params![parent, child]).unwrap();
         child
     }
 
@@ -181,23 +181,23 @@ mod tests {
             let parent = task(&store, &project);
             let child = task(&store, &project);
             let other = task(&store, &project);
-            store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent, child]).unwrap();
+            store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent, child]).unwrap();
             for sid in [&parent, &child, &other] {
                 store.message(sid, "user", "Keep my project files").unwrap();
-                let message = store.db.lock().unwrap().last_insert_rowid();
-                store.db.lock().unwrap().execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'sub','{}',0)", [sid]).unwrap();
-                store.db.lock().unwrap().execute("INSERT INTO jev_assessments(id,session_id,created_at,report) VALUES(?1,?1,0,'{}')", [sid]).unwrap();
+                let message = store.conn().last_insert_rowid();
+                store.conn().execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'sub','{}',0)", [sid]).unwrap();
+                store.conn().execute("INSERT INTO jev_assessments(id,session_id,created_at,report) VALUES(?1,?1,0,'{}')", [sid]).unwrap();
                 store
-                    .db.lock().unwrap().execute(
+                    .conn().execute(
                         "INSERT INTO context_recovery(session_id,through_message_id) VALUES(?1,?2)",
                         params![sid, message],
                     )
                     .unwrap();
-                store.db.lock().unwrap().execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at) VALUES(?1,?1,?2,'{}',0)", params![sid,message]).unwrap();
-                store.db.lock().unwrap().execute("INSERT INTO turn_change_files(change_id,path,detail) VALUES(?1,'source.rs','{}')", [sid]).unwrap();
+                store.conn().execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at) VALUES(?1,?1,?2,'{}',0)", params![sid,message]).unwrap();
+                store.conn().execute("INSERT INTO turn_change_files(change_id,path,detail) VALUES(?1,'source.rs','{}')", [sid]).unwrap();
             }
-            store.db.lock().unwrap().execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,'request','dispatch','{}','worker')", [&parent]).unwrap();
-            store.db.lock().unwrap().execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,'architect','worker','message','Hello',0)", [&parent]).unwrap();
+            store.conn().execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,'request','dispatch','{}','worker')", [&parent]).unwrap();
+            store.conn().execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,'architect','worker','message','Hello',0)", [&parent]).unwrap();
             (parent, child, other)
         };
         let deleted = delete_state(&state, &parent).unwrap();
@@ -219,7 +219,7 @@ mod tests {
             "turn_change_files",
         ] {
             let count: i64 = store
-                .db.lock().unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap();
             assert_eq!(count, 1, "{table}");
         }
@@ -229,7 +229,7 @@ mod tests {
             "architect_messages",
         ] {
             let count: i64 = store
-                .db.lock().unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap();
             assert_eq!(count, 0, "{table}");
         }
@@ -274,7 +274,7 @@ mod tests {
                 .store
                 .lock()
                 .unwrap()
-                .db.lock().unwrap().execute(
+                .conn().execute(
                     "UPDATE sessions SET goal_state=?2 WHERE id=?1",
                     params![target, goal.to_string()],
                 )
@@ -284,7 +284,7 @@ mod tests {
                 .store
                 .lock()
                 .unwrap()
-                .db.lock().unwrap().execute("UPDATE sessions SET goal_state=NULL WHERE id=?1", [&target])
+                .conn().execute("UPDATE sessions SET goal_state=NULL WHERE id=?1", [&target])
                 .unwrap();
             let (tx, _rx) = crate::unbounded_channel();
             // A stop flag does not mean process cleanup or its callbacks finished.
@@ -309,9 +309,9 @@ mod tests {
             let parent = task(&store, &project);
             let child = owned_worker(&store, &parent, &project);
             store.message(&child, "assistant", "Worker result").unwrap();
-            store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_parent_delete BEFORE DELETE ON sessions WHEN OLD.title='Keep parent' BEGIN SELECT RAISE(ABORT,'Injected deletion failure'); END;").unwrap();
+            store.conn().execute_batch("CREATE TRIGGER reject_parent_delete BEFORE DELETE ON sessions WHEN OLD.title='Keep parent' BEGIN SELECT RAISE(ABORT,'Injected deletion failure'); END;").unwrap();
             store
-                .db.lock().unwrap().execute(
+                .conn().execute(
                     "UPDATE sessions SET title='Keep parent' WHERE id=?1",
                     [&parent],
                 )
@@ -399,7 +399,7 @@ mod tests {
             let original = task(&store, &project);
             let fork = task(&store, &project);
             for sid in [&original, &fork] {
-                store.db.lock().unwrap().execute("UPDATE sessions SET worktree_path=?2,resume_id='same-provider-context' WHERE id=?1", params![sid,worktree.to_string_lossy()]).unwrap();
+                store.conn().execute("UPDATE sessions SET worktree_path=?2,resume_id='same-provider-context' WHERE id=?1", params![sid,worktree.to_string_lossy()]).unwrap();
             }
             (project, original, fork)
         };

@@ -89,7 +89,7 @@ pub struct TeamLibrary {
 
 pub(crate) fn initialize(store: &Store) -> Result<()> {
     let exists: bool = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT EXISTS(SELECT 1 FROM architect_library WHERE id=1)",
             [],
             |r| r.get(0),
@@ -99,7 +99,7 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
         return Ok(());
     }
     // Only a missing library is seeded. Explicitly disabling defaults is durable.
-    let previous=store.db.lock().unwrap().query_row("SELECT s.provider,s.model,s.reasoning_effort,json_extract(t.content,'$.config') FROM architect_teams t JOIN sessions s ON s.id=t.session_id ORDER BY json_extract(t.content,'$.updatedAt') DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional().map_err(|e|e.to_string())?;
+    let previous=store.conn().query_row("SELECT s.provider,s.model,s.reasoning_effort,json_extract(t.content,'$.config') FROM architect_teams t JOIN sessions s ON s.id=t.session_id ORDER BY json_extract(t.content,'$.updatedAt') DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional().map_err(|e|e.to_string())?;
     let mut library = TeamLibrary::default();
     if let Some((provider, model, reasoning_effort, config)) = previous {
         let setup = TeamSetup {
@@ -116,7 +116,7 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
     }
     let content = serde_json::to_string(&library).map_err(|e| e.to_string())?;
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "INSERT OR IGNORE INTO architect_library(id,content) VALUES(1,?1)",
             [content],
         )
@@ -124,7 +124,7 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
     Ok(())
 }
 pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
-    read_on(&store.db.lock().unwrap())
+    read_on(&store.conn())
 }
 fn read_on(conn: &rusqlite::Connection) -> Result<TeamLibrary> {
     let content = conn
@@ -137,7 +137,7 @@ fn read_on(conn: &rusqlite::Connection) -> Result<TeamLibrary> {
     serde_json::from_str(&content).map_err(|e| format!("Saved team library is invalid: {e}"))
 }
 fn write(store: &Store, library: &TeamLibrary) -> Result<()> {
-    write_on(&store.db.lock().unwrap(), library)
+    write_on(&store.conn(), library)
 }
 fn write_on(conn: &rusqlite::Connection, library: &TeamLibrary) -> Result<()> {
     let content = serde_json::to_string(library).map_err(|e| e.to_string())?;
@@ -166,7 +166,7 @@ pub(crate) fn save_profile(
 ) -> Result<TeamLibrary> {
     setup.validate()?;
     let name = validate_name(&name)?;
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut library = read_on(&tx)?;
     if library
@@ -211,7 +211,7 @@ pub(crate) fn save_profile(
     Ok(library)
 }
 pub(crate) fn delete_profile(store: &Store, id: &str) -> Result<TeamLibrary> {
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut library = read_on(&tx)?;
     let index = library
@@ -235,7 +235,7 @@ pub(super) fn remember(
     setup: Option<TeamSetup>,
     profile_id: Option<&str>,
 ) -> Result<()> {
-    remember_on(&store.db.lock().unwrap(), setup, profile_id)
+    remember_on(&store.conn(), setup, profile_id)
 }
 /// Must share the task configuration transaction so Save setup is all-or-nothing.
 pub(super) fn remember_on(
@@ -289,7 +289,7 @@ pub(super) fn check_remember_on(
 /// Test-only entry point for `apply_selection_on`: takes the store lock itself.
 #[cfg(test)]
 pub(super) fn apply_selection(store: &Store, sid: &str, selection: &ModelSelection) -> Result<()> {
-    apply_selection_on(&store.db.lock().unwrap(), sid, selection)
+    apply_selection_on(&store.conn(), sid, selection)
 }
 pub(super) fn apply_selection_on(
     conn: &rusqlite::Connection,
@@ -345,7 +345,7 @@ pub(crate) fn create_user_task(
     }
     store.project(project_id)?;
     let sid = {
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let sid = Store::insert_new_session(
             &tx,

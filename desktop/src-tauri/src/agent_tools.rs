@@ -460,7 +460,7 @@ fn bounded(text: &str, bytes: usize) -> String {
 
 fn project_page(state: &AppState) -> Result<Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare("SELECT id,substr(name,1,200) FROM projects ORDER BY name,id LIMIT 101")
+    let conn = store.conn(); let mut  query = conn.prepare("SELECT id,substr(name,1,200) FROM projects ORDER BY name,id LIMIT 101")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([], |row| {
@@ -480,7 +480,7 @@ fn task_page(state: &AppState, project_id: &str, offset: u64, archived: bool) ->
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let offset = offset.min(1_000_000) as i64;
     // Filter the project before LIMIT: global recent-task lists cannot paginate a project.
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,substr(title,1,200),status,task_stage,worktree_path IS NOT NULL FROM sessions WHERE project_id=?1 AND archived=?2 ORDER BY updated_at DESC,id DESC LIMIT 51 OFFSET ?3").map_err(|e| e.to_string())?;
+    let conn = store.conn(); let mut query = conn.prepare("SELECT id,substr(title,1,200),status,task_stage,worktree_path IS NOT NULL FROM sessions WHERE project_id=?1 AND archived=?2 ORDER BY updated_at DESC,id DESC LIMIT 51 OFFSET ?3").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![project_id,archived,offset], |row| {
         let id:String = row.get(0)?;
         let mut status:String = row.get(2)?;
@@ -506,7 +506,7 @@ fn read_task_page(
     let store = state.store.lock().map_err(|e| e.to_string())?;
     // Project validation and the complete read share a lock. SQL bounds previews
     // before allocation, including a large latest response and task description.
-    let task = store.db.lock().unwrap().query_row("SELECT id,project_id,substr(title,1,200),provider,model,mode,status,task_stage,substr(task_description,1,4096),length(CAST(task_description AS BLOB)),worktree_path IS NOT NULL,updated_at FROM sessions WHERE id=?1 AND project_id=?2",params![sid,project_id],|row| {
+    let task = store.conn().query_row("SELECT id,project_id,substr(title,1,200),provider,model,mode,status,task_stage,substr(task_description,1,4096),length(CAST(task_description AS BLOB)),worktree_path IS NOT NULL,updated_at FROM sessions WHERE id=?1 AND project_id=?2",params![sid,project_id],|row| {
         let description = bounded(&row.get::<_,String>(8)?,4096);
         let description_truncated = row.get::<_,i64>(9)? > description.len() as i64;
         let mut status:String = row.get(6)?;
@@ -521,7 +521,7 @@ fn read_task_page(
     {
         // Read the full page while holding the connection, then drop the lock
         // before the follow-up EXISTS query so we don't relock the same Mutex<Connection>.
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
         let mut query = conn.prepare(
             "SELECT id,substr(role,1,24),CASE WHEN role='coordination' THEN CASE WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_update' THEN 'Checking worker updates' WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_review' THEN 'Reviewing worker results' ELSE 'Coordinating team' END ELSE substr(content,1,4096) END,CASE WHEN role='coordination' THEN 0 ELSE length(CAST(content AS BLOB)) END,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT 50",
         ).map_err(|e| e.to_string())?;
@@ -549,7 +549,7 @@ fn read_task_page(
     }
     let has_older = match oldest {
         Some(oldest) => store
-            .db.lock().unwrap().query_row(
+            .conn().query_row(
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id<?2)",
                 params![sid, oldest],
                 |row| row.get::<_, bool>(0),
@@ -1077,7 +1077,7 @@ mod tests {
         {
             let store = state.store.lock().unwrap();
             store
-                .db.lock().unwrap().execute(
+                .conn().execute(
                     "INSERT INTO projects(id,name,path) VALUES ('other','Other','/fixture/other')",
                     [],
                 )
@@ -1088,7 +1088,7 @@ mod tests {
                     .unwrap();
             }
             store
-                .db.lock().unwrap()
+                .conn()
                 // Sidebar recency uses activity/creation time, not metadata updates.
                 // Separate the fixture's projects even when setup fits in one tick.
                 .execute("UPDATE sessions SET created_at=1,updated_at=1", [])
@@ -1126,7 +1126,7 @@ mod tests {
         {
             let store = state.store.lock().unwrap();
             store
-                .db.lock().unwrap().execute(
+                .conn().execute(
                     "UPDATE sessions SET task_description=?1 WHERE id=?2",
                     params!["🦀".repeat(32768), current.id],
                 )
@@ -1139,7 +1139,7 @@ mod tests {
             store
                 .message(&current.id, "assistant", &"large response ".repeat(6000))
                 .unwrap();
-            last = store.db.lock().unwrap().last_insert_rowid();
+            last = store.conn().last_insert_rowid();
         }
         let page = read_task_page(&state, &current.project_id, &current.id, None).unwrap();
         let messages = page["messages"].as_array().unwrap();
@@ -1171,7 +1171,7 @@ mod tests {
             let store = state.store.lock().unwrap();
             for index in 0..105 {
                 store
-                    .db.lock().unwrap().execute(
+                    .conn().execute(
                         "INSERT INTO projects(id,name,path) VALUES (?1,?2,?3)",
                         params![
                             format!("project-{index}"),

@@ -406,13 +406,13 @@ mod task_agent_tests {
             .create_session(&project.id, "codex", "default", "ask")
             .unwrap();
         let assistant = Mutex::new("Preserve this response.".to_string());
-        store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_response BEFORE INSERT ON messages WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        store.conn().execute_batch("CREATE TRIGGER reject_response BEFORE INSERT ON messages WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
         let mut boundary = event(&task.id, "message_start", "");
         assert!(save_agent_activity(&store, &assistant, &mut boundary, None).is_err());
         assert_eq!(*assistant.lock().unwrap(), "Preserve this response.");
         assert!(store.messages(&task.id, None).unwrap().is_empty());
         store
-            .db.lock().unwrap()
+            .conn()
             .execute_batch("DROP TRIGGER reject_response;")
             .unwrap();
         save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
@@ -503,7 +503,7 @@ mod task_agent_tests {
         );
         let live = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
         assert_eq!(live.status, "running");
-        store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        store.conn().execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
         assert!(store.finish_task_turn(&task.id, true, false).is_err());
         agents.clear();
         let visible = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
@@ -511,7 +511,7 @@ mod task_agent_tests {
         assert_eq!(visible.task_stage, "in_progress");
         assert_eq!(store.session(&task.id).unwrap().status, "running");
         store
-            .db.lock().unwrap()
+            .conn()
             .execute_batch("DROP TRIGGER reject_completion;")
             .unwrap();
         let recovered = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
@@ -617,7 +617,7 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
             return Err("Stop this project's agents first.".into());
         }
     }
-    let active_team:bool=store.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",[&project_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let active_team:bool=store.conn().query_row("SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",[&project_id],|r|r.get(0)).map_err(|e|e.to_string())?;
     if active_team {
         return Err("Stop this project's architect teams first.".into());
     }
@@ -1106,7 +1106,7 @@ fn save_agent_activity(
             if data.len() > 32 * 1024 {
                 return Err("Task settings are too large.".into());
             }
-            db.db.lock().unwrap().execute(
+            db.conn().execute(
                     "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
                     rusqlite::params![activity.session_id, data],
                 )
@@ -1141,7 +1141,7 @@ fn save_agent_activity(
             // updates must not split that response. Reuse the persisted unique
             // tool index instead of keeping an unbounded per-turn ID cache.
             let starts_tool = match &activity.tool {
-                Some(tool) => db.db.lock().unwrap().query_row(
+                Some(tool) => db.conn().query_row(
                     "SELECT NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND tool_id=?2)",
                     rusqlite::params![activity.session_id, tool.id],
                     |row| row.get::<_, bool>(0),
@@ -1651,12 +1651,12 @@ fn prepare_cloud_attach(
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "DELETE FROM messages WHERE session_id=?1 AND id>?2",
             rusqlite::params![session_id, cloud.turn_message],
         )
         .map_err(|e| e.to_string())?;
-    store.db.lock().unwrap().execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL WHERE id=?1", [&session_id]).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL WHERE id=?1", [&session_id]).map_err(|e| e.to_string())?;
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -2370,7 +2370,7 @@ async fn launch_operation_admitted(
         {
             // A turn that ended without any reply (seen after background commands) may have
             // left the session in a state a spare would inherit: start the next one fresh.
-            let replied = store.lock().ok().and_then(|db| db.db.lock().unwrap().query_row(
+            let replied = store.lock().ok().and_then(|db| db.conn().query_row(
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')))",
                 [&session_id],
                 |row| row.get::<_, bool>(0),
@@ -2758,7 +2758,7 @@ fn create_worktree_task_with_defaults(
         }
         store.project(&source.project_id)?;
         let task_id = {
-            let conn = store.db.lock().unwrap();
+            let conn = store.conn();
             let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
             let task_id = storage::Store::create_worktree_session_on_conn(
                 &tx,

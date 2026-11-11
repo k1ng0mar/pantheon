@@ -100,7 +100,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Schedule> {
 const COLUMNS: &str = "id,bot_id,title,prompt,kind,interval_minutes,time_of_day,next_run_at,last_run_at,enabled,created_by";
 
 pub(crate) fn list(store: &Store, bot_id: &str) -> Result<Vec<Schedule>> {
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM bot_schedules WHERE bot_id=?1 ORDER BY created_at")).map_err(|e| e.to_string())?;
     let rows = statement.query_map([bot_id], row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
@@ -108,7 +108,7 @@ pub(crate) fn list(store: &Store, bot_id: &str) -> Result<Vec<Schedule>> {
 
 fn get(store: &Store, id: &str) -> Result<Schedule> {
     store
-        .db.lock().unwrap().query_row(&format!("SELECT {COLUMNS} FROM bot_schedules WHERE id=?1"), [id], row)
+        .conn().query_row(&format!("SELECT {COLUMNS} FROM bot_schedules WHERE id=?1"), [id], row)
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This schedule no longer exists.".into())
@@ -121,7 +121,7 @@ pub(crate) fn create(store: &Store, bot_id: &str, input: &ScheduleInput, created
     if prompt.is_empty() {
         return Err("A schedule needs a prompt: what should the bot do?".into());
     }
-    let count: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM bot_schedules WHERE bot_id=?1", [bot_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let count: i64 = store.conn().query_row("SELECT COUNT(*) FROM bot_schedules WHERE bot_id=?1", [bot_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if count >= 50 {
         return Err("A bot can have up to 50 schedules.".into());
     }
@@ -133,7 +133,7 @@ pub(crate) fn create(store: &Store, bot_id: &str, input: &ScheduleInput, created
     .ok_or("Check the schedule's time: intervals are 5 minutes to a week, times are HH:MM, one-off runs are within a year.")?;
     let id = crate::storage::id();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "INSERT INTO bot_schedules(id,bot_id,title,prompt,kind,interval_minutes,time_of_day,next_run_at,enabled,created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10)",
             params![id, bot_id, if title.is_empty() { prompt.chars().take(60).collect::<String>() } else { title }, prompt, input.kind, input.interval_minutes, input.time_of_day, next, created_by, now],
         )
@@ -150,12 +150,12 @@ pub(crate) fn set_enabled(store: &Store, id: &str, enabled: bool, now: i64) -> R
     } else {
         schedule.next_run_at
     };
-    store.db.lock().unwrap().execute("UPDATE bot_schedules SET enabled=?2,next_run_at=?3 WHERE id=?1", params![id, enabled, next]).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE bot_schedules SET enabled=?2,next_run_at=?3 WHERE id=?1", params![id, enabled, next]).map_err(|e| e.to_string())?;
     get(store, id)
 }
 
 pub(crate) fn delete(store: &Store, bot_id: &str, id: &str) -> Result<()> {
-    let removed = store.db.lock().unwrap().execute("DELETE FROM bot_schedules WHERE id=?1 AND bot_id=?2", params![id, bot_id]).map_err(|e| e.to_string())?;
+    let removed = store.conn().execute("DELETE FROM bot_schedules WHERE id=?1 AND bot_id=?2", params![id, bot_id]).map_err(|e| e.to_string())?;
     if removed == 0 {
         return Err("That schedule was already removed.".into());
     }
@@ -165,7 +165,7 @@ pub(crate) fn delete(store: &Store, bot_id: &str, id: &str) -> Result<()> {
 /// Due work: schedules whose time has come and bots whose check-in is due, for unpaused bots.
 pub(crate) fn due(store: &Store, now: i64) -> Result<(Vec<Schedule>, Vec<Bot>)> {
     let schedules = {
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
         let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM bot_schedules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=?1 AND bot_id IN (SELECT id FROM bots WHERE paused=0) ORDER BY next_run_at LIMIT 20"))
             .map_err(|e| e.to_string())?;
         let rows = statement.query_map([now], row).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
@@ -181,13 +181,13 @@ pub(crate) fn due(store: &Store, now: i64) -> Result<(Vec<Schedule>, Vec<Bot>)> 
 pub(crate) fn advance(store: &Store, schedule: &Schedule, now: i64) -> Result<()> {
     let next = if schedule.kind == "once" { None } else { next_run(&schedule.kind, schedule.interval_minutes, schedule.time_of_day.as_deref(), now, local_offset_ms(now)) };
     store
-        .db.lock().unwrap().execute("UPDATE bot_schedules SET last_run_at=?2,next_run_at=?3,enabled=CASE WHEN ?4 THEN 0 ELSE enabled END WHERE id=?1", params![schedule.id, now, next, schedule.kind == "once"])
+        .conn().execute("UPDATE bot_schedules SET last_run_at=?2,next_run_at=?3,enabled=CASE WHEN ?4 THEN 0 ELSE enabled END WHERE id=?1", params![schedule.id, now, next, schedule.kind == "once"])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub(crate) fn advance_heartbeat(store: &Store, bot: &Bot, now: i64) -> Result<()> {
-    store.db.lock().unwrap().execute("UPDATE bots SET next_heartbeat_at=?2 WHERE id=?1", params![bot.id, heartbeat_after(bot.heartbeat_minutes, now)]).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE bots SET next_heartbeat_at=?2 WHERE id=?1", params![bot.id, heartbeat_after(bot.heartbeat_minutes, now)]).map_err(|e| e.to_string())?;
     Ok(())
 }
 

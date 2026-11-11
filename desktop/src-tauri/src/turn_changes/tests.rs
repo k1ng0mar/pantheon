@@ -346,7 +346,7 @@ fn retained_summary_survives_patch_eviction_and_duplicate_ids_roll_back() {
     let first_id = first.summary.id.clone();
     persist(&store, &task.id, first).unwrap();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "UPDATE turn_changes SET diff_bytes=?1 WHERE id=?2",
             params![RETAINED_BYTES, first_id],
         )

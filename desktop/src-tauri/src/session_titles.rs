@@ -14,7 +14,7 @@ const MAX_TITLE: usize = 80;
 /// Old versions did not record provenance. Only recognize their exact generated
 /// title, and preserve anything else (including explicitly named board tasks).
 pub(crate) fn automatic(store: &Store, sid: &str) -> Result<bool> {
-    automatic_on(&store.db.lock().unwrap(), sid)
+    automatic_on(&store.conn(), sid)
 }
 pub(crate) fn automatic_on(conn: &rusqlite::Connection, sid: &str) -> Result<bool> {
     let (origin, title, description): (String, String, String) = conn
@@ -59,7 +59,7 @@ pub(crate) fn automatic_on(conn: &rusqlite::Connection, sid: &str) -> Result<boo
 }
 
 pub(crate) fn inherit(store: &Store, source: &str, target: &str) -> Result<()> {
-    inherit_on(&store.db.lock().unwrap(), source, target)
+    inherit_on(&store.conn(), source, target)
 }
 pub(crate) fn inherit_on(conn: &rusqlite::Connection, source: &str, target: &str) -> Result<()> {
     let origin = if automatic_on(conn, source)? {
@@ -131,7 +131,7 @@ pub(crate) const GUIDANCE: &str = "\n\nSidebar titles: when a message carries <P
 
 impl TitleRun {
     pub(crate) fn prepare(store: &Store, sid: &str, turn: i64) -> Result<Option<Self>> {
-        let eligible: bool = store.db.lock().unwrap().query_row(
+        let eligible: bool = store.conn().query_row(
             "SELECT EXISTS(SELECT 1 FROM messages m JOIN sessions s ON s.id=m.session_id
              WHERE m.session_id=?1 AND m.id=?2 AND m.role='user' AND s.archived=0
              AND NOT EXISTS(SELECT 1 FROM architect_workers WHERE session_id=?1)
@@ -142,7 +142,7 @@ impl TitleRun {
             return Ok(None);
         }
         let prompt: String = store
-            .db.lock().unwrap().query_row(
+            .conn().query_row(
                 "SELECT content FROM messages WHERE session_id=?1 AND id=?2",
                 params![sid, turn],
                 |r| r.get(0),
@@ -202,7 +202,7 @@ impl TitleRun {
         }
         // The exact initiating message and current title are both checked. A
         // stopped/replaced run or an intervening manual rename can never win.
-        store.db.lock().unwrap().execute("UPDATE sessions SET title=?3 WHERE id=?1 AND title_origin='auto' AND title=?4 AND archived=0
+        store.conn().execute("UPDATE sessions SET title=?3 WHERE id=?1 AND title_origin='auto' AND title=?4 AND archived=0
             AND ?2=(SELECT MAX(id) FROM messages WHERE session_id=?1 AND role IN ('user','coordination'))
             AND EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id>?2 AND role='assistant' AND trim(content)<>'')",
             params![self.sid, self.turn, title, self.original],
@@ -430,7 +430,7 @@ mod tests {
             let (db, sid) = task();
             db.message(&sid, "user", "Repair Windows startup paths\nMore details")
                 .unwrap();
-            db.db.lock().unwrap().execute(
+            db.conn().execute(
                     "UPDATE sessions SET title=?2,title_origin='legacy' WHERE id=?1",
                     params![sid, title],
                 )
@@ -462,7 +462,7 @@ mod tests {
         let worker = db
             .create_session(&project, "claude", "sonnet", "full")
             .unwrap();
-        db.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent, worker.id]).unwrap();
+        db.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent, worker.id]).unwrap();
         let id = db
             .begin_task_turn(&worker.id, "Inspect internal coordination changes")
             .unwrap();
@@ -500,17 +500,17 @@ mod tests {
             db.message(&task.id, "user", "Repair Windows startup paths")
                 .unwrap();
         }
-        db.db.lock().unwrap().execute(
+        db.conn().execute(
                 "UPDATE sessions SET title='Repair Windows startup paths' WHERE id=?1",
                 [&auto.id],
             )
             .unwrap();
-        db.db.lock().unwrap().execute(
+        db.conn().execute(
                 "UPDATE sessions SET title='My saved title' WHERE id=?1",
                 [&manual.id],
             )
             .unwrap();
-        db.db.lock().unwrap()
+        db.conn()
             .execute_batch("ALTER TABLE sessions DROP COLUMN title_origin; PRAGMA user_version=19;")
             .unwrap();
         drop(db);

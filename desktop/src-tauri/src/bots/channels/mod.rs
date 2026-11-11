@@ -165,11 +165,11 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Channel> {
 /// conversations in the same database, so it lives there rather than in the keychain,
 /// where an access prompt after an app update would break every open link.
 pub(crate) fn web_token(store: &Store, channel_id: &str) -> Option<String> {
-    store.db.lock().unwrap().query_row("SELECT web_token FROM bot_channels WHERE id=?1 AND kind='web'", [channel_id], |r| r.get::<_, Option<String>>(0)).ok().flatten()
+    store.conn().query_row("SELECT web_token FROM bot_channels WHERE id=?1 AND kind='web'", [channel_id], |r| r.get::<_, Option<String>>(0)).ok().flatten()
 }
 
 pub(crate) fn list(store: &Store, bot_id: &str) -> Result<Vec<Channel>> {
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM bot_channels WHERE bot_id=?1 ORDER BY created_at")).map_err(|e| e.to_string())?;
     let rows = statement.query_map([bot_id], row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
@@ -177,14 +177,14 @@ pub(crate) fn list(store: &Store, bot_id: &str) -> Result<Vec<Channel>> {
 
 pub(crate) fn get(store: &Store, id: &str) -> Result<Channel> {
     store
-        .db.lock().unwrap().query_row(&format!("SELECT {COLUMNS} FROM bot_channels WHERE id=?1"), [id], row)
+        .conn().query_row(&format!("SELECT {COLUMNS} FROM bot_channels WHERE id=?1"), [id], row)
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This channel no longer exists.".into())
 }
 
 pub(crate) fn kind_of(store: &Store, id: &str) -> Option<String> {
-    store.db.lock().unwrap().query_row("SELECT kind FROM bot_channels WHERE id=?1", [id], |r| r.get(0)).ok()
+    store.conn().query_row("SELECT kind FROM bot_channels WHERE id=?1", [id], |r| r.get(0)).ok()
 }
 
 pub(crate) fn add(store: &Store, bot_id: &str, input: &ChannelInput) -> Result<Channel> {
@@ -220,7 +220,7 @@ pub(crate) fn add(store: &Store, bot_id: &str, input: &ChannelInput) -> Result<C
     let token = (input.kind == "web").then(web::new_token);
     let label = input.label.trim().chars().take(60).collect::<String>();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "INSERT INTO bot_channels(id,bot_id,kind,label,config,secret_names,web_token,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             params![id, bot_id, input.kind, label, config.to_string(), json!(saved).to_string(), token, crate::storage::now()],
         )
@@ -230,11 +230,11 @@ pub(crate) fn add(store: &Store, bot_id: &str, input: &ChannelInput) -> Result<C
 }
 
 pub(crate) fn set_status(store: &Store, id: &str, status: &str) {
-    let _ = store.db.lock().unwrap().execute("UPDATE bot_channels SET status=?2 WHERE id=?1", params![id, status.chars().take(200).collect::<String>()]);
+    let _ = store.conn().execute("UPDATE bot_channels SET status=?2 WHERE id=?1", params![id, status.chars().take(200).collect::<String>()]);
 }
 
 pub(crate) fn pairings(store: &Store, bot_id: &str) -> Result<Vec<Pairing>> {
-    let conn = store.db.lock().unwrap(); let mut  statement = conn.prepare("SELECT p.channel_id,p.sender_id,p.sender_name,p.status,p.code,p.created_at FROM bot_pairings p JOIN bot_channels c ON c.id=p.channel_id WHERE c.bot_id=?1 ORDER BY p.created_at DESC")
+    let conn = store.conn(); let mut  statement = conn.prepare("SELECT p.channel_id,p.sender_id,p.sender_name,p.status,p.code,p.created_at FROM bot_pairings p JOIN bot_channels c ON c.id=p.channel_id WHERE c.bot_id=?1 ORDER BY p.created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([bot_id], |r| Ok(Pairing { channel_id: r.get(0)?, sender_id: r.get(1)?, sender_name: r.get(2)?, status: r.get(3)?, code: r.get(4)?, created_at: r.get(5)? }))
@@ -244,7 +244,7 @@ pub(crate) fn pairings(store: &Store, bot_id: &str) -> Result<Vec<Pairing>> {
 
 pub(crate) fn is_approved(store: &Store, channel_id: &str, sender_id: &str) -> Result<bool> {
     store
-        .db.lock().unwrap().query_row("SELECT status='approved' FROM bot_pairings WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id], |r| r.get(0))
+        .conn().query_row("SELECT status='approved' FROM bot_pairings WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id], |r| r.get(0))
         .optional()
         .map(|found| found.unwrap_or(false))
         .map_err(|e| e.to_string())
@@ -258,20 +258,20 @@ fn pairing_code() -> String {
 /// Records an unknown sender as pending (once) and returns its code, or `None` if blocked.
 pub(crate) fn request_pairing(store: &Store, channel_id: &str, sender_id: &str, sender_name: &str) -> Result<Option<String>> {
     let existing: Option<(String, String)> = store
-        .db.lock().unwrap().query_row("SELECT status,code FROM bot_pairings WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .conn().query_row("SELECT status,code FROM bot_pairings WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
         .map_err(|e| e.to_string())?;
     match existing {
         Some((status, _)) if status == "blocked" => Ok(None),
         Some((_, code)) => Ok(Some(code)),
         None => {
-            let pending: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM bot_pairings WHERE channel_id=?1 AND status='pending'", [channel_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+            let pending: i64 = store.conn().query_row("SELECT COUNT(*) FROM bot_pairings WHERE channel_id=?1 AND status='pending'", [channel_id], |r| r.get(0)).map_err(|e| e.to_string())?;
             if pending >= 20 {
                 return Ok(None);
             }
             let code = pairing_code();
             store
-                .db.lock().unwrap().execute("INSERT INTO bot_pairings(channel_id,sender_id,sender_name,status,code,created_at) VALUES(?1,?2,?3,'pending',?4,?5)", params![channel_id, sender_id, sender_name.chars().take(80).collect::<String>(), code, crate::storage::now()])
+                .conn().execute("INSERT INTO bot_pairings(channel_id,sender_id,sender_name,status,code,created_at) VALUES(?1,?2,?3,'pending',?4,?5)", params![channel_id, sender_id, sender_name.chars().take(80).collect::<String>(), code, crate::storage::now()])
                 .map_err(|e| e.to_string())?;
             Ok(Some(code))
         }
@@ -283,9 +283,9 @@ pub(crate) fn decide_pairing(store: &Store, channel_id: &str, sender_id: &str, d
         return Err("Approve, block or remove the sender.".into());
     }
     if decision == "removed" {
-        store.db.lock().unwrap().execute("DELETE FROM bot_pairings WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id]).map_err(|e| e.to_string())?;
+        store.conn().execute("DELETE FROM bot_pairings WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id]).map_err(|e| e.to_string())?;
     } else {
-        store.db.lock().unwrap().execute("UPDATE bot_pairings SET status=?3 WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id, decision]).map_err(|e| e.to_string())?;
+        store.conn().execute("UPDATE bot_pairings SET status=?3 WHERE channel_id=?1 AND sender_id=?2", params![channel_id, sender_id, decision]).map_err(|e| e.to_string())?;
     }
     let channel = get(store, channel_id)?;
     super::log(store, &channel.bot_id, "pairing", &format!("Sender {decision} on {}", channel.kind), json!({"channelId": channel_id}))
@@ -478,7 +478,7 @@ pub(crate) fn configure(store: &Store, channel_id: &str, patch: &Value) -> Resul
             _ => return Err(format!("{key} cannot be changed for this channel.")),
         }
     }
-    store.db.lock().unwrap().execute("UPDATE bot_channels SET config=?2 WHERE id=?1", params![channel_id, config.to_string()]).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE bot_channels SET config=?2 WHERE id=?1", params![channel_id, config.to_string()]).map_err(|e| e.to_string())?;
     get(store, channel_id)
 }
 
@@ -499,7 +499,7 @@ pub async fn bot_channel_test(input: ChannelInput) -> Result<Identity> {
 pub async fn bot_channel_set_enabled(app: tauri::AppHandle, state: State<'_, AppState>, channel_id: String, enabled: bool) -> Result<Channel> {
     let channel = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        store.db.lock().unwrap().execute("UPDATE bot_channels SET enabled=?2 WHERE id=?1", params![channel_id, enabled]).map_err(|e| e.to_string())?;
+        store.conn().execute("UPDATE bot_channels SET enabled=?2 WHERE id=?1", params![channel_id, enabled]).map_err(|e| e.to_string())?;
         get(&store, &channel_id)?
     };
     start(&app, channel.clone());
@@ -513,7 +513,7 @@ pub async fn bot_channel_remove(app: tauri::AppHandle, state: State<'_, AppState
     secrets::remove_all(&channel_id);
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let channel = get(&store, &channel_id)?;
-    store.db.lock().unwrap().execute("DELETE FROM bot_channels WHERE id=?1", [&channel_id]).map_err(|e| e.to_string())?;
+    store.conn().execute("DELETE FROM bot_channels WHERE id=?1", [&channel_id]).map_err(|e| e.to_string())?;
     super::log(&store, &channel.bot_id, "channel", &format!("Removed a {} channel", channel.kind), json!({}))?;
     let _ = app.emit("bots-changed", ());
     Ok(())
@@ -556,7 +556,7 @@ pub async fn bot_web_new_link(app: tauri::AppHandle, state: State<'_, AppState>,
         if channel.kind != "web" {
             return Err("Only web channels have a chat link.".into());
         }
-        store.db.lock().unwrap().execute("UPDATE bot_channels SET web_token=?2 WHERE id=?1", params![channel_id, web::new_token()]).map_err(|e| e.to_string())?;
+        store.conn().execute("UPDATE bot_channels SET web_token=?2 WHERE id=?1", params![channel_id, web::new_token()]).map_err(|e| e.to_string())?;
         super::log(&store, &channel.bot_id, "channel", "Created a new web chat link; old links stopped working", json!({}))?;
     }
     bot_web_link(app, state, channel_id).await

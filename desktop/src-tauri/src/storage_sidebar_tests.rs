@@ -5,7 +5,7 @@ fn tasks(store: &Store, count: usize) -> Vec<Session> {
     (0..count).map(|i| {
         let task = store.create_session(&project.id, "codex", "default", "full").unwrap();
         // Metadata edit time deliberately opposes activity order.
-        store.db.lock().unwrap().execute("UPDATE sessions SET created_at=1,updated_at=?2,last_response_at=?3,last_prompt_at=NULL WHERE id=?1", params![task.id, i as i64 + 1, (count - i) as i64 + 10]).unwrap();
+        store.conn().execute("UPDATE sessions SET created_at=1,updated_at=?2,last_response_at=?3,last_prompt_at=NULL WHERE id=?1", params![task.id, i as i64 + 1, (count - i) as i64 + 10]).unwrap();
         store.session(&task.id).unwrap()
     }).collect()
 }
@@ -102,18 +102,18 @@ fn sidebar_order_uses_prompt_response_then_creation_and_not_metadata_edits() {
     let store = Store::open(Path::new(":memory:")).unwrap();
     let tasks = tasks(&store, 3);
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "UPDATE sessions SET last_prompt_at=30,last_response_at=20,created_at=100 WHERE id=?1",
             [&tasks[0].id],
         )
         .unwrap();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "UPDATE sessions SET last_prompt_at=NULL,last_response_at=40,updated_at=1 WHERE id=?1",
             [&tasks[1].id],
         )
         .unwrap();
-    store.db.lock().unwrap().execute("UPDATE sessions SET last_prompt_at=NULL,last_response_at=NULL,created_at=35,updated_at=999 WHERE id=?1", [&tasks[2].id]).unwrap();
+    store.conn().execute("UPDATE sessions SET last_prompt_at=NULL,last_response_at=NULL,created_at=35,updated_at=999 WHERE id=?1", [&tasks[2].id]).unwrap();
     assert_eq!(
         ids(&store),
         vec![
@@ -128,7 +128,7 @@ fn sidebar_order_uses_prompt_response_then_creation_and_not_metadata_edits() {
 fn sidebar_reorder_rejects_invalid_subsets_without_partial_writes() {
     let store = Store::open(Path::new(":memory:")).unwrap();
     let tasks = tasks(&store, 4);
-    store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![tasks[0].id, tasks[3].id]).unwrap();
+    store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![tasks[0].id, tasks[3].id]).unwrap();
     store.pin_session(&tasks[2].id, true).unwrap();
     let before = serde_json::to_value(store.sessions().unwrap()).unwrap();
     for invalid in [
@@ -155,7 +155,7 @@ fn sidebar_reorder_rolls_back_if_any_rank_write_fails() {
     let store = Store::open(Path::new(":memory:")).unwrap();
     let tasks = tasks(&store, 4);
     let before = serde_json::to_value(store.sessions().unwrap()).unwrap();
-    store.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_sidebar_rank BEFORE UPDATE OF sidebar_order ON sessions WHEN NEW.sidebar_order=2 BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
+    store.conn().execute_batch("CREATE TRIGGER fail_sidebar_rank BEFORE UPDATE OF sidebar_order ON sessions WHEN NEW.sidebar_order=2 BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
     assert!(store
         .reorder_sessions(&[tasks[1].id.clone(), tasks[0].id.clone()])
         .is_err());
@@ -171,7 +171,7 @@ fn sidebar_old_pinned_and_ranked_tasks_are_included_before_the_list_limit() {
     let tasks = tasks(&store, 502);
     store.pin_session(&tasks[501].id, true).unwrap();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "UPDATE sessions SET sidebar_order=0 WHERE id=?1",
             [&tasks[500].id],
         )
@@ -200,7 +200,7 @@ fn sidebar_forks_start_unpinned_unordered_and_deletion_preserves_other_preferenc
     let tasks = tasks(&store, 2);
     let source = &tasks[0];
     store.message(&source.id, "user", "Saved prompt").unwrap();
-    let boundary = store.db.lock().unwrap().last_insert_rowid();
+    let boundary = store.conn().last_insert_rowid();
     store.pin_session(&source.id, true).unwrap();
     store.reorder_sessions(std::slice::from_ref(&source.id)).unwrap();
     let fork = crate::conversation_fork::at_message(&store, &source.id, boundary).unwrap();
@@ -217,7 +217,7 @@ fn sidebar_forks_start_unpinned_unordered_and_deletion_preserves_other_preferenc
     assert_eq!(worktree.sidebar_order, None);
     let retained = serde_json::to_value(store.session(&tasks[1].id).unwrap()).unwrap();
     store
-        .db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&source.id])
+        .conn().execute("DELETE FROM sessions WHERE id=?1", [&source.id])
         .unwrap();
     assert_eq!(
         serde_json::to_value(store.session(&tasks[1].id).unwrap()).unwrap(),
@@ -235,7 +235,7 @@ fn sidebar_v20_migration_is_idempotent_and_retains_existing_preferences() {
     {
         let store = Store::open(&path).unwrap();
         sid = tasks(&store, 1)[0].id.clone();
-        store.db.lock().unwrap().execute_batch("DROP INDEX sessions_sidebar; ALTER TABLE sessions DROP COLUMN pinned; ALTER TABLE sessions DROP COLUMN sidebar_order; PRAGMA user_version=20;").unwrap();
+        store.conn().execute_batch("DROP INDEX sessions_sidebar; ALTER TABLE sessions DROP COLUMN pinned; ALTER TABLE sessions DROP COLUMN sidebar_order; PRAGMA user_version=20;").unwrap();
     }
     {
         let store = Store::open(&path).unwrap();
@@ -244,7 +244,7 @@ fn sidebar_v20_migration_is_idempotent_and_retains_existing_preferences() {
         assert_eq!(task.sidebar_order, None);
         store.pin_session(&sid, true).unwrap();
         store.reorder_sessions(std::slice::from_ref(&sid)).unwrap();
-        store.db.lock().unwrap().execute_batch("PRAGMA user_version=20;").unwrap();
+        store.conn().execute_batch("PRAGMA user_version=20;").unwrap();
     }
     {
         let store = Store::open(&path).unwrap();
@@ -253,7 +253,7 @@ fn sidebar_v20_migration_is_idempotent_and_retains_existing_preferences() {
         assert_eq!(task.sidebar_order, Some(0));
         assert_eq!(
             store
-                .db.lock().unwrap()
+                .conn()
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
             SCHEMA_VERSION

@@ -1526,7 +1526,7 @@ pub fn persist(store: &Store, sid: &str, mut capture: Captured) -> Result<i64> {
     }
     // The message, its summary, and the retained-diff eviction commit together.
     // A duplicate summary id rolls the message back instead of orphaning it.
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let message_id:i64=tx.query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id",params![sid,storage::now()],|r|r.get(0)).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at,diff_bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![capture.summary.id,sid,message_id,summary,storage::now(),bytes]).map_err(|e|e.to_string())?;
@@ -1583,7 +1583,7 @@ pub fn detail(store: &Store, sid: &str, id: &str, path: &str) -> Result<TurnChan
         .find(|f| f.path == path)
         .ok_or("This file is not in this turn's change summary.")?;
     let stored: Option<String> = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT detail FROM turn_change_files WHERE change_id=?1 AND path=?2",
             params![id, path],
             |r| r.get(0),
@@ -1597,7 +1597,7 @@ pub fn summary(store: &Store, sid: &str, id: &str) -> Result<TurnChanges> {
         return Err("Invalid turn change selection.".into());
     }
     let summary: String = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT summary FROM turn_changes WHERE id=?1 AND session_id=?2",
             params![id, sid],
             |r| r.get(0),

@@ -367,10 +367,10 @@ fn missing_library_migrates_latest_team_once_and_never_reenables_disabled_defaul
                 team.config.max_rounds = 2;
             }
             architect::save(&store, &mut team).unwrap();
-            store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_set(content,'$.updatedAt',?2) WHERE session_id=?1",params![task.id,time]).unwrap();
+            store.conn().execute("UPDATE architect_teams SET content=json_set(content,'$.updatedAt',?2) WHERE session_id=?1",params![task.id,time]).unwrap();
         }
         store
-            .db.lock().unwrap()
+            .conn()
             .execute_batch("DROP TABLE architect_library; PRAGMA user_version=11;")
             .unwrap();
     }
@@ -387,7 +387,7 @@ fn missing_library_migrates_latest_team_once_and_never_reenables_disabled_defaul
     assert_eq!(read(&store).unwrap().last_setup, Some(expected));
     assert_eq!(
         store
-            .db.lock().unwrap()
+            .conn()
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
         crate::storage::SCHEMA_VERSION
@@ -445,7 +445,7 @@ fn mismatched_profile_or_storage_failure_roll_back_task_selection_and_library() 
         assert!(architect::load(&store, &task.id).unwrap().is_none());
         assert_eq!(library_json(&store), before);
     }
-    state.store.lock().unwrap().db.lock().unwrap().execute_batch("CREATE TRIGGER reject_defaults BEFORE UPDATE ON architect_library BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;").unwrap();
+    state.store.lock().unwrap().conn().execute_batch("CREATE TRIGGER reject_defaults BEFORE UPDATE ON architect_library BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;").unwrap();
     assert!(apply(&state, &task.id, &setup, Some(&id)).is_err());
     let store = state.store.lock().unwrap();
     assert_eq!(
@@ -565,7 +565,7 @@ fn mcp_providers_keep_native_history_when_enabling_or_disabling_teams() {
             .unwrap();
         store.resume(&task.id, "existing-context").unwrap();
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "UPDATE sessions SET context_used_tokens=1234,context_window=100000 WHERE id=?1",
                 [&task.id],
             )

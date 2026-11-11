@@ -36,14 +36,14 @@ fn lock(state: &AppState) -> Result<std::sync::MutexGuard<'_, Store>> {
 
 /// The host and host task behind a local task, or None for an ordinary task.
 pub(crate) fn of(store: &Store, local: &str) -> Result<Option<Mirror>> {
-    let row: Option<(Option<String>, Option<String>)> = store.db.lock().unwrap().query_row("SELECT remote_device,remote_session FROM sessions WHERE id=?1", [local], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+    let row: Option<(Option<String>, Option<String>)> = store.conn().query_row("SELECT remote_device,remote_session FROM sessions WHERE id=?1", [local], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
     let Some((Some(device), session)) = row else { return Ok(None) };
     let session = session.ok_or_else(|| format!("This task is still starting on {}.", super::device_label(&device)))?;
     Ok(Some(Mirror { device, session }))
 }
 
 fn local_id(store: &Store, device: &str, session: &str) -> Option<String> {
-    store.db.lock().unwrap().query_row("SELECT id FROM sessions WHERE remote_device=?1 AND remote_session=?2", [device, session], |r| r.get(0)).optional().ok().flatten()
+    store.conn().query_row("SELECT id FROM sessions WHERE remote_device=?1 AND remote_session=?2", [device, session], |r| r.get(0)).optional().ok().flatten()
 }
 
 /// Sends a mirror's command to its host, with the host's task id. None for a local task,
@@ -77,8 +77,8 @@ pub(crate) fn prepare(store: &Store, local: &str, method: &str, mut params: Valu
 
 /// Marks a mirror running for a new prompt; returns the status it had.
 fn start_turn(store: &Store, local: &str) -> Result<String> {
-    let status: String = store.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
-    store.db.lock().unwrap().execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,last_prompt_at=?2,updated_at=?2 WHERE id=?1", params![local, crate::storage::now()]).map_err(|e| e.to_string())?;
+    let status: String = store.conn().query_row("SELECT status FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,last_prompt_at=?2,updated_at=?2 WHERE id=?1", params![local, crate::storage::now()]).map_err(|e| e.to_string())?;
     Ok(status)
 }
 
@@ -119,7 +119,7 @@ pub(crate) fn events(app: &tauri::AppHandle, from: &str, data: &Value) {
         let mut changed = false;
         for event in &events {
             let (Some(id), Some(kind)) = (event["sessionId"].as_str(), event["kind"].as_str()) else { continue };
-            let current: String = store.db.lock().unwrap().query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| r.get(0)).unwrap_or_default();
+            let current: String = store.conn().query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| r.get(0)).unwrap_or_default();
             if let Some(next) = status_after(&current, kind) {
                 changed |= store.status(id, next).is_ok();
             }
@@ -155,12 +155,12 @@ async fn end_turn(app: &tauri::AppHandle, local: &str, successful: bool, stopped
 }
 
 fn active(state: &AppState, local: &str) -> bool {
-    lock(state).is_ok_and(|store| store.db.lock().unwrap().query_row("SELECT status IN ('running','waiting') FROM sessions WHERE id=?1", [local], |r| r.get(0)).unwrap_or(false))
+    lock(state).is_ok_and(|store| store.conn().query_row("SELECT status IN ('running','waiting') FROM sessions WHERE id=?1", [local], |r| r.get(0)).unwrap_or(false))
 }
 
 /// Ends a running mirror's turn once: false (and nothing changes) when it already ended.
 fn finish_once(store: &Store, local: &str, successful: bool, stopped: bool) -> Result<bool> {
-    let running: bool = store.db.lock().unwrap().query_row("SELECT status IN ('running','waiting') FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let running: bool = store.conn().query_row("SELECT status IN ('running','waiting') FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
     if running {
         store.finish_task_turn(local, successful, stopped)?;
     }
@@ -209,7 +209,7 @@ pub(crate) async fn sync(app: &tauri::AppHandle, local: &str) -> Result<()> {
         let (mirror, after) = {
             let store = lock(&state)?;
             let mirror = of(&store, local)?.ok_or("That task does not run on another computer.")?;
-            let after: i64 = store.db.lock().unwrap().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+            let after: i64 = store.conn().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
             (mirror, after)
         };
         let page = client::call(app, &mirror.device, "task.messages", json!({"sessionId": mirror.session, "afterId": after})).await?;
@@ -226,7 +226,7 @@ pub(crate) async fn sync(app: &tauri::AppHandle, local: &str) -> Result<()> {
 /// position, all or nothing. Returns whether to ask for the next page. A page that no
 /// longer starts at the stored position (another sync got there first) is skipped.
 pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -> Result<bool> {
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let current: i64 = tx.query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
     if current != after {
@@ -275,7 +275,7 @@ pub(crate) async fn subscribe_all(app: tauri::AppHandle) {
     let mirrors: Vec<(String, String)> = {
         let state = app.state::<AppState>();
         let Ok(store) = state.store.lock() else { return };
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
     let Ok(mut statement) = conn.prepare("SELECT remote_device,remote_session FROM sessions WHERE remote_session IS NOT NULL AND archived=0 ORDER BY updated_at DESC") else { return };
         statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map(|rows| rows.filter_map(std::result::Result::ok).collect()).unwrap_or_default()
     };
@@ -304,7 +304,7 @@ async fn catch_up(app: &tauri::AppHandle, device: &str, tasks: &[Value]) {
         let (Some(session), Some(status)) = (task["sessionId"].as_str(), task["status"].as_str()) else { continue };
         let row = app.state::<AppState>().store.lock().ok().and_then(|store| {
             let local = local_id(&store, device, session)?;
-            store.db.lock().unwrap().query_row("SELECT status,remote_synced_id FROM sessions WHERE id=?1", [&local], |r| Ok((local.clone(), r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).ok()
+            store.conn().query_row("SELECT status,remote_synced_id FROM sessions WHERE id=?1", [&local], |r| Ok((local.clone(), r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).ok()
         });
         let Some((local, current, synced)) = row else { continue };
         match reconcile(&current, status) {
@@ -396,14 +396,14 @@ pub async fn remote_start_task(
     let request = json!({"repo": repo, "branch": branch, "worktree": worktree.unwrap_or(false), "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort});
     let started = client::call_within(&app, &device_id, "task.start", request, START_TIMEOUT).await.and_then(|reply| reply["sessionId"].as_str().filter(|id| host::valid_id(id).is_ok()).map(str::to_owned).ok_or_else(|| "The other computer did not start the task.".to_string()));
     let saved = started.and_then(|session| {
-        lock(&state)?.db.lock().unwrap().execute("UPDATE sessions SET remote_session=?2 WHERE id=?1", params![local, session]).map_err(|e| e.to_string())
+        lock(&state)?.conn().execute("UPDATE sessions SET remote_session=?2 WHERE id=?1", params![local, session]).map_err(|e| e.to_string())
     });
     if let Err(error) = saved {
         // Leave nothing behind: a new row goes, a reused draft is a local draft again.
         if created {
             let _ = crate::task_deletion::delete_state(&state, &local);
         } else if let Ok(store) = lock(&state) {
-            let _ = store.db.lock().unwrap().execute("UPDATE sessions SET remote_device=NULL,remote_session=NULL,draft=1,status='idle' WHERE id=?1", [&local]);
+            let _ = store.conn().execute("UPDATE sessions SET remote_device=NULL,remote_session=NULL,draft=1,status='idle' WHERE id=?1", [&local]);
         }
         let _ = app.emit("sessions-changed", ());
         return Err(error);
@@ -443,7 +443,7 @@ fn mirror_row(store: &Store, device: &str, project_id: &str, provider: &str, mod
     if effort.is_some() {
         store.set_reasoning_effort(&id, effort)?;
     }
-    store.db.lock().unwrap().execute("UPDATE sessions SET remote_device=?2,remote_session=NULL,remote_synced_id=0,draft=0 WHERE id=?1", params![id, device]).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE sessions SET remote_device=?2,remote_session=NULL,remote_synced_id=0,draft=0 WHERE id=?1", params![id, device]).map_err(|e| e.to_string())?;
     start_turn(store, &id)?;
     Ok((id, created))
 }
@@ -456,7 +456,7 @@ mod tests {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
-        store.db.lock().unwrap().execute("UPDATE sessions SET remote_device='host',remote_session='h1' WHERE id=?1", [&task.id]).unwrap();
+        store.conn().execute("UPDATE sessions SET remote_device='host',remote_session='h1' WHERE id=?1", [&task.id]).unwrap();
         (store, task.id)
     }
 
@@ -465,15 +465,15 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pantheon-mirror-{}.sqlite3", uuid::Uuid::new_v4()));
         {
             let store = Store::open(&path).unwrap();
-            store.db.lock().unwrap().execute_batch("DROP INDEX sessions_remote; ALTER TABLE sessions DROP COLUMN remote_device; ALTER TABLE sessions DROP COLUMN remote_session; ALTER TABLE sessions DROP COLUMN remote_synced_id; PRAGMA user_version=25;").unwrap();
+            store.conn().execute_batch("DROP INDEX sessions_remote; ALTER TABLE sessions DROP COLUMN remote_device; ALTER TABLE sessions DROP COLUMN remote_session; ALTER TABLE sessions DROP COLUMN remote_synced_id; PRAGMA user_version=25;").unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.lock().unwrap().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (29, 29));
-        let columns: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('remote_device','remote_session','remote_synced_id')", [], |r| r.get(0)).unwrap();
+        assert_eq!((crate::storage::SCHEMA_VERSION, store.conn().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (29, 29));
+        let columns: i64 = store.conn().query_row("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('remote_device','remote_session','remote_synced_id')", [], |r| r.get(0)).unwrap();
         assert_eq!(columns, 3);
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
-        let synced: i64 = store.db.lock().unwrap().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&task.id], |r| r.get(0)).unwrap();
+        let synced: i64 = store.conn().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&task.id], |r| r.get(0)).unwrap();
         assert_eq!((synced, task.remote_device), (0, None));
         drop(store);
         for suffix in ["", "-wal", "-shm"] {
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(serde_json::to_value(store.session(&local).unwrap()).unwrap()["remoteDevice"]["name"], "another computer");
         // The checkout is on the host: git and worktree commands never reach this disk.
         assert_eq!(store.workspace_root(&task.project_id, Some(&local)), Err("This task runs on another computer.".into()));
-        store.db.lock().unwrap().execute("UPDATE sessions SET remote_session=NULL WHERE id=?1", [&local]).unwrap();
+        store.conn().execute("UPDATE sessions SET remote_session=NULL WHERE id=?1", [&local]).unwrap();
         assert!(of(&store, &local).unwrap_err().contains("still starting"));
         let plain = store.create_session(&task.project_id, "claude", "sonnet", "full").unwrap();
         assert!(of(&store, &plain.id).unwrap().is_none());
@@ -585,20 +585,20 @@ mod tests {
         for i in 0..5 {
             host.message(&host_task, if i % 2 == 0 { "user" } else { "assistant" }, &format!("{i}{}", "x".repeat(60 * 1024))).unwrap();
         }
-        host.db.lock().unwrap().execute("UPDATE sessions SET title='Fix the build' WHERE id=?1", [&host_task]).unwrap();
-        let first = host::messages_page(&host.db.lock().unwrap(), &host_task, 0).unwrap();
+        host.conn().execute("UPDATE sessions SET title='Fix the build' WHERE id=?1", [&host_task]).unwrap();
+        let first = host::messages_page(&host.conn(), &host_task, 0).unwrap();
         assert_eq!((first["messages"].as_array().unwrap().len(), first["hasMore"].as_bool()), (2, Some(true)), "a page fits one frame");
         assert!(first.to_string().len() <= host::PAGE_BUDGET);
         assert!(store_page(&viewer, &local, 0, &first).unwrap());
-        let synced: i64 = viewer.db.lock().unwrap().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&local], |r| r.get(0)).unwrap();
+        let synced: i64 = viewer.conn().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&local], |r| r.get(0)).unwrap();
         assert_eq!(synced, first["messages"][1]["id"].as_i64().unwrap());
         // A page from a stale position (a concurrent sync) is skipped, never duplicated.
         assert!(!store_page(&viewer, &local, 0, &first).unwrap());
         let mut after = synced;
         loop {
-            let page = host::messages_page(&host.db.lock().unwrap(), &host_task, after).unwrap();
+            let page = host::messages_page(&host.conn(), &host_task, after).unwrap();
             let more = store_page(&viewer, &local, after, &page).unwrap();
-            after = viewer.db.lock().unwrap().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&local], |r| r.get(0)).unwrap();
+            after = viewer.conn().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&local], |r| r.get(0)).unwrap();
             if !more {
                 break;
             }
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(copied.iter().map(|m| m.content.chars().next().unwrap()).collect::<String>(), "01234");
         assert_eq!(copied[0].role, "user");
         assert_eq!(viewer.session(&local).unwrap().title, "Fix the build");
-        let empty = host::messages_page(&host.db.lock().unwrap(), &host_task, after).unwrap();
+        let empty = host::messages_page(&host.conn(), &host_task, after).unwrap();
         assert_eq!((empty["messages"].as_array().unwrap().len(), empty["hasMore"].as_bool()), (0, Some(false)));
         assert!(store_page(&viewer, &local, after, &json!({"messages": [{"id": 1, "role": "user", "content": "old", "createdAt": 0}]})).is_err(), "ids only move forward");
     }

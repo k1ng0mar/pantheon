@@ -58,19 +58,19 @@ pub(crate) fn view(json: &str) -> Option<Value> {
 }
 
 pub(crate) fn load(store: &Store, session_id: &str) -> Result<Option<State>> {
-    let json: Option<Option<String>> = store.db.lock().unwrap().query_row("SELECT cloud FROM sessions WHERE id=?1", [session_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+    let json: Option<Option<String>> = store.conn().query_row("SELECT cloud FROM sessions WHERE id=?1", [session_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
     Ok(json.flatten().and_then(|json| serde_json::from_str(&json).ok()))
 }
 
 pub(crate) fn save(store: &Store, session_id: &str, state: Option<&State>) -> Result<()> {
     let json = state.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?;
-    store.db.lock().unwrap().execute("UPDATE sessions SET cloud=?2 WHERE id=?1", rusqlite::params![session_id, json]).map_err(|e| e.to_string())?;
+    store.conn().execute("UPDATE sessions SET cloud=?2 WHERE id=?1", rusqlite::params![session_id, json]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Cloud tasks with a run that was started and not finalized.
 pub(crate) fn active_runs(store: &Store) -> Result<Vec<String>> {
-    let conn = store.db.lock().unwrap(); let mut statement = conn.prepare("SELECT id,cloud FROM sessions WHERE cloud IS NOT NULL").map_err(|e| e.to_string())?;
+    let conn = store.conn(); let mut statement = conn.prepare("SELECT id,cloud FROM sessions WHERE cloud IS NOT NULL").map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
     Ok(rows.filter_map(std::result::Result::ok).filter(|(_, json)| serde_json::from_str::<State>(json).is_ok_and(|s| s.active())).map(|(id, _)| id).collect())
 }
@@ -130,10 +130,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pantheon-cloud-{}.sqlite3", uuid::Uuid::new_v4()));
         {
             let store = Store::open(&path).unwrap();
-            store.db.lock().unwrap().execute_batch("ALTER TABLE sessions DROP COLUMN cloud; PRAGMA user_version=26;").unwrap();
+            store.conn().execute_batch("ALTER TABLE sessions DROP COLUMN cloud; PRAGMA user_version=26;").unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.lock().unwrap().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (29, 29));
+        assert_eq!((crate::storage::SCHEMA_VERSION, store.conn().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (29, 29));
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
         assert_eq!(task.cloud, None);

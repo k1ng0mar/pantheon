@@ -288,7 +288,7 @@ pub(super) async fn set_task_preference(
     }
     let settings = merge_preference(current.codex_settings, &delta)?;
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
             rusqlite::params![session_id, settings.to_string()],
         )
@@ -455,7 +455,7 @@ pub(super) async fn fork_codex_task(
     }
     store.project(&source.project_id)?;
     let task_id = {
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let task_id = storage::Store::insert_new_session(
             &tx,
@@ -481,7 +481,7 @@ pub(super) async fn fork_codex_task(
 /// Test-only entry point for `copy_task_messages_on`: takes the store lock itself.
 #[cfg(test)]
 pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> Result<()> {
-    copy_task_messages_on(&store.db.lock().unwrap(), source, target)
+    copy_task_messages_on(&store.conn(), source, target)
 }
 /// A fork has no team provenance. Preserve recognized historical app turns as
 /// typed records while their original team IDs and cutoff are still available.
@@ -525,7 +525,7 @@ pub(crate) fn copy_task_messages_on(
 }
 
 fn existing_codex_task(store: &Store, remote_id: &str) -> Result<Option<String>> {
-    store.db.lock().unwrap().query_row("SELECT id FROM sessions WHERE provider='codex' AND resume_id=?1 ORDER BY updated_at DESC LIMIT 1",[remote_id],|row|row.get(0)).optional().map_err(|e|e.to_string())
+    store.conn().query_row("SELECT id FROM sessions WHERE provider='codex' AND resume_id=?1 ORDER BY updated_at DESC LIMIT 1",[remote_id],|row|row.get(0)).optional().map_err(|e|e.to_string())
 }
 
 #[tauri::command]
@@ -558,7 +558,7 @@ pub(super) async fn export_task(state: State<'_, AppState>, session_id: String) 
     // Read the transcript under the connection, then drop the lock before
     // projecting turns, which looks up legacy coordination kinds.
     let rows = {
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
         let mut query = conn.prepare("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
             .map_err(|e| e.to_string())?;
         let rows = query
@@ -799,7 +799,7 @@ mod command_tests {
         let task = store
             .create_session(&project.id, "codex", "default", "ask")
             .unwrap();
-        store.db.lock().unwrap().execute("UPDATE sessions SET resume_id='remote-existing',created_at=0,updated_at=0,archived=1 WHERE id=?1",[&task.id]).unwrap();
+        store.conn().execute("UPDATE sessions SET resume_id='remote-existing',created_at=0,updated_at=0,archived=1 WHERE id=?1",[&task.id]).unwrap();
         for _ in 0..501 {
             store
                 .create_session(&project.id, "codex", "default", "ask")

@@ -81,7 +81,7 @@ fn task_deletion_waits_for_team_cleanup_and_late_callbacks_cannot_recreate_it() 
     assert!(store.session(&parent).is_err());
     assert!(store.session(&child).is_err());
     for table in ["sessions", "architect_teams", "architect_workers", "architect_requests"] {
-        let count: i64 = store.db.lock().unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+        let count: i64 = store.conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "{table}");
     }
 }
@@ -103,7 +103,7 @@ fn generated_review_keeps_model_input_but_projects_a_timed_coordination_turn() {
     assert!(review.config.prompt.ends_with(&original));
     let store = state.store.lock().unwrap();
     let (role, saved): (String, String) = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT role,content FROM messages WHERE id=?1",
             [review.turn_message_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -191,17 +191,17 @@ fn prompt_activity_migration_excludes_legacy_coordination_without_a_watermark() 
         let store = Store::open(&path).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         parent = store.create_session(&project.id, "codex", "default", "full").unwrap().id;
-        store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user','Build the parser',100)", [&parent]).unwrap();
+        store.conn().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user','Build the parser',100)", [&parent]).unwrap();
         let child = store.create_session(&project.id, "codex", "default", "full").unwrap();
         let mut team = new_team(parent.clone(), config());
         team.status = "paused".into(); team.round = 2; team.legacy_prompt_through_id = None;
         let mut worker = worker("legacy-worker", "completed", &["src"], &[]);
         worker.session_id = child.id.clone(); team.workers.push(worker);
-        store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)", params![parent,child.id]).unwrap();
+        store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)", params![parent,child.id]).unwrap();
         let raw = format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{}", review_summaries(&team));
-        store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user',?2,200)", params![parent,raw]).unwrap();
+        store.conn().execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user',?2,200)", params![parent,raw]).unwrap();
         save(&store, &mut team).unwrap();
-        store.db.lock().unwrap().execute_batch("DROP INDEX sessions_sidebar; DROP TRIGGER messages_record_prompt; ALTER TABLE sessions DROP COLUMN last_prompt_at; PRAGMA user_version=18;").unwrap();
+        store.conn().execute_batch("DROP INDEX sessions_sidebar; DROP TRIGGER messages_record_prompt; ALTER TABLE sessions DROP COLUMN last_prompt_at; PRAGMA user_version=18;").unwrap();
     }
     let store = Store::open(&path).unwrap();
     assert_eq!(store.session(&parent).unwrap().last_prompt_at, Some(100));
@@ -234,7 +234,7 @@ fn legacy_generated_rows_project_only_with_owned_workers_before_the_startup_cuto
         worker.summary = "Worker report remains private".into();
         worker.result_revision = 1;
         team.workers.push(worker);
-        store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)",params![parent,child.id]).unwrap();
+        store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)",params![parent,child.id]).unwrap();
         raw=format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{}",review_summaries(&team));
         store.message(&parent, "user", &raw).unwrap();
         store
@@ -253,7 +253,7 @@ fn legacy_generated_rows_project_only_with_owned_workers_before_the_startup_cuto
     assert_eq!(messages[2].role, "user");
     assert_eq!(
         store
-            .db.lock().unwrap().query_row(
+            .conn().query_row(
                 "SELECT content FROM messages WHERE id=?1",
                 [messages[1].id],
                 |r| r.get::<_, String>(0)
@@ -298,7 +298,7 @@ fn legacy_generated_rows_project_only_with_owned_workers_before_the_startup_cuto
     assert_eq!(fork_messages[3].role, "user");
     assert_eq!(fork_messages[3].content, raw);
     let copied: String = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT content FROM messages WHERE id=?1",
             [fork_messages[1].id],
             |row| row.get(0),
@@ -733,7 +733,7 @@ fn collaboration_migration_refreshes_only_codex_team_catalogs_and_retains_privat
             let mut w = worker(id, "running", &[id], &[]);
             w.session_id = sid.clone();
             team.workers.push(w);
-            store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?3)",params![parent,id,sid]).unwrap();
+            store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?3)",params![parent,id,sid]).unwrap();
         }
         for (sid, content) in [
             (&parent, "PRIVATE PARENT TEXT"),
@@ -743,7 +743,7 @@ fn collaboration_migration_refreshes_only_codex_team_catalogs_and_retains_privat
         ] {
             store.message(sid, "assistant", content).unwrap();
             store
-                .db.lock().unwrap().execute(
+                .conn().execute(
                     "UPDATE sessions SET resume_id='native-context' WHERE id=?1",
                     [sid],
                 )
@@ -751,7 +751,7 @@ fn collaboration_migration_refreshes_only_codex_team_catalogs_and_retains_privat
         }
         save(&store, &mut team).unwrap();
         store
-            .db.lock().unwrap()
+            .conn()
             .execute_batch("DROP TABLE architect_messages; PRAGMA user_version=15;")
             .unwrap();
     }
@@ -776,7 +776,7 @@ fn collaboration_migration_refreshes_only_codex_team_catalogs_and_retains_privat
     assert!(team.pending_turn.is_none());
     assert_eq!(
         store
-            .db.lock().unwrap()
+            .conn()
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
         crate::storage::SCHEMA_VERSION
@@ -802,7 +802,7 @@ fn legacy_codex_catalog_refresh_preserves_private_history_and_survives_restart_o
         child_worker.session_id = child.clone();
         team.workers.push(child_worker);
         save(&store, &mut team).unwrap();
-        store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_remove(content,'$.toolCatalogVersion') WHERE session_id=?1", [&parent]).unwrap();
+        store.conn().execute("UPDATE architect_teams SET content=json_remove(content,'$.toolCatalogVersion') WHERE session_id=?1", [&parent]).unwrap();
         for (sid, history) in [(&parent, "PRIVATE PARENT HISTORY"), (&child, "PRIVATE CHILD HISTORY"), (&ordinary, "ORDINARY HISTORY")] {
             store.message(sid, "assistant", history).unwrap();
             store.resume(sid, &format!("old-{sid}")).unwrap();
@@ -849,9 +849,9 @@ fn catalog_refresh_skips_current_codex_and_other_harness_contexts() {
         let (store, mut team) = fixture();
         let sid = team.session_id.clone();
         save(&store, &mut team).unwrap();
-        store.db.lock().unwrap().execute("UPDATE sessions SET provider=?2,resume_id='existing-context' WHERE id=?1", params![sid, provider]).unwrap();
+        store.conn().execute("UPDATE sessions SET provider=?2,resume_id='existing-context' WHERE id=?1", params![sid, provider]).unwrap();
         store.message(&sid, "assistant", "Saved conversation").unwrap();
-        store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_set(content,'$.toolCatalogVersion',?2) WHERE session_id=?1", params![sid, if provider == "codex" { TOOL_CATALOG_VERSION } else { 0 }]).unwrap();
+        store.conn().execute("UPDATE architect_teams SET content=json_set(content,'$.toolCatalogVersion',?2) WHERE session_id=?1", params![sid, if provider == "codex" { TOOL_CATALOG_VERSION } else { 0 }]).unwrap();
         validate_admission(&store, &sid, Some(&Admission { parent: sid.clone(), generation: 1 })).unwrap();
         assert_eq!(store.session(&sid).unwrap().resume_id.as_deref(), Some("existing-context"));
         assert!(!crate::context_recovery::pending(&store, &store.session(&sid).unwrap()).unwrap());
@@ -863,10 +863,10 @@ fn catalog_refresh_rolls_back_context_handoff_when_team_persistence_fails() {
     let (store, mut team) = fixture();
     let sid = team.session_id.clone();
     save(&store, &mut team).unwrap();
-    store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_remove(content,'$.toolCatalogVersion') WHERE session_id=?1", [&sid]).unwrap();
-    store.db.lock().unwrap().execute("UPDATE sessions SET provider='codex',resume_id='old-context' WHERE id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE architect_teams SET content=json_remove(content,'$.toolCatalogVersion') WHERE session_id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE sessions SET provider='codex',resume_id='old-context' WHERE id=?1", [&sid]).unwrap();
     store.message(&sid, "assistant", "Saved conversation").unwrap();
-    store.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_catalog_update BEFORE UPDATE ON architect_teams BEGIN SELECT RAISE(ABORT,'catalog save failed'); END;").unwrap();
+    store.conn().execute_batch("CREATE TRIGGER reject_catalog_update BEFORE UPDATE ON architect_teams BEGIN SELECT RAISE(ABORT,'catalog save failed'); END;").unwrap();
     let result = validate_admission(&store, &sid, Some(&Admission { parent: sid.clone(), generation: 1 }));
     assert!(result.is_err());
     assert_eq!(store.session(&sid).unwrap().resume_id.as_deref(), Some("old-context"));
@@ -1051,7 +1051,7 @@ fn managed_workers_are_hidden_from_task_lists_but_have_real_transcripts() {
         .create_session(&parent.project_id, "kimi", "default", "ask")
         .unwrap();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "INSERT INTO architect_workers VALUES(?1,'child',?2)",
             params![parent.id, child.id],
         )
@@ -1199,7 +1199,7 @@ fn switching_live_team_keeps_current_turn_and_worker_snapshots_until_boundary() 
     {
         let store = state.store.lock().unwrap();
         store.resume(&sid, "original-native-context").unwrap();
-        store.db.lock().unwrap().execute("UPDATE sessions SET mode='plan',context_used_tokens=123,context_window=1000,codex_settings=?2 WHERE id=?1",
+        store.conn().execute("UPDATE sessions SET mode='plan',context_used_tokens=123,context_window=1000,codex_settings=?2 WHERE id=?1",
             params![sid, r#"{"personality":"friendly"}"#]).unwrap();
     }
     let (parent, _rx) = claim(&state, Launch {
@@ -1476,13 +1476,13 @@ fn batch_idempotency_rejects_different_arguments_and_rolls_back_invalid_batches(
     assert_eq!(load(&store, &sid).unwrap().unwrap().workers.len(), 1);
     assert_eq!(
         store
-            .db.lock().unwrap().query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+            .conn().query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))
             .unwrap(),
         2
     );
     assert_eq!(
         store
-            .db.lock().unwrap().query_row("SELECT COUNT(*) FROM architect_requests", [], |r| r
+            .conn().query_row("SELECT COUNT(*) FROM architect_requests", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
         1
@@ -1536,7 +1536,7 @@ fn dispatch_requires_explicit_file_scopes_without_persisting_any_part_of_the_bat
     let store = state.store.lock().unwrap();
     assert!(load(&store, &sid).unwrap().unwrap().workers.is_empty());
     for (table, expected) in [("sessions", 1), ("architect_workers", 0), ("architect_requests", 0)] {
-        let count: i64 = store.db.lock().unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+        let count: i64 = store.conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
         assert_eq!(count, expected, "{table}");
     }
     let tools = catalog();
@@ -1737,7 +1737,7 @@ fn permission_revocation_applies_to_worker_retry_and_failed_work_can_be_abandone
     {
         let store = state.store.lock().unwrap();
         store
-            .db.lock().unwrap().execute("UPDATE sessions SET mode='full' WHERE id=?1", [&sid])
+            .conn().execute("UPDATE sessions SET mode='full' WHERE id=?1", [&sid])
             .unwrap();
     }
     let ids = call(
@@ -1913,7 +1913,7 @@ fn legacy_dispatch_retry_without_files_reuses_the_saved_whole_checkout_assignmen
     assert!(team.workers[0].files.is_empty());
     assert!(!team.workers[0].read_only);
     for (table, expected) in [("sessions", 2), ("architect_workers", 1), ("architect_requests", 1)] {
-        let count: i64 = store.db.lock().unwrap().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+        let count: i64 = store.conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)).unwrap();
         assert_eq!(count, expected, "{table}");
     }
 }
@@ -2033,7 +2033,7 @@ fn roster_only_team_lets_a_listed_lead_staff_itself() {
 fn roster_only_team_keeps_lead_and_worker_efforts_apart() {
     // Issue #34: the lead runs at its own effort while workers of the same model use the roster's.
     let (state, sid) = roster_only_state(true);
-    state.store.lock().unwrap().db.lock().unwrap().execute("UPDATE sessions SET reasoning_effort='xhigh' WHERE id=?1", [&sid]).unwrap();
+    state.store.lock().unwrap().conn().execute("UPDATE sessions SET reasoning_effort='xhigh' WHERE id=?1", [&sid]).unwrap();
     call(&state, &sid, "pantheon_dispatch_workers", json!({"assignments":[auto_assignment("own", json!({}))]})).unwrap();
     let store = state.store.lock().unwrap();
     let worker = &load(&store, &sid).unwrap().unwrap().workers[0];
@@ -2197,7 +2197,7 @@ fn one_team_with_a_missing_folder_does_not_stop_the_others() {
         team.generation = 1;
         team.updated_at = 0;
         let content = serde_json::to_string(&team).unwrap();
-        store.db.lock().unwrap().execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![parent.id, content]).unwrap();
+        store.conn().execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![parent.id, content]).unwrap();
         parent.id
     };
     std::fs::remove_dir_all(&gone).unwrap();
@@ -2334,7 +2334,7 @@ fn a_silent_review_is_asked_once_to_continue_with_the_reason() {
 fn a_resumed_conversation_gets_the_team_rules_once_and_only_new_messages() {
     let (state, sid) = state_fixture();
     let store = state.store.lock().unwrap();
-    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
     let admission = Admission { parent: sid.clone(), generation: 1 };
     let first = prompt(&store, &sid, "Build the parser", Some(&admission)).unwrap();
     assert!(first.contains("Pantheon architect mode. Coordinate"));
@@ -2344,7 +2344,7 @@ fn a_resumed_conversation_gets_the_team_rules_once_and_only_new_messages() {
     assert!(!second.contains("Team coordination"));
     assert!(second.starts_with("Pantheon architect mode continues"));
     assert!(second.ends_with("Now the renderer"));
-    store.db.lock().unwrap().execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,'w1','architect','k','Renderer API is ready',1)", [&sid]).unwrap();
+    store.conn().execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,'w1','architect','k','Renderer API is ready',1)", [&sid]).unwrap();
     let third = prompt(&store, &sid, "Review", Some(&admission)).unwrap();
     assert!(third.contains("Renderer API is ready"));
     let fourth = prompt(&store, &sid, "Review again", Some(&admission)).unwrap();
@@ -2355,7 +2355,7 @@ fn a_resumed_conversation_gets_the_team_rules_once_and_only_new_messages() {
     save(&store, &mut team).unwrap();
     assert!(prompt(&store, &sid, "Go on", Some(&admission)).unwrap().contains("Pantheon architect mode. Coordinate"));
     // A conversation the harness starts afresh has never seen them.
-    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL WHERE id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE sessions SET resume_id=NULL WHERE id=?1", [&sid]).unwrap();
     assert!(prompt(&store, &sid, "Go on", Some(&admission)).unwrap().contains("Pantheon architect mode. Coordinate"));
 }
 
@@ -2363,7 +2363,7 @@ fn a_resumed_conversation_gets_the_team_rules_once_and_only_new_messages() {
 fn lead_guidance_joins_the_team_rules_and_is_reminded() {
     let (state, sid) = state_fixture();
     let store = state.store.lock().unwrap();
-    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
     let admission = Admission { parent: sid.clone(), generation: 1 };
     let mut team = load(&store, &sid).unwrap().unwrap();
     team.config.lead_guidance = Some("  You only lead: never edit files yourself.  ".into());
@@ -2384,7 +2384,7 @@ fn lead_guidance_joins_the_team_rules_and_is_reminded() {
 fn empty_guidance_leaves_the_built_in_rules_alone() {
     let (state, sid) = state_fixture();
     let store = state.store.lock().unwrap();
-    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
     let admission = Admission { parent: sid.clone(), generation: 1 };
     let mut team = load(&store, &sid).unwrap().unwrap();
     team.config.lead_guidance = Some("   \n  ".into());
@@ -2399,7 +2399,7 @@ fn empty_guidance_leaves_the_built_in_rules_alone() {
 fn the_app_wide_lead_guidance_reaches_teams_that_set_none() {
     let (state, sid) = state_fixture();
     let store = state.store.lock().unwrap();
-    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
+    store.conn().execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
     let admission = Admission { parent: sid.clone(), generation: 1 };
     profiles::set_lead_guidance(&store, Some("  Always run the test suite before finishing.  ".into())).unwrap();
     let rules = prompt(&store, &sid, "Build the parser", Some(&admission)).unwrap();

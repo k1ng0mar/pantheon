@@ -137,7 +137,7 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<
         Command::NewThread => {
             {
                 let store = state.store.lock().map_err(|e| e.to_string())?;
-                store.db.lock().unwrap().execute("DELETE FROM bot_threads WHERE session_id=?1", [&session_id]).map_err(|e| e.to_string())?;
+                store.conn().execute("DELETE FROM bot_threads WHERE session_id=?1", [&session_id]).map_err(|e| e.to_string())?;
             }
             reply(app, &bot, &inbound.channel_id, &inbound.thread, "Starting a fresh conversation. What's next?").await;
             return Ok(session_id);
@@ -188,7 +188,7 @@ pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &
 
 /// The assistant's reply for the turn that just ended: messages after the last user prompt.
 fn latest_reply(store: &Store, session_id: &str) -> Result<String> {
-    let conn = store.db.lock().unwrap(); let mut  statement = conn.prepare("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' AND id > COALESCE((SELECT MAX(id) FROM messages WHERE session_id=?1 AND role='user'),0) ORDER BY id")
+    let conn = store.conn(); let mut  statement = conn.prepare("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' AND id > COALESCE((SELECT MAX(id) FROM messages WHERE session_id=?1 AND role='user'),0) ORDER BY id")
         .map_err(|e| e.to_string())?;
     let parts = statement.query_map([session_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
     Ok(parts.join("\n\n").trim().to_owned())

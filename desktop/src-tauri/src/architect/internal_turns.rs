@@ -93,7 +93,7 @@ pub fn legacy_kind(
     message_id: i64,
     content: &str,
 ) -> Result<Option<CoordinationKind>> {
-    legacy_kind_in_db(&store.db.lock().unwrap(), sid, message_id, content)
+    legacy_kind_in_db(&store.conn(), sid, message_id, content)
 }
 
 pub(crate) fn legacy_kind_in_db(

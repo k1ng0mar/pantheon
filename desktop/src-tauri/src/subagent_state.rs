@@ -304,14 +304,14 @@ mod tests {
         let mut state = SubagentState::default();
         let mut activity = child("worker", "running");
         record(&mut state, &store, &sid, "run", activity.clone());
-        let changes = store.lock().unwrap().db.lock().unwrap().total_changes();
+        let changes = store.lock().unwrap().conn().total_changes();
         for n in 0..200 {
             activity.response = format!("Read {n} lines");
             activity.updated_at += 1;
             record(&mut state, &store, &sid, "run", activity.clone());
         }
         let history = store.lock().unwrap().subagents(&sid).unwrap();
-        assert_eq!(store.lock().unwrap().db.lock().unwrap().total_changes(), changes);
+        assert_eq!(store.lock().unwrap().conn().total_changes(), changes);
         assert_eq!(history[0].response, "Reading");
         assert_eq!(state.merge_history(history)[0].response, "Read 199 lines");
         state.entries.get_mut("run:worker").unwrap().last_saved =
@@ -456,11 +456,11 @@ mod tests {
         assert_eq!(merged.len(), 64);
         assert!(merged.iter().take(2).all(|a| a.status == "running"));
         store
-            .db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [&sid])
+            .conn().execute("DELETE FROM sessions WHERE id=?1", [&sid])
             .unwrap();
         assert_eq!(
             store
-                .db.lock().unwrap().query_row("SELECT COUNT(*) FROM subagents", [], |row| row
+                .conn().query_row("SELECT COUNT(*) FROM subagents", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
             0
@@ -472,13 +472,13 @@ mod tests {
         let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
         let sid = task(&store.lock().unwrap());
         let mut state = SubagentState::default();
-        store.lock().unwrap().db.lock().unwrap().execute_batch("CREATE TRIGGER reject_child BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;").unwrap();
+        store.lock().unwrap().conn().execute_batch("CREATE TRIGGER reject_child BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;").unwrap();
         let mut event = crate::event(&sid, "subagent", "");
         event.data = Some(serde_json::to_value(child("worker", "running")).unwrap());
         assert!(state.record(&store, "run", &mut event).is_err());
         assert_eq!(state.merge_history(Vec::new())[0].response, "Reading");
         let db = store.lock().unwrap();
-        db.db.lock().unwrap().execute_batch("DROP TRIGGER reject_child;").unwrap();
+        db.conn().execute_batch("DROP TRIGGER reject_child;").unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();
         assert_eq!(db.subagents(&sid).unwrap()[0].response, "Reading");
     }
@@ -547,7 +547,7 @@ mod tests {
         let mut state = SubagentState::default();
         record(&mut state, &store, &sid, "run", child("worker", "running"));
         let db = store.lock().unwrap();
-        db.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_final_insert BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;
+        db.conn().execute_batch("CREATE TRIGGER reject_final_insert BEFORE INSERT ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;
             CREATE TRIGGER reject_final_update BEFORE UPDATE ON subagents BEGIN SELECT RAISE(ABORT,'test full disk'); END;").unwrap();
         let (changed, saved) = state.finish(&db, &sid, "stopped");
         assert!(
@@ -566,7 +566,7 @@ mod tests {
             state.merge_history(db.subagents(&sid).unwrap())[0].status,
             "stopped"
         );
-        db.db.lock().unwrap()
+        db.conn()
             .execute_batch("DROP TRIGGER reject_final_insert; DROP TRIGGER reject_final_update;")
             .unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();

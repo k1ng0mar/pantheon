@@ -79,11 +79,11 @@ fn board_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Moodboard> {
     })
 }
 fn board(store: &Store, project: &str, id: &str) -> Result<Moodboard> {
-    store.db.lock().unwrap().query_row("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE b.id=?1 AND b.project_id=?2",params![id,project],board_row).optional().map_err(|e|e.to_string())?.ok_or("Moodboard is unavailable in this project.".into())
+    store.conn().query_row("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE b.id=?1 AND b.project_id=?2",params![id,project],board_row).optional().map_err(|e|e.to_string())?.ok_or("Moodboard is unavailable in this project.".into())
 }
 pub fn list(store: &Store, project: &str) -> Result<Vec<Moodboard>> {
     store.project(project)?;
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let mut query = conn.prepare("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE project_id=?1 ORDER BY updated_at DESC,id LIMIT 24").map_err(|e|e.to_string())?;
     let rows = query
         .query_map([project], board_row)
@@ -95,7 +95,7 @@ pub fn create(store: &Store, project: &str, name: &str) -> Result<Moodboard> {
     store.project(project)?;
     let name = label(name, 120)?;
     let count: i64 = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT COUNT(*) FROM moodboards WHERE project_id=?1",
             [project],
             |r| r.get(0),
@@ -106,12 +106,12 @@ pub fn create(store: &Store, project: &str, name: &str) -> Result<Moodboard> {
     }
     let id = storage::id();
     let now = storage::now();
-    store.db.lock().unwrap().execute("INSERT INTO moodboards(id,project_id,name,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)",params![id,project,name,now]).map_err(|e|e.to_string())?;
+    store.conn().execute("INSERT INTO moodboards(id,project_id,name,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)",params![id,project,name,now]).map_err(|e|e.to_string())?;
     board(store, project, &id)
 }
 pub fn detail(store: &Store, project: &str, id: &str) -> Result<MoodboardDetail> {
     let board = board(store, project, id)?;
-    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare("SELECT id,name,caption,width,height,created_at FROM moodboard_images WHERE board_id=?1 ORDER BY created_at,id LIMIT 64").map_err(|e|e.to_string())?;
+    let conn = store.conn(); let mut  query = conn.prepare("SELECT id,name,caption,width,height,created_at FROM moodboard_images WHERE board_id=?1 ORDER BY created_at,id LIMIT 64").map_err(|e|e.to_string())?;
     let images = query
         .query_map([id], |r| {
             Ok(MoodboardImage {
@@ -255,7 +255,7 @@ fn insert(
     if board.image_count + images.len() as i64 > MAX_IMAGES {
         return Err("A moodboard can hold up to 64 images.".into());
     }
-    let used:i64=store.db.lock().unwrap().query_row("SELECT COALESCE(SUM(length(original)+length(thumbnail)+length(agent_image)),0) FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id WHERE b.project_id=?1",[project],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let used:i64=store.conn().query_row("SELECT COALESCE(SUM(length(original)+length(thumbnail)+length(agent_image)),0) FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id WHERE b.project_id=?1",[project],|r|r.get(0)).map_err(|e|e.to_string())?;
     let added: usize = images
         .iter()
         .map(|i| i.original.len() + i.thumbnail.len() + i.agent.len())
@@ -266,7 +266,7 @@ fn insert(
         );
     }
     {
-        let mut conn = store.db.lock().unwrap();
+        let mut conn = store.conn();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         for image in images {
             tx.execute("INSERT INTO moodboard_images(id,board_id,name,mime_type,width,height,original,thumbnail,agent_image,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![storage::id(),id,image.name,image.mime,image.width,image.height,image.original,image.thumbnail,image.agent,storage::now()]).map_err(|e|e.to_string())?;
@@ -295,7 +295,7 @@ fn image_bytes(
         "SELECT i.agent_image,i.caption FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id WHERE i.id=?1 AND b.id=?2 AND b.project_id=?3"
     };
     store
-        .db.lock().unwrap().query_row(sql, params![image_id, board_id, project], |r| {
+        .conn().query_row(sql, params![image_id, board_id, project], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .optional()
@@ -380,7 +380,7 @@ pub async fn rename_moodboard(
         board(&store, &project_id, &board_id)?;
         let name = label(&name, 120)?;
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "UPDATE moodboards SET name=?2,updated_at=?3 WHERE id=?1",
                 params![board_id, name, storage::now()],
             )
@@ -400,7 +400,7 @@ pub async fn delete_moodboard(
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
         store
-            .db.lock().unwrap().execute("DELETE FROM moodboards WHERE id=?1", [board_id])
+            .conn().execute("DELETE FROM moodboards WHERE id=?1", [board_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     })
@@ -468,7 +468,7 @@ pub async fn update_moodboard_image(
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
         if store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "UPDATE moodboard_images SET caption=?3 WHERE id=?1 AND board_id=?2",
                 params![image_id, board_id, caption],
             )
@@ -478,7 +478,7 @@ pub async fn update_moodboard_image(
             return Err("Image is no longer available.".into());
         }
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
                 params![board_id, storage::now()],
             )
@@ -499,13 +499,13 @@ pub async fn remove_moodboard_image(
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "DELETE FROM moodboard_images WHERE id=?1 AND board_id=?2",
                 params![image_id, board_id],
             )
             .map_err(|e| e.to_string())?;
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
                 params![board_id, storage::now()],
             )
@@ -552,7 +552,7 @@ mod tests {
             let path =
                 std::env::temp_dir().join(format!("pantheon-moodboard-{}.db", storage::id()));
             let store = Store::open(&path).unwrap();
-            store.db.lock().unwrap().execute("INSERT INTO projects(id,name,path) VALUES('one','One','/tmp/one'),('two','Two','/tmp/two')",[]).unwrap();
+            store.conn().execute("INSERT INTO projects(id,name,path) VALUES('one','One','/tmp/one'),('two','Two','/tmp/two')",[]).unwrap();
             Self {
                 path,
                 store,
@@ -636,12 +636,12 @@ mod tests {
         assert!(image_result(&f.store, &f.project, &b.id, image).is_err());
         assert!(image_result(&f.store, &f.project, &a.id, "../../secret").is_err());
         f.store
-            .db.lock().unwrap().execute("DELETE FROM moodboards WHERE id=?1", [a.id])
+            .conn().execute("DELETE FROM moodboards WHERE id=?1", [a.id])
             .unwrap();
         assert!(image_result(&f.store, &f.project, &b.id, image).is_err());
         assert_eq!(
             f.store
-                .db.lock().unwrap().query_row("SELECT COUNT(*) FROM moodboard_images", [], |r| r
+                .conn().query_row("SELECT COUNT(*) FROM moodboard_images", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
             0
@@ -661,7 +661,7 @@ mod tests {
             .collect();
         insert(&mut f.store, &f.project, &b.id, images).unwrap();
         f.store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "UPDATE moodboard_images SET caption=?1",
                 ["\u{1}".repeat(2000)],
             )

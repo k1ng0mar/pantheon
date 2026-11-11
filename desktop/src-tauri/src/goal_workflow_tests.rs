@@ -144,7 +144,7 @@ fn paused_blocked_and_limited_goals_remain_in_progress_until_completion() {
 fn goal_maintenance_adds_no_user_turn_and_preserves_the_previous_stage() {
     let (store, task) = fixture();
     store
-        .db.lock().unwrap().execute(
+        .conn().execute(
             "UPDATE sessions SET task_stage='pending' WHERE id=?1",
             [&task.id],
         )

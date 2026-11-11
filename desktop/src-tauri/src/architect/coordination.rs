@@ -80,7 +80,7 @@ fn mailbox(
     limit: usize,
     latest: bool,
 ) -> Result<Value> {
-    mailbox_on(&store.db.lock().unwrap(), parent, actor, after, limit, latest)
+    mailbox_on(&store.conn(), parent, actor, after, limit, latest)
 }
 fn mailbox_on(
     conn: &rusqlite::Connection,
@@ -158,7 +158,7 @@ pub async fn architect_team_messages(
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     load(&store, &session_id)?.ok_or("Team unavailable.")?;
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e|e.to_string())?;
+    let conn = store.conn(); let mut query = conn.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e|e.to_string())?;
     let mut messages = query
         .query_map(params![session_id, after, (limit + 1) as i64], |r| {
             Ok(Message {
@@ -203,7 +203,7 @@ pub(super) fn dispatch_state(
     }
     // The tool call commits or rolls back together: a rejected message or a
     // failed team save leaves no partial mailbox entry behind.
-    let conn = store.db.lock().unwrap();
+    let conn = store.conn();
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut changed = false;
     let result = match name {

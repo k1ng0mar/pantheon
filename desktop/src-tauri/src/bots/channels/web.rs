@@ -100,12 +100,12 @@ fn history(app: &tauri::AppHandle, channel: &Channel) -> Value {
     let Ok(store) = state.store.lock() else { return json!({"messages": [], "busy": false}) };
     let bot = crate::bots::get(&store, &channel.bot_id).ok();
     let session: Option<String> = store
-        .db.lock().unwrap().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
+        .conn().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
         .ok();
     let messages: Vec<Value> = session
         .as_deref()
         .and_then(|session| {
-            let conn = store.db.lock().unwrap(); let mut  statement = conn.prepare("SELECT role,content,created_at FROM (SELECT id,role,content,created_at FROM messages WHERE session_id=?1 AND role IN ('user','assistant') ORDER BY id DESC LIMIT 80) ORDER BY id").ok()?;
+            let conn = store.conn(); let mut  statement = conn.prepare("SELECT role,content,created_at FROM (SELECT id,role,content,created_at FROM messages WHERE session_id=?1 AND role IN ('user','assistant') ORDER BY id DESC LIMIT 80) ORDER BY id").ok()?;
             let rows = statement.query_map([session], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).ok()?;
             Some(rows.flatten().map(|(role, content, at)| json!({"role": role, "text": if role == "user" { visible(&content) } else { content }, "at": at})).collect())
         })
@@ -123,7 +123,7 @@ fn busy(app: &tauri::AppHandle, channel: &Channel) -> bool {
     let state = app.state::<AppState>();
     let session: Option<String> = state.store.lock().ok().and_then(|store| {
         store
-            .db.lock().unwrap().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
+            .conn().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
             .ok()
     });
     session.is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false))

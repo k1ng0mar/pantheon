@@ -655,7 +655,7 @@ fn summaries(
     // worker remains visible; a saved "running" team after restart does not.
     // SQLite extracts only labels from team JSON, never whole assignments/results.
     let ids = serde_json::to_string(&live.keys().collect::<Vec<_>>()).map_err(|e| e.to_string())?;
-    let conn = store.db.lock().unwrap(); let mut stmt = conn.prepare("WITH live(id) AS (SELECT value FROM json_each(?1)),
+    let conn = store.conn(); let mut stmt = conn.prepare("WITH live(id) AS (SELECT value FROM json_each(?1)),
       parents(id) AS (SELECT DISTINCT aw.parent_session_id FROM architect_workers aw JOIN live ON live.id=aw.session_id JOIN architect_teams t ON t.session_id=aw.parent_session_id WHERE json_extract(t.content,'$.status') IN ('running','waiting'))
       SELECT s.id,substr(COALESCE((SELECT json_extract(w.value,'$.name') FROM json_each(t.content,'$.workers') w WHERE json_extract(w.value,'$.id')=aw.worker_id LIMIT 1),s.title),1,160),s.project_id,substr(p.name,1,120),s.provider,s.updated_at,aw.parent_session_id,aw.worker_id,substr(parent.title,1,160)
       FROM sessions s JOIN projects p ON p.id=s.project_id
@@ -814,13 +814,13 @@ fn thread_snapshot(
     };
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let session = store.session(session_id)?;
-    let version = store.db.lock().unwrap().total_changes();
+    let version = store.conn().total_changes();
     if let Some(id) = subagent_id {
         let mut child = match child {
             Some(child) => child,
             None => {
                 let content: Option<String> = store
-                    .db.lock().unwrap().query_row(
+                    .conn().query_row(
                         "SELECT content FROM subagents WHERE session_id=?1 AND id=?2",
                         rusqlite::params![session_id, id],
                         |row| row.get(0),
@@ -865,7 +865,7 @@ fn thread_snapshot(
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| e.to_string())?;
-        let coordinating: bool = store.db.lock().unwrap().query_row(
+        let coordinating: bool = store.conn().query_row(
             "SELECT EXISTS(SELECT 1 FROM architect_workers w JOIN architect_teams t ON t.session_id=w.parent_session_id WHERE w.parent_session_id=?1 AND w.session_id IN (SELECT value FROM json_each(?2)) AND json_extract(t.content,'$.status') IN ('running','waiting'))",
             rusqlite::params![session_id, live_ids], |row| row.get(0),
         ).map_err(|e| e.to_string())?;
@@ -1006,7 +1006,7 @@ fn create_launch_task(
     crate::providers::validate_reasoning_effort(&context.provider, effort)?;
     store.project(project_id)?;
     let task_id = {
-        let conn = store.db.lock().unwrap();
+        let conn = store.conn();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         let task_id = storage::Store::insert_new_session(
             &tx,
@@ -1062,7 +1062,7 @@ fn open_target(
 ) -> Result<OpenTarget> {
     use rusqlite::OptionalExtension;
     let exists: bool = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
             [session_id],
             |row| row.get(0),
@@ -1073,7 +1073,7 @@ fn open_target(
     }
     if let Some(child) = subagent_id {
         let saved: bool = store
-            .db.lock().unwrap().query_row(
+            .conn().query_row(
                 "SELECT EXISTS(SELECT 1 FROM subagents WHERE session_id=?1 AND id=?2)",
                 rusqlite::params![session_id, child],
                 |r| r.get(0),
@@ -1084,7 +1084,7 @@ fn open_target(
         }
     }
     let worker: Option<(String, String)> = store
-        .db.lock().unwrap().query_row(
+        .conn().query_row(
             "SELECT parent_session_id,worker_id FROM architect_workers WHERE session_id=?1",
             [session_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -1268,12 +1268,12 @@ mod tests {
     fn team(store: &storage::Store, parent: &str, worker: &str, status: &str) {
         let content = serde_json::json!({"status":status,"workers":[{"id":"worker-1","sessionId":worker,"name":"Review accessibility","status":"running"}]}).to_string();
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                 rusqlite::params![parent, content],
             )
             .unwrap();
-        store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker-1',?2)",[parent,worker]).unwrap();
+        store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker-1',?2)",[parent,worker]).unwrap();
     }
 
     fn app_state(store: storage::Store) -> AppState {
@@ -1541,7 +1541,7 @@ mod tests {
         let live = task(&store, &project);
         store.status(&stale.id, "running").unwrap();
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                 rusqlite::params![
                     idle.id,
@@ -1582,7 +1582,7 @@ mod tests {
         assert_eq!(child.worker_id.as_deref(), Some("worker-1"));
         assert_eq!(child.parent_session_id.as_deref(), Some(parent.id.as_str()));
         assert_eq!(child.session_id, worker.id);
-        store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_set(content,'$.status','completed') WHERE session_id=?1",[&parent.id]).unwrap();
+        store.conn().execute("UPDATE architect_teams SET content=json_set(content,'$.status','completed') WHERE session_id=?1",[&parent.id]).unwrap();
         let rows = summaries(&store, &active).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, worker.id);
@@ -1663,7 +1663,7 @@ mod tests {
         team(&store, &parent.id, &worker.id, "running");
         // An indexed existence lookup permits a child which settled after it was clicked.
         store
-            .db.lock().unwrap().execute(
+            .conn().execute(
                 "INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'child','{}',1)",
                 [&worker.id],
             )
@@ -2010,7 +2010,7 @@ mod tests {
             serde_json::to_value(architect::profiles::read(&store).unwrap()).unwrap(),
             library_before
         );
-        store.db.lock().unwrap().execute("UPDATE architect_library SET content=json_set(content,'$.enabled',json('false')) WHERE id=1", []).unwrap();
+        store.conn().execute("UPDATE architect_library SET content=json_set(content,'$.enabled',json('false')) WHERE id=1", []).unwrap();
         let (preview, count) = launch_preview(&store, &preferences).unwrap();
         assert_eq!(count, 0);
         assert_eq!(preview, preferences.effective_context());

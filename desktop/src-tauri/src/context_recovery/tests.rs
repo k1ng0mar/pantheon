@@ -275,7 +275,7 @@ fn migration_repairs_legacy_architect_resets_once_even_after_a_new_session_was_s
             .unwrap();
         store.resume(&unaffected.id, "intact-context").unwrap();
         store
-            .db.lock().unwrap()
+            .conn()
             .execute_batch("DROP TABLE context_recovery; PRAGMA user_version=13;")
             .unwrap();
     }
