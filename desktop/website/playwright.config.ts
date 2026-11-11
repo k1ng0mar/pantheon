@@ -2,7 +2,11 @@ import { defineConfig } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 
 const siteUrl = process.env.PANTHEON_SITE_URL;
-const chrome = process.env.PANTHEON_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// Only macOS keeps Chrome at this fixed path. Elsewhere leave it unset so Playwright
+// uses the Chromium it installed, which is all CI and Linux have.
+const chrome =
+  process.env.PANTHEON_TEST_CHROME ??
+  (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : undefined);
 
 export default defineConfig({
   testDir: './tests',
@@ -12,7 +16,7 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 6_000 },
   reporter: 'list',
-  outputDir: '/private/tmp/pantheon-landing-checks/results',
+  outputDir: 'test-results',
   use: {
     baseURL: siteUrl ?? 'http://127.0.0.1:4173',
     headless: true,
