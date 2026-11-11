@@ -1,6 +1,8 @@
 // Writes latest.json, the in-app updater's manifest, beside a release's assets: one entry
-// per platform whose signed update file was built. The release workflow uploads it with
-// the installers, so .../releases/latest/download/latest.json names the newest version.
+// per platform whose signed update file was built. The workflow then copies it onto the
+// fixed `desktop-latest` Release, so .../releases/download/desktop-latest/latest.json names
+// the newest version. It is not /releases/latest: the CLI releases `v*` tags from this same
+// repo and would take that slot.
 //
 //   node scripts/release/updater-manifest.mjs <assets-dir> <version> <notes.md>
 import { readFile, writeFile } from 'node:fs/promises';

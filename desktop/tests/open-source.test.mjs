@@ -32,8 +32,10 @@ test('no app source references the paid Pantheon service or the old support port
 
 test('updates come only from signed GitHub Releases, and nothing reads license keys', async () => {
   const config = JSON.parse(await readFile(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
-  // The fork updates only from its own signed GitHub Releases feed.
-  assert.deepEqual(config.plugins?.updater?.endpoints, ['https://github.com/k1ng0mar/pantheon/releases/latest/download/latest.json']);
+  // The fork updates only from its own signed GitHub Releases feed, and from a
+  // fixed manifest Release rather than `/releases/latest`: the CLI ships `v*` tags
+  // from this same repo and would take over that redirect.
+  assert.deepEqual(config.plugins?.updater?.endpoints, ['https://github.com/k1ng0mar/pantheon/releases/download/desktop-latest/latest.json']);
   assert.match(config.plugins.updater.pubkey, /^[A-Za-z0-9+/=]{40,}$/, 'a public key verifies every update');
   // Update files are produced only by builds that hold the signing key (scripts/release/build.mjs).
   assert.equal(config.bundle.createUpdaterArtifacts, undefined);
