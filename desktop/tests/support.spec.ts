@@ -94,7 +94,7 @@ test('preview opens the GitHub issue tracker without sending customer or workspa
   await open(page, 'preview');
   await support(page).click();
   await expect.poll(() => page.evaluate(() => (window as any).__supportFixture.opened)).toEqual([
-    ['https://github.com/aicodeking/pantheon/issues', '_blank', 'noopener,noreferrer'],
+    ['https://github.com/k1ng0mar/pantheon/issues', '_blank', 'noopener,noreferrer'],
   ]);
 });
 
@@ -126,15 +126,15 @@ test('Settings shows an About section with the version and GitHub links', async 
   await expect(about.locator('.settings-about-version')).toHaveText('Version Preview');
   const urls = await about.locator('[data-action="open-url"]').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.url));
   expect(urls).toEqual(expect.arrayContaining([
-    'https://github.com/aicodeking/pantheon',
-    'https://github.com/aicodeking/pantheon/issues',
-    'https://github.com/aicodeking/pantheon/releases',
+    'https://github.com/k1ng0mar/pantheon',
+    'https://github.com/k1ng0mar/pantheon/issues',
+    'https://github.com/k1ng0mar/pantheon/releases',
   ]));
   await expect(about.getByRole('button', { name: 'Releases', exact: true })).toBeVisible();
   await expect(about.getByRole('button', { name: 'Pantheon License' })).toBeVisible();
   await expect(settings).not.toContainText('License & updates');
   await about.getByRole('button', { name: 'Releases', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).__supportFixture.opened)).toEqual([
-    ['https://github.com/aicodeking/pantheon/releases', '_blank', 'noopener,noreferrer'],
+    ['https://github.com/k1ng0mar/pantheon/releases', '_blank', 'noopener,noreferrer'],
   ]);
 });

@@ -1,7 +1,7 @@
 import { test as base, expect, type Page } from '@playwright/test';
 import { readdir, readFile } from 'node:fs/promises';
 
-const repo = 'https://github.com/aicodeking/pantheon';
+const repo = 'https://github.com/k1ng0mar/pantheon';
 
 /* The reading pages: /changelog lists every releases/X.Y.Z.md, /privacy states that
  * Pantheon collects nothing, /license carries the LICENSE text word for word, and all three work without scripts. */

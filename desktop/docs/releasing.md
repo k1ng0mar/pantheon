@@ -1,7 +1,7 @@
 # Releasing Pantheon
 
 Pantheon releases are GitHub Releases on
-[aicodeking/pantheon](https://github.com/aicodeking/pantheon/releases). There
+[k1ng0mar/pantheon](https://github.com/k1ng0mar/pantheon/releases). There
 are no private servers: pushing a `vX.Y.Z` tag runs
 [`.github/workflows/release.yml`](../.github/workflows/release.yml), which builds
 the desktop installers on GitHub-hosted runners and attaches them to a
@@ -24,7 +24,7 @@ uncommitted work.
 
 Each asset has a `NAME.sha256` file beside it (`sha256sum` format). Asset names
 do not contain the version, so
-`https://github.com/aicodeking/pantheon/releases/latest/download/<asset>`
+`https://github.com/k1ng0mar/pantheon/releases/latest/download/<asset>`
 always serves the newest build. There is no Windows ARM release target. The Intel Mac build runs natively on
 `macos-15-intel` because `build.mjs` refuses to cross-build.
 
@@ -89,7 +89,7 @@ and skips. If the update key is ever rotated, update `PUBKEY` in
 
 ## Homebrew
 
-The tap [aicodeking/homebrew-pantheon](https://github.com/aicodeking/homebrew-pantheon)
+The tap [k1ng0mar/homebrew-pantheon](https://github.com/k1ng0mar/homebrew-pantheon)
 updates itself: every 3 hours it reads the latest release and its `.sha256` files and
 commits the new version, so a release needs no step here and no secret in this
 repository. To pick up a release sooner, run its `update` workflow by hand. Asset names

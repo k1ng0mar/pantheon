@@ -2,7 +2,7 @@ import { test as base, expect, type Page, type TestInfo } from '@playwright/test
 import { mkdir, writeFile } from 'node:fs/promises';
 
 const screenshots = '/private/tmp/pantheon-landing-checks';
-const repo = 'https://github.com/aicodeking/pantheon';
+const repo = 'https://github.com/k1ng0mar/pantheon';
 const releases = `${repo}/releases/latest`;
 const issues = `${repo}/issues`;
 const test = base.extend<{ browserHealth: void }>({

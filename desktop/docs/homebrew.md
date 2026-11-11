@@ -1,11 +1,11 @@
 # Homebrew
 
 Pantheon has an official tap,
-[aicodeking/homebrew-pantheon](https://github.com/aicodeking/homebrew-pantheon).
+[k1ng0mar/homebrew-pantheon](https://github.com/k1ng0mar/homebrew-pantheon).
 
 ```sh
-brew install --cask aicodeking/pantheon/pantheon   # macOS 12+, Apple silicon or Intel
-brew install aicodeking/pantheon/pantheon          # Linux x86_64 or aarch64
+brew install --cask k1ng0mar/pantheon/pantheon   # macOS 12+, Apple silicon or Intel
+brew install k1ng0mar/pantheon/pantheon          # Linux x86_64 or aarch64
 ```
 
 ## What it installs
@@ -30,7 +30,7 @@ The tap updates itself, so releasing Pantheon needs no change here and no secret
 this repository. Its `.github/workflows/update.yml` runs every 3 hours, on demand
 (`workflow_dispatch`) and on a `pantheon-release` repository dispatch. It:
 
-1. reads the latest release tag of `aicodeking/pantheon` with `gh api` and stops
+1. reads the latest release tag of `k1ng0mar/pantheon` with `gh api` and stops
    unless it matches `^v\d+\.\d+\.\d+$`;
 2. downloads the four macOS and Linux `.sha256` files from that release and checks
    that each holds a 64-character hex digest;

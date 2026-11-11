@@ -1,6 +1,6 @@
 # Desktop platform support
 
-Pantheon is built for three targets. Each [GitHub Release](https://github.com/aicodeking/pantheon/releases)
+Pantheon is built for three targets. Each [GitHub Release](https://github.com/k1ng0mar/pantheon/releases)
 carries one installer per target, built by `.github/workflows/release.yml`
 (see [releasing](releasing.md)). Windows and Linux builds are still previews:
 CI builds them and checks that the packaged app starts, but interactive desktop
@@ -133,4 +133,4 @@ a Windows Server runner, or Linux desktop behavior from Xvfb.
 Record unrun native checks and known limitations alongside each preview's
 results, even if CI packaging succeeds. Complete these checks before claiming
 stable support. Reports from real machines are welcome as
-[GitHub issues](https://github.com/aicodeking/pantheon/issues).
+[GitHub issues](https://github.com/k1ng0mar/pantheon/issues).

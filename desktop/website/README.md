@@ -4,8 +4,8 @@ The static Pantheon website: the landing page, the changelog,
 the privacy policy and the Pantheon License (MIT-based). Pantheon is free, open source and collects nothing,
 and the site follows suit: no cookies, no analytics, no remote fonts or scripts, and no
 third-party requests of any kind. Downloads link to
-[GitHub Releases](https://github.com/aicodeking/pantheon/releases/latest); the source is at
-[github.com/aicodeking/pantheon](https://github.com/aicodeking/pantheon).
+[GitHub Releases](https://github.com/k1ng0mar/pantheon/releases/latest); the source is at
+[github.com/k1ng0mar/pantheon](https://github.com/k1ng0mar/pantheon).
 
 ## Development
 
