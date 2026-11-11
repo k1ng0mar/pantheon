@@ -26,6 +26,9 @@ __pycache__/
 # nyx scratch: split tooling and diffs from the 2026-10-22 worktree repair
 .nyx-work/
 
+# Local work scratch
+.zwork/
+
 # Runtime-materialized bundled plugins (from vendor/ at compile time)
 .pantheon-extensions/
 # Desktop app (Tauri) build artifacts
