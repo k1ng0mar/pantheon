@@ -74,6 +74,30 @@ const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 pub(crate) const PROVIDERS: [(&str, &str); 1] = [("pantheon", "Pantheon")];
 
+/// Every harness `run_inner` can launch. `PROVIDERS` is the advertised subset,
+/// while the model catalog, warm reuse and team agents each carry their own id
+/// list — keep all of them consistent with this one, or a provider gets
+/// advertised and then refused at launch.
+pub(crate) const HARNESSES: &[&str] = &[
+    "claude",
+    "codex",
+    "kimi",
+    "opencode",
+    "glm",
+    "antigravity",
+    "grok",
+    "mimo",
+    "pi",
+    "deepseek",
+    "commandcode",
+    "cline",
+    "kilo",
+    "omp",
+    "github-copilot",
+    "muse",
+    "pantheon",
+];
+
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
 
@@ -760,8 +784,75 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "kilo" => kilo::models(&path).await,
         "github-copilot" => github_copilot::models(&path).await,
         "muse" => muse::models(&path).await,
-        _ => unreachable!(),
+        "pantheon" => pantheon_models(&path).await,
+        // model_discovery_index gates this call to PROVIDERS, so an unhandled id
+        // means the harness lists drifted apart. Report it, never panic.
+        other => Err(format!("Unknown provider: {other}")),
     }
+}
+
+/// Models the Pantheon CLI can route to. The CLI owns its provider registry
+/// (`agent provider catalog`), so ids are reported as `provider/model` — the
+/// same shape `session/set_model` accepts.
+async fn pantheon_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    let mut command = Command::new(path);
+    command
+        .args(["agent", "provider", "catalog"])
+        .stdin(Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "Listing Pantheon providers timed out".to_owned())?
+        .map_err(|error| format!("Could not run the Pantheon CLI: {error}"))?;
+    if !output.status.success() {
+        return Err("The Pantheon CLI could not list its providers".into());
+    }
+    Ok(parse_pantheon_catalog(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// `  * Name (id): wire -- url` followed by `    models: a, b`. Ids are
+/// reported as `provider/model`, matching `session/set_model`.
+fn parse_pantheon_catalog(text: &str) -> Vec<ModelInfo> {
+    let mut models = vec![ModelInfo::default_choice()];
+    let mut provider = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(head) = line
+            .strip_prefix("* ")
+            .and_then(|rest| rest.split(": ").next())
+        {
+            if let Some((_, id)) = head.rsplit_once('(') {
+                provider = id.trim_end_matches(')').trim().to_string();
+            }
+            continue;
+        }
+        let Some(list) = line.strip_prefix("models:") else {
+            continue;
+        };
+        if provider.is_empty() {
+            continue;
+        }
+        for model in list
+            .split(',')
+            .map(str::trim)
+            .filter(|model| valid_model_id(model))
+        {
+            let id = format!("{provider}/{model}");
+            if models.iter().any(|entry| entry.id == id) {
+                continue;
+            }
+            models.push(ModelInfo {
+                id,
+                name: model.to_string(),
+                description: format!("Provided by {provider}"),
+                reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_window: None,
+            });
+        }
+    }
+    models
 }
 
 fn valid_model_id(id: &str) -> bool {
@@ -2896,26 +2987,7 @@ async fn run_inner(
     input: UnboundedReceiver<RunInput>,
     host: Option<ToolHost>,
 ) -> Result<(), String> {
-    if ![
-        "claude",
-        "codex",
-        "kimi",
-        "opencode",
-        "glm",
-        "antigravity",
-        "grok",
-        "mimo",
-        "pi",
-        "deepseek",
-        "commandcode",
-        "cline",
-        "kilo",
-        "omp",
-        "github-copilot",
-        "muse",
-    ]
-    .contains(&config.provider.as_str())
-    {
+    if !HARNESSES.contains(&config.provider.as_str()) {
         return Err("Unknown provider".into());
     }
     if !crate::storage::valid_permission_mode(&config.mode) {
@@ -4440,6 +4512,46 @@ mod tests {
     }
 
     #[test]
+    fn every_advertised_provider_passes_the_launch_whitelist() {
+        for (id, _) in PROVIDERS {
+            assert!(
+                HARNESSES.contains(&id),
+                "{id} is advertised but run_inner refuses to launch it"
+            );
+        }
+        assert!(HARNESSES.contains(&"pantheon"));
+    }
+
+    #[test]
+    fn pantheon_catalog_reports_provider_model_ids_without_duplicates() {
+        let models = parse_pantheon_catalog(
+            r#"
+    cataloged providers:
+      * OpenAI (openai): OpenAI -- https://api.openai.com/v1
+        models: gpt-4o, gpt-4o-mini
+      * (Google Vertex AI only) (vertex): OpenAI -- https://{location}-aiplatform.googleapis.com/v1
+        models:
+        tag: template
+      * Zhipu AI / GLM (zhipu): OpenAI -- https://open.bigmodel.cn/api/paas/v4
+        models: glm-4-flash, glm-5.3-flash, glm-4-flash
+    "#,
+        );
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "default",
+                "openai/gpt-4o",
+                "openai/gpt-4o-mini",
+                "zhipu/glm-4-flash",
+                "zhipu/glm-5.3-flash"
+            ]
+        );
+        assert_eq!(models[1].name, "gpt-4o");
+        assert_eq!(models[1].description, "Provided by openai");
+    }
+
+    #[test]
     fn claude_catalog_uses_resolved_releases_without_changing_invocation_aliases() {
         let models = parse_claude_models(&json!({"models":[
             {"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)"},
@@ -4525,6 +4637,18 @@ mod tests {
     async fn installed_codex_catalog() {
         let path = executable("codex").expect("Install Codex to check its catalog");
         let models = codex_models(&path).await.unwrap();
+        assert!(models.len() > 1);
+        for model in models {
+            println!("{}: {}", model.id, model.name);
+        }
+    }
+
+    /// Read-only registry query; no model inference.
+    #[tokio::test]
+    #[ignore]
+    async fn installed_pantheon_catalog() {
+        let path = executable("pantheon").expect("Build the Pantheon CLI to check its catalog");
+        let models = pantheon_models(&path).await.unwrap();
         assert!(models.len() > 1);
         for model in models {
             println!("{}: {}", model.id, model.name);
@@ -4674,9 +4798,9 @@ mod tests {
     async fn smoke_provider_from_env() {
         use std::sync::Mutex;
         let provider = std::env::var("PANTHEON_SMOKE_PROVIDER")
-            .expect("Set PANTHEON_SMOKE_PROVIDER to claude, codex, kimi or muse");
+            .expect("Set PANTHEON_SMOKE_PROVIDER to claude, codex, kimi, muse or pantheon");
         let model = std::env::var("PANTHEON_SMOKE_MODEL").unwrap_or_else(|_| "default".into());
-        assert!(["claude", "codex", "kimi", "muse"].contains(&provider.as_str()));
+        assert!(["claude", "codex", "kimi", "muse", "pantheon"].contains(&provider.as_str()));
         let root =
             std::env::temp_dir().join(format!("pantheon-provider-smoke-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
