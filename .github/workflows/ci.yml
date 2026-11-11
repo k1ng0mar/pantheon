@@ -136,6 +136,43 @@ jobs:
       - run: npm run test:release
         working-directory: desktop
 
+  desktop-rust:
+    name: desktop Rust tests + clippy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    # The workflow-level `RUSTFLAGS: -D warnings` reaches every crate cargo
+    # compiles, dependencies included. The desktop pulls in Tauri, so deny only
+    # this crate's own lints: clippy below passes `-D warnings` itself.
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: install Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      # 1277 tests over the whole desktop runtime. `cargo test --workspace`
+      # above cannot reach them: root Cargo.toml excludes `desktop`.
+      - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib
+      - if: ${{ !cancelled() }}
+        run: cargo clippy --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+
   install-smoke:
     name: installer smoke
     runs-on: ubuntu-latest
