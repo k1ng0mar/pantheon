@@ -265,17 +265,19 @@ fn insert(
             "This project's moodboards use the 192 MB limit. Remove unused images first.".into(),
         );
     }
-    let mut conn = store.db.lock().unwrap();
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    for image in images {
-        tx.execute("INSERT INTO moodboard_images(id,board_id,name,mime_type,width,height,original,thumbnail,agent_image,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![storage::id(),id,image.name,image.mime,image.width,image.height,image.original,image.thumbnail,image.agent,storage::now()]).map_err(|e|e.to_string())?;
+    {
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for image in images {
+            tx.execute("INSERT INTO moodboard_images(id,board_id,name,mime_type,width,height,original,thumbnail,agent_image,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![storage::id(),id,image.name,image.mime,image.width,image.height,image.original,image.thumbnail,image.agent,storage::now()]).map_err(|e|e.to_string())?;
+        }
+        tx.execute(
+            "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
+            params![id, storage::now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
-    tx.execute(
-        "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
-        params![id, storage::now()],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
     detail(store, project, id)
 }
 fn image_bytes(

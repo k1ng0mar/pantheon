@@ -1,6 +1,7 @@
 //! A lazy launcher with a bounded, read-only view of the selected live thread.
 use crate::architect::profiles::ModelSelection;
 use crate::{storage, AppState, Result};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -994,25 +995,44 @@ fn create_launch_task(
     title: &str,
     prompt: &str,
 ) -> Result<storage::Session> {
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
+    // Reject a bad launch before reserving a session, so a failed call cannot
+    // leave an empty task behind.
+    storage::Store::validate_task_details(title, prompt)?;
+    let effort = context
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty());
+    crate::providers::validate_reasoning_effort(&context.provider, effort)?;
+    store.project(project_id)?;
+    let task_id = {
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let task_id = storage::Store::insert_new_session(
+            &tx,
+            project_id,
+            &context.provider,
+            &context.model,
+            &context.mode,
+        )?;
+        tx.execute(
+            "UPDATE sessions SET title=?2,task_description=?3,title_origin='auto' WHERE id=?1",
+            params![task_id, title.trim(), prompt.trim()],
+        )
         .map_err(|e| e.to_string())?;
-    let task =
-        store.create_session(project_id, &context.provider, &context.model, &context.mode)?;
-    store.update_task_details(&task.id, title, prompt)?;
-    // The launcher derives this title from the prompt; it is not a manual name.
-    store.db.lock().unwrap().execute("UPDATE sessions SET title_origin='auto' WHERE id=?1", [&task.id]).map_err(|e| e.to_string())?;
-    crate::architect::profiles::apply_default(store, &task.id)?;
+        crate::architect::profiles::apply_default_on(&tx, &task_id)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        task_id
+    };
     if explicit_model {
         // Keep the saved worker setup, but honor the user's launcher selection for
         // this architect. The reusable team library is never rewritten here.
-        store.configure(&task.id, &context.provider, &context.model, None)?;
-        store.set_reasoning_effort(&task.id, context.reasoning_effort.as_deref())?;
+        store.configure(&task_id, &context.provider, &context.model, None)?;
+        store.set_reasoning_effort(&task_id, context.reasoning_effort.as_deref())?;
     } else {
-        apply_context_effort(store, &task.id, context.reasoning_effort.as_deref())?;
+        apply_context_effort(store, &task_id, context.reasoning_effort.as_deref())?;
     }
-    let task = store.session(&task.id)?;
-    transaction.commit().map_err(|e| e.to_string())?;
-    Ok(task)
+    store.session(&task_id)
 }
 
 fn apply_context_effort(store: &storage::Store, task_id: &str, effort: Option<&str>) -> Result<()> {

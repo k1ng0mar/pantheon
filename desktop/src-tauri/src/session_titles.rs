@@ -14,8 +14,11 @@ const MAX_TITLE: usize = 80;
 /// Old versions did not record provenance. Only recognize their exact generated
 /// title, and preserve anything else (including explicitly named board tasks).
 pub(crate) fn automatic(store: &Store, sid: &str) -> Result<bool> {
-    let (origin, title, description): (String, String, String) = store
-        .db.lock().unwrap().query_row(
+    automatic_on(&store.db.lock().unwrap(), sid)
+}
+pub(crate) fn automatic_on(conn: &rusqlite::Connection, sid: &str) -> Result<bool> {
+    let (origin, title, description): (String, String, String) = conn
+        .query_row(
             "SELECT title_origin,title,substr(task_description,1,1) FROM sessions WHERE id=?1",
             [sid],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -25,14 +28,14 @@ pub(crate) fn automatic(store: &Store, sid: &str) -> Result<bool> {
         "auto" => Ok(true),
         "manual" => Ok(false),
         _ => {
-            let first: Option<(i64, String)> = store.db.lock().unwrap().query_row(
+            let first: Option<(i64, String)> = conn.query_row(
                 "SELECT id,substr(content,1,1024) FROM messages WHERE session_id=?1 AND role='user' ORDER BY id LIMIT 1",
                 [sid], |r| Ok((r.get(0)?, r.get(1)?)),
             ).optional().map_err(|e| e.to_string())?;
             let generated = match first {
                 Some((id, prompt)) => {
                     description.is_empty()
-                        && crate::architect::internal_turns::legacy_kind(store, sid, id, &prompt)?
+                        && crate::architect::internal_turns::legacy_kind_in_db(conn, sid, id, &prompt)?
                             .is_none()
                         && title
                             == prompt
@@ -45,29 +48,30 @@ pub(crate) fn automatic(store: &Store, sid: &str) -> Result<bool> {
                 }
                 None => description.is_empty() && title == "New conversation",
             };
-            store
-                .db.lock().unwrap().execute(
-                    "UPDATE sessions SET title_origin=?2 WHERE id=?1 AND title_origin='legacy'",
-                    params![sid, if generated { "auto" } else { "manual" }],
-                )
-                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE sessions SET title_origin=?2 WHERE id=?1 AND title_origin='legacy'",
+                params![sid, if generated { "auto" } else { "manual" }],
+            )
+            .map_err(|e| e.to_string())?;
             Ok(generated)
         }
     }
 }
 
 pub(crate) fn inherit(store: &Store, source: &str, target: &str) -> Result<()> {
-    let origin = if automatic(store, source)? {
+    inherit_on(&store.db.lock().unwrap(), source, target)
+}
+pub(crate) fn inherit_on(conn: &rusqlite::Connection, source: &str, target: &str) -> Result<()> {
+    let origin = if automatic_on(conn, source)? {
         "auto"
     } else {
         "manual"
     };
-    store
-        .db.lock().unwrap().execute(
-            "UPDATE sessions SET title_origin=?2 WHERE id=?1",
-            params![target, origin],
-        )
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET title_origin=?2 WHERE id=?1",
+        params![target, origin],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -506,7 +510,7 @@ mod tests {
                 [&manual.id],
             )
             .unwrap();
-        db.db
+        db.db.lock().unwrap()
             .execute_batch("ALTER TABLE sessions DROP COLUMN title_origin; PRAGMA user_version=19;")
             .unwrap();
         drop(db);

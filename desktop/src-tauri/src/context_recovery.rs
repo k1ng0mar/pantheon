@@ -3,7 +3,7 @@ use crate::{
     storage::{Session, Store},
     Result,
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 pub(crate) const LEGACY_NOTICE: &str = "Architect mode starts a fresh harness context so its team tools are available. Your earlier conversation remains here.";
@@ -22,7 +22,15 @@ pub(crate) fn pending(store: &Store, session: &Session) -> Result<bool> {
 /// Queue before clearing a resume ID, in the caller's configuration transaction.
 pub(crate) fn queue(store: &Store, sid: &str) -> Result<()> {
     store.session(sid)?;
-    store.db.lock().unwrap().execute(
+    queue_on(&store.db.lock().unwrap(), sid)
+}
+
+/// Low-level variant: push the handoff cutoff onto an already-held connection.
+/// Use this inside a caller-owned transaction so the queue rolls back
+/// together with the provider switch; never pair it with a fresh db.lock()
+/// in the same stack frame or you'll deadlock.
+pub(crate) fn queue_on(conn: &Connection, sid: &str) -> Result<()> {
+    conn.execute(
         "INSERT INTO context_recovery(session_id,through_message_id) SELECT ?1,MAX(id) FROM messages WHERE session_id=?1 AND role IN ('user','assistant','coordination') AND content<>'' HAVING MAX(id) IS NOT NULL ON CONFLICT(session_id) DO UPDATE SET through_message_id=MAX(through_message_id,excluded.through_message_id)",
         [sid],
     ).map_err(|e| e.to_string())?;

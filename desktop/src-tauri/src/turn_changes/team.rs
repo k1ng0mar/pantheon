@@ -9,7 +9,8 @@ pub(super) fn merge(store: &Store, sid: &str, capture: &mut Captured) -> Result<
     if !capture.summary.attributed {
         return Ok(vec![]);
     }
-    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare(
+    let rows = {
+        let conn = store.db.lock().unwrap(); let mut  query = conn.prepare(
             "SELECT child.id,child.session_id,child.summary FROM turn_changes child
          JOIN architect_workers relation ON relation.session_id=child.session_id
          JOIN architect_teams team ON team.session_id=relation.parent_session_id
@@ -26,9 +27,22 @@ pub(super) fn merge(store: &Store, sid: &str, capture: &mut Captured) -> Result<
          ORDER BY child.message_id DESC LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
-    let mut rows = query
-        .query(params![sid, (SOURCES + 1) as i64])
-        .map_err(|e| e.to_string())?;
+        let mut result = query
+            .query(params![sid, (SOURCES + 1) as i64])
+            .map_err(|e| e.to_string())?;
+        let mut collected = Vec::new();
+        while let Some(row) = result.next().map_err(|e| e.to_string())? {
+            collected.push((
+                row.get::<_, String>(0).map_err(|e| e.to_string())?,
+                row.get::<_, String>(1).map_err(|e| e.to_string())?,
+                row.get::<_, String>(2).map_err(|e| e.to_string())?,
+            ));
+        }
+        drop(result);
+        drop(query);
+        drop(conn);
+        collected
+    };
     let mut files: BTreeMap<_, _> = capture
         .summary
         .files
@@ -45,10 +59,7 @@ pub(super) fn merge(store: &Store, sid: &str, capture: &mut Captured) -> Result<
     let mut patch_bytes: usize = details.values().map(|d| d.patch.len()).sum();
     let mut summary_bytes = 0usize;
     let mut sources = Vec::new();
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let source: String = row.get(0).map_err(|e| e.to_string())?;
-        let worker_sid: String = row.get(1).map_err(|e| e.to_string())?;
-        let json: String = row.get(2).map_err(|e| e.to_string())?;
+    for (source, worker_sid, json) in rows {
         summary_bytes = summary_bytes.saturating_add(json.len());
         if sources.len() == SOURCES || summary_bytes > TURN_BYTES {
             limited(&mut capture.summary);

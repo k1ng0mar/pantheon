@@ -253,7 +253,7 @@ fn sidebar_v20_migration_is_idempotent_and_retains_existing_preferences() {
         assert_eq!(task.sidebar_order, Some(0));
         assert_eq!(
             store
-                .db
+                .db.lock().unwrap()
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
             SCHEMA_VERSION

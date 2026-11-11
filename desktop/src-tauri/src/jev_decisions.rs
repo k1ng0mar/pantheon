@@ -279,19 +279,24 @@ fn save_rules(store: &Store, sid: &str, rules: &[String]) -> Result<Vec<String>>
 }
 
 fn transcript(store: &Store, sid: &str, count: usize) -> Result<(Vec<Evidence>, bool)> {
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,role,substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND content<>'' ORDER BY id DESC LIMIT ?2").map_err(|e| e.to_string())?;
-    let rows = query
-        .query_map(params![sid, (count + 1) as i64], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    let rows = {
+        let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,role,substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND content<>'' ORDER BY id DESC LIMIT ?2").map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map(params![sid, (count + 1) as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(query);
+        drop(conn);
+        rows
+    };
     let mut omitted = rows.len() > count;
     let mut items = Vec::new();
     for (id, role, content, chars) in rows.into_iter().take(count) {
@@ -370,18 +375,23 @@ fn saved_diff(
     };
     let mut result = vec![evidence("saved_changes", "Saved change summary", format!("{count} changed files. Shared checkout includes overlapping tasks: {concurrent}. This is an immutable saved diff, not a live workspace scan."), 800)];
     result[0].change_id = Some(id.clone());
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT json_extract(f.value,'$.path'),COALESCE(json_extract(f.value,'$.binary'),0),COALESCE(json_extract(f.value,'$.truncated'),0) FROM turn_changes t,json_each(t.summary,'$.files') f WHERE t.id=?1 AND t.session_id=?2 LIMIT 8").map_err(|e|e.to_string())?;
-    let files = query
-        .query_map(params![id, sid], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, bool>(1)?,
-                r.get::<_, bool>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    let files = {
+        let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT json_extract(f.value,'$.path'),COALESCE(json_extract(f.value,'$.binary'),0),COALESCE(json_extract(f.value,'$.truncated'),0) FROM turn_changes t,json_each(t.summary,'$.files') f WHERE t.id=?1 AND t.session_id=?2 LIMIT 8").map_err(|e|e.to_string())?;
+        let files = query
+            .query_map(params![id, sid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(query);
+        drop(conn);
+        files
+    };
     let mut incomplete = truncated || count > files.len() as i64;
     for (index, (path, binary, file_truncated)) in files.into_iter().enumerate() {
         let patch:Option<(String,i64,bool)> = store.db.lock().unwrap().query_row("SELECT substr(COALESCE(json_extract(detail,'$.patch'),''),1,4097),length(COALESCE(json_extract(detail,'$.patch'),'')),COALESCE(json_extract(detail,'$.truncated'),0) FROM turn_change_files WHERE change_id=?1 AND path=?2",params![id,path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
@@ -1554,7 +1564,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             assert_eq!(
                 store
-                    .db
+                    .db.lock().unwrap()
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .unwrap(),
                 crate::storage::SCHEMA_VERSION

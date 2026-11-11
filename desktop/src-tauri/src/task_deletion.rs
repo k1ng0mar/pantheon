@@ -1,5 +1,6 @@
 //! Local conversation deletion, serialized with task and harness admission.
 use crate::{architect, jev, jev_decisions, storage::Store, terminal, AppState, Result};
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
@@ -10,13 +11,35 @@ pub struct DeletedSessions {
     pub deleted_session_ids: Vec<String>,
 }
 
-fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
-    store.session(sid)?;
-    architect::check_manual(store, sid)?;
+fn candidates_with_conn(conn: &rusqlite::Connection, sid: &str) -> Result<Vec<String>> {
+    conn.query_row("SELECT id FROM sessions WHERE id=?1", [sid], |r| r.get::<_, String>(0))
+        .map_err(|_| "Task is no longer available.".to_string())?;
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
+            [sid],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if parent.is_some() {
+        return Err("This worker is managed by its architect. Use the team controls.".into());
+    }
+    let team_status: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(content,'$.status') FROM architect_teams WHERE session_id=?1",
+            [sid],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if team_status.as_deref().is_some_and(|s| architect::active(s)) {
+        return Err("Pause the architect team before changing this task.".into());
+    }
     let mut ids = vec![sid.to_owned()];
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare(
-        "SELECT session_id FROM architect_workers WHERE parent_session_id=?1 ORDER BY session_id",
-    ).map_err(|e| e.to_string())?;
+    let mut query = conn
+        .prepare("SELECT session_id FROM architect_workers WHERE parent_session_id=?1 ORDER BY session_id")
+        .map_err(|e| e.to_string())?;
     let workers = query
         .query_map([sid], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
@@ -24,17 +47,30 @@ fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
         ids.push(worker.map_err(|e| e.to_string())?);
     }
     for id in &ids {
-        let task = store.session(id)?;
-        if matches!(task.status.as_str(), "running" | "waiting") {
+        let status: String = conn
+            .query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| r.get(0))
+            .map_err(|_| "Task is no longer available.".to_string())?;
+        if matches!(status.as_str(), "running" | "waiting") {
             return Err(
                 "Stop this task and wait for its agents to finish before deleting it.".into(),
             );
         }
-        if task.goal_state.is_some_and(|goal| goal.status == "active") {
+        let goal: Option<String> = conn
+            .query_row("SELECT goal_state FROM sessions WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0))
+            .map_err(|e| e.to_string())?;
+        if goal.as_deref().and_then(|g| serde_json::from_str::<serde_json::Value>(g).ok())
+            .and_then(|g| g.get("status").and_then(|s| s.as_str()).map(|s| s == "active"))
+            .unwrap_or(false)
+        {
             return Err("Pause this task's active goal before deleting it.".into());
         }
     }
     Ok(ids)
+}
+
+fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
+    let conn = store.db.lock().unwrap();
+    candidates_with_conn(&conn, sid)
 }
 
 fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
@@ -43,7 +79,7 @@ fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
             .map_err(|e| e.to_string())?;
     // Revalidate inside the transaction, including any changes made while the
     // runtime registries were inspected. Only this exact ownership set is removed.
-    if candidates(store, sid)? != expected {
+    if candidates_with_conn(&transaction, sid)? != expected {
         return Err("The team changed. Review the task again before deleting it.".into());
     }
     // Parent deletion cascades the ownership mapping, not the worker sessions.

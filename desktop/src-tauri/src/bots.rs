@@ -461,14 +461,16 @@ pub(crate) fn set_paused(store: &Store, id: &str, paused: bool) -> Result<Bot> {
 /// Reset deletes the bot's conversations, memories, schedules and activity together.
 pub(crate) fn reset(store: &Store, id: &str) -> Result<Bot> {
     let bot = get(store, id)?;
-    let conn = store.db.lock().unwrap();
-    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    store.db.lock().unwrap().execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
-    for table in ["bot_memories", "bot_schedules", "bot_activity"] {
-        store.db.lock().unwrap().execute(&format!("DELETE FROM {table} WHERE bot_id=?1"), [id]).map_err(|e| e.to_string())?;
+    {
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
+        for table in ["bot_memories", "bot_schedules", "bot_activity"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE bot_id=?1"), [id]).map_err(|e| e.to_string())?;
+        }
+        tx.execute("UPDATE bots SET memory_version=memory_version+1,notify_thread=NULL,updated_at=?2 WHERE id=?1", params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
-    store.db.lock().unwrap().execute("UPDATE bots SET memory_version=memory_version+1,notify_thread=NULL,updated_at=?2 WHERE id=?1", params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
-    transaction.commit().map_err(|e| e.to_string())?;
     log(store, id, "reset", &format!("{} was reset", bot.name), json!({}))?;
     get(store, id)
 }

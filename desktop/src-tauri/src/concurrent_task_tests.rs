@@ -429,7 +429,7 @@ fn failed_start_releases_admission_and_shutdown_does_not_enqueue_a_prompt() {
         .store
         .lock()
         .unwrap()
-        .db
+        .db.lock().unwrap()
         .execute_batch("DROP TRIGGER reject_prompt;")
         .unwrap();
     state.shutdown.store(1, Ordering::SeqCst);

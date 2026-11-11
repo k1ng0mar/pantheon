@@ -226,9 +226,9 @@ pub(crate) async fn sync(app: &tauri::AppHandle, local: &str) -> Result<()> {
 /// position, all or nothing. Returns whether to ask for the next page. A page that no
 /// longer starts at the stored position (another sync got there first) is skipped.
 pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -> Result<bool> {
-    let conn = store.db.lock().unwrap();
-    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    let current: i64 = store.db.lock().unwrap().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let current: i64 = tx.query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
     if current != after {
         return Ok(false);
     }
@@ -238,14 +238,14 @@ pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -
         if id <= last || role.is_empty() || role.len() > 32 || !role.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
             return Err("The other computer sent an invalid message.".into());
         }
-        store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES (?1,?2,?3,?4,?5)", params![local, role, content, created_at, message["turnDurationMs"].as_i64()]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES (?1,?2,?3,?4,?5)", params![local, role, content, created_at, message["turnDurationMs"].as_i64()]).map_err(|e| e.to_string())?;
         last = id;
     }
     if let Some(title) = page["title"].as_str().map(str::trim).filter(|title| !title.is_empty() && title.chars().count() <= 200) {
-        store.db.lock().unwrap().execute("UPDATE sessions SET title=?2 WHERE id=?1 AND title<>?2", params![local, title]).map_err(|e| e.to_string())?;
+        tx.execute("UPDATE sessions SET title=?2 WHERE id=?1 AND title<>?2", params![local, title]).map_err(|e| e.to_string())?;
     }
-    store.db.lock().unwrap().execute("UPDATE sessions SET remote_synced_id=?2 WHERE id=?1", params![local, last]).map_err(|e| e.to_string())?;
-    transaction.commit().map_err(|e| e.to_string())?;
+    tx.execute("UPDATE sessions SET remote_synced_id=?2 WHERE id=?1", params![local, last]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(page["hasMore"] == true && last > after)
 }
 
@@ -418,6 +418,15 @@ pub async fn remote_start_task(
 /// Makes (or converts an empty draft into) the local mirror row, published and running.
 #[allow(clippy::too_many_arguments)]
 fn mirror_row(store: &Store, device: &str, project_id: &str, provider: &str, model: &str, mode: Option<&str>, effort: Option<&str>, draft: Option<&str>) -> Result<(String, bool)> {
+    // Reject an unusable selection before any row is created or converted.
+    if let Some(mode) = mode {
+        if !crate::storage::valid_permission_mode(mode) {
+            return Err("Unknown permission mode.".into());
+        }
+    }
+    if let Some(effort) = effort {
+        crate::providers::validate_reasoning_effort(provider, Some(effort))?;
+    }
     // A draft with its own local worktree keeps it; the mirror gets a fresh row.
     let reuse = draft.filter(|id| store.is_empty_draft(id).unwrap_or(false) && store.session(id).is_ok_and(|task| task.project_id == project_id && task.worktree_path.is_none()));
     // `create_user_task` commits its own transaction, so a new row is made before this one.
@@ -425,8 +434,6 @@ fn mirror_row(store: &Store, device: &str, project_id: &str, provider: &str, mod
         Some(id) => (id.to_owned(), false),
         None => (crate::architect::profiles::create_user_task(store, project_id, provider, model, mode, None)?.id, true),
     };
-    let conn = store.db.lock().unwrap();
-    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     if !created {
         store.configure(&id, provider, model, None)?;
         if let Some(mode) = mode {
@@ -438,7 +445,6 @@ fn mirror_row(store: &Store, device: &str, project_id: &str, provider: &str, mod
     }
     store.db.lock().unwrap().execute("UPDATE sessions SET remote_device=?2,remote_session=NULL,remote_synced_id=0,draft=0 WHERE id=?1", params![id, device]).map_err(|e| e.to_string())?;
     start_turn(store, &id)?;
-    transaction.commit().map_err(|e| e.to_string())?;
     Ok((id, created))
 }
 
@@ -580,7 +586,7 @@ mod tests {
             host.message(&host_task, if i % 2 == 0 { "user" } else { "assistant" }, &format!("{i}{}", "x".repeat(60 * 1024))).unwrap();
         }
         host.db.lock().unwrap().execute("UPDATE sessions SET title='Fix the build' WHERE id=?1", [&host_task]).unwrap();
-        let first = host::messages_page(&host.db, &host_task, 0).unwrap();
+        let first = host::messages_page(&host.db.lock().unwrap(), &host_task, 0).unwrap();
         assert_eq!((first["messages"].as_array().unwrap().len(), first["hasMore"].as_bool()), (2, Some(true)), "a page fits one frame");
         assert!(first.to_string().len() <= host::PAGE_BUDGET);
         assert!(store_page(&viewer, &local, 0, &first).unwrap());
@@ -590,7 +596,7 @@ mod tests {
         assert!(!store_page(&viewer, &local, 0, &first).unwrap());
         let mut after = synced;
         loop {
-            let page = host::messages_page(&host.db, &host_task, after).unwrap();
+            let page = host::messages_page(&host.db.lock().unwrap(), &host_task, after).unwrap();
             let more = store_page(&viewer, &local, after, &page).unwrap();
             after = viewer.db.lock().unwrap().query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [&local], |r| r.get(0)).unwrap();
             if !more {
@@ -601,7 +607,7 @@ mod tests {
         assert_eq!(copied.iter().map(|m| m.content.chars().next().unwrap()).collect::<String>(), "01234");
         assert_eq!(copied[0].role, "user");
         assert_eq!(viewer.session(&local).unwrap().title, "Fix the build");
-        let empty = host::messages_page(&host.db, &host_task, after).unwrap();
+        let empty = host::messages_page(&host.db.lock().unwrap(), &host_task, after).unwrap();
         assert_eq!((empty["messages"].as_array().unwrap().len(), empty["hasMore"].as_bool()), (0, Some(false)));
         assert!(store_page(&viewer, &local, after, &json!({"messages": [{"id": 1, "role": "user", "content": "old", "createdAt": 0}]})).is_err(), "ids only move forward");
     }

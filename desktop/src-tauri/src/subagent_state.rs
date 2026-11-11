@@ -304,14 +304,14 @@ mod tests {
         let mut state = SubagentState::default();
         let mut activity = child("worker", "running");
         record(&mut state, &store, &sid, "run", activity.clone());
-        let changes = store.lock().unwrap().db.total_changes();
+        let changes = store.lock().unwrap().db.lock().unwrap().total_changes();
         for n in 0..200 {
             activity.response = format!("Read {n} lines");
             activity.updated_at += 1;
             record(&mut state, &store, &sid, "run", activity.clone());
         }
         let history = store.lock().unwrap().subagents(&sid).unwrap();
-        assert_eq!(store.lock().unwrap().db.total_changes(), changes);
+        assert_eq!(store.lock().unwrap().db.lock().unwrap().total_changes(), changes);
         assert_eq!(history[0].response, "Reading");
         assert_eq!(state.merge_history(history)[0].response, "Read 199 lines");
         state.entries.get_mut("run:worker").unwrap().last_saved =
@@ -566,7 +566,7 @@ mod tests {
             state.merge_history(db.subagents(&sid).unwrap())[0].status,
             "stopped"
         );
-        db.db
+        db.db.lock().unwrap()
             .execute_batch("DROP TRIGGER reject_final_insert; DROP TRIGGER reject_final_update;")
             .unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();

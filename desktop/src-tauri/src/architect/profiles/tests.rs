@@ -370,7 +370,7 @@ fn missing_library_migrates_latest_team_once_and_never_reenables_disabled_defaul
             store.db.lock().unwrap().execute("UPDATE architect_teams SET content=json_set(content,'$.updatedAt',?2) WHERE session_id=?1",params![task.id,time]).unwrap();
         }
         store
-            .db
+            .db.lock().unwrap()
             .execute_batch("DROP TABLE architect_library; PRAGMA user_version=11;")
             .unwrap();
     }
@@ -387,7 +387,7 @@ fn missing_library_migrates_latest_team_once_and_never_reenables_disabled_defaul
     assert_eq!(read(&store).unwrap().last_setup, Some(expected));
     assert_eq!(
         store
-            .db
+            .db.lock().unwrap()
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
         crate::storage::SCHEMA_VERSION

@@ -453,56 +453,71 @@ pub(super) async fn fork_codex_task(
     {
         return Err("The source task changed projects. Open its commands again.".into());
     }
-    let conn = store.db.lock().unwrap(); let tx = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
-    let task = store.create_session(
-        &source.project_id,
-        "codex",
-        fork.model.as_deref().unwrap_or(&source.model),
-        &source.mode,
-    )?;
-    store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task.id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
-    for (role, content) in history {
-        store.message(&task.id, &role, &content)?;
-    }
-    if !adopting {
-        copy_task_messages(&store, &source.id, &task.id)?;
-        crate::session_titles::inherit(&store, &source.id, &task.id)?;
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    store.session(&task.id)
+    store.project(&source.project_id)?;
+    let task_id = {
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let task_id = storage::Store::insert_new_session(
+            &tx,
+            &source.project_id,
+            "codex",
+            fork.model.as_deref().unwrap_or(&source.model),
+            &source.mode,
+        )?;
+        tx.execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task_id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
+        for (role, content) in history {
+            storage::Store::insert_message(&tx, &task_id, &role, &content)?;
+        }
+        if !adopting {
+            copy_task_messages_on(&tx, &source.id, &task_id)?;
+            crate::session_titles::inherit_on(&tx, &source.id, &task_id)?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        task_id
+    };
+    store.session(&task_id)
 }
 
 /// A fork has no team provenance. Preserve recognized historical app turns as
 /// typed records while their original team IDs and cutoff are still available.
 pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> Result<()> {
+    copy_task_messages_on(&store.db.lock().unwrap(), source, target)
+}
+pub(crate) fn copy_task_messages_on(
+    conn: &rusqlite::Connection,
+    source: &str,
+    target: &str,
+) -> Result<()> {
     if source == target {
         return Err("A task cannot be forked into itself.".into());
     }
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id").map_err(|e|e.to_string())?;
-    let messages = query
-        .query_map([source], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<i64>>(4)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    for message in messages {
-        let (id, mut role, mut content, created_at, duration) =
-            message.map_err(|e| e.to_string())?;
+    let messages = {
+        let mut query = conn.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id").map_err(|e|e.to_string())?;
+        let rows = query
+            .query_map([source], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    for (id, mut role, mut content, created_at, duration) in messages {
         if role == "user" {
             if let Some(kind) =
-                crate::architect::internal_turns::legacy_kind(store, source, id, &content)?
+                crate::architect::internal_turns::legacy_kind_in_db(conn, source, id, &content)?
             {
                 content = crate::architect::internal_turns::encode(kind, &content)?;
                 role = "coordination".into();
             }
         }
-        store.db.lock().unwrap().execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES(?1,?2,?3,?4,?5)",rusqlite::params![target,role,content,created_at,duration]).map_err(|e|e.to_string())?;
+        conn.execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES(?1,?2,?3,?4,?5)",rusqlite::params![target,role,content,created_at,duration]).map_err(|e|e.to_string())?;
     }
     Ok(())
 }
@@ -538,19 +553,25 @@ pub(super) async fn export_task(state: State<'_, AppState>, session_id: String) 
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let task = store.session(&session_id)?;
     let mut output = format!("# {}\n\n", task.title);
-    let conn = store.db.lock().unwrap(); let mut  query = conn.prepare("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
-        .map_err(|e| e.to_string())?;
-    let rows = query
-        .query_map([&session_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    for row in rows {
-        let (id, role, content) = row.map_err(|e| e.to_string())?;
+    // Read the transcript under the connection, then drop the lock before
+    // projecting turns, which looks up legacy coordination kinds.
+    let rows = {
+        let conn = store.db.lock().unwrap();
+        let mut query = conn.prepare("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map([&session_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    for (id, role, content) in rows {
         let (role, content, _) = crate::architect::internal_turns::project_text(
             &store,
             &session_id,

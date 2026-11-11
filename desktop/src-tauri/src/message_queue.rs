@@ -104,8 +104,6 @@ pub(crate) fn remove(store: &Store, id: &str) -> Result<()> {
 
 /// Reorders a task's queue to `ids`, which must name exactly its current entries.
 pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result<Vec<QueuedMessage>> {
-    let conn = store.db.lock().unwrap();
-    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut current: Vec<String> = list(store, Some(session_id))?.into_iter().map(|entry| entry.id).collect();
     let mut requested = ids.to_vec();
     current.sort();
@@ -113,10 +111,14 @@ pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result
     if current != requested {
         return Err("The queue changed. Try reordering again.".into());
     }
-    for (position, id) in ids.iter().enumerate() {
-        store.db.lock().unwrap().execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;
+    {
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for (position, id) in ids.iter().enumerate() {
+            tx.execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
     }
-    transaction.commit().map_err(|e| e.to_string())?;
     list(store, Some(session_id))
 }
 

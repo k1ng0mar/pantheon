@@ -1500,11 +1500,8 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Op>> {
 }
 
 pub fn persist(store: &Store, sid: &str, mut capture: Captured) -> Result<i64> {
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
     store.session(sid)?;
     let team_sources = team::merge(store, sid, &mut capture)?;
-    let message_id:i64=store.db.lock().unwrap().query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id",params![sid,storage::now()],|r|r.get(0)).map_err(|e|e.to_string())?;
     let mut saved_summary = serde_json::to_value(&capture.summary).map_err(|e| e.to_string())?;
     if !team_sources.is_empty() {
         saved_summary["teamSources"] =
@@ -1527,46 +1524,52 @@ pub fn persist(store: &Store, sid: &str, mut capture: Captured) -> Result<i64> {
     {
         return Err("Turn change snapshot exceeded its storage limit.".into());
     }
-    store.db.lock().unwrap().execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at,diff_bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![capture.summary.id,sid,message_id,summary,storage::now(),bytes]).map_err(|e|e.to_string())?;
+    // The message, its summary, and the retained-diff eviction commit together.
+    // A duplicate summary id rolls the message back instead of orphaning it.
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let message_id:i64=tx.query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id",params![sid,storage::now()],|r|r.get(0)).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at,diff_bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![capture.summary.id,sid,message_id,summary,storage::now(),bytes]).map_err(|e|e.to_string())?;
     for (path, data) in details {
-        store
-            .db.lock().unwrap().execute(
-                "INSERT INTO turn_change_files(change_id,path,detail) VALUES(?1,?2,?3)",
-                params![capture.summary.id, path, data],
-            )
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO turn_change_files(change_id,path,detail) VALUES(?1,?2,?3)",
+            params![capture.summary.id, path, data],
+        )
+        .map_err(|e| e.to_string())?;
     }
-    let mut retained: i64 = store
-        .db.lock().unwrap().query_row(
+    let mut retained: i64 = tx
+        .query_row(
             "SELECT COALESCE(SUM(diff_bytes),0) FROM turn_changes WHERE diff_bytes>0",
             [],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
     if retained > RETAINED_BYTES {
-        let conn = store.db.lock().unwrap(); let mut  stmt = conn.prepare(
+        let rows = {
+            let mut stmt = tx.prepare(
                 "SELECT id,diff_bytes FROM turn_changes WHERE diff_bytes>0 ORDER BY created_at,id",
             )
             .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-            .map_err(|e| e.to_string())?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(|e| e.to_string())?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            drop(stmt);
+            rows
+        };
         for (id, bytes) in rows {
             if retained <= RETAINED_BYTES {
                 break;
             }
-            store
-                .db.lock().unwrap().execute("DELETE FROM turn_change_files WHERE change_id=?1", [&id])
+            tx.execute("DELETE FROM turn_change_files WHERE change_id=?1", [&id])
                 .map_err(|e| e.to_string())?;
-            store
-                .db.lock().unwrap().execute("UPDATE turn_changes SET diff_bytes=0 WHERE id=?1", [id])
+            tx.execute("UPDATE turn_changes SET diff_bytes=0 WHERE id=?1", [id])
                 .map_err(|e| e.to_string())?;
             retained -= bytes;
         }
     }
-    transaction.commit().map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(message_id)
 }
 pub fn detail(store: &Store, sid: &str, id: &str, path: &str) -> Result<TurnChangeDiff> {

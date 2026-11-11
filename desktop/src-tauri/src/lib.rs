@@ -412,7 +412,7 @@ mod task_agent_tests {
         assert_eq!(*assistant.lock().unwrap(), "Preserve this response.");
         assert!(store.messages(&task.id, None).unwrap().is_empty());
         store
-            .db
+            .db.lock().unwrap()
             .execute_batch("DROP TRIGGER reject_response;")
             .unwrap();
         save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
@@ -511,7 +511,7 @@ mod task_agent_tests {
         assert_eq!(visible.task_stage, "in_progress");
         assert_eq!(store.session(&task.id).unwrap().status, "running");
         store
-            .db
+            .db.lock().unwrap()
             .execute_batch("DROP TRIGGER reject_completion;")
             .unwrap();
         let recovered = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
@@ -2751,19 +2751,28 @@ fn create_worktree_task_with_defaults(
     };
     let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing)?;
     let store = store.lock().map_err(|e| e.to_string())?;
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
     let created = (|| {
         let mut source = source.clone();
         if inherit_defaults {
             source.mode = storage::DEFAULT_PERMISSION_MODE.into();
         }
-        let task =
-            store.create_worktree_session_on(&source, &worktree.path, Some(&worktree.branch))?;
-        if inherit_defaults {
-            architect::profiles::apply_default(&store, &task.id)?;
-        }
-        store.session(&task.id)
+        store.project(&source.project_id)?;
+        let task_id = {
+            let mut conn = store.db.lock().unwrap();
+            let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+            let task_id = storage::Store::create_worktree_session_on_conn(
+                &tx,
+                &source,
+                &worktree.path,
+                Some(&worktree.branch),
+            )?;
+            if inherit_defaults {
+                architect::profiles::apply_default_on(&tx, &task_id)?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+            task_id
+        };
+        store.session(&task_id)
     })()
     .map_err(|error| {
         format!(
@@ -2771,7 +2780,6 @@ fn create_worktree_task_with_defaults(
             worktree.path.display()
         )
     })?;
-    transaction.commit().map_err(|e| e.to_string())?;
     Ok(created)
 }
 
@@ -3732,10 +3740,10 @@ pub fn run() {
             if jev::setup(&dir).is_err() {
                 eprintln!("Jev settings are unavailable; browser testing remains disabled.");
             }
+            let database_path = dir.join("pantheon.sqlite3");
             // New installs use pantheon.sqlite3. Existing installs keep
             // their existing database through a one-time rename, including
             // SQLite sidecars, so the Pantheon rebrand does not orphan them.
-            let database_path = dir.join("pantheon.sqlite3");
             let legacy_path = dir.join("kingcode.sqlite3");
             if !database_path.exists() && legacy_path.exists() {
                 let _ = std::fs::rename(&legacy_path, &database_path);

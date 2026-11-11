@@ -80,8 +80,18 @@ fn mailbox(
     limit: usize,
     latest: bool,
 ) -> Result<Value> {
+    mailbox_on(&store.db.lock().unwrap(), parent, actor, after, limit, latest)
+}
+fn mailbox_on(
+    conn: &rusqlite::Connection,
+    parent: &str,
+    actor: &str,
+    after: i64,
+    limit: usize,
+    latest: bool,
+) -> Result<Value> {
     let order = if latest { "DESC" } else { "ASC" };
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare(&format!("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 ORDER BY id {order} LIMIT ?4")).map_err(|e| e.to_string())?;
+    let mut query = conn.prepare(&format!("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 ORDER BY id {order} LIMIT ?4")).map_err(|e| e.to_string())?;
     let mut messages = query
         .query_map(params![parent, actor, after, (limit + 1) as i64], |r| {
             Ok(Message {
@@ -191,8 +201,10 @@ pub(super) fn dispatch_state(
     if session.archived || session.task_stage == "completed" {
         return Err("Restore the parent task before coordinating work.".into());
     }
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
+    // The tool call commits or rolls back together: a rejected message or a
+    // failed team save leaves no partial mailbox entry behind.
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let mut changed = false;
     let result = match name {
         "pantheon_team_directory" => {
@@ -215,7 +227,7 @@ pub(super) fn dispatch_state(
             if read.after_id < 0 || !(1..=20).contains(&read.limit) {
                 return Err("Invalid mailbox cursor or page size.".into());
             }
-            mailbox(&store, parent, actor.id(), read.after_id, read.limit, false)?
+            mailbox_on(&tx, parent, actor.id(), read.after_id, read.limit, false)?
         }
         "pantheon_send_team_message" => {
             #[derive(Deserialize)]
@@ -241,15 +253,15 @@ pub(super) fn dispatch_state(
             {
                 return Err("Recipient does not belong to this active team.".into());
             }
-            let existing = store.db.lock().unwrap().query_row("SELECT id,recipient,content FROM architect_messages WHERE parent_session_id=?1 AND sender=?2 AND request_key=?3", params![parent,actor.id(),send.key], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
+            let existing = tx.query_row("SELECT id,recipient,content FROM architect_messages WHERE parent_session_id=?1 AND sender=?2 AND request_key=?3", params![parent,actor.id(),send.key], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
             let (id, duplicate) = if let Some((id, recipient, content)) = existing {
                 if recipient != send.recipient || content != send.message {
                     return Err("This message key already has different arguments.".into());
                 }
                 (id, true)
             } else {
-                let count: i64 = store
-                    .db.lock().unwrap().query_row(
+                let count: i64 = tx
+                    .query_row(
                         "SELECT COUNT(*) FROM architect_messages WHERE parent_session_id=?1",
                         [parent],
                         |r| r.get(0),
@@ -260,14 +272,14 @@ pub(super) fn dispatch_state(
                         "Team message limit reached. Continue with compact worker results.".into(),
                     );
                 }
-                store.db.lock().unwrap().execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![parent,actor.id(),send.recipient,send.key,send.message,storage::now()]).map_err(|e|e.to_string())?;
+                tx.execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![parent,actor.id(),send.recipient,send.key,send.message,storage::now()]).map_err(|e|e.to_string())?;
                 if send.recipient == "architect" {
                     team.coordination_revision = team.coordination_revision.saturating_add(1);
                 }
                 changed = true;
-                (store.db.lock().unwrap().last_insert_rowid(), false)
+                (tx.last_insert_rowid(), false)
             };
-            json!({"messageId":id,"recipient":send.recipient,"saved":true,"duplicate":duplicate,"mailbox":mailbox(&store,parent,actor.id(),0,6,true)?})
+            json!({"messageId":id,"recipient":send.recipient,"saved":true,"duplicate":duplicate,"mailbox":mailbox_on(&tx,parent,actor.id(),0,6,true)?})
         }
         "pantheon_checkpoint_worker" => {
             let Actor::Worker { id, .. } = actor else {
@@ -294,14 +306,14 @@ pub(super) fn dispatch_state(
             let key = format!("checkpoint:{id}:{}", checkpoint.key);
             let content = serde_json::to_string(&checkpoint).map_err(|e| e.to_string())?;
             let duplicate =
-                request_duplicate(&store, parent, &key, "checkpoint", &content)?.is_some();
+                request_duplicate_on(&tx, parent, &key, "checkpoint", &content)?.is_some();
             let worker = team
                 .workers
                 .iter_mut()
                 .find(|w| w.id == *id)
                 .ok_or("Worker unavailable.")?;
             if !duplicate {
-                let count: i64 = store.db.lock().unwrap().query_row("SELECT COUNT(*) FROM architect_requests WHERE parent_session_id=?1 AND kind='checkpoint' AND worker_id=?2",params![parent,id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                let count: i64 = tx.query_row("SELECT COUNT(*) FROM architect_requests WHERE parent_session_id=?1 AND kind='checkpoint' AND worker_id=?2",params![parent,id],|r|r.get(0)).map_err(|e|e.to_string())?;
                 if count >= 200 {
                     return Err("Worker checkpoint limit reached.".into());
                 }
@@ -318,17 +330,17 @@ pub(super) fn dispatch_state(
                     updated_at: storage::now(),
                 });
                 worker.updated_at = storage::now();
-                record_request(&store, parent, &key, "checkpoint", &content, id)?;
+                record_request_on(&tx, parent, &key, "checkpoint", &content, id)?;
                 changed = true;
             }
-            json!({"saved":true,"duplicate":duplicate,"checkpoint":worker.checkpoint,"mailbox":mailbox(&store,parent,actor.id(),0,6,true)?})
+            json!({"saved":true,"duplicate":duplicate,"checkpoint":worker.checkpoint,"mailbox":mailbox_on(&tx,parent,actor.id(),0,6,true)?})
         }
         _ => return Err("This team role cannot use that tool.".into()),
     };
     if changed {
-        save(&store, &mut team)?;
+        save_on(&tx, &mut team)?;
     }
-    transaction.commit().map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok((result, changed.then_some(team)))
 }
 fn default_limit() -> usize {

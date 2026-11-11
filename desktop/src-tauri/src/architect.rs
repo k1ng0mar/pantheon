@@ -205,7 +205,7 @@ pub struct Runtime {
     scheduled: AtomicBool,
     dirty: AtomicBool,
 }
-fn active(status: &str) -> bool {
+pub(crate) fn active(status: &str) -> bool {
     matches!(status, "running" | "waiting")
 }
 fn unsettled(status: &str) -> bool {
@@ -283,8 +283,10 @@ impl TeamConfig {
     }
 }
 pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
-    store
-        .db.lock().unwrap().query_row(
+    load_on(&store.db.lock().unwrap(), sid)
+}
+pub(crate) fn load_on(conn: &rusqlite::Connection, sid: &str) -> Result<Option<TeamSnapshot>> {
+    conn.query_row(
             "SELECT content FROM architect_teams WHERE session_id=?1",
             [sid],
             |r| r.get::<_, String>(0),
@@ -295,13 +297,16 @@ pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
         .transpose()
 }
 fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
+    save_on(&store.db.lock().unwrap(), team)
+}
+fn save_on(conn: &rusqlite::Connection, team: &mut TeamSnapshot) -> Result<()> {
     team.updated_at = storage::now();
     team.revision = team.revision.saturating_add(1);
     let content = serde_json::to_string(team).map_err(|e| e.to_string())?;
     if content.len() > 1024 * 1024 {
         return Err("Team history reached its storage limit.".into());
     }
-    store.db.lock().unwrap().execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",params![team.session_id,content]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",params![team.session_id,content]).map_err(|e|e.to_string())?;
     Ok(())
 }
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
@@ -309,8 +314,10 @@ fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
     let _ = app.emit("sessions-changed", ());
 }
 pub(crate) fn parent_of(store: &Store, sid: &str) -> Result<Option<String>> {
-    store
-        .db.lock().unwrap().query_row(
+    parent_of_on(&store.db.lock().unwrap(), sid)
+}
+pub(crate) fn parent_of_on(conn: &rusqlite::Connection, sid: &str) -> Result<Option<String>> {
+    conn.query_row(
             "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
             [sid],
             |r| r.get(0),
@@ -371,15 +378,15 @@ pub(crate) fn validate_admission(
         // snapshot. Refresh only the architect: worker tool schemas are unchanged.
         // Queue its own history before clearing the native ID, atomically with the
         // version marker, so interrupted startup retries keep their handoff.
-        let conn = store.db.lock().unwrap();
-    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         if parent.provider == "codex" {
-            crate::context_recovery::queue(store, sid)?;
-            store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
+            crate::context_recovery::queue_on(&tx, sid)?;
+            tx.execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
         }
         team.tool_catalog_version = TOOL_CATALOG_VERSION;
-        save(store, &mut team)?;
-        transaction.commit().map_err(|e| e.to_string())?;
+        save_on(&tx, &mut team)?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -559,8 +566,8 @@ pub(super) fn configure_state(
     {
         return Err("Wait for workers to stop before changing the team.".into());
     }
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let Some(config) = config else {
         // Keep completed worker transcripts addressable if the team is enabled again.
         if existing.as_ref().is_some_and(|t| !t.workers.is_empty()) {
@@ -568,22 +575,21 @@ pub(super) fn configure_state(
                 "This task has a team history. Use a new task for ordinary conversation.".into(),
             );
         }
-        store
-            .db.lock().unwrap().execute(
-                "DELETE FROM architect_teams WHERE session_id=?1",
-                [session_id],
-            )
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM architect_teams WHERE session_id=?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
         // Codex persists its dynamic-tool catalog with the native thread. A
         // different catalog needs a new context, with the transcript carried
         // forward. Claude and Kimi reload MCP tools when resuming, so their
         // existing context remains valid. Saving ordinary mode is a no-op.
         if existing.is_some() && session.provider == "codex" {
-            crate::context_recovery::queue(&store, session_id)?;
-            store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
+            crate::context_recovery::queue_on(&tx, session_id)?;
+            tx.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
         }
-        profiles::remember(&store, None, None)?;
-        transaction.commit().map_err(|e| e.to_string())?;
+        profiles::remember_on(&tx, None, None)?;
+        tx.commit().map_err(|e| e.to_string())?;
         return Ok(None);
     };
     let fresh = existing.is_none();
@@ -595,8 +601,9 @@ pub(super) fn configure_state(
         config: config.clone(),
     };
     setup.validate()?;
-    let used: bool = store
-        .db.lock().unwrap().query_row(
+    profiles::check_remember_on(&tx, &setup, profile_id)?;
+    let used: bool = tx
+        .query_row(
             "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1)",
             [session_id],
             |r| r.get(0),
@@ -613,27 +620,29 @@ pub(super) fn configure_state(
         team.pending_setup = (setup.architect != profiles::ModelSelection::from_session(&session)
             || setup.config != team.config)
             .then_some(setup.clone());
-    } else {
-        apply_setup(&store, &mut team, &setup)?;
     }
     if fresh {
         team.status = "ready".into();
     }
     team.error = None;
+    profiles::remember_on(&tx, Some(setup.clone()), profile_id)?;
+    if !agents.contains_key(session_id) {
+        apply_setup_on(&tx, &mut team, &setup)?;
+    }
     if fresh && selection.provider == "codex" {
-        crate::context_recovery::queue(&store, session_id)?;
-        store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
+        crate::context_recovery::queue_on(&tx, session_id)?;
+        tx.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
         if session.resume_id.is_some() {
-            store.message(
+            Store::insert_message(
+                &tx,
                 session_id,
                 "system",
                 "Earlier conversation will be restored in the new architect context.",
             )?;
         }
     }
-    save(&store, &mut team)?;
-    profiles::remember(&store, Some(setup), profile_id)?;
-    transaction.commit().map_err(|e| e.to_string())?;
+    save_on(&tx, &mut team)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(Some(team))
 }
 
@@ -649,16 +658,31 @@ fn validate_setup_limits(team: &TeamSnapshot, config: &TeamConfig) -> Result<()>
 
 /// Caller holds the agent registry and a database transaction. Assignment sessions
 /// carry their own immutable selection, including queued workers and follow-ups.
-fn apply_setup(store: &Store, team: &mut TeamSnapshot, setup: &profiles::TeamSetup) -> Result<()> {
+fn apply_setup_on(
+    conn: &rusqlite::Connection,
+    team: &mut TeamSnapshot,
+    setup: &profiles::TeamSetup,
+) -> Result<()> {
     setup.validate()?;
     validate_setup_limits(team, &setup.config)?;
-    let session = store.session(&team.session_id)?;
-    if setup.architect.provider != session.provider {
-        crate::context_recovery::queue(store, &team.session_id)?;
-        store.db.lock().unwrap().execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1", [&team.session_id]).map_err(|e|e.to_string())?;
+    let (provider, model, reasoning_effort): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT provider,model,reasoning_effort FROM sessions WHERE id=?1",
+            [&team.session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let current = profiles::ModelSelection {
+        provider: provider.clone(),
+        model,
+        reasoning_effort,
+    };
+    if setup.architect.provider != provider {
+        crate::context_recovery::queue_on(conn, &team.session_id)?;
+        conn.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1", [&team.session_id]).map_err(|e|e.to_string())?;
     }
-    if setup.architect != profiles::ModelSelection::from_session(&session) {
-        profiles::apply_selection(store, &team.session_id, &setup.architect)?;
+    if setup.architect != current {
+        profiles::apply_selection_on(conn, &team.session_id, &setup.architect)?;
     }
     team.config = setup.config.clone();
     team.pending_setup = None;
@@ -671,11 +695,11 @@ fn apply_pending_setup(store: &Store, team: &mut TeamSnapshot) -> Result<bool> {
     let Some(setup) = team.pending_setup.clone() else {
         return Ok(false);
     };
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
-    apply_setup(store, team, &setup)?;
-    save(store, team)?;
-    transaction.commit().map_err(|e| e.to_string())?;
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    apply_setup_on(&tx, team, &setup)?;
+    save_on(&tx, team)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(true)
 }
 #[tauri::command]
@@ -1180,8 +1204,10 @@ fn dispatch_state(
     }
     let parent = store.session(sid)?;
     let mut changed = false;
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
+    // The whole tool call commits or rolls back together: a rejected batch or a
+    // failed team save leaves no reserved session, worker, or request behind.
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let result = match name {
         "pantheon_dispatch_workers" => {
             #[derive(Deserialize)]
@@ -1206,7 +1232,7 @@ fn dispatch_state(
                 }
                 let request = serde_json::to_string(&assignment).map_err(|e| e.to_string())?;
                 if let Some(id) =
-                    request_duplicate(&store, sid, &assignment.key, "dispatch", &request)?
+                    request_duplicate_on(&tx, sid, &assignment.key, "dispatch", &request)?
                 {
                     duplicates.push(id.clone());
                     ids.push(id);
@@ -1241,21 +1267,21 @@ fn dispatch_state(
                 }
                 let profile = staff(&team.config, &parent, &assignment)?;
                 let profile = &profile;
-                let session = store.create_session(
+                let session_id = Store::insert_new_session(&tx,
                     &parent.project_id,
                     &profile.provider,
                     &profile.model,
                     &parent.mode,
                 )?;
-                store.db.lock().unwrap().execute("UPDATE sessions SET title=?2,task_description=?3,worktree_path=?4,reasoning_effort=?5 WHERE id=?1",params![session.id,assignment.name,assignment.prompt,parent.worktree_path,profile.reasoning_effort]).map_err(|e|e.to_string())?;
+                tx.execute("UPDATE sessions SET title=?2,task_description=?3,worktree_path=?4,reasoning_effort=?5 WHERE id=?1",params![session_id,assignment.name,assignment.prompt,parent.worktree_path,profile.reasoning_effort]).map_err(|e|e.to_string())?;
                 let id = storage::id();
-                store.db.lock().unwrap().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?3)",params![sid,id,session.id]).map_err(|e|e.to_string())?;
-                record_request(&store, sid, &assignment.key, "dispatch", &request, &id)?;
+                tx.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?3)",params![sid,id,session_id]).map_err(|e|e.to_string())?;
+                record_request_on(&tx, sid, &assignment.key, "dispatch", &request, &id)?;
                 let now = storage::now();
                 ids.push(id.clone());
                 team.workers.push(Worker {
                     id,
-                    session_id: session.id,
+                    session_id,
                     name: assignment.name,
                     profile_id: profile.id.clone(),
                     provider: profile.provider.clone(),
@@ -1309,7 +1335,7 @@ fn dispatch_state(
         }
         "pantheon_read_worker" => {
             let worker = worker_arg(&team, &args)?;
-            let response=store.db.lock().unwrap().query_row("SELECT substr(content,1,12001) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",[&worker.session_id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default();
+            let response=tx.query_row("SELECT substr(content,1,12001) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",[&worker.session_id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default();
             json!({"id":worker.id,"status":worker.status,"summary":worker.summary,"response":bounded(&response,12000),"truncated":response.chars().count()>12000,"checkpoint":worker.checkpoint,"files":worker.files,"readOnly":worker.read_only,"dependsOn":worker.depends_on,"queueReason":queue_reason(&team,worker)})
         }
         "pantheon_followup_worker" => {
@@ -1330,7 +1356,7 @@ fn dispatch_state(
             }
             text(&follow.prompt, 8192, "Follow-up")?;
             let request = serde_json::to_string(&follow).map_err(|e| e.to_string())?;
-            if let Some(id) = request_duplicate(&store, sid, &follow.key, "followup", &request)? {
+            if let Some(id) = request_duplicate_on(&tx, sid, &follow.key, "followup", &request)? {
                 json!({"workerId":id,"duplicate":true})
             } else {
                 let worker = team
@@ -1357,7 +1383,7 @@ fn dispatch_state(
                 worker.summary.clear();
                 worker.error = None;
                 worker.attempt += 1;
-                record_request(&store, sid, &follow.key, "followup", &request, &worker.id)?;
+                record_request_on(&tx, sid, &follow.key, "followup", &request, &worker.id)?;
                 worker.keys.push(follow.key);
                 worker.updated_at = storage::now();
                 changed = true;
@@ -1415,19 +1441,19 @@ fn dispatch_state(
     };
     if changed {
         team.dispatch_revision += 1;
-        save(&store, &mut team)?;
+        save_on(&tx, &mut team)?;
     }
-    transaction.commit().map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok((result, changed.then_some(team)))
 }
-fn request_duplicate(
-    store: &Store,
+fn request_duplicate_on(
+    conn: &rusqlite::Connection,
     sid: &str,
     key: &str,
     kind: &str,
     content: &str,
 ) -> Result<Option<String>> {
-    let existing=store.db.lock().unwrap().query_row("SELECT kind,content,worker_id FROM architect_requests WHERE parent_session_id=?1 AND key=?2",params![sid,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
+    let existing=conn.query_row("SELECT kind,content,worker_id FROM architect_requests WHERE parent_session_id=?1 AND key=?2",params![sid,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
     match existing {
         Some((saved_kind, saved_content, id)) if saved_kind == kind && saved_content == content => {
             Ok(Some(id))
@@ -1436,15 +1462,15 @@ fn request_duplicate(
         None => Ok(None),
     }
 }
-fn record_request(
-    store: &Store,
+fn record_request_on(
+    conn: &rusqlite::Connection,
     sid: &str,
     key: &str,
     kind: &str,
     content: &str,
     worker: &str,
 ) -> Result<()> {
-    store.db.lock().unwrap().execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,?2,?3,?4,?5)",params![sid,key,kind,content,worker]).map_err(|e|e.to_string())?;
+    conn.execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,?2,?3,?4,?5)",params![sid,key,kind,content,worker]).map_err(|e|e.to_string())?;
     Ok(())
 }
 fn worker_arg<'a>(team: &'a TeamSnapshot, args: &Value) -> Result<&'a Worker> {
@@ -1561,14 +1587,18 @@ fn next_action_state(
         return Ok(None);
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let conn = store.db.lock().unwrap();
-    let mut query=conn.prepare("SELECT content FROM architect_teams WHERE json_extract(content,'$.status') IN ('running','waiting') OR EXISTS(SELECT 1 FROM architect_workers aw JOIN sessions s ON s.id=aw.session_id WHERE aw.parent_session_id=architect_teams.session_id AND s.status IN ('running','waiting')) ORDER BY json_extract(content,'$.updatedAt')").map_err(|e|e.to_string())?;
-    let teams = query
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(query);
+    let teams = {
+        let conn = store.db.lock().unwrap();
+        let mut query=conn.prepare("SELECT content FROM architect_teams WHERE json_extract(content,'$.status') IN ('running','waiting') OR EXISTS(SELECT 1 FROM architect_workers aw JOIN sessions s ON s.id=aw.session_id WHERE aw.parent_session_id=architect_teams.session_id AND s.status IN ('running','waiting')) ORDER BY json_extract(content,'$.updatedAt')").map_err(|e|e.to_string())?;
+        let rows = query
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(query);
+        drop(conn);
+        rows
+    };
     let teams = teams
         .into_iter()
         .filter_map(|s| match serde_json::from_str::<TeamSnapshot>(&s) {

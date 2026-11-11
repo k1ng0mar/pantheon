@@ -124,8 +124,11 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
     Ok(())
 }
 pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
-    let content = store
-        .db.lock().unwrap().query_row(
+    read_on(&store.db.lock().unwrap())
+}
+fn read_on(conn: &rusqlite::Connection) -> Result<TeamLibrary> {
+    let content = conn
+        .query_row(
             "SELECT content FROM architect_library WHERE id=1",
             [],
             |r| r.get::<_, String>(0),
@@ -134,16 +137,18 @@ pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
     serde_json::from_str(&content).map_err(|e| format!("Saved team library is invalid: {e}"))
 }
 fn write(store: &Store, library: &TeamLibrary) -> Result<()> {
+    write_on(&store.db.lock().unwrap(), library)
+}
+fn write_on(conn: &rusqlite::Connection, library: &TeamLibrary) -> Result<()> {
     let content = serde_json::to_string(library).map_err(|e| e.to_string())?;
     if content.len() > 256 * 1024 {
         return Err("Saved team setups exceed their storage limit.".into());
     }
-    store
-        .db.lock().unwrap().execute(
-            "UPDATE architect_library SET content=?1 WHERE id=1",
-            [content],
-        )
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE architect_library SET content=?1 WHERE id=1",
+        [content],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 fn validate_name(name: &str) -> Result<String> {
@@ -161,9 +166,9 @@ pub(crate) fn save_profile(
 ) -> Result<TeamLibrary> {
     setup.validate()?;
     let name = validate_name(&name)?;
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
-    let mut library = read(store)?;
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut library = read_on(&tx)?;
     if library
         .profiles
         .iter()
@@ -201,14 +206,14 @@ pub(crate) fn save_profile(
     }) {
         library.active_profile_id = None;
     }
-    write(store, &library)?;
-    transaction.commit().map_err(|e| e.to_string())?;
+    write_on(&tx, &library)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(library)
 }
 pub(crate) fn delete_profile(store: &Store, id: &str) -> Result<TeamLibrary> {
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
-    let mut library = read(store)?;
+    let mut conn = store.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut library = read_on(&tx)?;
     let index = library
         .profiles
         .iter()
@@ -218,8 +223,8 @@ pub(crate) fn delete_profile(store: &Store, id: &str) -> Result<TeamLibrary> {
     if library.active_profile_id.as_deref() == Some(id) {
         library.active_profile_id = None;
     }
-    write(store, &library)?;
-    transaction.commit().map_err(|e| e.to_string())?;
+    write_on(&tx, &library)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(library)
 }
 /// Must share the task configuration transaction so Save setup is all-or-nothing.
@@ -228,7 +233,14 @@ pub(super) fn remember(
     setup: Option<TeamSetup>,
     profile_id: Option<&str>,
 ) -> Result<()> {
-    let mut library = read(store)?;
+    remember_on(&store.db.lock().unwrap(), setup, profile_id)
+}
+pub(super) fn remember_on(
+    conn: &rusqlite::Connection,
+    setup: Option<TeamSetup>,
+    profile_id: Option<&str>,
+) -> Result<()> {
+    let mut library = read_on(conn)?;
     if let Some(setup) = setup {
         setup.validate()?;
         let profile = profile_id
@@ -249,16 +261,46 @@ pub(super) fn remember(
     } else {
         library.enabled = false;
     }
-    write(store, &library)
+    write_on(conn, &library)
+}
+/// Reject a missing or mismatched profile before any session writes.
+pub(super) fn check_remember_on(
+    conn: &rusqlite::Connection,
+    setup: &TeamSetup,
+    profile_id: Option<&str>,
+) -> Result<()> {
+    setup.validate()?;
+    let library = read_on(conn)?;
+    if let Some(id) = profile_id {
+        let profile = library
+            .profiles
+            .iter()
+            .find(|p| p.id == id)
+            .ok_or("This team profile no longer exists.")?;
+        if profile.setup != *setup {
+            return Err("The selected profile does not match this team setup. Save it as a custom setup or update the profile first.".into());
+        }
+    }
+    Ok(())
 }
 pub(super) fn apply_selection(store: &Store, sid: &str, selection: &ModelSelection) -> Result<()> {
+    apply_selection_on(&store.db.lock().unwrap(), sid, selection)
+}
+pub(super) fn apply_selection_on(
+    conn: &rusqlite::Connection,
+    sid: &str,
+    selection: &ModelSelection,
+) -> Result<()> {
     selection.validate()?;
-    store.db.lock().unwrap().execute("UPDATE sessions SET provider=?2,model=?3,reasoning_effort=?4,context_used_tokens=NULL,context_window=NULL WHERE id=?1",params![sid,selection.provider,selection.model,selection.reasoning_effort]).map_err(|e|e.to_string())?;
+    conn.execute("UPDATE sessions SET provider=?2,model=?3,reasoning_effort=?4,context_used_tokens=NULL,context_window=NULL WHERE id=?1",params![sid,selection.provider,selection.model,selection.reasoning_effort]).map_err(|e|e.to_string())?;
     Ok(())
 }
 /// Called only by user-facing new-task entrypoints, inside their creation transaction.
-pub(crate) fn apply_default(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
-    let library = read(store)?;
+pub(crate) fn apply_default_on(
+    conn: &rusqlite::Connection,
+    sid: &str,
+) -> Result<Option<TeamSnapshot>> {
+    let library = read_on(conn)?;
     if !library.enabled {
         return Ok(None);
     }
@@ -266,23 +308,23 @@ pub(crate) fn apply_default(store: &Store, sid: &str) -> Result<Option<TeamSnaps
         .last_setup
         .ok_or("The saved default team setup is missing.")?;
     setup.validate()?;
-    let has_history: bool = store
-        .db.lock().unwrap().query_row(
+    let has_history: bool = conn
+        .query_row(
             "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1)",
             [sid],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if has_history || super::parent_of(store, sid)?.is_some() || super::load(store, sid)?.is_some()
+    if has_history || super::parent_of_on(conn, sid)?.is_some() || super::load_on(conn, sid)?.is_some()
     {
         return Err("Default team settings only apply to a new user task.".into());
     }
     // An auto team is led by whatever model the new task was created with.
     if !setup.config.auto {
-        apply_selection(store, sid, &setup.architect)?;
+        apply_selection_on(conn, sid, &setup.architect)?;
     }
     let mut team = super::new_team(sid.into(), setup.config);
-    super::save(store, &mut team)?;
+    super::save_on(conn, &mut team)?;
     Ok(Some(team))
 }
 pub(crate) fn create_user_task(
@@ -293,21 +335,32 @@ pub(crate) fn create_user_task(
     mode: Option<&str>,
     details: Option<(&str, &str)>,
 ) -> Result<Session> {
-    let conn = store.db.lock().unwrap(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
-    let task = store.create_session(
-        project_id,
-        provider,
-        model,
-        mode.unwrap_or(storage::DEFAULT_PERMISSION_MODE),
-    )?;
     if let Some((title, description)) = details {
-        store.update_task_details(&task.id, title, description)?;
+        Store::validate_task_details(title, description)?;
     }
-    apply_default(store, &task.id)?;
-    let task = store.session(&task.id)?;
-    transaction.commit().map_err(|e| e.to_string())?;
-    Ok(task)
+    store.project(project_id)?;
+    let sid = {
+        let mut conn = store.db.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let sid = Store::insert_new_session(
+            &tx,
+            project_id,
+            provider,
+            model,
+            mode.unwrap_or(storage::DEFAULT_PERMISSION_MODE),
+        )?;
+        if let Some((title, description)) = details {
+            tx.execute(
+                "UPDATE sessions SET title=?2,title_origin='manual',task_description=?3 WHERE id=?1",
+                params![sid, title.trim(), description.trim()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        apply_default_on(&tx, &sid)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        sid
+    };
+    store.session(&sid)
 }
 /// Replaces the app-wide lead guidance. Blank or absent means the built-in rules alone.
 pub(crate) fn set_lead_guidance(

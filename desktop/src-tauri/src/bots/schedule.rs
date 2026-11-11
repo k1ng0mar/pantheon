@@ -164,9 +164,15 @@ pub(crate) fn delete(store: &Store, bot_id: &str, id: &str) -> Result<()> {
 
 /// Due work: schedules whose time has come and bots whose check-in is due, for unpaused bots.
 pub(crate) fn due(store: &Store, now: i64) -> Result<(Vec<Schedule>, Vec<Bot>)> {
-    let conn = store.db.lock().unwrap(); let mut  statement = conn.prepare(&format!("SELECT {COLUMNS} FROM bot_schedules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=?1 AND bot_id IN (SELECT id FROM bots WHERE paused=0) ORDER BY next_run_at LIMIT 20"))
-        .map_err(|e| e.to_string())?;
-    let schedules = statement.query_map([now], row).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+    let schedules = {
+        let conn = store.db.lock().unwrap();
+        let mut statement = conn.prepare(&format!("SELECT {COLUMNS} FROM bot_schedules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=?1 AND bot_id IN (SELECT id FROM bots WHERE paused=0) ORDER BY next_run_at LIMIT 20"))
+            .map_err(|e| e.to_string())?;
+        let rows = statement.query_map([now], row).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+        drop(statement);
+        drop(conn);
+        rows
+    };
     let bots = super::list(store)?.into_iter().filter(|bot| !bot.paused && bot.heartbeat_minutes > 0 && bot.next_heartbeat_at.is_some_and(|at| at <= now)).collect();
     Ok((schedules, bots))
 }

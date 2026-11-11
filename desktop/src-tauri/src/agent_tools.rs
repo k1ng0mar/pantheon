@@ -514,27 +514,39 @@ fn read_task_page(
         if matches!(status.as_str(),"running"|"waiting") && !agents.contains_key(sid) {status="interrupted".into(); stage="in_progress".into();}
         Ok(json!({"id":row.get::<_,String>(0)?,"projectId":row.get::<_,String>(1)?,"title":row.get::<_,String>(2)?,"provider":row.get::<_,String>(3)?,"model":row.get::<_,String>(4)?,"mode":row.get::<_,String>(5)?,"status":status,"stage":stage,"description":description,"descriptionTruncated":description_truncated,"worktree":row.get::<_,bool>(10)?,"updatedAt":row.get::<_,i64>(11)?}))
     }).optional().map_err(|e| e.to_string())?.ok_or("Task is unavailable in the current project.")?;
-    let conn = store.db.lock().unwrap(); let mut query = conn.prepare("SELECT id,substr(role,1,24),CASE WHEN role='coordination' THEN CASE WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_update' THEN 'Checking worker updates' WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_review' THEN 'Reviewing worker results' ELSE 'Coordinating team' END ELSE substr(content,1,4096) END,CASE WHEN role='coordination' THEN 0 ELSE length(CAST(content AS BLOB)) END,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT 50").map_err(|e| e.to_string())?;
-    let rows = query.query_map(params![sid,before_id.unwrap_or(i64::MAX)],|row| {
-        let content = bounded(&row.get::<_,String>(2)?,4096);
-        Ok(json!({"id":row.get::<_,i64>(0)?,"role":row.get::<_,String>(1)?,"truncated":row.get::<_,i64>(3)? > content.len() as i64,"content":content,"createdAt":row.get::<_,i64>(4)?,"turnDurationMs":row.get::<_,Option<i64>>(5)?}))
-    }).map_err(|e| e.to_string())?;
     let mut messages = Vec::new();
     let mut bytes = 2;
-    for row in rows {
-        let message = row.map_err(|e| e.to_string())?;
-        // Count encoded bytes, not only raw text: control characters need escaping.
-        let encoded = serde_json::to_vec(&message)
-            .map_err(|e| e.to_string())?
-            .len()
-            + 1;
-        if bytes + encoded > 48 * 1024 {
-            break;
+    let bytes_limit = 48 * 1024;
+    let oldest;
+    {
+        // Read the full page while holding the connection, then drop the lock
+        // before the follow-up EXISTS query so we don't relock the same Mutex<Connection>.
+        let conn = store.db.lock().unwrap();
+        let mut query = conn.prepare(
+            "SELECT id,substr(role,1,24),CASE WHEN role='coordination' THEN CASE WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_update' THEN 'Checking worker updates' WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_review' THEN 'Reviewing worker results' ELSE 'Coordinating team' END ELSE substr(content,1,4096) END,CASE WHEN role='coordination' THEN 0 ELSE length(CAST(content AS BLOB)) END,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT 50",
+        ).map_err(|e| e.to_string())?;
+        let rows = query.query_map(params![sid, before_id.unwrap_or(i64::MAX)], |row| {
+            let content = bounded(&row.get::<_, String>(2)?, 4096);
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "role": row.get::<_, String>(1)?,
+                "truncated": row.get::<_, i64>(3)? > content.len() as i64,
+                "content": content,
+                "createdAt": row.get::<_, i64>(4)?,
+                "turnDurationMs": row.get::<_, Option<i64>>(5)?,
+            }))
+        }).map_err(|e| e.to_string())?;
+        for row in rows {
+            let message = row.map_err(|e| e.to_string())?;
+            let encoded = serde_json::to_vec(&message).map_err(|e| e.to_string())?.len() + 1;
+            if bytes + encoded > bytes_limit {
+                break;
+            }
+            bytes += encoded;
+            messages.push(message);
         }
-        bytes += encoded;
-        messages.push(message);
+        oldest = messages.last().and_then(|message| message["id"].as_i64());
     }
-    let oldest = messages.last().and_then(|message| message["id"].as_i64());
     let has_older = match oldest {
         Some(oldest) => store
             .db.lock().unwrap().query_row(
@@ -1076,7 +1088,7 @@ mod tests {
                     .unwrap();
             }
             store
-                .db
+                .db.lock().unwrap()
                 // Sidebar recency uses activity/creation time, not metadata updates.
                 // Separate the fixture's projects even when setup fits in one tick.
                 .execute("UPDATE sessions SET created_at=1,updated_at=1", [])

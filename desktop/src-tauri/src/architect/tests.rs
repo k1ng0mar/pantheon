@@ -751,7 +751,7 @@ fn collaboration_migration_refreshes_only_codex_team_catalogs_and_retains_privat
         }
         save(&store, &mut team).unwrap();
         store
-            .db
+            .db.lock().unwrap()
             .execute_batch("DROP TABLE architect_messages; PRAGMA user_version=15;")
             .unwrap();
     }
@@ -776,7 +776,7 @@ fn collaboration_migration_refreshes_only_codex_team_catalogs_and_retains_privat
     assert!(team.pending_turn.is_none());
     assert_eq!(
         store
-            .db
+            .db.lock().unwrap()
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
         crate::storage::SCHEMA_VERSION
