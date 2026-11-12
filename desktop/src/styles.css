@@ -402,6 +402,12 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 #terminal-host{height:calc(100% - 37px);padding:10px 13px 5px;color:var(--text);font-size:0.785714rem}
 .toast{position:fixed;bottom:45px;left:0;right:0;width:fit-content;margin:0 auto;display:flex;align-items:center;gap:10px;background:radial-gradient(120% 140% at 0% 50%,var(--glass-glow),transparent 60%),linear-gradient(160deg,var(--glass-warm),var(--glass-tint) 70%);border:1px solid var(--glass-edge);color:var(--text);font-size:0.857143rem;padding:11px 17px 11px 14px;border-radius:6px;box-shadow:0 0 0 1px var(--glass-ring),0 16px 44px -14px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near),inset 0 1px 0 var(--glass-highlight);backdrop-filter:blur(24px) saturate(1.5);-webkit-backdrop-filter:blur(24px) saturate(1.5);z-index:50;max-width:min(600px,90vw);animation:none;overflow-wrap:anywhere}
 .toast::before{content:"";width:7px;height:7px;flex-shrink:0;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .22)}
+/* Unhandled failures anchor to the top so they never collide with the bottom notification toast. */
+.error-toast{top:18px;bottom:auto;border-color:var(--danger);z-index:60}
+.error-toast::before{background:var(--danger);box-shadow:0 0 0 3px rgb(176 53 53 / .22)}
+.error-toast .toast-message{flex:1;min-width:0}
+.error-toast .toast-detail{color:var(--muted);font-size:.78rem}
+.error-toast .toast-retry{flex-shrink:0}
 /* The dialog is a transparent shell: .dialog-plate behind it carries the glass so
    menus positioned inside keep viewport coordinates (see motion.css). */
 /* Dialog chrome is slim: a one-line title row, an optional one-line note, then content. */
