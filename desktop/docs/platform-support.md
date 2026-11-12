@@ -1,7 +1,7 @@
 # Desktop platform support
 
-Pantheon is built for three targets. Each [GitHub Release](https://github.com/k1ng0mar/pantheon/releases)
-carries one installer per target, built by `.github/workflows/release.yml`
+Pantheon ships installers for six targets across three platforms. Each [GitHub Release](https://github.com/k1ng0mar/pantheon/releases)
+carries one installer per target, built by `.github/workflows/desktop-release.yml`
 (see [releasing](releasing.md)). Windows and Linux builds are still previews:
 CI builds them and checks that the packaged app starts, but interactive desktop
 validation is incomplete.
@@ -51,10 +51,10 @@ bootstrapper only if the runtime is missing, which requires internet access; it
 does not bundle a fixed WebView2 runtime. The integrated terminal uses ConPTY,
 which sets the Windows 10 version 1809 minimum.
 
-The Linux AppImage's GTK launch hook selects the X11 backend. A graphical X11
-session or XWayland within a Wayland desktop is required; native Wayland without
-XWayland is unsupported. Core GTK/WebKit libraries are bundled and do not require
-a separate manual install for the AppImage.
+The Linux AppImage bundles GTK and WebKitGTK but does not force a GTK backend.
+A graphical X11 session or XWayland within a Wayland desktop is required; native
+Wayland without XWayland is unsupported. The bundled libraries do not require a
+separate manual install for the AppImage.
 
 Mark the downloaded AppImage executable before opening it. Some distributions
 also require FUSE 2 (`libfuse2` on Ubuntu 22.04). Where FUSE is unavailable,
@@ -92,8 +92,8 @@ Wayland portal implementation.
 
 ## Validation
 
-CI (`.github/workflows/ci.yml`) typechecks, runs the unit tests, builds the
-website and runs `cargo check`, `cargo test --lib` and strict Clippy on Linux.
+CI (`.github/workflows/ci.yml`) typechecks the desktop, runs its unit tests, and
+runs `cargo test --lib` and strict Clippy on Linux.
 The release workflow builds each installer on its native runner and, on Windows
 and Linux, installs or launches the packaged app and checks that it stays alive
 for a fixed interval (`scripts/release/ci-startup-smoke.mjs`). Staying alive
