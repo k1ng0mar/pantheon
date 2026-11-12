@@ -49,7 +49,7 @@ jobs:
             runner: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No toolchain input: reads the pinned channel from
       # rust-toolchain.toml, same as the ci workflow.
@@ -149,7 +149,7 @@ jobs:
             "$tmp/pantheon" --help > /dev/null
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -163,7 +163,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -186,7 +186,7 @@ jobs:
             echo "::warning::This release is UNSIGNED (MINISIGN_SECRET_KEY is not provisioned). pantheon update refuses it; users must install by hand."
             echo 'status=**UNSIGNED** - no minisign signature is attached because the signing key is not provisioned. `pantheon update` refuses unsigned releases by design; install this release by hand (see docs/release-signing.md).' >> "$GITHUB_OUTPUT"
           fi
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true

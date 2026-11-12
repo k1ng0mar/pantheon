@@ -21,7 +21,7 @@ jobs:
     name: fmt, clippy, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # No toolchain input: the action reads the pinned channel from
       # rust-toolchain.toml, so CI and local fmt/clippy resolution can
       # never drift apart (the audit-F9 failure mode).
@@ -49,7 +49,7 @@ jobs:
     name: release build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Reads the pinned channel from rust-toolchain.toml, like the check
       # job. `@stable` here meant the release smoke test ran on a different
       # compiler than the artifacts actually ship with.
@@ -82,7 +82,7 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       - name: test the platform-branching crates
@@ -92,7 +92,7 @@ jobs:
     name: eval harness (real CLI)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       # The harness drives the real binary, so it needs a build. Debug is
@@ -112,13 +112,13 @@ jobs:
     name: desktop typecheck + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # `desktop/` is excluded from the Cargo workspace, and its own
       # `desktop/.github/workflows/ci.yml` is inert in this monorepo:
       # GitHub only reads the workflow directory at the repository root.
       # Without this job the desktop's TypeScript is never typechecked
       # and its 137 unit tests never run.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # Type stripping (needed: the tests import src/*.ts directly) is
           # on by default from Node 22.18; the tag resolves to latest 22.x.
@@ -146,9 +146,9 @@ jobs:
     env:
       RUSTFLAGS: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -177,7 +177,7 @@ jobs:
     name: installer smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: run installer against latest release
         env:
           PANTHEON_NO_INIT: "1"
