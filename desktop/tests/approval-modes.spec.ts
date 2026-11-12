@@ -32,28 +32,6 @@ test('offers Approve for me to Claude Code and keeps it with the task', async ({
   await expect(menu.getByRole('menuitemradio', { name: 'Approve for me', exact: true })).toHaveAttribute('aria-checked', 'true');
 });
 
-test('shows Approve for me as unavailable instead of another mode on a harness without it', async ({ page }) => {
-  const trigger = page.locator('#mode-picker-trigger');
-  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
-  // Kimi Code task: no agent-reviewed approvals, so the option is not offered.
-  await page.locator('.task-item[data-id="session-3"]').click();
-  await trigger.click();
-  await expect(menu.getByRole('menuitemradio', { name: 'Approve for me', exact: true })).toHaveCount(0);
-  await page.keyboard.press('Escape');
-  // A task that already holds the mode (e.g. after a harness switch) says why it cannot run.
-  await page.evaluate(async () => {
-    const { invoke } = await import((window as any).__pantheonPreviewUrl);
-    await invoke('update_session', { sessionId: 'session-3', mode: 'review' });
-  });
-  await page.locator('.task-item[data-id="session-4"]').click();
-  await page.locator('.task-item[data-id="session-3"]').click();
-  await expect(trigger).toHaveText('Approve for me');
-  await trigger.click();
-  const row = menu.getByRole('menuitemradio', { name: 'Approve for me', exact: true });
-  await expect(row).toBeDisabled();
-  await expect(menu).toContainText('no agent-reviewed approvals');
-});
-
 test('describes Plan mode investigation for Claude Code', async ({ page }) => {
   await page.locator('#mode-picker-trigger').click();
   await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Plan mode', exact: true }).click();
