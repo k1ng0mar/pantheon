@@ -194,7 +194,7 @@ test('identifies sample data and renders the desktop workspace without runtime e
   await expect(prompt(page)).toBeEnabled();
   await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('.change-row')).toHaveCount(3);
-  await page.screenshot({ path: '/private/tmp/pantheon-activity.png' });
+  await page.screenshot({ path: '/tmp/pantheon-activity.png' });
   expect(errors).toEqual([]);
 });
 
@@ -396,7 +396,7 @@ test('defaults to dark mode and remembers explicit light and dark preferences af
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(menu.getByRole('searchbox', { name: 'Search harnesses and models', exact: true })).toBeFocused();
-  await page.screenshot({ path: '/private/tmp/pantheon-dark-models.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-dark-models.png', animations: 'disabled' });
   await page.keyboard.press('Escape');
   await toggle.focus();
   await page.keyboard.press('Space');
@@ -451,7 +451,7 @@ test('loads full model names, searches names or IDs, and saves the harness invoc
   await expect(opus).toBeVisible();
   await search.fill('  OPUS  ');
   await expect(opus).toBeVisible();
-  await page.screenshot({ path: '/private/tmp/pantheon-model-names.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-model-names.png', animations: 'disabled' });
   await search.press('Enter');
   await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'opus' });
   await expect(trigger).toHaveText('Claude Opus 5');
@@ -483,7 +483,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   // The context window is shown under the composer, not in this menu.
   await expect(settings).not.toContainText(/context/i);
   await expect(modelPicker(page).getByRole('button', { name: 'Claude Code · Claude Opus 5', exact: true })).toContainText(/1M/i);
-  await page.screenshot({ path: '/private/tmp/pantheon-reasoning-settings.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-reasoning-settings.png', animations: 'disabled' });
   await page.setViewportSize({ width: 860, height: 600 });
   await expect(slider).toBeInViewport();
   const compactBounds = (await modelPicker(page).boundingBox())!;
@@ -492,7 +492,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   expect(compactBounds.x + compactBounds.width).toBeLessThanOrEqual(848);
   expect(compactBounds.y + compactBounds.height).toBeLessThanOrEqual(588);
   await expect(modelPicker(page)).toHaveAttribute('data-popover-state', 'open');
-  await page.screenshot({ path: '/private/tmp/pantheon-reasoning-compact.png', animations: 'allow' });
+  await page.screenshot({ path: '/tmp/pantheon-reasoning-compact.png', animations: 'allow' });
   await page.setViewportSize({ width: 1440, height: 940 });
   await expect(modelPicker(page)).toHaveCSS('max-height', '916px');
   // Resizing also repositions the anchored menu on an animation frame. Wait
@@ -532,7 +532,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   const particle = particles.nth(4);
   const position = await particle.evaluate(element => getComputedStyle(element).transform);
   await expect.poll(() => particle.evaluate(element => getComputedStyle(element).transform)).not.toBe(position);
-  await page.screenshot({ path: '/private/tmp/pantheon-effort-slider-dark.png', animations: 'allow' });
+  await page.screenshot({ path: '/tmp/pantheon-effort-slider-dark.png', animations: 'allow' });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await expect(particle).toHaveCSS('animation-name', 'none');
   await expect(particle).toHaveCSS('opacity', '0.55');
@@ -544,7 +544,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   await expect(slider).toHaveAttribute('aria-valuetext', 'High');
   await expect(modelPicker(page)).toHaveAttribute('data-popover-state', 'open');
   await expectColor(highColor);
-  await page.screenshot({ path: '/private/tmp/pantheon-effort-slider-light.png', animations: 'allow' });
+  await page.screenshot({ path: '/tmp/pantheon-effort-slider-light.png', animations: 'allow' });
   await slider.focus();
   await slider.press('ArrowUp');
   await expect(slider).toBeFocused();
@@ -979,7 +979,7 @@ test('changes terminal colors without replacing its session or the composer draf
   await page.getByRole('button', { name: 'Dark mode', exact: true }).click();
   await expect(viewport).toHaveCSS('background-color', 'rgb(25, 26, 24)');
   await expect(prompt(page)).toHaveValue('Keep this draft while changing appearance');
-  await page.screenshot({ path: '/private/tmp/pantheon-dark-terminal.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-dark-terminal.png', animations: 'disabled' });
   expect(await page.evaluate(() => {
     const nodes = (window as any).__themeNodes;
     return nodes[0] === document.querySelector('#prompt') && nodes[1] === document.querySelector('.xterm-screen');
@@ -1015,7 +1015,7 @@ test('synchronizes dark mode with native appearance without wallpapers and respe
   await projectFilter(page).click();
   const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
   await expect(menu).toHaveCSS('backdrop-filter', 'none');
-  await page.screenshot({ path: '/private/tmp/pantheon-dark-accessible.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-dark-accessible.png', animations: 'disabled' });
   await page.keyboard.press('Escape');
   const count = await page.evaluate(() => { (window as any).__disposeThemeAppearance(); return (window as any).__themeCalls.length; });
   await page.getByRole('button', { name: 'Dark mode', exact: true }).click();
@@ -1032,7 +1032,7 @@ test('chooses a project filter from its anchored menu using the keyboard', async
   await page.keyboard.press('ArrowDown');
   await expect(all).toBeFocused();
   await expect(all).toHaveAttribute('aria-checked', 'true');
-  await page.screenshot({ path: '/private/tmp/pantheon-filter-menu.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-filter-menu.png', animations: 'disabled' });
   await page.keyboard.press('End');
   await expect(menu.getByRole('menuitemradio', { name: 'pantheon', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
@@ -1179,7 +1179,7 @@ test('changes permissions and opens task actions with anchored keyboard menus', 
   await page.getByRole('button', { name: 'Standard', exact: true }).click();
   const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
   await expect(permissions.getByRole('menuitemradio', { name: 'Standard', exact: true })).toBeFocused();
-  await page.screenshot({ path: '/private/tmp/pantheon-permissions-menu.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-permissions-menu.png', animations: 'disabled' });
   await page.keyboard.press('ArrowDown');
   await expect(permissions.getByRole('menuitemradio', { name: 'Accept edits', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
@@ -1345,7 +1345,7 @@ test('chooses the default agent inside Settings without closing the Settings pag
   await trigger.click();
   const menu = page.getByRole('dialog', { name: 'Default agent', exact: true });
   await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
-  await page.screenshot({ path: '/private/tmp/pantheon-settings-menu.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-settings-menu.png', animations: 'disabled' });
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await expect(settings.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
@@ -1381,7 +1381,7 @@ test('keeps the Settings agent menu clickable at the minimum desktop window size
   await settings.getByRole('button', { name: 'Default agent for new tasks', exact: true }).click();
   const menu = page.getByRole('dialog', { name: 'Default agent', exact: true });
   await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
-  await page.screenshot({ path: '/private/tmp/pantheon-settings-menu-narrow.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-settings-menu-narrow.png', animations: 'disabled' });
   // The list scrolls at this height; every agent must be reachable once scrolled to.
   const hitTargets = await menu.getByRole('menuitemradio').evaluateAll(elements => elements.map(element => {
     element.scrollIntoView({ block: 'nearest' });
@@ -1580,7 +1580,7 @@ test('expands saved tool commands and file contents after reloading the conversa
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('Tests: 12 passed, 12 total');
   await expect(bash).toHaveAttribute('data-tool-status', 'completed');
   await bash.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: '/private/tmp/pantheon-tool-details.png' });
+  await page.screenshot({ path: '/tmp/pantheon-tool-details.png' });
   await page.reload();
   await expandToolTurn(bash);
   await bash.locator(':scope > summary').click();
@@ -1815,7 +1815,7 @@ test('collapses turn activity into one compact row while keeping the final answe
   expect(bounds.height).toBeGreaterThanOrEqual(24);
   expect(bounds.height).toBeLessThanOrEqual(44);
   expect((await turn.boundingBox())!.height).toBeLessThanOrEqual(52);
-  await page.screenshot({ path: '/private/tmp/pantheon-activity-collapsed.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-activity-collapsed.png', animations: 'disabled' });
   await summary.focus();
   await page.keyboard.press('Enter');
   await expect(turn).toHaveAttribute('open', '');
@@ -1823,7 +1823,7 @@ test('collapses turn activity into one compact row while keeping the final answe
   await expandToolTurn(toolByName(page, 'Read'));
   await expect(toolByName(page, 'Read').locator(':scope > summary')).toBeVisible();
   await expect(toolByName(page, 'Bash').locator(':scope > summary')).toBeVisible();
-  await page.screenshot({ path: '/private/tmp/pantheon-activity-expanded.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-activity-expanded.png', animations: 'disabled' });
   await summary.focus();
   await page.keyboard.press('Space');
   await expect(turn).not.toHaveAttribute('open', '');
@@ -2056,7 +2056,7 @@ test('shows reported context usage while running and keeps late usage from creat
   await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: 200000 } }]);
   await expect(indicator).toHaveText('24K / 200K context');
   await expect(indicator).toHaveAttribute('title', /24,000.*200,000/);
-  await page.screenshot({ path: '/private/tmp/pantheon-context-usage.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-context-usage.png', animations: 'disabled' });
   await emitStatusEvents(page, sessionId, [
     { kind: 'usage', text: '', data: { usedTokens: -10, contextWindow: 200000 } },
     { kind: 'usage', text: '', data: { usedTokens: 'fake', contextWindow: 200000 } },
@@ -2543,13 +2543,13 @@ test('opens a new conversation in the active project without listing it', async 
   expect(mainBounds.y + mainBounds.height - composerBounds.y - composerBounds.height).toBeGreaterThanOrEqual(0);
   expect(mainBounds.y + mainBounds.height - composerBounds.y - composerBounds.height).toBeLessThan(90);
   await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(2);
-  await page.screenshot({ path: '/private/tmp/pantheon-new-task.png' });
+  await page.screenshot({ path: '/tmp/pantheon-new-task.png' });
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.getByRole('button', { name: 'Claude Code · Default', exact: true })).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Codex · Default', exact: true })).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Kimi Code · Default', exact: true })).toBeVisible();
-  await page.screenshot({ path: '/private/tmp/pantheon-brand-picker.png' });
+  await page.screenshot({ path: '/tmp/pantheon-brand-picker.png' });
 });
 
 test('changes the empty task project while keeping its draft, harness, model, and identity', async ({ page }) => {
@@ -2607,7 +2607,7 @@ test('searches task projects by keyboard and cancels or reselects without changi
   const search = picker.getByRole('searchbox', { name: 'Search projects', exact: true });
   await expect(search).toBeFocused();
   await expect(picker.getByRole('option', { name: /^orbit — / })).toHaveAttribute('aria-selected', 'true');
-  await page.screenshot({ path: '/private/tmp/pantheon-project-picker.png' });
+  await page.screenshot({ path: '/tmp/pantheon-project-picker.png' });
   await search.fill('panda');
   await expect(picker.getByRole('option')).toHaveCount(1);
   await search.press('Escape');

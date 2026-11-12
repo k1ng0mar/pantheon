@@ -73,7 +73,7 @@ test.describe('thread order', () => {
     const after = await saved(page);
     const timestamps = (tasks: any[]) => tasks.map(task => [task.id, task.updatedAt, task.lastResponseAt, task.lastPromptAt]).sort((a, b) => a[0].localeCompare(b[0]));
     expect(timestamps(after)).toEqual(timestamps(before));
-    await page.screenshot({ path: `/private/tmp/pantheon-thread-pinned-${browserName}.png`, animations: 'disabled' });
+    await page.screenshot({ path: `/tmp/pantheon-thread-pinned-${browserName}.png`, animations: 'disabled' });
     await page.reload();
     await expect(group(page, 'pinned').locator('.task-item')).toHaveAttribute('data-id', 'session-2');
     await row(page, 'session-2').click();

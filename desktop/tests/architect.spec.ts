@@ -169,14 +169,14 @@ test.describe('architect teams', () => {
       await row(page, 'build').hover();
       await expect(row(page, 'build')).not.toHaveCSS('background-color', normalRow);
       await expect(row(page, 'build').locator('strong')).toBeVisible();
-      await page.screenshot({ path: `/private/tmp/pantheon-workers-frost-${browserName}-${theme}-${view}-list.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-workers-frost-${browserName}-${theme}-${view}-list.png`, animations: 'disabled' });
       await row(page, 'build').click();
       const detail = panel(page).locator('.architect-worker-message > div').first();
       await expect(detail).toContainText('Search is ready.');
       await expect(detail).toHaveCSS('filter', 'none'); await expect(detail).toHaveCSS('opacity', '1');
       expect(await workerSurface(panel(page))).toEqual(material);
       expect(await panel(page).evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-      await page.screenshot({ path: `/private/tmp/pantheon-workers-frost-${browserName}-${theme}-${view}-detail.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-workers-frost-${browserName}-${theme}-${view}-detail.png`, animations: 'disabled' });
       // Both accessibility preferences must remove translucency even while a detail is open.
       const preferences = browserName === 'chromium' ? ['prefers-contrast', 'prefers-reduced-transparency'] : ['prefers-contrast'];
       const cdp = browserName === 'chromium' ? await page.context().newCDPSession(page) : null;
@@ -300,7 +300,7 @@ test.describe('architect teams', () => {
     await row(page, 'review').click();
     await expect(reason).toHaveText('Waiting for Builder to finish editing shared files');
     await expect(reason).toHaveCSS('white-space', 'nowrap');
-    await page.screenshot({ path: `/private/tmp/pantheon-worker-queue-${browserName}.png`, animations: 'disabled' });
+    await page.screenshot({ path: `/tmp/pantheon-worker-queue-${browserName}.png`, animations: 'disabled' });
     snapshot.revision++; snapshot.workers[1].status = 'running'; snapshot.workers[1].readOnly = true;
     await publish(page, snapshot);
     await expect(reason).toBeHidden();
@@ -514,7 +514,7 @@ test.describe('architect teams', () => {
       await expect(transcript(page).locator('.turn-changes:visible')).toHaveCount(1);
       await expect(transcript(page).locator('.turn-changes:visible')).toContainText('README.md');
       await progress.scrollIntoViewIfNeeded();
-      await page.screenshot({ path: `/private/tmp/pantheon-team-progress-${view}.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-team-progress-${view}.png`, animations: 'disabled' });
       await page.evaluate(() => { (window as any).__progressNodes = { host: document.querySelector('.team-progress'), build: document.querySelector('.team-progress-worker[data-worker-id="build"]'), review: document.querySelector('.team-progress-worker[data-worker-id="review"]') }; });
       await publish(page, team('session-3', { workers: [worker('other', { name: 'Unrelated background task' })] }));
       await nextPaint(page);
@@ -673,7 +673,7 @@ test.describe('architect teams', () => {
       await expect(panel(page).locator('.architect-worker-empty')).not.toContainText('Loading');
       await expect(live(page)).not.toContainText('word25');
       await expect(page.locator('.task-item[data-id^="worker-"]')).toHaveCount(0);
-      await page.screenshot({ path: `/private/tmp/pantheon-architect-${view}-worker.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-architect-${view}-worker.png`, animations: 'disabled' });
     });
   }
 

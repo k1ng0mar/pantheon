@@ -134,7 +134,7 @@ test.describe('project board', () => {
     await expect(details(page).getByRole('button', { name: 'Start task', exact: true })).toBeEnabled();
     await expect.poll(async () => (await details(page).boundingBox())!.x).toBeGreaterThan(500);
     await expect.poll(async () => { const bounds = (await details(page).boundingBox())!; return bounds.x + bounds.width; }).toBeLessThanOrEqual(1441);
-    await page.screenshot({ path: '/private/tmp/pantheon-board-pending.png', animations: 'disabled' });
+    await page.screenshot({ path: '/tmp/pantheon-board-pending.png', animations: 'disabled' });
     await details(page).getByRole('button', { name: 'Close task details', exact: true }).click();
     await expect(details(page)).toBeHidden();
     await expect(card(page, task.title)).toBeVisible();
@@ -161,7 +161,7 @@ test.describe('project board', () => {
     await expect(details(page).locator('.agent-message').first()).toBeVisible();
     await expect(details(page)).toContainText('This is the browser preview.');
     await expect(details(page).getByRole('button', { name: 'Mark complete', exact: true })).toBeEnabled();
-    await page.screenshot({ path: '/private/tmp/pantheon-board-review.png', animations: 'disabled' });
+    await page.screenshot({ path: '/tmp/pantheon-board-review.png', animations: 'disabled' });
     await details(page).getByRole('button', { name: 'Mark complete', exact: true }).click();
     await expect(column(page, 'Completed').getByRole('button', { name: `Open task: ${title}`, exact: true })).toBeVisible();
     const completed = await savedTask(page, title);
@@ -319,7 +319,7 @@ test.describe('project board', () => {
     await expect.poll(async () => { const bounds = (await details(page).boundingBox())!; return bounds.x + bounds.width; }).toBeLessThanOrEqual(901);
     await expect(details(page).getByRole('button', { name: 'Start task', exact: true })).toBeVisible();
     await expect(details(page).getByRole('button', { name: 'Close task details', exact: true })).toBeVisible();
-    await page.screenshot({ path: '/private/tmp/pantheon-board-light-compact.png', animations: 'disabled' });
+    await page.screenshot({ path: '/tmp/pantheon-board-light-compact.png', animations: 'disabled' });
   });
 
   test('archives completed tasks after a week while retaining recent completions and pending tasks', async ({ page }) => {

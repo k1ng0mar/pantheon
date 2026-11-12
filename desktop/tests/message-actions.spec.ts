@@ -125,7 +125,7 @@ test('older history and forks preserve authors when the later harness switch is 
   const earlierReply = transcript(page).locator('[data-message-id="202"]');
   await expect(earlierReply.locator('pre code')).toContainText('Hello, world!');
   await earlierReply.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: '/private/tmp/pantheon-history-scroll.png', animations: 'disabled' });
+  await page.screenshot({ path: '/tmp/pantheon-history-scroll.png', animations: 'disabled' });
   await action(page,202,'fork').click();
   await selectedFork(page);
   const saved = transcript(page).locator('.agent-message').filter({hasText:'Saved Claude answer'});

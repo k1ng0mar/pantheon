@@ -214,11 +214,11 @@ test('saved history stays scoped and closing invalidates late async results', as
 for (const theme of ['dark','light']) test(`Jev assistance is readable in ${theme} and keyboard tabs fit narrow screens`, async ({page}) => {
   await setup(page); await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
   await open(page); await prepared(page); await finish(page);
-  await page.screenshot({path:`/private/tmp/pantheon-jev-assist-${theme}.png`});
+  await page.screenshot({path:`/tmp/pantheon-jev-assist-${theme}.png`});
   await page.setViewportSize({width:390,height:844});
   await page.getByRole('tab',{name:'Work review',exact:true}).focus(); await page.keyboard.press('End');
   await expect(page.getByRole('tab',{name:'Choose worker',exact:true})).toBeFocused();
   await expect(page.getByRole('tab',{name:'Choose worker',exact:true})).toHaveAttribute('aria-selected','true');
   expect(await page.locator('#dialog').evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
-  await page.screenshot({path:`/private/tmp/pantheon-jev-assist-${theme}-narrow.png`});
+  await page.screenshot({path:`/tmp/pantheon-jev-assist-${theme}-narrow.png`});
 });

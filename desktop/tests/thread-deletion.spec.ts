@@ -65,7 +65,7 @@ test.describe('task deletion', () => {
     await openDelete(page);
     await expect(confirmation(page)).toContainText(title);
     await expect(confirmation(page).getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
-    await page.screenshot({ path: `/private/tmp/pantheon-delete-task-${browserName}.png`, animations: 'disabled' });
+    await page.screenshot({ path: `/tmp/pantheon-delete-task-${browserName}.png`, animations: 'disabled' });
     await confirmation(page).getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(confirmation(page)).toBeHidden();
     expect(await calls(page, 'delete_session')).toEqual([]);
@@ -84,7 +84,7 @@ test.describe('task deletion', () => {
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(740);
     expect(await confirmation(page).evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
     await expect(confirmation(page).getByRole('button', { name: 'Delete task', exact: true })).toBeVisible();
-    await page.screenshot({ path: `/private/tmp/pantheon-delete-task-${browserName}-140pct.png`, animations: 'disabled' });
+    await page.screenshot({ path: `/tmp/pantheon-delete-task-${browserName}-140pct.png`, animations: 'disabled' });
     await confirmation(page).getByRole('button', { name: 'Cancel', exact: true }).click();
     expect(await calls(page, 'delete_session')).toEqual([]);
   });

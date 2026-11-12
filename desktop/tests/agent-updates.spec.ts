@@ -168,7 +168,7 @@ test.describe('Agent updates', () => {
       expect(await surface.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
     };
     await check(popup(page));
-    await page.screenshot({path:`/private/tmp/pantheon-agent-updates-${testInfo.project.name || testInfo.project.use.browserName || 'chrome'}.png`, animations:'disabled'});
+    await page.screenshot({path:`/tmp/pantheon-agent-updates-${testInfo.project.name || testInfo.project.use.browserName || 'chrome'}.png`, animations:'disabled'});
     await popup(page).getByRole('button', {name:'Later',exact:true}).click();
     await manual(page); await check(dialog(page));
   });

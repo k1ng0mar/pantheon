@@ -129,13 +129,13 @@ test.describe('subagents', () => {
       await row(page, 'reader').hover();
       await expect(row(page, 'reader')).not.toHaveCSS('background-color', normalRow);
       await expect(row(page, 'reader').locator('strong')).toBeVisible();
-      await page.screenshot({ path: `/private/tmp/pantheon-subagents-frost-${browserName}-${theme}-${view}-list.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-subagents-frost-${browserName}-${theme}-${view}-list.png`, animations: 'disabled' });
       await row(page, 'reader').click();
       await expect(response(page)).toContainText('Search is ready.');
       await expect(response(page)).toHaveCSS('filter', 'none'); await expect(response(page)).toHaveCSS('opacity', '1');
       expect(await subagentSurface(panel(page))).toEqual(material);
       expect(await panel(page).evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
-      await page.screenshot({ path: `/private/tmp/pantheon-subagents-frost-${browserName}-${theme}-${view}-detail.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-subagents-frost-${browserName}-${theme}-${view}-detail.png`, animations: 'disabled' });
       const preferences = browserName === 'chromium' ? ['prefers-contrast', 'prefers-reduced-transparency'] : ['prefers-contrast'];
       const cdp = browserName === 'chromium' ? await page.context().newCDPSession(page) : null;
       for (const name of preferences) {
@@ -215,7 +215,7 @@ test.describe('subagents', () => {
       await expect(trigger(page)).toContainText('3 running');
       await expect(row(page, 'tests')).toContainText('Test runner');
       await expect(row(page, 'tests')).toContainText('Reader');
-      await page.screenshot({ path: `/private/tmp/pantheon-subagents-${view}-list.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-subagents-${view}-list.png`, animations: 'disabled' });
       await row(page, 'reader').click();
       await expect(panel(page).locator('.subagent-detail-name')).toHaveText('Reader');
       await expect(panel(page)).toContainText('Work assigned to Reader.');
@@ -230,7 +230,7 @@ test.describe('subagents', () => {
       await panel(page).locator('.subagent-tools details.tool-activity > summary').click();
       await expect(panel(page).locator('.subagent-tools')).toContainText('src/search.ts');
       await expect(panel(page).locator('.subagent-tools')).toContainText('const index = buildIndex(items);');
-      await page.screenshot({ path: `/private/tmp/pantheon-subagents-${view}-detail.png`, animations: 'disabled' });
+      await page.screenshot({ path: `/tmp/pantheon-subagents-${view}-detail.png`, animations: 'disabled' });
       await upsert(page, [child('reader', 'Reader', { status: 'completed', response: 'Index reuse fixed.', updatedAt: 1_800_000_000_003 })]);
       await expect(trigger(page)).toContainText('2 running');
       await expect(response(page)).toHaveText('Index reuse fixed.');
@@ -529,6 +529,6 @@ test.describe('subagents', () => {
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(921);
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(701);
     expect(await panel(page).evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-    await page.screenshot({ path: '/private/tmp/pantheon-subagents-light.png', animations: 'disabled' });
+    await page.screenshot({ path: '/tmp/pantheon-subagents-light.png', animations: 'disabled' });
   });
 });
