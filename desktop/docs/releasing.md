@@ -62,7 +62,7 @@ readable, so automatic updates start working once the repository is public.
 
 ## SBOMs and scan coverage
 
-The `sbom` job in `release.yml` runs after the builds and attaches these to the
+The `sbom` job in `desktop-release.yml` runs after the builds and attaches these to the
 release (it never blocks publishing; a failed job just means they are missing):
 
 - `<asset>.cdx.json`: a CycloneDX SBOM that syft generates from each installer
@@ -76,8 +76,10 @@ release (it never blocks publishing; a failed job just means they are missing):
 
 An inventory that errors or finds no components is listed as **incomplete** and its scan
 as `not-scanned`; it is never reported as clean. Compressed installers often end up
-incomplete, which is why the lockfile SBOMs are published beside them. The WebView and
-other operating-system libraries are supplied by the host, not bundled, and not scanned.
+incomplete, which is why the lockfile SBOMs are published beside them. On macOS and
+Windows the WebView is supplied by the system or downloaded by the installer, so it is
+not scanned. The Linux AppImage bundles GTK and WebKitGTK, so they are inside the image
+syft scans.
 The same summary appears on the workflow run page. Findings are reported, not gating;
 record any reviewed exception (scope, reason, owner, expiry) in the release notes.
 
@@ -91,7 +93,7 @@ commit SHA; keep it that way. Run the helper's tests with `npm run test:release`
 `packages/npx` is the `pantheon` npm package: it downloads the latest release asset
 (the updater file and its `.sig`), verifies the signature against the public key in
 `tauri.conf.json` and installs it; on macOS it then runs the app with `--local-sign`.
-The `npm` job in `release.yml` publishes it on tag runs with the release version, using
+The `npm` job in `desktop-release.yml` publishes it on tag runs with the release version, using
 the repository secret `NPM_TOKEN` (an npm automation token); without it the job warns
 and skips. If the update key is ever rotated, update `PUBKEY` in
 `packages/npx/installer.mjs` (a test compares it with `tauri.conf.json`).

@@ -44,7 +44,7 @@ Release values reach the scripts only through environment variables, never inlin
 request.
 
 The cask and formula name the release assets, so renaming a macOS or Linux asset in
-`release.yml` breaks the tap until it is updated as well.
+`desktop-release.yml` breaks the tap until it is updated as well.
 
 ## Credits
 
