@@ -19,6 +19,7 @@ mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
 mod design;
+mod error_report;
 mod file_preview;
 mod github;
 mod github_hub;
@@ -3733,6 +3734,7 @@ pub fn run() {
             }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            error_report::install(app.handle(), &dir);
             secret_store::setup(&dir);
             provider_settings::setup(&dir).map_err(std::io::Error::other)?;
             connections::setup(&dir).map_err(std::io::Error::other)?;
@@ -3800,7 +3802,7 @@ pub fn run() {
                         Ok(count) if count > 0 => {
                             let _ = handle.emit("sessions-changed", ());
                         }
-                        Err(error) => eprintln!("Completed task archive failed: {error}"),
+                        Err(error) => error_report::record("archive", format!("Completed task archive failed: {error}"), "lib.rs: archive loop"),
                         _ => {}
                     }
                 }
