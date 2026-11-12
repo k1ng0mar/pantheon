@@ -64,14 +64,28 @@ The frontend is intentionally framework-free. Each feature lives in its own
 ```sh
 npm test                     # frontend unit tests (node --test)
 npm run test:rust            # Tauri Rust tests
-npx playwright test          # E2E (requires a running dev server)
+npx playwright test          # full E2E suite; starts Vite itself
+npx playwright test --config playwright.ci.config.ts   # the CI subset
 ```
+
+Playwright runs against `npm run dev` (preview mode, mock data). On a small
+machine set `PW_WORKERS=1`; the default of 4 oversubscribes a 4-vCPU host and
+the clock-driven specs time out.
+
+CI runs the subset in `playwright.ci.config.ts`, not the full suite. The full
+suite has 74 spec files; 32 of them assert a provider list, a settings shape,
+or UI text from before the rebrand and fail deterministically against the
+current app. They are excluded from CI, not deleted, and
+`docs/developer/ci.md` lists each one with its cause. Repair a spec by
+updating its expectations to the app as it is now, then remove it from
+`testIgnore`.
 
 ## Commits and PRs
 
-- Conventional-ish subjects: `fix:`, `feat:`, `refactor:`, `docs:`, `chore:`.
+- Lowercase subject, no type prefix: `fix the overlay focus trap`.
 - One logical change per commit. Squash before merge.
-- PRs against `main`. CI runs tests and `tsc --noEmit`.
+- PRs against `master`. CI runs the unit tests, `tsc --noEmit`, the Rust
+  tests, clippy, and the reliable Playwright subset.
 
 ## License
 

@@ -173,6 +173,36 @@ jobs:
       - if: ${{ !cancelled() }}
         run: cargo clippy --locked --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 
+  desktop-ui:
+    name: desktop ui tests
+    runs-on: ubuntu-22.04
+    # One worker is the only setting this suite is green at: at two workers the
+    # heavy specs (concurrency, turn-changes, jev-live) lose races to scheduler
+    # latency. That makes the job slow, so the timeout is generous.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+        working-directory: desktop
+      # The Playwright webServer starts `npm run dev` itself, so no frontend
+      # build is needed here. Chromium and its OS libraries are not on the
+      # runner by default.
+      - name: install chromium
+        working-directory: desktop
+        run: npx playwright install --with-deps chromium
+      # Runs the reliable subset; playwright.ci.config.ts names the specs that
+      # are excluded and why. See docs/developer/ci.md.
+      - name: run the reliable ui subset
+        working-directory: desktop
+        env:
+          PW_WORKERS: 1
+        run: npx playwright test --config playwright.ci.config.ts
+
   install-smoke:
     name: installer smoke
     runs-on: ubuntu-latest
