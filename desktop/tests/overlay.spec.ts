@@ -1,4 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
+import { tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
+// Screenshot evidence lands in a writable temp dir; /private is macOS-only.
+const shot = (name: string): string => { const dir = tmpdir() + '/pantheon-overlay'; mkdirSync(dir, { recursive: true }); return dir + '/' + name; };
+// Clock-driven specs pile up virtual time fast; slow hosts need headroom.
+test.setTimeout(60_000);
 
 test('launcher preserves saved harness authors and renders handoffs beside the current live provider', async ({page}) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
@@ -46,7 +52,7 @@ test('overlay copies live Markdown and forks a saved message without opening the
   await expect(response).toBeHidden();
   expect(await page.evaluate(() => (window as any).__overlayCalls.filter((call:any) => call.command === 'fork_session_at_message').map((call:any) => call.args))).toEqual([{sessionId:'preview-active',messageId:1}]);
   expect(await page.evaluate(() => (window as any).__overlayCalls.some((call:any) => call.command === 'overlay_open_task'))).toBe(false);
-  await page.screenshot({path:'/private/tmp/pantheon-overlay-message-fork.png'});
+  await page.screenshot({path: shot('pantheon-overlay-message-fork.png')});
   await page.getByRole('button',{name:'Back to active agents'}).click();
   await expect(page.locator('.launcher-task')).toHaveCount(4);
   await page.locator('.launcher-task[data-task="preview-active"]').click();
@@ -106,7 +112,7 @@ test('launcher shows saved team models beside its architect and preserves the co
   await expect(suffix).toHaveText('+2 models');
   await page.clock.runFor(1600);
   await expect(trigger).toHaveAttribute('title','Codex · GPT-5.6-Sol +2 models');
-  await page.screenshot({path:'/private/tmp/pantheon-overlay-team-models.png'});
+  await page.screenshot({path: shot('pantheon-overlay-team-models.png')});
   await page.evaluate(() => { (window as any).__teamWorkerCount = 1; });
   await page.clock.runFor(1600);
   await expect(suffix).toHaveText('+1 model');
@@ -364,7 +370,7 @@ test('launcher model picker fits the minimum window and Escape only closes the p
   await expect(glm.locator('.provider-logo')).toHaveCount(1);
   await expect(picker).toHaveAttribute('data-popover-state','open');
   await expect(picker).toHaveCSS('opacity','1');
-  await page.screenshot({path:'/private/tmp/pantheon-overlay-check/model-picker.png'});
+  await page.screenshot({path: shot('model-picker.png')});
   await page.keyboard.press('Escape');
   await expect(picker).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -538,7 +544,7 @@ test('launcher keeps live narratives between compact tool groups and preserves l
   await expect(groups.nth(1)).toHaveJSProperty('open',false);
   await expect(firstTool.locator('[data-tool-section="output"]')).toContainText('The launcher inspection is complete.');
   expect(await sequence()).toEqual([originalSequence[0], 'Read 2 files', originalSequence[2], originalSequence[3]]);
-  await page.screenshot({path:'/private/tmp/pantheon-overlay-chronological-tools.png'});
+  await page.screenshot({path: shot('pantheon-overlay-chronological-tools.png')});
   await page.evaluate(() => {
     const fixture = (window as any).__chronologicalThread;
     fixture.status = 'completed'; fixture.version++;
@@ -956,7 +962,7 @@ test('launcher fits small windows and keeps task controls accessible', async ({p
   await expect(lastRow).toBeFocused(); await expect(lastRow).toBeInViewport();
   await page.keyboard.press('Home');
   await expect(page.locator('.launcher-task').first()).toBeFocused();
-  await page.screenshot({path:'/private/tmp/pantheon-overlay-check/launcher.png'});
+  await page.screenshot({path: shot('launcher.png')});
 });
 
 test('launcher thread stays readable and scrollable at minimum window size', async ({page}) => {
@@ -977,5 +983,5 @@ test('launcher thread stays readable and scrollable at minimum window size', asy
   expect(await scroll.evaluate(element => element.scrollHeight > element.clientHeight && element.clientHeight > 100)).toBe(true);
   await scroll.evaluate(element => { element.scrollTop=element.scrollHeight; });
   expect(await scroll.evaluate(element => element.scrollTop > 0)).toBe(true);
-  await page.screenshot({path:'/private/tmp/pantheon-overlay-check/thread.png'});
+  await page.screenshot({path: shot('thread.png')});
 });
