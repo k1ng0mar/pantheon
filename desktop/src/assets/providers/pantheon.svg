@@ -1,4 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#7223ff"/>
-  <path d="M150 120h118c62 0 108 40 108 100s-46 100-108 100h-50v72h-68V120zm68 64v74h44c26 0 44-15 44-37s-18-37-44-37h-44z" fill="#0b0d13"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500"><defs><linearGradient id="pantheon" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7223FF"/><stop offset=".45" stop-color="#4B00CD"/><stop offset="1" stop-color="#0C0046"/></linearGradient></defs><g fill="url(#pantheon)"><polygon points="250,85 370,145 370,167 250,107 130,167 130,145"/><polygon points="250,125 356,178 356,200 250,147 144,200 144,178"/><polygon points="158,212 198,212 198,322 158,302 146,312 158,298"/><path fill-rule="evenodd" d="M250 165 L292 186 L292 270 L248 292 L248 335 L230 358 L208 335 L208 186 Z M250 187 L272 198 L272 248 L250 259 L228 259 L228 198 Z"/><polygon points="302,212 342,212 342,298 354,312 342,302 302,322"/></g></svg>
