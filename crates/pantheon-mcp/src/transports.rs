@@ -150,6 +150,8 @@ pub mod client {
     pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Default cap on a single framed message, both directions.
+    /// Messages buffered between the stdio reader thread and the client.
+    const MESSAGE_QUEUE_DEPTH: usize = 256;
     pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 
     /// How to spawn one MCP server.
@@ -471,7 +473,11 @@ pub mod client {
                 });
             }
 
-            let (tx, rx) = mpsc::channel();
+            // Bounded: a server that floods notifications faster than the
+            // client drains them now blocks on its own stdout pipe instead
+            // of growing this queue without limit (each message is capped
+            // at `max_message_bytes`, the queue was not; audit SEC-15).
+            let (tx, rx) = mpsc::sync_channel(MESSAGE_QUEUE_DEPTH);
             let max_bytes = config.max_message_bytes;
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stdout);

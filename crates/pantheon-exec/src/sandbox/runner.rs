@@ -116,8 +116,14 @@ fn scrub_child_env(cmd: &mut Command) {
 ///
 /// What it builds, inside a fresh user+mount (+optional net) namespace:
 /// - every inherited mount remounted read-only; a mount that refuses
-///   the remount is hidden under a fresh empty tmpfs instead (fail
-///   safe: read-only or invisible, never left writable);
+///   the remount is hidden under a fresh empty tmpfs instead, and a
+///   mount that refuses both aborts the spawn (exit 126). Before, both
+///   failures were swallowed with `|| true`, the root remount and the
+///   sandbox-root mount were unchecked, and nothing verified the result,
+///   so a mount could stay writable while the run reported isolation
+///   (audit SEC-11). The final table is now checked before exec;
+///   pseudo filesystems under /proc, /dev and /sys are left alone, and
+///   octal-escaped mount points (`\040` for a space) are decoded;
 /// - a private tmpfs sandbox root (`/tmp/<name>`, 256MiB, mode 0700)
 ///   the only host-invisible writable spot besides the private `/tmp`
 ///   and `/dev/shm` (bwrap-equivalent scratch semantics);
@@ -137,19 +143,40 @@ fn scrub_child_env(cmd: &mut Command) {
 /// are unavailable the wrapper probe fails and the runner fails closed.
 #[cfg(unix)]
 const UNSHARE_SETUP_SCRIPT: &str = r#"SB="$1"; HOSTCWD="$2"; PROG="$3"; shift 3
-mount --make-rprivate /
-while read -r _dev mp _rest; do
+fail() { echo "pantheon sandbox: $*; refusing to run" >&2; exit 126; }
+mount --make-rprivate / || fail "cannot make mounts private"
+while read -r _dev mp _fs opts _rest; do
+  mp=$(printf '%b' "$mp")
   case "$mp" in
-    /proc|/dev|/sys) ;;
-    *) mount -o remount,ro,bind "$mp" "$mp" 2>/dev/null || mount -t tmpfs tmpfs "$mp" 2>/dev/null || true ;;
+    /proc|/proc/*|/dev|/dev/*|/sys|/sys/*) continue ;;
   esac
+  # Flags locked by the parent namespace must be kept on the remount, or
+  # the kernel refuses it (EPERM): nosuid/nodev/noexec and atime flags.
+  keep=""
+  for f in nosuid nodev noexec noatime nodiratime relatime strictatime; do
+    case ",$opts," in *,$f,*) keep="$keep,$f" ;; esac
+  done
+  mount -o "remount,ro,bind$keep" "$mp" "$mp" 2>/dev/null && continue
+  mount -t tmpfs -o ro tmpfs "$mp" 2>/dev/null && continue
+  # A mount this namespace cannot even stat (another user's FUSE mount
+  # without allow_other) is unreachable for reads and writes alike.
+  stat "$mp" >/dev/null 2>&1 || continue
+  fail "cannot make $mp read-only"
 done < /proc/self/mounts
-mount -o remount,ro,bind / /
-mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mount -o remount,ro,bind / / 2>/dev/null || fail "cannot make / read-only"
+mount -t tmpfs tmpfs /tmp || fail "cannot mount a private /tmp"
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 ROOT="/tmp/$SB"
-mkdir -p "$ROOT"
-mount -t tmpfs -o size=256m,mode=0700 tmpfs "$ROOT"
+mkdir -p "$ROOT" || fail "cannot create the sandbox root"
+mount -t tmpfs -o size=256m,mode=0700 tmpfs "$ROOT" || fail "cannot mount the sandbox root"
+while read -r _dev mp fs opts _rest; do
+  mp=$(printf '%b' "$mp")
+  case "$mp" in /proc|/proc/*|/dev|/dev/*|/sys|/sys/*|/tmp|/tmp/*) continue ;; esac
+  case ",$opts," in *,ro,*) continue ;; esac
+  [ "$fs" = tmpfs ] && continue
+  stat "$mp" >/dev/null 2>&1 || continue
+  fail "$mp is still writable"
+done < /proc/self/mounts
 export TMPDIR="$ROOT" TEMP="$ROOT" TMP="$ROOT"
 mount -t proc proc /proc 2>/dev/null || true
 cd "$HOSTCWD" 2>/dev/null || cd "$ROOT"
@@ -181,6 +208,28 @@ pub fn build_sandboxed(
     args: &[&str],
     cwd: &str,
 ) -> Command {
+    // VeryHigh's seccomp program, staged for bwrap's `--seccomp FD`
+    // (applied to the payload, not the wrapper). When it is wanted and
+    // cannot be staged, the strict boundary builds unwrapped, so the
+    // checked builder fails closed with SANDBOX_UNAVAILABLE.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let seccomp_fd = if profile.seccomp
+        && matches!(profile.boundary, super::ExecutionBoundary::StrictNamespaces)
+    {
+        match stage_seccomp_fd() {
+            Ok(fd) => Some(fd),
+            Err(e) => {
+                eprintln!("pantheon: seccomp filter unavailable: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let seccomp_ready = !profile.seccomp || seccomp_fd.is_some();
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    let seccomp_ready = !profile.seccomp;
     #[allow(unused_mut)] // non-unix has no rlimits to attach
     let mut cmd = match profile.boundary {
         super::ExecutionBoundary::InProcess => {
@@ -234,8 +283,13 @@ pub fn build_sandboxed(
 
         super::ExecutionBoundary::Container => {
             // bwrap: the strongest general-purpose sandbox this runner
-            // offers. --unshare-user-try attempts a user namespace (so no caps survive),
-            // falling back gracefully if user namespaces are not available.
+            // offers. --unshare-user is REQUIRED, not best-effort: the
+            // old --unshare-user-try silently stayed in the host user
+            // namespace when one could not be created, and a root caller
+            // then ran the payload with a full capability set (audit
+            // SEC-10). A host that cannot create a user namespace fails
+            // the probe and the boundary fails closed. --cap-drop ALL
+            // empties the set explicitly for privileged callers.
             // --unshare-pid + --unshare-cgroup limit process creation.
             if let Some(bwrap) = find_binary("bwrap") {
                 let mut cmd = Command::new(bwrap);
@@ -250,12 +304,15 @@ pub fn build_sandboxed(
                 cmd.arg("--tmpfs").arg("/tmp");
                 cmd.arg("--tmpfs").arg("/var/tmp");
 
+                push_hidden_masks(&mut cmd, profile, cwd);
+
                 for writable in &profile.writable_paths {
                     cmd.arg("--bind").arg(writable).arg(writable);
                 }
 
                 if profile.drop_capabilities {
-                    cmd.arg("--unshare-user-try");
+                    cmd.arg("--unshare-user");
+                    cmd.arg("--cap-drop").arg("ALL");
                     cmd.arg("--unshare-pid");
                     cmd.arg("--unshare-cgroup");
                     cmd.arg("--unshare-uts");
@@ -293,10 +350,15 @@ pub fn build_sandboxed(
             // Without bwrap the command builds unwrapped, and
             // `run_sandboxed` fails closed (SANDBOX_UNAVAILABLE) unless
             // the direct fallback is explicitly opted in.
-            if let Some(bwrap) = find_binary("bwrap") {
+            if let Some(bwrap) = find_binary("bwrap").filter(|_| seccomp_ready) {
                 let mut cmd = Command::new(bwrap);
+                // --unshare-all only TRIES the user namespace; the
+                // explicit --unshare-user makes it mandatory.
                 cmd.arg("--die-with-parent")
                     .arg("--unshare-all")
+                    .arg("--unshare-user")
+                    .arg("--cap-drop")
+                    .arg("ALL")
                     .arg("--ro-bind")
                     .arg("/")
                     .arg("/")
@@ -306,8 +368,18 @@ pub fn build_sandboxed(
                     .arg("/proc")
                     .arg("--tmpfs")
                     .arg("/tmp");
+                push_hidden_masks(&mut cmd, profile, cwd);
                 for writable in &profile.writable_paths {
                     cmd.arg("--bind").arg(writable).arg(writable);
+                }
+                // Seccomp goes INSIDE the sandbox: bwrap loads the BPF
+                // program from an fd and applies it to the payload after
+                // its own setup. Installing the filter in the wrapper's
+                // pre_exec (the old path) denied the mount/pivot_root/
+                // unshare calls bwrap itself needs (audit COR-02).
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                if let Some(fd) = seccomp_fd {
+                    attach_seccomp_fd(&mut cmd, fd);
                 }
                 cmd.arg("--chdir").arg(cwd).arg("--").arg(program);
                 cmd.args(args);
@@ -337,6 +409,38 @@ pub fn build_sandboxed(
     cmd
 }
 
+/// The `SANDBOX_UNAVAILABLE` detail: what was unavailable, what to set to
+/// opt in, and - when the kernel refused the user namespace - the Ubuntu
+/// AppArmor restriction that causes it. Split from
+/// [`build_sandboxed_checked`] so the wording is testable.
+fn sandbox_unavailable_msg(boundary: &super::ExecutionBoundary, failure: Option<&str>) -> String {
+    let mut detail = format!(
+        "sandbox wrapper for {boundary:?} boundary unavailable and direct fallback \
+         not opted in (set PANTHEON_SANDBOX_FALLBACK=allow or \
+         allow_direct_fallback); refusing to run unsandboxed"
+    );
+    match failure {
+        Some(reason) if userns_blocked(reason) => {
+            // The single most common cause on a current Ubuntu desktop:
+            // AppArmor refuses the unprivileged user namespace, so bwrap
+            // cannot build the boundary at all.
+            detail.push_str(
+                "; the kernel refused the user namespace, which on Ubuntu is \
+                 kernel.apparmor_restrict_unprivileged_userns=1 (AppArmor blocks \
+                 unprivileged user namespaces). Allow it (sudo sysctl \
+                 kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor \
+                 profile), or set PANTHEON_SANDBOX_FALLBACK=allow to accept the \
+                 unisolated run",
+            );
+        }
+        Some(reason) if !reason.trim().is_empty() => {
+            detail.push_str(&format!(": {}", reason.trim()));
+        }
+        _ => {}
+    }
+    detail
+}
+
 /// Build a sandboxed command and enforce the fail-closed contract.
 ///
 /// [`build_sandboxed`] is best-effort by construction: when the boundary's
@@ -363,11 +467,9 @@ pub fn build_sandboxed_checked(
         if !direct_fallback_allowed(profile) {
             return Err(berr(
                 "SANDBOX_UNAVAILABLE",
-                format!(
-                    "sandbox wrapper for {:?} boundary unavailable and direct fallback \
-                     not opted in (set PANTHEON_SANDBOX_FALLBACK=allow or \
-                     allow_direct_fallback); refusing to run unsandboxed",
-                    profile.boundary
+                sandbox_unavailable_msg(
+                    &profile.boundary,
+                    wrapper_failure_reason(profile, cwd).as_deref(),
                 ),
                 false,
             ));
@@ -396,6 +498,106 @@ pub fn build_sandboxed_checked(
         return Ok((cmd, false));
     }
     Ok((builder, sandboxed))
+}
+
+/// Mask the profile's `hidden_paths` inside a bwrap boundary, after the
+/// read-only root bind: an existing directory gets an empty tmpfs, an
+/// existing file (or socket, symlink target...) is replaced by
+/// `/dev/null`. Absent paths are skipped (bwrap cannot mount over
+/// nothing, and there is nothing to read). When the command's `cwd` lies
+/// under a masked directory it is bound back read-only so `--chdir`
+/// still works; writable binds come after this and re-expose their own
+/// paths. Paths are canonicalized so a symlinked `~/.ssh` masks its real
+/// target.
+fn push_hidden_masks(cmd: &mut Command, profile: &SandboxProfile, cwd: &str) {
+    let mut masked_dirs: Vec<std::path::PathBuf> = Vec::new();
+    for hidden in &profile.hidden_paths {
+        let path = std::path::Path::new(hidden);
+        let Ok(real) = std::fs::canonicalize(path) else {
+            continue;
+        };
+        if real == std::path::Path::new("/") {
+            continue;
+        }
+        if real.is_dir() {
+            if masked_dirs.iter().any(|d| real.starts_with(d)) {
+                continue;
+            }
+            cmd.arg("--tmpfs").arg(&real);
+            masked_dirs.push(real);
+        } else {
+            cmd.arg("--ro-bind").arg("/dev/null").arg(&real);
+        }
+    }
+    let cwd_real = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.into());
+    let writable = profile
+        .writable_paths
+        .iter()
+        .any(|w| cwd_real.starts_with(std::fs::canonicalize(w).unwrap_or_else(|_| w.into())));
+    if !writable && masked_dirs.iter().any(|d| cwd_real.starts_with(d)) {
+        cmd.arg("--ro-bind").arg(&cwd_real).arg(&cwd_real);
+        // Secret files directly in a re-exposed tree stay hidden.
+        for hidden in &profile.hidden_paths {
+            if let Ok(real) = std::fs::canonicalize(hidden) {
+                if real.starts_with(&cwd_real) && real != cwd_real {
+                    if real.is_dir() {
+                        cmd.arg("--tmpfs").arg(&real);
+                    } else {
+                        cmd.arg("--ro-bind").arg("/dev/null").arg(&real);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compile the VeryHigh seccomp program and stage it in a sealed-size
+/// memfd (offset 0) for bwrap's `--seccomp FD`. The fd is CLOEXEC in the
+/// parent; [`attach_seccomp_fd`] clears that only in the child.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn stage_seccomp_fd() -> Result<std::os::fd::OwnedFd, String> {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::fd::FromRawFd;
+    let program = super::kernel::compile_seccomp()?;
+    let mut bytes = Vec::with_capacity(program.len() * 8);
+    for ins in &program {
+        bytes.extend_from_slice(&ins.code.to_ne_bytes());
+        bytes.push(ins.jt);
+        bytes.push(ins.jf);
+        bytes.extend_from_slice(&ins.k.to_ne_bytes());
+    }
+    // SAFETY: memfd_create with a static NUL-terminated name; the
+    // returned fd is owned exactly once by the File below.
+    let raw = unsafe { libc::memfd_create(c"pantheon-seccomp".as_ptr(), libc::MFD_CLOEXEC) };
+    if raw < 0 {
+        return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
+    file.write_all(&bytes)
+        .and_then(|_| file.seek(SeekFrom::Start(0)).map(|_| ()))
+        .map_err(|e| format!("staging seccomp program: {e}"))?;
+    Ok(file.into())
+}
+
+/// Pass a staged seccomp fd to bwrap. The `pre_exec` closure owns the fd,
+/// so the parent's copy closes when the `Command` is dropped; in the
+/// forked child it only clears CLOEXEC so bwrap inherits it.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn attach_seccomp_fd(cmd: &mut Command, fd: std::os::fd::OwnedFd) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let raw = fd.as_raw_fd();
+    cmd.arg("--seccomp").arg(raw.to_string());
+    // SAFETY: fcntl on an fd we own is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(move || {
+            let _keep = &fd;
+            if libc::fcntl(raw, libc::F_SETFD, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// Child-side setup, issued in the forked child just before exec (via
@@ -437,12 +639,26 @@ pub fn build_sandboxed_checked(
 fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     use std::os::unix::process::CommandExt;
 
+    // When bwrap wraps the payload, the kernel layers must not land on
+    // bwrap itself: seccomp denies the mount/pivot_root/unshare calls it
+    // needs, and Landlock makes it fail ("Failed to make / slave"), so
+    // VeryHigh never ran (audit COR-02). Under bwrap, seccomp is applied
+    // to the payload via `--seccomp FD` (see `build_sandboxed`), and
+    // Landlock is redundant: the mount namespace already makes the whole
+    // tree read-only except the profile's writable binds, which is
+    // stricter than the Landlock ruleset (that one also opens the cwd).
+    // Both layers still apply to direct spawns (the opted-in fallback),
+    // which have no mount namespace.
+    let wrapped_by_bwrap = std::path::Path::new(cmd.get_program())
+        .file_name()
+        .is_some_and(|n| n == "bwrap");
+
     // Compile the kernel-layer programs in the PARENT. `pre_exec` runs
     // after fork, where only async-signal-safe calls are permitted: no
     // allocation, no locks. Compiling here means the child's closure only
     // makes the two syscalls.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let seccomp_program = if profile.seccomp {
+    let seccomp_program = if profile.seccomp && !wrapped_by_bwrap {
         // A profile that asks for seccomp and cannot get it must not run
         // unfiltered: `None` here is enforced inside the closure, which is
         // the only place that can abort the spawn.
@@ -451,9 +667,9 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
         None
     };
     #[cfg(target_os = "linux")]
-    let seccomp_wanted = profile.seccomp;
+    let seccomp_wanted = profile.seccomp && !wrapped_by_bwrap;
     #[cfg(target_os = "linux")]
-    let mut landlock_ruleset = if profile.landlock {
+    let mut landlock_ruleset = if profile.landlock && !wrapped_by_bwrap {
         let cwd = cmd
             .get_current_dir()
             .map(|p| p.to_string_lossy().into_owned())
@@ -463,7 +679,7 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
         None
     };
     #[cfg(target_os = "linux")]
-    let landlock_wanted = profile.landlock;
+    let landlock_wanted = profile.landlock && !wrapped_by_bwrap;
 
     let as_bytes = profile
         .max_memory_mb
@@ -473,14 +689,17 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     // cfg so other Unix targets don't carry an unused binding.
     #[cfg(target_os = "linux")]
     let no_new_privs = profile.no_new_privs;
-    // NPROC's hard ceiling, read now (parent, safe context): probes must
-    // stay within it and the final cap may not exceed it.
-    let nproc_hard = want_pids.and_then(|_| {
+    // NPROC's inherited (soft, hard) pair, read now (parent, safe
+    // context): probes must stay within the hard ceiling, the final cap
+    // may not exceed either value, and every path that declines to cap
+    // restores the soft value the probes overwrote (audit COR-01).
+    let nproc_inherited = want_pids.and_then(|_| {
         let mut lim = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        (unsafe { libc::getrlimit(libc::RLIMIT_NPROC, &mut lim) } == 0).then_some(lim.rlim_max)
+        (unsafe { libc::getrlimit(libc::RLIMIT_NPROC, &mut lim) } == 0)
+            .then_some((lim.rlim_cur, lim.rlim_max))
     });
 
     // SAFETY: between fork and exec the closure only issues setsid,
@@ -545,15 +764,22 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            if let (Some(want), Some(hard)) = (want_pids, nproc_hard) {
-                if let Some(cap) = calibrate_nproc(want, hard) {
-                    let lim = libc::rlimit {
+            if let (Some(want), Some((soft, hard))) = (want_pids, nproc_inherited) {
+                // The probes overwrite the soft limit, so the final value
+                // is always written back: the cap when one applies, the
+                // inherited pair otherwise.
+                let lim = match calibrate_nproc(want, soft, hard) {
+                    Some(cap) => libc::rlimit {
                         rlim_cur: cap,
                         rlim_max: cap,
-                    };
-                    if libc::setrlimit(libc::RLIMIT_NPROC, &lim) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
+                    },
+                    None => libc::rlimit {
+                        rlim_cur: soft,
+                        rlim_max: hard,
+                    },
+                };
+                if libc::setrlimit(libc::RLIMIT_NPROC, &lim) != 0 {
+                    return Err(std::io::Error::last_os_error());
                 }
             }
             Ok(())
@@ -561,28 +787,50 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     }
 }
 
+/// Outcome of one NPROC fork probe.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForkProbe {
+    /// The fork succeeded under the probed limit.
+    Forks,
+    /// The fork failed with EAGAIN: the limit is at or below usage.
+    Refused,
+    /// The probe could not be run (setrlimit failed) or the fork failed
+    /// for another reason (ENOMEM...). Carries no NPROC information, so
+    /// the search must stop rather than be steered by it.
+    Unknown,
+}
+
 /// A NPROC cap granting `want` processes above the kernel's true current
-/// usage for this UID - or `None` to leave NPROC untouched.
+/// usage for this UID - or `None` to leave NPROC at its inherited value.
+/// The caller always writes the final limit back (cap or inherited),
+/// because every probe overwrites the soft limit.
 ///
 /// SAFETY: pre-exec context - only setrlimit/fork/_exit/waitpid, no
 /// allocation.
 #[cfg(unix)]
-unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t> {
-    /// Would `limit` currently allow a fork? Resets NPROC's soft limit
-    /// as a side effect (the caller re-sets the final value afterwards).
-    unsafe fn forkable(limit: u64, hard: libc::rlim_t) -> bool {
+unsafe fn calibrate_nproc(
+    want: u64,
+    soft: libc::rlim_t,
+    hard: libc::rlim_t,
+) -> Option<libc::rlim_t> {
+    /// Probe whether `limit` currently allows a fork. Overwrites NPROC's
+    /// soft limit as a side effect.
+    unsafe fn forkable(limit: u64, hard: libc::rlim_t) -> ForkProbe {
         let lim = libc::rlimit {
             rlim_cur: limit as libc::rlim_t,
             rlim_max: hard,
         };
         if libc::setrlimit(libc::RLIMIT_NPROC, &lim) != 0 {
-            return false;
+            return ForkProbe::Unknown;
         }
         let pid = unsafe { libc::fork() };
         if pid < 0 {
-            // Only EAGAIN carries information about NPROC; anything else
-            // (ENOMEM...) must not steer the search.
-            return std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN);
+            return if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
+                ForkProbe::Refused
+            } else {
+                ForkProbe::Unknown
+            };
         }
         if pid == 0 {
             unsafe { libc::_exit(0) };
@@ -591,41 +839,112 @@ unsafe fn calibrate_nproc(want: u64, hard: libc::rlim_t) -> Option<libc::rlim_t>
         while unsafe { libc::waitpid(pid, &mut status, 0) } < 0
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
         {}
-        true
+        ForkProbe::Forks
     }
+    nproc_search(want, soft, hard, |limit| unsafe { forkable(limit, hard) })
+}
 
+/// The calibration search, separated from the fork probe so its
+/// decisions are unit-testable. Returns `None` whenever no cap should
+/// apply. A returned cap never exceeds the inherited soft limit (limits
+/// are only ever lowered) or the hard limit.
+#[cfg(unix)]
+fn nproc_search(
+    want: u64,
+    soft: libc::rlim_t,
+    hard: libc::rlim_t,
+    mut probe: impl FnMut(u64) -> ForkProbe,
+) -> Option<libc::rlim_t> {
     if hard == 0 {
         return None;
     }
-    // Not enforced for this user: a cap would be decoration.
-    if unsafe { forkable(1, hard) } {
+    // Not enforced for this user (root, CAP_SYS_RESOURCE): a cap would
+    // be decoration. Unknown also stops: no information to search on.
+    if probe(1) != ForkProbe::Refused {
         return None;
     }
     // Search ceiling: covers any realistic usage, and stays far from
     // RLIM_INFINITY (u64::MAX would need 64 halvings to converge).
-    let top = hard.min(1 << 20);
+    let top = hard.min(soft).min(1 << 20);
     let mut lo = 1u64; // known unforkable (usage ≥ 1: we exist)
     let mut hi = top; // assumed forkable (we are running under it)
-    if !unsafe { forkable(hi, hard) } {
-        // Usage is at the ceiling - nothing safe to grant.
+    if probe(hi) != ForkProbe::Forks {
+        // Usage is at the ceiling, or the probe is unreliable.
         return None;
     }
     while hi - lo > 16 {
         let mid = lo + (hi - lo) / 2;
-        if unsafe { forkable(mid, hard) } {
-            hi = mid;
-        } else {
-            lo = mid;
+        match probe(mid) {
+            ForkProbe::Forks => hi = mid,
+            ForkProbe::Refused => lo = mid,
+            ForkProbe::Unknown => return None,
         }
     }
-    // `hi` ≈ usage + 1; grant the profile's headroom above it.
-    let cap = hi.saturating_add(want).min(hard);
+    // `hi` ≈ usage + 1; grant the profile's headroom above it, never
+    // above what the process already had.
+    let cap = hi.saturating_add(want).min(hard).min(soft);
     // Belt and braces: never apply a cap that can't fork - degrade to
-    // no pids limit instead of breaking the command.
-    if !unsafe { forkable(cap, hard) } {
+    // the inherited limit instead of breaking the command.
+    if probe(cap) != ForkProbe::Forks {
         return None;
     }
     Some(cap)
+}
+
+#[cfg(all(test, unix))]
+mod nproc_search_tests {
+    use super::{nproc_search, ForkProbe};
+
+    /// A probe for a host whose true usage is `usage` processes.
+    fn enforced(usage: u64) -> impl FnMut(u64) -> ForkProbe {
+        move |limit| {
+            if limit > usage {
+                ForkProbe::Forks
+            } else {
+                ForkProbe::Refused
+            }
+        }
+    }
+
+    #[test]
+    fn not_enforced_declines_to_cap() {
+        // Root: even a limit of 1 forks.
+        assert_eq!(nproc_search(8, 4096, 4096, |_| ForkProbe::Forks), None);
+    }
+
+    #[test]
+    fn unknown_probe_declines_to_cap() {
+        assert_eq!(nproc_search(8, 4096, 4096, |_| ForkProbe::Unknown), None);
+        let mut calls = 0;
+        let r = nproc_search(8, 4096, 4096, |limit| {
+            calls += 1;
+            match calls {
+                1 => ForkProbe::Refused,
+                2 => ForkProbe::Forks,
+                _ if limit > 100 => ForkProbe::Unknown,
+                _ => ForkProbe::Refused,
+            }
+        });
+        assert_eq!(r, None, "a non-EAGAIN failure mid-search must not steer it");
+    }
+
+    #[test]
+    fn enforced_grants_headroom_above_usage() {
+        let cap = nproc_search(8, 4096, 4096, enforced(100)).expect("cap");
+        assert!(cap > 100 + 8 - 1 && cap <= 100 + 17 + 8, "cap {cap}");
+    }
+
+    #[test]
+    fn cap_never_exceeds_inherited_soft() {
+        // Soft 120 < usage(100) + want(256): the cap is clamped to 120.
+        let cap = nproc_search(256, 120, 4096, enforced(100)).expect("cap");
+        assert_eq!(cap, 120);
+    }
+
+    #[test]
+    fn zero_hard_declines() {
+        assert_eq!(nproc_search(8, 0, 0, enforced(1)), None);
+    }
 }
 
 /// A plain direct command (no wrapper); rlimits attached by the caller.
@@ -636,6 +955,15 @@ fn direct_command(program: &str, args: &[&str], cwd: &str) -> Command {
     cmd
 }
 
+/// The result of one wrapper probe: whether it initialized, and the
+/// wrapper's own stderr when it did not. The stderr is what lets a caller
+/// tell a kernel-blocked user namespace apart from a missing binary.
+#[derive(Clone)]
+struct ProbeResult {
+    ok: bool,
+    stderr: String,
+}
+
 /// Has this boundary's wrapper successfully initialized once in this
 /// process? Probed once and cached: a wrapper that cannot initialize
 /// here (missing privileges, blocked user namespaces) would fail *every*
@@ -643,35 +971,139 @@ fn direct_command(program: &str, args: &[&str], cwd: &str) -> Command {
 /// the opt-in direct fallback) instead of running each command
 /// un-isolated.
 fn wrapper_initializes(profile: &SandboxProfile, cwd: &str) -> bool {
-    static PROBE: [std::sync::OnceLock<bool>; 4] = [
-        std::sync::OnceLock::new(),
-        std::sync::OnceLock::new(),
-        std::sync::OnceLock::new(),
-        std::sync::OnceLock::new(),
-    ];
-    *PROBE[profile.boundary as usize].get_or_init(|| {
-        let mut probe = build_sandboxed(profile, "sh", &["-c", "true"], cwd);
-        probe
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let Ok(mut child) = probe.spawn() else {
-            return false;
+    wrapper_probe(profile, cwd).ok
+}
+
+/// The cached failure reason for a wrapper shape whose probe did not
+/// initialize, so [`build_sandboxed_checked`] can name the cause instead of
+/// reporting only that a fallback was not opted in.
+fn wrapper_failure_reason(profile: &SandboxProfile, cwd: &str) -> Option<String> {
+    let probe = wrapper_probe(profile, cwd);
+    if probe.ok {
+        return None;
+    }
+    Some(probe.stderr)
+}
+
+fn wrapper_probe(profile: &SandboxProfile, cwd: &str) -> ProbeResult {
+    // Cached per wrapper shape, not per boundary type: the probe's result
+    // depends on the profile's masks, binds, seccomp/Landlock and the cwd,
+    // so one caller's failure (a cwd bwrap cannot reach) used to make every
+    // later profile of that boundary SANDBOX_UNAVAILABLE for the life of
+    // the process, and one caller's success vouched for profiles it never
+    // tried (audit REL-01).
+    use std::hash::{Hash, Hasher};
+    static PROBES: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<u64, ProbeResult>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (profile.boundary as u8).hash(&mut h);
+    profile.network.hash(&mut h);
+    profile.seccomp.hash(&mut h);
+    profile.landlock.hash(&mut h);
+    profile.drop_capabilities.hash(&mut h);
+    profile.writable_paths.hash(&mut h);
+    profile.hidden_paths.hash(&mut h);
+    cwd.hash(&mut h);
+    let key = h.finish();
+    if let Some(known) = PROBES.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return known.clone();
+    }
+    let probe = probe_wrapper(profile, cwd);
+    let mut cache = PROBES.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= 256 {
+        cache.clear();
+    }
+    cache.insert(key, probe.clone());
+    probe
+}
+
+/// Whether a failed probe's stderr says the kernel refused to create the
+/// user namespace. On Ubuntu that is AppArmor's
+/// `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks
+/// unprivileged user namespaces for every confined process: bwrap reports
+/// it as "setting up uid map: Permission denied", `unshare` as
+/// "write failed /proc/self/uid_map: Operation not permitted".
+fn userns_blocked(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    let refused = [
+        "permission denied",
+        "operation not permitted",
+        "no permissions",
+        "eperm",
+        "eacces",
+    ]
+    .iter()
+    .any(|m| s.contains(m));
+    let userns = [
+        "uid map",
+        "gid map",
+        "uid_map",
+        "gid_map",
+        "namespace",
+        "unshare",
+    ]
+    .iter()
+    .any(|m| s.contains(m));
+    refused && userns
+}
+
+fn probe_wrapper(profile: &SandboxProfile, cwd: &str) -> ProbeResult {
+    let program = "sh";
+    let mut probe = build_sandboxed(profile, program, &["-c", "true"], cwd);
+    // A plain command means no wrapper was used at all: the binary was not
+    // found, or the strict boundary's seccomp filter could not be staged.
+    // Its exit status says nothing about the boundary, so it must never be
+    // cached as "the wrapper initializes". The lookup reads the process
+    // environment (`PANTHEON_SANDBOX_PATH`, then `PATH`), which a parallel
+    // test can change mid-process; caching a wrapper-less probe as success
+    // let a later spawn use a wrapper that cannot run, and the payload's
+    // output never arrived (audit REL-01).
+    if probe.get_program() == std::ffi::OsStr::new(program) {
+        return ProbeResult {
+            ok: false,
+            stderr: "probe ran without a sandbox wrapper".to_string(),
         };
-        // Bounded: a wedged wrapper must not hang the first command.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return status.success(),
-                Ok(None) if std::time::Instant::now() > deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(_) => return false,
+    }
+    probe
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let Ok(mut child) = probe.spawn() else {
+        return ProbeResult {
+            ok: false,
+            stderr: String::new(),
+        };
+    };
+    // Drain the wrapper's own stderr on a thread so a wedged wrapper cannot
+    // fill the pipe and block itself, while the wait below stays bounded.
+    let mut pipe = child.stderr.take();
+    let drain = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(p) = pipe.as_mut() {
+            let _ = std::io::Read::read_to_string(p, &mut buf);
+        }
+        buf
+    });
+    // Bounded: a wedged wrapper must not hang the first command.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let ok = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if std::time::Instant::now() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
             }
         }
-    })
+    };
+    let stderr = drain.join().unwrap_or_default();
+    ProbeResult { ok, stderr }
 }
 
 /// Whether the direct-spawn fallback is opted in: either the profile's
@@ -765,7 +1197,7 @@ where
                 Err(_) => break,
             };
             let take = {
-                let mut b = budget.lock().unwrap();
+                let mut b = budget.lock().unwrap_or_else(|e| e.into_inner());
                 let take = (*b).min(n);
                 *b -= take;
                 take
@@ -1069,6 +1501,91 @@ mod sandbox_escape_tests {
         assert!(
             profile_origin.contains("SandboxProfile::allow_direct_fallback"),
             "{profile_origin}"
+        );
+    }
+
+    /// The AppArmor refusal is the one cause an operator can act on, so it
+    /// must be recognised from both wrappers' wording and not confused with
+    /// an unrelated failure.
+    #[test]
+    fn userns_refusals_are_recognised() {
+        for msg in [
+            "bwrap: setting up uid map: Permission denied",
+            "bwrap: setting up gid map: Permission denied",
+            "unshare: write failed /proc/self/uid_map: Operation not permitted",
+            "bwrap: Creating new namespace failed: Permission denied",
+            "bwrap: No permissions to creating new namespace, likely because \
+             the kernel does not allow non-privileged user namespaces.",
+        ] {
+            assert!(userns_blocked(msg), "not recognised: {msg}");
+        }
+        for msg in [
+            "bwrap: No such file or directory",
+            "sh: 1: true: not found",
+            "permission denied while binding a read-only path",
+            "",
+        ] {
+            assert!(!userns_blocked(msg), "false positive: {msg}");
+        }
+    }
+
+    /// The `SANDBOX_UNAVAILABLE` detail must name the AppArmor restriction
+    /// alongside the fallback env var when the kernel refused the userns,
+    /// and must not blame AppArmor for an unrelated failure.
+    #[test]
+    fn unavailable_error_names_apparmor_when_the_userns_is_refused() {
+        let boundary = crate::sandbox::ExecutionBoundary::IsolatedProcess;
+        let refused = sandbox_unavailable_msg(
+            &boundary,
+            Some("bwrap: setting up uid map: Permission denied"),
+        );
+        assert!(refused.contains("PANTHEON_SANDBOX_FALLBACK"), "{refused}");
+        assert!(
+            refused.contains("apparmor_restrict_unprivileged_userns"),
+            "{refused}"
+        );
+
+        let other = sandbox_unavailable_msg(&boundary, Some("bwrap: bind failed"));
+        assert!(other.contains("PANTHEON_SANDBOX_FALLBACK"), "{other}");
+        assert!(
+            !other.contains("apparmor_restrict_unprivileged_userns"),
+            "{other}"
+        );
+        assert!(other.contains("bind failed"), "{other}");
+
+        let none = sandbox_unavailable_msg(&boundary, None);
+        assert!(none.contains("PANTHEON_SANDBOX_FALLBACK"), "{none}");
+        assert!(
+            !none.contains("apparmor_restrict_unprivileged_userns"),
+            "{none}"
+        );
+    }
+
+    /// A probe that ran without a wrapper must not count as "the wrapper
+    /// initializes". The wrapper lookup reads the process environment
+    /// (`PANTHEON_SANDBOX_PATH`, then `PATH`), which a parallel test can
+    /// change; a cached success then let a later spawn use a wrapper that
+    /// cannot run, and the payload's output never arrived (audit REL-01).
+    #[test]
+    fn wrapper_less_probe_is_not_a_success() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let profile = medium_profile();
+        let cwd = scratch_cwd("nowrapper");
+        let saved = std::env::var_os("PANTHEON_SANDBOX_PATH");
+        std::env::set_var(
+            "PANTHEON_SANDBOX_PATH",
+            std::path::Path::new("/nonexistent-pantheon-sandbox-path"),
+        );
+        let probe = probe_wrapper(&profile, &cwd);
+        match saved {
+            Some(v) => std::env::set_var("PANTHEON_SANDBOX_PATH", v),
+            None => std::env::remove_var("PANTHEON_SANDBOX_PATH"),
+        }
+        assert!(!probe.ok, "a wrapper-less probe reported success");
+        assert!(
+            !probe.stderr.is_empty(),
+            "the reason is recorded: {}",
+            probe.stderr
         );
     }
 

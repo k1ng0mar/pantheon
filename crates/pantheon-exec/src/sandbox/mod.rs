@@ -28,6 +28,76 @@ pub use runner::{
 use pantheon_api::capability::Capability;
 use serde::{Deserialize, Serialize};
 
+/// Credential locations a model-run command must never read: the
+/// Pantheon data dir as a whole (ledgers, sessions, secret stores),
+/// its secret files individually (so they stay hidden even when the
+/// command's cwd re-exposes part of the data dir), SSH/GPG keys, cloud
+/// and registry credentials, and shell history. The shell and terminal
+/// sandboxes mask these paths (audit SEC-01); the file-tool deny list
+/// refuses [`data_dir_secret_paths`] plus the home entries (audit
+/// SEC-02). Paths are returned whether or not they exist.
+pub fn sensitive_paths(
+    data_dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut out = vec![data_dir.to_path_buf()];
+    out.extend(data_dir_secret_paths(data_dir));
+    out.extend(home_secret_paths(home));
+    out
+}
+
+/// The secret stores Pantheon writes under its data dir.
+pub fn data_dir_secret_paths(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    DATA_DIR_SECRET_FILES
+        .iter()
+        .map(|f| data_dir.join(f))
+        .collect()
+}
+
+/// Home-relative credential locations (absolute), empty without a home.
+pub fn home_secret_paths(home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    home.map(|h| SENSITIVE_HOME_PATHS.iter().map(|rel| h.join(rel)).collect())
+        .unwrap_or_default()
+}
+
+/// Secret stores under the data dir: the dotenv (provider keys, gateway
+/// tokens), the vault key and vault, OAuth logins, gateway env, and the
+/// secure-forms metadata.
+pub const DATA_DIR_SECRET_FILES: &[&str] = &[
+    ".env",
+    ".secrets.key",
+    "secrets",
+    "secrets.json",
+    "logins.env",
+    "logins.json",
+    "gateway.env",
+    "secure-forms.json",
+];
+
+/// Home-relative credential locations covered by [`sensitive_paths`].
+pub const SENSITIVE_HOME_PATHS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".config/gh",
+    ".config/gcloud",
+    ".config/hub",
+    ".config/op",
+    ".local/share/keyrings",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".bash_history",
+    ".zsh_history",
+    ".python_history",
+];
+
 /// Can this host actually build the given boundary?
 ///
 /// The binary existing is not the same as the boundary working. Both
@@ -78,7 +148,9 @@ pub fn boundary_available(boundary: ExecutionBoundary) -> bool {
                     .map(|b| {
                         probe(&[
                             b.to_string_lossy().as_ref(),
-                            "--unshare-user-try",
+                            "--unshare-user",
+                            "--cap-drop",
+                            "ALL",
                             "--ro-bind",
                             "/",
                             "/",

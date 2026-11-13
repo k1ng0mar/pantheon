@@ -31,6 +31,7 @@ fn timeout_kills_long_running_command() {
         seccomp: false,
         landlock: false,
         writable_paths: Vec::new(),
+        hidden_paths: Vec::new(),
     };
     let result = run_sandboxed(&profile, "sleep", &["5"], "/tmp");
     assert!(result.is_err(), "should have timed out");
@@ -106,6 +107,13 @@ fn pids_cap_is_applied_as_rlimit_nproc() {
     let mut profile = SandboxLevel::High.profile();
     profile.allow_direct_fallback = true;
     let want = u64::from(profile.max_pids.expect("High carries a pids cap"));
+    if host_is_root() {
+        // Root: the kernel does not enforce NPROC, so calibration
+        // declines to cap. The child must keep the inherited limit, not
+        // the probe's leftover soft limit of 1 (audit COR-01).
+        assert_nproc_inherited(&profile);
+        return;
+    }
     let soft = proc_limit(&profile, "Max processes").expect("NPROC must be finite");
     assert!(
         soft > want,
@@ -117,6 +125,30 @@ fn pids_cap_is_applied_as_rlimit_nproc() {
             "child cap {soft} must not exceed the host hard limit {hard}"
         );
     }
+}
+
+/// Whether this test process runs as uid 0, where the kernel skips
+/// RLIMIT_NPROC enforcement and the calibrator must leave NPROC alone.
+#[cfg(target_os = "linux")]
+fn host_is_root() -> bool {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    status
+        .lines()
+        .find(|l| l.starts_with("Uid:"))
+        .and_then(|l| l.split_whitespace().nth(2))
+        .is_some_and(|euid| euid == "0")
+}
+
+/// The child's NPROC soft limit equals this process's (the inherited
+/// value): the uncapped outcome.
+#[cfg(target_os = "linux")]
+fn assert_nproc_inherited(profile: &SandboxProfile) {
+    let soft = proc_limit(profile, "Max processes");
+    let host = host_limit("Max processes");
+    assert_eq!(
+        soft, host,
+        "uncapped NPROC must stay at the inherited soft limit {host:?}, got {soft:?}"
+    );
 }
 
 #[test]
@@ -138,11 +170,16 @@ fn in_process_boundary_also_gets_the_limits() {
         seccomp: false,
         landlock: false,
         writable_paths: Vec::new(),
+        hidden_paths: Vec::new(),
     };
     assert_eq!(
         proc_limit(&profile, "Max address space"),
         Some(512 * 1024 * 1024)
     );
+    if host_is_root() {
+        assert_nproc_inherited(&profile);
+        return;
+    }
     let soft = proc_limit(&profile, "Max processes").expect("NPROC must be finite");
     assert!(soft > 8, "nproc limit {soft} must cover the 8-pid cap");
     if let Some(hard) = host_limit("Max processes") {
@@ -357,6 +394,7 @@ fn timeout_error_redacts_secret_bearing_args() {
         seccomp: false,
         landlock: false,
         writable_paths: Vec::new(),
+        hidden_paths: Vec::new(),
     };
     // The canary rides in the args: a timeout error that echoes them
     // verbatim leaks secrets into the ledger and the model transcript.
@@ -387,4 +425,191 @@ fn timeout_error_redacts_secret_bearing_args() {
         "timeout error lost its digest: {}",
         e.cause
     );
+}
+
+/// The argv the High and VeryHigh boundaries hand to bwrap: the user
+/// namespace is REQUIRED (`--unshare-user`, never the best-effort
+/// `--unshare-user-try`), and capabilities are dropped explicitly so a
+/// privileged caller cannot carry them into the sandbox (audit SEC-10).
+#[test]
+#[cfg(target_os = "linux")]
+fn container_boundaries_require_user_namespace_and_drop_caps() {
+    use pantheon_exec::sandbox::build_sandboxed;
+    for level in [SandboxLevel::High, SandboxLevel::VeryHigh] {
+        let profile = level.profile();
+        let cmd = build_sandboxed(&profile, "true", &[], "/tmp");
+        if !cmd.get_program().to_string_lossy().ends_with("bwrap") {
+            eprintln!("skip {level:?}: bwrap not installed");
+            continue;
+        }
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "--unshare-user"),
+            "{level:?} must require a user namespace: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--unshare-user-try"),
+            "{level:?} must not fall back to the host user namespace: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--cap-drop" && w[1] == "ALL"),
+            "{level:?} must drop every capability: {args:?}"
+        );
+    }
+}
+
+/// Run as root (`sudo` on the test binary): the sandboxed child of the
+/// High profile has no effective capabilities, in any namespace. Before
+/// the fix, `--unshare-user-try` gave a root caller a fresh user
+/// namespace with a full capability set.
+#[test]
+#[cfg(target_os = "linux")]
+fn high_profile_child_has_no_capabilities_even_for_root() {
+    if !host_is_root() {
+        eprintln!("skip: needs root (the unprivileged case has no caps to drop)");
+        return;
+    }
+    let profile = SandboxLevel::High.profile();
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let r = match run_sandboxed(
+        &profile,
+        "sh",
+        &["-c", "grep CapEff /proc/self/status"],
+        "/tmp",
+    ) {
+        Ok(r) => r,
+        Err(e) if e.code == "SANDBOX_UNAVAILABLE" => {
+            eprintln!("skip: no user namespaces on this host ({})", e.cause);
+            return;
+        }
+        Err(e) => panic!("run failed: {} {}", e.code, e.cause),
+    };
+    assert!(r.sandboxed, "must run inside bwrap");
+    let eff = r
+        .output
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_else(|| panic!("no CapEff in {}", r.output));
+    assert_eq!(
+        u64::from_str_radix(eff, 16).unwrap(),
+        0,
+        "child CapEff must be empty, got {eff}"
+    );
+}
+
+/// VeryHigh (bwrap --unshare-all + Landlock + seccomp) must actually run
+/// a command where the host supports the layers: a tier that always
+/// fails is not a sandbox (audit COR-02).
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn very_high_profile_runs_a_command() {
+    use pantheon_exec::sandbox::{boundary_available, kernel_layer_available};
+    let profile = SandboxLevel::VeryHigh.profile();
+    if !boundary_available(profile.boundary) || !kernel_layer_available(false, true) {
+        eprintln!("skip: host lacks bwrap user namespaces or Landlock");
+        return;
+    }
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let r = run_sandboxed(&profile, "/bin/true", &[], "/tmp")
+        .unwrap_or_else(|e| panic!("VeryHigh spawn failed: {} {}", e.code, e.cause));
+    assert_eq!(r.exit_code, 0, "VeryHigh child failed: {}", r.output);
+    assert!(r.sandboxed);
+    // The filter is live inside the sandbox: an escape primitive on the
+    // deny list (unshare) is refused, while ordinary work still runs.
+    let r = run_sandboxed(
+        &profile,
+        "sh",
+        &["-c", "unshare -U true && echo ESCAPED; echo done"],
+        "/tmp",
+    )
+    .expect("spawn");
+    assert!(
+        !r.output.contains("ESCAPED"),
+        "unshare must be denied: {}",
+        r.output
+    );
+    assert!(
+        r.output.contains("done"),
+        "shell must keep running: {}",
+        r.output
+    );
+}
+
+/// The unshare (Medium) boundary leaves the host read-only and refuses
+/// to run when a mount cannot be made read-only (audit SEC-11). Root
+/// only on hosts that restrict unprivileged user namespaces.
+#[test]
+#[cfg(target_os = "linux")]
+fn medium_boundary_is_read_only_and_fails_closed_on_mount_errors() {
+    use pantheon_exec::sandbox::boundary_available;
+    let profile = SandboxLevel::Medium.profile();
+    if !boundary_available(profile.boundary) {
+        eprintln!("skip: unshare cannot create a user namespace here");
+        return;
+    }
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let probe = "/usr/pantheon-sec11-probe";
+    let r = run_sandboxed(
+        &profile,
+        "sh",
+        &[
+            "-c",
+            &format!("touch {probe} 2>/dev/null && echo WROTE; echo done"),
+        ],
+        "/tmp",
+    )
+    .expect("spawn");
+    assert!(r.output.contains("done"), "{}", r.output);
+    assert!(
+        !r.output.contains("WROTE"),
+        "host must be read-only: {}",
+        r.output
+    );
+    assert!(!std::path::Path::new(probe).exists());
+
+    // A `mount` that always fails: the script must refuse, not run.
+    // Outside any 0750 home: root inside the user namespace must be
+    // able to traverse to the shim, or `sh` silently falls back to the
+    // real `mount` further down PATH.
+    let shim = std::path::PathBuf::from(if host_is_root() {
+        "/srv"
+    } else {
+        env!("CARGO_TARGET_TMPDIR")
+    })
+    .join(format!("sec11-shim-{}", std::process::id()));
+    std::fs::create_dir_all(&shim).unwrap();
+    let fake = shim.join("mount");
+    std::fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let old_path = std::env::var_os("PATH");
+    std::env::set_var(
+        "PATH",
+        format!("{}:/usr/sbin:/usr/bin:/sbin:/bin", shim.display()),
+    );
+    let r = run_sandboxed(&profile, "sh", &["-c", "echo RAN"], "/tmp");
+    match old_path {
+        Some(p) => std::env::set_var("PATH", p),
+        None => std::env::remove_var("PATH"),
+    }
+    let _ = std::fs::remove_dir_all(&shim);
+    // The wrapper probe runs the same script, so the refusal surfaces
+    // either as the probe failing closed or as the script's exit 126.
+    match r {
+        Err(e) => assert_eq!(e.code, "SANDBOX_UNAVAILABLE", "{e:?}"),
+        Ok(r) => {
+            assert!(
+                !r.output.contains("RAN"),
+                "must not run with failed mounts: {}",
+                r.output
+            );
+            assert_eq!(r.exit_code, 126, "{}", r.output);
+        }
+    }
 }

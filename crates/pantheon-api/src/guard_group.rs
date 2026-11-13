@@ -1130,6 +1130,9 @@ pub mod capability {
                 .allow(Capability::GitWrite)
                 .approval(Capability::GitPush)
                 .allow(Capability::NetworkOutbound)
+                // Shell commands run offline; going online asks once and
+                // the grant lasts for the session (audit SEC-01, D1).
+                .approval(Capability::Other("shell.network".into()))
                 .allow(Capability::Browser)
                 .approval(Capability::BrowserAct)
                 .approval(Capability::BrowserFillLogin)

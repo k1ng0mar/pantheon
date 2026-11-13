@@ -304,3 +304,82 @@ fn command_digest_is_deterministic_across_calls() {
         assess("mkfs /dev/sda").matches[0].snippet
     );
 }
+
+/// Every bypass the 2026-11-12 audit verified against the pre-gate
+/// (SEC-06, SEC-07) is now blocked, and the ordinary commands next to
+/// them still pass.
+#[test]
+fn audit_2026_11_12_bypasses_are_blocked() {
+    let blocked = [
+        // Wrapper flags stopped the peel.
+        "sudo -u root rm -rf /",
+        "nice -n 5 rm -rf /",
+        "env -i rm -rf /",
+        "timeout -s KILL 5 rm -rf /",
+        "time -p rm -rf /",
+        "stdbuf -o0 rm -rf /",
+        "coproc rm -rf /",
+        "sudo -u x bash -c 'echo hi'",
+        // Newlines are command separators.
+        "true\nrm -rf /",
+        // Shell grammar in front of the command word.
+        "(rm -rf /)",
+        "{ rm -rf /; }",
+        "if true; then rm -rf /; fi",
+        "! rm -rf /",
+        "\\rm -rf /",
+        // Root spellings.
+        "rm -rf //",
+        "rm -rf /.",
+        "rm -rf ${HOME}",
+        // IFS forms that do split.
+        "rm${IFS%?}-rf${IFS%?}/",
+        // shred under wrappers or after another command.
+        "sudo shred -u /dev/sda",
+        "env shred /dev/sda",
+        "timeout 5 shred /dev/sda",
+        "nohup shred /dev/sda",
+        "ls; shred /dev/sda",
+        "/usr/bin/shred /dev/sda",
+        // Block devices dd missed.
+        "dd if=/dev/zero of=/dev/vda",
+        "dd if=/dev/zero of=/dev/xvda",
+        "dd if=/dev/zero of=/dev/mmcblk0",
+        "cat /dev/zero > /dev/vda",
+        // chmod spellings.
+        "chmod --recursive 000 /",
+        "chmod -R 777 /",
+        "chmod 0000 /",
+        "chmod -Rf 000 /",
+        "chmod 000 /; ls /home",
+        // Named fork bomb.
+        "f(){ f|f& };f",
+    ];
+    for cmd in blocked {
+        assert!(
+            gate(cmd).is_err(),
+            "must be blocked: {cmd:?} ({:?})",
+            assess(cmd).matches
+        );
+    }
+    let allowed = [
+        "ls -la",
+        "cargo build --release",
+        "sudo -u postgres psql -c 'select 1'",
+        "nice -n 5 cargo test",
+        "rm -rf ./target",
+        "chmod -R 755 ./build",
+        "chmod 644 /tmp/file",
+        "dd if=disk.img of=backup.img",
+        "echo task-list",
+        "time cargo check",
+    ];
+    for cmd in allowed {
+        assert_eq!(
+            assess(cmd).level,
+            RiskLevel::Low,
+            "must stay allowed: {cmd:?} ({:?})",
+            assess(cmd).matches
+        );
+    }
+}

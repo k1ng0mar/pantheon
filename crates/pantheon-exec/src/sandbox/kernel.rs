@@ -202,6 +202,56 @@ pub const ALLOWED_SYSCALLS: &[&str] = &[
     "getgroups",
     "setgroups",
     "personality",
+    // Positional and vector I/O, legacy path calls and basic process
+    // housekeeping. This allowlist had never run (the filter could not
+    // compile, audit COR-02); once it did, the dynamic loader died on
+    // `pread64` and every error message on `writev`. These are ordinary
+    // userland calls, none on the escape-primitive list below.
+    "pread64",
+    "pwrite64",
+    "readv",
+    "writev",
+    "preadv",
+    "pwritev",
+    "preadv2",
+    "pwritev2",
+    "open",
+    "creat",
+    "stat",
+    "lstat",
+    "chdir",
+    "fchdir",
+    "getpgrp",
+    "getresuid",
+    "getresgid",
+    "getrusage",
+    "getpriority",
+    "setpriority",
+    "getitimer",
+    "setitimer",
+    "alarm",
+    "pause",
+    "rt_sigsuspend",
+    "rt_sigpending",
+    "sched_getparam",
+    "sched_getscheduler",
+    "sched_get_priority_max",
+    "sched_get_priority_min",
+    "sched_setaffinity",
+    "fork",
+    "vfork",
+    "pidfd_open",
+    "pidfd_send_signal",
+    "eventfd2",
+    "signalfd4",
+    "epoll_pwait2",
+    "splice",
+    "tee",
+    "readahead",
+    "fadvise64",
+    "msync",
+    "futex_waitv",
+    "restart_syscall",
 ];
 
 /// Syscalls that are refused even though a broad allowlist might include
@@ -295,11 +345,15 @@ pub fn compile_seccomp() -> Result<seccompiler::BpfProgram, String> {
         rules.remove(&nr);
     }
 
+    // seccompiler's argument order is (rules, mismatch_action,
+    // match_action, arch). Mismatch = a syscall not in the allowlist ->
+    // EPERM; match = an allowlisted syscall -> Allow. Passing EPERM for
+    // both was rejected by seccompiler (IdenticalActions), so the filter
+    // never compiled and every VeryHigh spawn failed (audit COR-02).
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Errno(libc::EPERM as u32),
-        // The default action for anything not in the allowlist.
-        SeccompAction::Errno(libc::EPERM as u32),
+        SeccompAction::Allow,
         TargetArch::x86_64,
     )
     .map_err(|e| format!("seccomp filter build failed: {e}"))?;
@@ -470,6 +524,51 @@ pub fn syscall_number(name: &str) -> Option<i64> {
         "getgroups" => libc::SYS_getgroups,
         "setgroups" => libc::SYS_setgroups,
         "personality" => libc::SYS_personality,
+        "pread64" => libc::SYS_pread64,
+        "pwrite64" => libc::SYS_pwrite64,
+        "readv" => libc::SYS_readv,
+        "writev" => libc::SYS_writev,
+        "preadv" => libc::SYS_preadv,
+        "pwritev" => libc::SYS_pwritev,
+        "preadv2" => libc::SYS_preadv2,
+        "pwritev2" => libc::SYS_pwritev2,
+        "open" => libc::SYS_open,
+        "creat" => libc::SYS_creat,
+        "stat" => libc::SYS_stat,
+        "lstat" => libc::SYS_lstat,
+        "chdir" => libc::SYS_chdir,
+        "fchdir" => libc::SYS_fchdir,
+        "getpgrp" => libc::SYS_getpgrp,
+        "getresuid" => libc::SYS_getresuid,
+        "getresgid" => libc::SYS_getresgid,
+        "getrusage" => libc::SYS_getrusage,
+        "getpriority" => libc::SYS_getpriority,
+        "setpriority" => libc::SYS_setpriority,
+        "getitimer" => libc::SYS_getitimer,
+        "setitimer" => libc::SYS_setitimer,
+        "alarm" => libc::SYS_alarm,
+        "pause" => libc::SYS_pause,
+        "rt_sigsuspend" => libc::SYS_rt_sigsuspend,
+        "rt_sigpending" => libc::SYS_rt_sigpending,
+        "sched_getparam" => libc::SYS_sched_getparam,
+        "sched_getscheduler" => libc::SYS_sched_getscheduler,
+        "sched_get_priority_max" => libc::SYS_sched_get_priority_max,
+        "sched_get_priority_min" => libc::SYS_sched_get_priority_min,
+        "sched_setaffinity" => libc::SYS_sched_setaffinity,
+        "fork" => libc::SYS_fork,
+        "vfork" => libc::SYS_vfork,
+        "pidfd_open" => libc::SYS_pidfd_open,
+        "pidfd_send_signal" => libc::SYS_pidfd_send_signal,
+        "eventfd2" => libc::SYS_eventfd2,
+        "signalfd4" => libc::SYS_signalfd4,
+        "epoll_pwait2" => libc::SYS_epoll_pwait2,
+        "splice" => libc::SYS_splice,
+        "tee" => libc::SYS_tee,
+        "readahead" => libc::SYS_readahead,
+        "fadvise64" => libc::SYS_fadvise64,
+        "msync" => libc::SYS_msync,
+        "futex_waitv" => libc::SYS_futex_waitv,
+        "restart_syscall" => libc::SYS_restart_syscall,
         // --- denied: resolved so the conflict check can run, then removed
         // from the allow map by `compile_seccomp` ---
         "ptrace" => libc::SYS_ptrace,
@@ -693,10 +792,11 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn seccomp_compiles() {
-        if !kernel_layer_available(true, false) {
-            return; // host without seccomp: the fail-closed path is what runs
-        }
-        compile_seccomp().expect("seccomp filter compiles when the host supports it");
+        // Compiling is pure BPF generation and does not depend on the
+        // host. The old early return on `kernel_layer_available` (which
+        // itself compiles the filter) made this test vacuous while the
+        // filter never compiled (audit COR-02).
+        compile_seccomp().expect("seccomp filter compiles");
     }
 
     /// Landlock must be buildable when the kernel supports it.
@@ -810,7 +910,11 @@ mod live_tests {
                     libc::_exit(20);
                 }
                 let msg = b"ok";
-                if libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len()) != 3 {
+                // Never ran before audit COR-02 (the filter could not
+                // compile), so its old `!= 3` for a 2-byte write went unseen.
+                if libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len())
+                    != msg.len() as isize
+                {
                     libc::_exit(21);
                 }
                 libc::close(fd);

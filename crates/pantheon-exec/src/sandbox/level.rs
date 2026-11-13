@@ -108,8 +108,23 @@ pub struct SandboxProfile {
     /// the boundary that matters for an agent running untrusted commands.
     #[serde(default)]
     pub writable_paths: Vec<String>,
+    /// Host paths masked inside the bwrap boundaries (Container,
+    /// StrictNamespaces): a directory is covered by an empty tmpfs, a
+    /// file by `/dev/null`. The shell and terminal tools fill this with
+    /// [`super::sensitive_paths`] so a model-run command cannot read the
+    /// data dir's secrets, SSH keys or cloud credentials through the
+    /// read-only root bind (audit SEC-01). Empty by default: plugin and
+    /// MCP profiles keep their current view.
+    #[serde(default)]
+    pub hidden_paths: Vec<String>,
 }
 
+/// On for the built-in profiles: `PANTHEON_SANDBOX_FALLBACK=allow` stays
+/// an operator opt-in that existing setups rely on (decision D2 keeps
+/// `.env` keys working). It is never on unless that variable is set, the
+/// `.env` loader flags it as a security-boundary key, and every degraded
+/// spawn is announced on stderr and in the tool result. Tool plugins
+/// set this false so only their manifest can opt in.
 fn default_allow_env_fallback() -> bool {
     true
 }
@@ -129,6 +144,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             seccomp: false,
             landlock: false,
             writable_paths: Vec::new(),
+            hidden_paths: Vec::new(),
             allow_direct_fallback: false,
             allow_env_fallback: true,
         },
@@ -144,6 +160,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             seccomp: false,
             landlock: false,
             writable_paths: Vec::new(),
+            hidden_paths: Vec::new(),
             allow_direct_fallback: false,
             allow_env_fallback: true,
         },
@@ -159,6 +176,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             seccomp: false,
             landlock: false,
             writable_paths: Vec::new(),
+            hidden_paths: Vec::new(),
             allow_direct_fallback: false,
             allow_env_fallback: true,
         },
@@ -179,6 +197,7 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             seccomp: true,
             landlock: true,
             writable_paths: Vec::new(),
+            hidden_paths: Vec::new(),
             allow_direct_fallback: false,
             allow_env_fallback: true,
         },

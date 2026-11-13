@@ -12,7 +12,7 @@ pub mod checks {
     //! provider reachability probe.
 
     use crate::finding::{Finding, Severity, Subsystem};
-    use crate::probe::{detect_binary, tcp_probe, DETECT_TIMEOUT};
+    use crate::probe::{detect_binary, run_capture, tcp_probe, userns_refused, DETECT_TIMEOUT};
     use crate::registry::{CheckDef, DoctorCtx};
     use pantheon_api::config::Config;
     use std::path::PathBuf;
@@ -1271,22 +1271,42 @@ pub mod checks {
         // Container boundary (bwrap). Without bwrap the runner fails closed
         // (SANDBOX_UNAVAILABLE), so a missing binary is a warning with the
         // fix, never silent.
-        if detect_binary("command -v bwrap", DETECT_TIMEOUT) {
-            vec![Finding::passed(
+        if !detect_binary("command -v bwrap", DETECT_TIMEOUT) {
+            return vec![Finding::failed(
                 "security.exec_sandbox",
                 Subsystem::Security,
-                "bwrap present (container sandbox for High-level exec)",
-            )]
-        } else {
-            vec![Finding::failed(
+                Severity::Warning,
+                "bwrap not found on PATH - the shell tool's High sandbox fails closed without it",
+                "High-sandbox exec calls are refused (SANDBOX_UNAVAILABLE) instead of contained",
+                "install bubblewrap (e.g. `apt install bubblewrap`), or set PANTHEON_SANDBOX_FALLBACK=allow to opt into the direct-spawn fallback",
+            )];
+        }
+        // Present is not usable: the High profile requires a user namespace,
+        // and Ubuntu's AppArmor refuses unprivileged ones by default, so
+        // bwrap installs but every High-sandbox call still fails closed.
+        if let Some((true, stderr)) = run_capture(
+            "bwrap --unshare-user --cap-drop ALL --ro-bind / / -- /bin/true",
+            DETECT_TIMEOUT,
+        ) {
+            if userns_refused(&stderr) {
+                return vec![Finding::failed(
+                    "security.exec_sandbox",
+                    Subsystem::Security,
+                    Severity::Warning,
+                    "bwrap is present but the kernel refuses the user namespace it needs",
+                    "High-sandbox exec calls are refused (SANDBOX_UNAVAILABLE) instead of contained",
+                    "Ubuntu blocks unprivileged user namespaces with \
+                     kernel.apparmor_restrict_unprivileged_userns=1; allow it (sudo sysctl \
+                     kernel.apparmor_restrict_unprivileged_userns=0, or an AppArmor profile), \
+                     or set PANTHEON_SANDBOX_FALLBACK=allow to opt into the direct-spawn fallback",
+                )];
+            }
+        }
+        vec![Finding::passed(
             "security.exec_sandbox",
             Subsystem::Security,
-            Severity::Warning,
-            "bwrap not found on PATH - the shell tool's High sandbox fails closed without it",
-            "High-sandbox exec calls are refused (SANDBOX_UNAVAILABLE) instead of contained",
-            "install bubblewrap (e.g. `apt install bubblewrap`), or set PANTHEON_SANDBOX_FALLBACK=allow to opt into the direct-spawn fallback",
+            "bwrap present and the user namespace it needs is permitted",
         )]
-        }
     }
 
     #[cfg(test)]
@@ -2564,9 +2584,107 @@ pub mod probe {
     /// Default deadline for binary detection probes.
     pub const DETECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+    /// Run `sh -c <cmd>` with a deadline, capturing stderr. Returns
+    /// `(success, stderr)`; `None` only when the command could not be
+    /// started at all. The stderr is what a diagnostic needs to tell the
+    /// operator *why* a probe failed, not just that it did.
+    pub fn run_capture(cmd: &str, timeout: Duration) -> Option<(bool, String)> {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let mut pipe = child.stderr.take();
+        let drain = std::thread::spawn(move || {
+            let mut buf = String::new();
+            if let Some(p) = pipe.as_mut() {
+                let _ = std::io::Read::read_to_string(p, &mut buf);
+            }
+            buf
+        });
+        let deadline = std::time::Instant::now() + timeout;
+        let mut ok = false;
+        let mut timed_out = false;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    ok = status.success();
+                    break;
+                }
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    timed_out = true;
+                    break;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            }
+        }
+        let stderr = drain.join().unwrap_or_default();
+        Some((ok && !timed_out, stderr))
+    }
+
+    /// Whether a failed sandbox probe's stderr says the kernel refused the
+    /// user namespace rather than the wrapper being missing or broken.
+    pub fn userns_refused(stderr: &str) -> bool {
+        let s = stderr.to_ascii_lowercase();
+        let refused = [
+            "permission denied",
+            "operation not permitted",
+            "no permissions",
+            "eperm",
+            "eacces",
+        ]
+        .iter()
+        .any(|m| s.contains(m));
+        let userns = [
+            "uid map",
+            "gid map",
+            "uid_map",
+            "gid_map",
+            "namespace",
+            "unshare",
+        ]
+        .iter()
+        .any(|m| s.contains(m));
+        refused && userns
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn run_capture_reports_failure_and_stderr() {
+            let (ok, err) =
+                run_capture("echo boom >&2; exit 3", Duration::from_secs(5)).expect("probe ran");
+            assert!(!ok);
+            assert!(err.contains("boom"), "{err}");
+            assert!(
+                run_capture("true", Duration::from_secs(5))
+                    .expect("probe ran")
+                    .0
+            );
+        }
+
+        #[test]
+        fn userns_refusals_are_recognised() {
+            for msg in [
+                "bwrap: setting up uid map: Permission denied",
+                "unshare: write failed /proc/self/uid_map: Operation not permitted",
+            ] {
+                assert!(userns_refused(msg), "not recognised: {msg}");
+            }
+            assert!(!userns_refused("bwrap: No such file or directory"));
+            assert!(!userns_refused(""));
+        }
 
         #[test]
         fn tcp_probe_rejects_garbage_and_refused_ports() {

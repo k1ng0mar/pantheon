@@ -190,10 +190,16 @@ pub mod builtins {
             reg.register_with(
         ToolSchema {
             name: "shell".into(),
-            description: "Run a shell command with a timeout. Returns compacted stdout+stderr.".into(),
+            description: "Run a shell command with a timeout. Returns compacted stdout+stderr. \
+                The command runs offline in a sandbox; set \"network\": true when it needs the \
+                network (package installs, git fetch, curl). Network access may need operator \
+                approval, which is remembered for the rest of the session.".into(),
             parameters: serde_json::json!({
                 "type": "object",
-                "properties": { "command": { "type": "string", "description": "The command to run" } },
+                "properties": {
+                    "command": { "type": "string", "description": "The command to run" },
+                    "network": { "type": "boolean", "description": "Allow network access for this command (default false)" }
+                },
                 "required": ["command"]
             }),
         },
@@ -230,16 +236,23 @@ pub mod builtins {
             let Some(cmd) = v.get("command").and_then(|c| c.as_str()) else {
                 return Vec::new();
             };
-            if pantheon_exec::danger::is_git_push(cmd) {
-                return vec![Capability::GitPush];
+            let mut caps = Vec::new();
+            // Network is opt-in per call (audit SEC-01, decision D1): it
+            // needs the general NetworkOutbound permission AND the shell
+            // network capability, which the coder policy approval-gates
+            // and a session can grant once.
+            if shell_network_requested(&v) {
+                caps.push(Capability::NetworkOutbound);
+                caps.push(Capability::Other(SHELL_NETWORK_CAP.into()));
             }
-            if pantheon_exec::cloudflare::is_cf_command(cmd) {
-                match pantheon_exec::cloudflare::classify(cmd).capability_token() {
-                    Some(token) => return vec![Capability::Other(token.to_string())],
-                    None => return Vec::new(),
+            if pantheon_exec::danger::is_git_push(cmd) {
+                caps.push(Capability::GitPush);
+            } else if pantheon_exec::cloudflare::is_cf_command(cmd) {
+                if let Some(token) = pantheon_exec::cloudflare::classify(cmd).capability_token() {
+                    caps.push(Capability::Other(token.to_string()));
                 }
             }
-            Vec::new()
+            caps
         })),
     );
         }
@@ -554,6 +567,33 @@ pub mod builtins {
     /// env list to hand the broker-resolved API token to `cf` children;
     /// the default path passes an empty list and children get nothing
     /// beyond the scrub allowlist.
+    /// Capability token for network access from the shell and terminal
+    /// tools. Separate from `network.outbound` so a policy can allow the
+    /// HTTP tools while still asking before a shell command goes online.
+    pub const SHELL_NETWORK_CAP: &str = "shell.network";
+
+    /// Whether a shell call asked for network access (`"network": true`).
+    pub fn shell_network_requested(v: &serde_json::Value) -> bool {
+        v.get("network").and_then(|n| n.as_bool()).unwrap_or(false)
+    }
+
+    /// The sandbox profile for a model-run shell or terminal command: the
+    /// High level, offline unless `network` (already capability-gated),
+    /// with every credential location masked (audit SEC-01).
+    pub fn shell_profile(network: bool) -> SandboxProfile {
+        let mut profile = SandboxProfile::from(SandboxLevel::High);
+        profile.network = network;
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        profile.hidden_paths = pantheon_exec::sandbox::sensitive_paths(
+            &pantheon_api::data_dir::resolve(),
+            home.as_deref(),
+        )
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+        profile
+    }
+
     fn run_shell_with_env(
         args: &str,
         child_hook: Option<&ShellChildHook>,
@@ -563,8 +603,9 @@ pub mod builtins {
         let v = parse_args(args)?;
         let command = crate::tools::arg_str(&v, "command")?;
         // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
-        // + rlimits. The capability gate already ran before we get here.
-        let profile = SandboxProfile::from(SandboxLevel::High);
+        // + rlimits. The capability gate already ran before we get here,
+        // including the network capabilities when the call asked for them.
+        let profile = shell_profile(shell_network_requested(&v));
         // Resolve relative to the session root, not the process cwd: the root
         // is read here so a worktree move takes effect on the next call.
         let cwd = workspace.path().to_string_lossy().to_string();
@@ -3432,6 +3473,55 @@ pub mod pty_tools {
             }
         }
 
+        /// The PTY child, inside the same boundary as the `shell` tool
+        /// (audit SEC-03): bwrap at the High level with credentials masked
+        /// and the network off unless the call asked (and was approved)
+        /// for it, and the scrubbed child environment. It used to spawn
+        /// the login shell straight on the host, so `terminal_open`
+        /// bypassed every sandbox guarantee the `shell` tool had. Fails
+        /// closed (SANDBOX_UNAVAILABLE) exactly like the shell tool. The
+        /// profile's rlimits are not carried over (portable-pty owns the
+        /// fork); the namespace and env boundaries are.
+        fn sandboxed_pty_command(
+            shell: &str,
+            command: Option<&str>,
+            cwd: &Path,
+            network: bool,
+        ) -> Result<CommandBuilder, PantheonError> {
+            if cfg!(windows) {
+                let mut cmd = CommandBuilder::new(shell);
+                if let Some(command) = command {
+                    cmd.arg("/C");
+                    cmd.arg(command);
+                }
+                cmd.cwd(cwd);
+                return Ok(cmd);
+            }
+            let mut args: Vec<&str> = Vec::new();
+            if let Some(command) = command {
+                args.push("-lc");
+                args.push(command);
+            }
+            let profile = crate::tools_group::builtins::shell_profile(network);
+            let (std_cmd, _sandboxed) = pantheon_exec::sandbox::build_sandboxed_checked(
+                &profile,
+                shell,
+                &args,
+                &cwd.to_string_lossy(),
+            )?;
+            let mut cmd = CommandBuilder::new(std_cmd.get_program());
+            cmd.args(std_cmd.get_args());
+            cmd.env_clear();
+            for (k, v) in std_cmd.get_envs() {
+                if let Some(v) = v {
+                    cmd.env(k, v);
+                }
+            }
+            cmd.env("TERM", "xterm-256color");
+            cmd.cwd(cwd);
+            Ok(cmd)
+        }
+
         /// Live worktree moves update the manager's root. Existing terminals
         /// keep the cwd they were opened with; new terminals start in the new
         /// root.
@@ -3455,6 +3545,7 @@ pub mod pty_tools {
             cwd: Option<&str>,
             rows: u16,
             cols: u16,
+            network: bool,
         ) -> Result<String, PantheonError> {
             if let Some(command) = command {
                 pantheon_exec::danger::gate(command)?;
@@ -3474,18 +3565,7 @@ pub mod pty_tools {
                 })
                 .map_err(|e| perr("PTY_OPEN", format!("open pty: {e}")))?;
             let shell = default_shell();
-            let mut cmd = CommandBuilder::new(&shell);
-            if let Some(command) = command {
-                if cfg!(windows) {
-                    cmd.arg("/C");
-                    cmd.arg(command);
-                } else {
-                    cmd.arg("-lc");
-                    cmd.arg(command);
-                }
-            }
-            cmd.cwd(&cwd);
-            cmd.env("TERM", "xterm-256color");
+            let cmd = Self::sandboxed_pty_command(&shell, command, &cwd, network)?;
             let child = pair
                 .slave
                 .spawn_command(cmd)
@@ -3744,6 +3824,7 @@ pub mod pty_tools {
                 "properties": {
                     "command": {"type": "string", "description": "Optional command to run; omit for an interactive shell."},
                     "cwd": {"type": "string", "description": "Optional working directory inside the workspace."},
+                    "network": {"type": "boolean", "description": "Allow network access in this terminal (default false; may need approval)."},
                     "rows": {"type": "integer", "minimum": 1, "maximum": 500},
                     "cols": {"type": "integer", "minimum": 1, "maximum": 500}
                 }
@@ -3757,6 +3838,7 @@ pub mod pty_tools {
                 jstr(&v, "cwd").as_deref(),
                 ju16(&v, "rows", 24),
                 ju16(&v, "cols", 80),
+                crate::tools_group::builtins::shell_network_requested(&v),
             )?;
             Ok(format!(
                 "{id}\nUse terminal_read {id} to collect output and terminal_write {id} to send input."
@@ -3771,12 +3853,19 @@ pub mod pty_tools {
             let Ok(v) = parse_args(args) else {
                 return Vec::new();
             };
-            match jstr(&v, "command") {
-                Some(cmd) if pantheon_exec::danger::is_git_push(&cmd) => {
-                    vec![Capability::GitPush]
-                }
-                _ => Vec::new(),
+            let mut caps = Vec::new();
+            if crate::tools_group::builtins::shell_network_requested(&v) {
+                caps.push(Capability::NetworkOutbound);
+                caps.push(Capability::Other(
+                    crate::tools_group::builtins::SHELL_NETWORK_CAP.into(),
+                ));
             }
+            if let Some(cmd) = jstr(&v, "command") {
+                if pantheon_exec::danger::is_git_push(&cmd) {
+                    caps.push(Capability::GitPush);
+                }
+            }
+            caps
         })),
     );
 
@@ -3923,9 +4012,25 @@ pub mod pty_tools {
             }
             let root = temp_root();
             let manager = PtyManager::new(root.clone());
-            let id = manager.open(None, None, 24, 80).unwrap();
+            // The PTY runs inside the shell sandbox (audit SEC-03): on a
+            // host where bwrap cannot create a user namespace it fails
+            // closed, like the `shell` tool.
+            let id = match manager.open(None, None, 24, 80, false) {
+                Ok(id) => id,
+                Err(e) if e.code == "SANDBOX_UNAVAILABLE" => {
+                    eprintln!("skip: {}", e.cause);
+                    return;
+                }
+                Err(e) => panic!("{e:?}"),
+            };
             assert!(manager.list().unwrap().iter().any(|v| v["id"] == id));
-            manager.write(&id, "printf pty-ok\\n").unwrap();
+            // Inside the sandbox: the data dir's secrets are masked.
+            manager
+                .write(
+                    &id,
+                    "cat \"$HOME/.pantheon/.env\" 2>/dev/null | wc -c; printf pty-ok\\n\n",
+                )
+                .unwrap();
             let mut text = String::new();
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
@@ -3956,7 +4061,7 @@ pub mod pty_tools {
         fn cwd_is_confined_to_the_workspace() {
             let root = temp_root();
             let manager = PtyManager::new(root.clone());
-            let err = manager.open(None, Some("/etc"), 24, 80).unwrap_err();
+            let err = manager.open(None, Some("/etc"), 24, 80, false).unwrap_err();
             assert!(err.to_string().contains("CONFINE"));
             let _ = std::fs::remove_dir_all(root);
         }

@@ -27,6 +27,18 @@ pub mod confine {
     //! than following it), so a symlink swap at the final component cannot
     //! redirect a write. Full elimination needs `openat2(RESOLVE_IN_ROOT)`-style
     //! dirfd walks; that is future work, not today's gap.
+    //!
+    //! Residual TOCTOU, plugin runners (documented here with the one above,
+    //! audit decision D3): a tool plugin's runner bytes are pinned by fd and
+    //! approval-checked, then staged to `<data_dir>/plugin-sealed/<sha256>`
+    //! (mode 0555, `create_new`), read back and hash-compared, and exec'd by
+    //! path. Between that read-back and `execve` a writer running as the
+    //! same uid can replace the staged file (the 0700 directory does not
+    //! stop the owner). An unwired `O_TMPFILE` + fd-exec path that would have
+    //! closed the window was removed as dead code; closing it again means
+    //! exec'ing by fd through the sandbox wrapper. The hourly sweep of the
+    //! staging dir can also delete a reused staged file just before exec,
+    //! which fails the spawn closed.
 
     use pantheon_api::error::{Layer, PantheonError};
     use std::ffi::OsString;
@@ -127,14 +139,31 @@ pub mod confine {
                 _ => p.clone(),
             })
             .collect();
-        // The secrets broker persists under the data dir; nothing the model
-        // touches through file tools should reach in there directly.
-        if let Ok(d) = std::env::var("PANTHEON_DATA_DIR") {
-            let d = d.trim();
-            if !d.is_empty() {
-                let pat = format!("{}/secrets/**", d.trim_end_matches('/'));
-                raw.push(pat.clone());
-                expanded.push(pat);
+        // The data dir holds every secret store Pantheon writes (`.env`,
+        // `.secrets.key`, `secrets/`, `logins.env`, `logins.json`,
+        // `gateway.env`, `secure-forms.json`) and the ledgers. It is
+        // resolved the same way the rest of the app resolves it, so the
+        // default `~/.pantheon` is covered even when PANTHEON_DATA_DIR is
+        // unset; the old env-only check left `<data_dir>/.env` writable
+        // by the file tools, and loading it on the next launch could flip
+        // security switches (audit SEC-02). Credential locations shared
+        // with the shell sandbox's hidden paths come from one list.
+        let data_dir = pantheon_api::data_dir::resolve();
+        let home_path = home.as_ref().map(std::path::PathBuf::from);
+        let mut secret_paths = crate::sandbox::data_dir_secret_paths(&data_dir);
+        secret_paths.extend(crate::sandbox::home_secret_paths(home_path.as_deref()));
+        for p in secret_paths {
+            let s = p.to_string_lossy().trim_end_matches('/').to_string();
+            if s.is_empty() {
+                continue;
+            }
+            // Both the path itself (a file, or the dir) and everything
+            // under it. `/**` matches the directory and its contents.
+            for pat in [s.clone(), format!("{s}/**")] {
+                if !expanded.contains(&pat) {
+                    raw.push(pat.clone());
+                    expanded.push(pat);
+                }
             }
         }
         DenySet { raw, expanded }
@@ -340,7 +369,7 @@ pub mod danger {
     //!
     //! A fast, deterministic, in-process classifier that runs BEFORE any hook,
     //! spawn, or policy check. It is deliberately NOT the security boundary:
-    //! capability policy and (future) sandboxing remain authoritative. This
+    //! capability policy and the sandbox remain authoritative. This
     //! gate exists to fail fast on the unambiguous worst cases (`rm -rf /`,
     //! fork bombs) before subprocess latency or plugin involvement, and to
     //! give the audit trail a clean `DANGER_BLOCKED` event before any hook
@@ -422,6 +451,12 @@ pub mod danger {
                 None => {
                     if c == '"' || c == '\'' {
                         quote = Some(c);
+                    } else if c == '\n' || c == '\r' {
+                        // An unquoted newline ends a command, like `;`.
+                        // Folding it into a space hid `true\nrm -rf /`
+                        // behind the command word `true` (audit SEC-06).
+                        spaces = 0;
+                        out.push(';');
                     } else if c.is_whitespace() {
                         spaces += 1;
                         if spaces == 1 {
@@ -466,38 +501,121 @@ pub mod danger {
     ///   to consume it.
     fn strip_wrappers(seg: &str) -> &str {
         let mut seg = seg.trim();
-        // Iterate: sudo env FOO=1 nice -n 5 rm ... etc.
+        while let Some(rest) = peel_wrapper(seg) {
+            seg = rest;
+        }
+        seg
+    }
+
+    /// Wrappers that run their argument as the real command, with the
+    /// options that take a separate value (`sudo -u root`, `nice -n 5`,
+    /// `timeout -s KILL 5`). ONE table, shared by `strip_wrappers` and
+    /// the `env_split_string` rule. The old code knew wrapper names but
+    /// not their flags, so the first flag stopped the peel: `sudo -u root
+    /// rm -rf /`, `nice -n 5 rm -rf /`, `env -i rm -rf /` all classified
+    /// Low, and the `env` rule carried its own drifting copy of the list
+    /// (audit SEC-06).
+    fn wrapper_value_flags(word: &str) -> Option<&'static [&'static str]> {
+        Some(match word {
+            "sudo" | "doas" => &["-u", "-g", "-h", "-p", "-c", "-d", "-r", "-t", "-u", "-c"],
+            "env" => &["-u", "-c", "--unset", "--chdir"],
+            "nice" => &["-n", "--adjustment"],
+            "ionice" => &["-c", "-n", "-p", "--class", "--classdata"],
+            "timeout" => &["-s", "-k", "--signal", "--kill-after"],
+            "stdbuf" => &["-i", "-o", "-e"],
+            "nohup" | "command" | "setsid" | "time" | "builtin" | "coproc" | "unbuffer" => &[],
+            "taskset" | "chrt" => &[],
+            _ => return None,
+        })
+    }
+
+    /// Positional arguments a wrapper consumes before the command:
+    /// `timeout DURATION cmd`, `taskset MASK cmd`, `chrt PRIO cmd`.
+    fn wrapper_positionals(word: &str) -> usize {
+        match word {
+            "timeout" | "taskset" | "chrt" => 1,
+            _ => 0,
+        }
+    }
+
+    /// Shell grammar that can precede a command word without changing
+    /// what runs: subshell/group openers, `!`, and compound-command
+    /// keywords. `(rm -rf /)`, `{ rm -rf /; }` and `if x; then rm -rf /;
+    /// fi` used to hide `rm` behind these tokens.
+    fn is_grammar_prefix(word: &str) -> bool {
+        matches!(
+            word,
+            "(" | "{" | "!" | "then" | "do" | "else" | "elif" | "if" | "while" | "until"
+        )
+    }
+
+    /// Remove one leading wrapper (with its flags and arguments), an
+    /// environment assignment, a grammar token, or a leading `(`/`{`/`\`
+    /// glued to the command word. `None` when nothing was removed.
+    fn peel_wrapper(seg: &str) -> Option<&str> {
+        let seg = seg.trim_start();
+        // `(rm`, `{rm`, `\rm`: glued openers and the backslash that only
+        // suppresses alias expansion.
+        if let Some(rest) = seg.strip_prefix(['(', '{', '\\']) {
+            return Some(rest);
+        }
+        let (first, rest) = match seg.split_once(char::is_whitespace) {
+            Some((f, r)) => (f, r.trim_start()),
+            None => (seg, ""),
+        };
+        if first.is_empty() {
+            return None;
+        }
+        if is_grammar_prefix(first) || (first.contains('=') && !first.starts_with('-')) {
+            return Some(rest);
+        }
+        let name = cmd_name(first);
+        let value_flags = wrapper_value_flags(name)?;
+        let mut rest = rest;
+        // Options (any `-x`, `--long`, `--long=value`); a listed option
+        // also consumes its value. `--` ends the options.
         loop {
-            let mut parts = seg.split_whitespace();
-            let first = parts.next().unwrap_or("");
-            // Flag-only wrappers: the next word is the command.
-            let flag_only = matches!(
-                first,
-                "sudo" | "env" | "nice" | "nohup" | "command" | "setsid" | "time" | "builtin"
-            );
-            // Wrappers whose first non-flag argument is consumed with the
-            // wrapper (`timeout 5 rm`, `nice -n 5 rm`, `stdbuf -o0 rm`).
-            let takes_arg = matches!(first, "timeout");
-            let strip = flag_only || takes_arg || first.contains('=');
-            if !strip {
+            let (word, after) = match rest.split_once(char::is_whitespace) {
+                Some((w, a)) => (w, a.trim_start()),
+                None => (rest, ""),
+            };
+            if word == "--" {
+                rest = after;
                 break;
             }
-            seg = match seg.split_once(char::is_whitespace) {
-                Some((_, rest)) => rest.trim(),
-                None => "",
-            };
-            if takes_arg {
-                // Drop the duration, so the command word is what follows it.
-                seg = match seg.split_once(char::is_whitespace) {
-                    Some((_, rest)) => rest.trim(),
+            if !word.starts_with('-') || word == "-" {
+                break;
+            }
+            // `env -S` re-parses its argument: leave it for the
+            // `env_split_string` rule, which sees the unpeeled segment.
+            if name == "env" && (word == "--split-string" || word.starts_with("-s")) {
+                return None;
+            }
+            rest = after;
+            if value_flags.contains(&word) && !word.contains('=') {
+                rest = match rest.split_once(char::is_whitespace) {
+                    Some((_, a)) => a.trim_start(),
                     None => "",
                 };
             }
-            if seg.is_empty() {
-                break;
+        }
+        // `env A=1 B=2 cmd`: assignments after env's options.
+        if name == "env" {
+            while let Some((word, after)) = rest.split_once(char::is_whitespace) {
+                if word.contains('=') && !word.starts_with('-') {
+                    rest = after.trim_start();
+                } else {
+                    break;
+                }
             }
         }
-        seg
+        for _ in 0..wrapper_positionals(name) {
+            rest = match rest.split_once(char::is_whitespace) {
+                Some((_, a)) => a.trim_start(),
+                None => "",
+            };
+        }
+        Some(rest)
     }
 
     /// Split a normalized command into command-list / pipeline segments so
@@ -521,7 +639,33 @@ pub mod danger {
     /// tokenizes like `rm -rf /`. The input is already lowercased by
     /// `normalize`, hence `${ifs}`.
     fn expand_ifs(s: &str) -> String {
-        s.replace("${ifs}", " ").replace("$ifs", " ")
+        // Every `${IFS...}` form (`${IFS}`, `${IFS%?}`, `${IFS:0:1}`), any
+        // case: the text inside quotes keeps its case (audit SEC-06).
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        loop {
+            let lower = rest.to_ascii_lowercase();
+            match lower.find("${ifs") {
+                Some(pos) => {
+                    out.push_str(&rest[..pos]);
+                    let after = &rest[pos..];
+                    let end = after.find('}').map(|e| e + 1).unwrap_or(after.len());
+                    out.push(' ');
+                    rest = &after[end..];
+                }
+                None => {
+                    out.push_str(rest);
+                    break;
+                }
+            }
+        }
+        let lower = out.to_ascii_lowercase();
+        if let Some(pos) = lower.find("$ifs") {
+            let mut s = out.clone();
+            s.replace_range(pos..pos + 4, " ");
+            return expand_ifs(&s);
+        }
+        out
     }
 
     /// One arm of the destructive-pattern table: id, human description,
@@ -551,12 +695,15 @@ pub mod danger {
                 has_r
                     && has_f
                     && rest.iter().filter(|t| !t.starts_with('-')).any(|t| {
-                        *t == "/"
-                            || *t == "/*"
-                            || *t == "~"
+                        let t = t.trim_end_matches(')').trim_end_matches(['/', '*', '.']);
+                        t.is_empty() // `/`, `//`, `/*`, `/.`, `/./`
+                            || t == "~"
                             || t.starts_with("~/")
-                            || *t == "$home"
+                            || t.starts_with('~') && !t.contains('/') // `~root`
+                            || t == "$home"
                             || t.starts_with("$home/")
+                            || t == "${home}"
+                            || t.starts_with("${home}/")
                     })
             }
             segments(c).any(is_root_rm)
@@ -622,28 +769,12 @@ pub mod danger {
                             }
                         }
                     }
-                    // Peel exactly one wrapper layer (mirrors
-                    // `strip_wrappers`, but single-step so `env` is seen).
-                    let first = words[0];
-                    let flag_only = matches!(
-                        first,
-                        "sudo" | "env" | "nice" | "nohup" | "command" | "setsid" | "time"
-                            | "builtin"
-                    );
-                    let takes_arg = first == "timeout";
-                    if !(flag_only || takes_arg || first.contains('=')) {
-                        return false;
-                    }
-                    seg = match seg.split_once(char::is_whitespace) {
-                        Some((_, rest)) => rest.trim(),
+                    // Peel exactly one wrapper layer with the shared table
+                    // (single-step so `env` is seen before it is consumed).
+                    seg = match peel_wrapper(seg) {
+                        Some(rest) => rest.trim(),
                         None => return false,
                     };
-                    if takes_arg {
-                        seg = match seg.split_once(char::is_whitespace) {
-                            Some((_, rest)) => rest.trim(),
-                            None => return false,
-                        };
-                    }
                     if seg.is_empty() {
                         return false;
                     }
@@ -674,7 +805,10 @@ pub mod danger {
     (
         "ifs_split",
         "IFS word-splitting trick used to evade token scanning",
-        |c: &str| c.contains("${ifs}") || c.contains("$ifs"),
+        |c: &str| {
+            let c = c.to_ascii_lowercase();
+            c.contains("${ifs") || c.contains("$ifs")
+        },
     ),
     (
         "find_delete_exec",
@@ -688,17 +822,41 @@ pub mod danger {
         },
     ),
     ("fork_bomb", "shell fork bomb", |c: &str| {
-        c.contains(":(){") || c.contains(":(){ :")
+        // `NAME(){ NAME|NAME& };NAME` with any function name, not just
+        // the classic `:` (audit SEC-07).
+        let compact: String = c.chars().filter(|ch| !ch.is_whitespace()).collect();
+        let mut rest = compact.as_str();
+        while let Some(pos) = rest.find("(){") {
+            let name_start = rest[..pos]
+                .rfind(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == ':'))
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let name = &rest[name_start..pos];
+            let body = &rest[pos + 3..];
+            if !name.is_empty() && body.contains(&format!("{name}|{name}")) && body.contains('&') {
+                return true;
+            }
+            rest = body;
+        }
+        false
     }),
     (
         "disk_wipe",
         "direct write of junk data to a block device",
         |c: &str| {
-            c.contains("dd ")
-                && (c.contains(" of=/dev/sd")
-                    || c.contains(" of=/dev/nvme")
-                    || c.contains(" of=/dev/hd")
-                    || c.contains(" of=/dev/disk"))
+            // Every common block-device family: virtio (`vd`, the default
+            // disk on cloud VMs), Xen (`xvd`), SD/eMMC (`mmcblk`), RAID
+            // (`md`), device-mapper and loop devices were missing (audit
+            // SEC-07). Raw writes by redirection count too.
+            const DEVICES: &[&str] = &[
+                "sd", "nvme", "hd", "disk", "vd", "xvd", "mmcblk", "md", "dm-", "mapper/", "loop",
+            ];
+            let hits = |prefix: &str| {
+                DEVICES
+                    .iter()
+                    .any(|d| c.contains(&format!("{prefix}/dev/{d}")))
+            };
+            (c.contains("dd ") && hits(" of=")) || hits("> ") || hits(">")
         },
     ),
     (
@@ -709,13 +867,45 @@ pub mod danger {
     (
         "shred_root",
         "shred of a filesystem root or block device",
-        |c: &str| c.starts_with("shred ") && (c.contains(" /dev/") || c.contains(" /boot")),
+        |c: &str| {
+            // Per segment with wrappers peeled, like `rm_rf_root`: the old
+            // `starts_with("shred ")` let `sudo shred /dev/sda` through.
+            segments(c).any(|seg| {
+                let seg = strip_wrappers(seg);
+                cmd_name(first_word(seg)) == "shred"
+                    && seg
+                        .split_whitespace()
+                        .skip(1)
+                        .any(|t| t.starts_with("/dev/") || t.starts_with("/boot"))
+            })
+        },
     ),
     (
         "chmod_root_sweep",
-        "chmod 000 on a system root",
+        "recursive chmod, or chmod 000, of the filesystem root",
         |c: &str| {
-            (c.contains("chmod 000 /") || c.contains("chmod -r 000 /")) && !c.contains("/home")
+            // Token-based (audit SEC-07): the literal-string version missed
+            // `--recursive`, `0000`, `-Rf`, `a-rwx`, and switched itself
+            // off whenever `/home` appeared anywhere in the command.
+            segments(c).any(|seg| {
+                let seg = strip_wrappers(seg);
+                let mut words = seg.split_whitespace();
+                if cmd_name(words.next().unwrap_or("")) != "chmod" {
+                    return false;
+                }
+                let args: Vec<&str> = words.collect();
+                let recursive = args.iter().any(|a| {
+                    *a == "--recursive" || (a.starts_with('-') && !a.starts_with("--") && a.contains('r'))
+                });
+                let root = args
+                    .iter()
+                    .filter(|a| !a.starts_with('-'))
+                    .any(|a| a.trim_end_matches(['/', '*', '.']).is_empty());
+                let locks_out = args
+                    .iter()
+                    .any(|a| a.trim_start_matches('0').is_empty() && !a.is_empty() || *a == "a-rwx");
+                root && (recursive || locks_out)
+            })
         },
     ),
 ];
@@ -2981,8 +3171,9 @@ pub mod danger {
         }
     }
 
-    /// Stable, non-secret identifier for a normalized command: `sha1:0123abcd`
-    /// (first 8 hex of an FNV-1a 64 hash) plus the char length. Deterministic
+    /// Stable, non-secret identifier for a normalized command:
+    /// `cmd:0123abcd len:42` (the top 32 bits of an FNV-1a 64 hash as 8 hex
+    /// digits, plus the normalized length). Deterministic
     /// across runs so repeated blocks of the same command correlate, but
     /// irreversible, so an error or log line carrying it cannot leak the
     /// command text - which may itself contain secrets.
@@ -3547,51 +3738,6 @@ pub mod supervisor {
         cause: String,
     }
 
-    /// A private, sealed copy of a plugin runner's bytes, ready for exec.
-    ///
-    /// On Linux this is an unnamed O_TMPFILE inode: it never has a path, so
-    /// nothing can retarget, replace, or rewrite it between sealing and exec.
-    /// On other platforms it is a 0700 file with an unguessable random name
-    /// under the sealed dir; `path` carries that name so the caller can exec
-    /// it (fd-exec is a Linux facility). Stale named files are swept by
-    /// [`PluginSupervisor::sealed_dir`] on the next seal.
-    struct SealedRunner {
-        file: std::fs::File,
-        /// Read on non-Linux (fd-exec is Linux-only); on Linux the sealed fd
-        /// is exec'd directly and this stays `None`.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
-        path: Option<PathBuf>,
-    }
-
-    /// 128 bits of randomness as hex, for unguessable sealed-file names.
-    /// Same-uid attackers share our file permissions, so the name is the only
-    /// thing keeping a racing writer out of the sealed file - and O_EXCL
-    /// creation fails closed on a pre-created plant regardless.
-    fn random_hex32() -> String {
-        static CTR: AtomicU64 = AtomicU64::new(0);
-        let mut buf = [0u8; 16];
-        #[cfg(unix)]
-        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-            let _ = f.read_exact(&mut buf);
-        }
-        // Always mix in per-process uniqueness: even if the urandom read
-        // failed, the name stays unpredictable in practice.
-        let uniq = CTR.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id() as u64;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        for (i, b) in buf.iter_mut().enumerate() {
-            let m = uniq
-                .wrapping_add(pid)
-                .wrapping_add(nanos)
-                .wrapping_add(i as u64) as u8;
-            *b ^= m;
-        }
-        buf.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     /// Supervises one plugin child process. Owns the child, its stdin, and a
     /// line-buffered stdout reader. Not Clone; share via `Arc<Mutex<..>>`.
     pub struct PluginSupervisor {
@@ -3750,10 +3896,13 @@ pub mod supervisor {
 
         /// Shared spawn implementation. `runner` must already be canonical; it
         /// is used for argv[0] and diagnostics only - never re-opened.
-        /// `runner_bytes` are the exact bytes to execute: they are written to
-        /// a private sealed file (see [`Self::seal_runner_bytes`]) and the
-        /// child execs that, so nothing under the plugin dir is re-resolved or
-        /// re-read between verification and execve.
+        /// `runner_bytes` are the exact bytes to execute: they are staged
+        /// content-addressed under `<data_dir>/plugin-sealed/<sha256>`
+        /// (see [`Self::stage_runner_bytes`]), read back and hash-checked,
+        /// and the child execs that path, so nothing under the plugin dir is
+        /// re-resolved or re-read between verification and execve. The
+        /// window between the read-back and execve is the residual TOCTOU
+        /// documented in the module header.
         fn spawn_inner(
             _runner: &Path,
             runner_bytes: &[u8],
@@ -3796,6 +3945,7 @@ pub mod supervisor {
             // Refuse to supervise PID 1 or our own process, defensively.
             if pgid <= 1 || pgid == std::process::id() as i32 {
                 let _ = child.kill();
+                reap_in_background(child);
                 return Err(merr(
                     "PLUGIN_BAD_PID",
                     format!("refusing to supervise pid {pgid}"),
@@ -3809,6 +3959,16 @@ pub mod supervisor {
                 .stdout
                 .take()
                 .ok_or_else(|| merr("PLUGIN_STDOUT", "child has no stdout".into()))?;
+            // Drain stderr. It is piped but was never read, so a plugin
+            // that logged more than a pipe buffer (64 KiB) blocked forever
+            // in write(2) and every call to it timed out (audit REL-01).
+            // The bytes are discarded: printing them would land in the TUI
+            // view and could echo secrets a plugin logs.
+            if let Some(mut stderr) = child.stderr.take() {
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+                });
+            }
             Ok(Self {
                 child: Some(child),
                 stdin: Some(stdin),
@@ -3822,30 +3982,11 @@ pub mod supervisor {
             })
         }
 
-        /// Write `bytes` to a private file and return it for exec. See
-        /// [`SealedRunner`] for the platform story.
-        #[allow(dead_code)]
-        fn seal_runner_bytes(bytes: &[u8], data_dir: &Path) -> Result<SealedRunner, PantheonError> {
-            let dir = Self::sealed_dir(data_dir)?;
-            #[cfg(target_os = "linux")]
-            if let Ok(file) = Self::seal_tmpfile(&dir, bytes) {
-                return Ok(SealedRunner { file, path: None });
-            }
-            // Fallback (non-Linux, or a filesystem that rejects O_TMPFILE):
-            // unguessable random name + O_EXCL so a pre-created plant fails
-            // closed instead of being executed.
-            let (file, path) = Self::seal_named_file(&dir, bytes)?;
-            Ok(SealedRunner {
-                file,
-                path: Some(path),
-            })
-        }
-
-        /// Ensure the private sealed-file dir exists (0700) and sweep stale
-        /// named sealed files left by earlier fallback-path seals or by a
-        /// crash between seal and exec. A sealed file is only needed for the
-        /// milliseconds between sealing and execve, so anything older than an
-        /// hour is definitionally a leftover.
+        /// Ensure the private staging dir exists (0700) and sweep staged
+        /// runners older than an hour. A staged runner is only needed for
+        /// the milliseconds between staging and execve; a reused hash keeps
+        /// its old mtime, so a concurrent sweep can delete it before exec,
+        /// which fails the spawn closed (it never runs other bytes).
         fn sealed_dir(data_dir: &Path) -> Result<PathBuf, PantheonError> {
             let dir = data_dir.join("plugin-sealed");
             std::fs::create_dir_all(&dir).map_err(|e| {
@@ -3939,142 +4080,6 @@ pub mod supervisor {
                     .map_err(|e| merr("PLUGIN_SPAWN", format!("chmod plugin work dir: {e}")))?;
             }
             Ok(dir)
-        }
-
-        /// Linux: write `bytes` to an unnamed O_TMPFILE inode in `dir`.
-        #[cfg(target_os = "linux")]
-        #[allow(dead_code)]
-        fn seal_tmpfile(dir: &Path, bytes: &[u8]) -> Result<std::fs::File, PantheonError> {
-            use std::ffi::CString;
-            use std::os::unix::io::FromRawFd;
-            let cdir = CString::new(dir.as_os_str().as_encoded_bytes())
-                .map_err(|e| merr("PLUGIN_SPAWN", format!("sealed dir path: {e}")))?;
-            // O_TMPFILE must be OR'd with O_RDWR or O_WRONLY; mode sets the
-            // inode permissions (0700: owner-only, with the exec bit so
-            // scripts pass execve's permission check).
-            let wfd = unsafe { libc::open(cdir.as_ptr(), libc::O_TMPFILE | libc::O_RDWR, 0o700) };
-            if wfd < 0 {
-                return Err(merr(
-                    "PLUGIN_SPAWN",
-                    format!(
-                        "O_TMPFILE in {}: {}",
-                        dir.display(),
-                        std::io::Error::last_os_error()
-                    ),
-                ));
-            }
-            // Re-open read-only through /proc/self/fd BEFORE closing the
-            // write handle: execve refuses (ETXTBSY) any file that is open for
-            // writing, so the handle the child execs - and every handle we
-            // keep - must be read-only.
-            let rpath = CString::new(format!("/proc/self/fd/{wfd}"))
-                .map_err(|e| merr("PLUGIN_SPAWN", format!("sealed fd path: {e}")))?;
-            let rfd = unsafe { libc::open(rpath.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-            if rfd < 0 {
-                unsafe { libc::close(wfd) };
-                return Err(merr(
-                    "PLUGIN_SPAWN",
-                    format!(
-                        "re-open sealed runner read-only: {}",
-                        std::io::Error::last_os_error()
-                    ),
-                ));
-            }
-            // SAFETY: wfd/rfd are valid file descriptions we own.
-            let mut wfile = unsafe { std::fs::File::from_raw_fd(wfd) };
-            let write_res = wfile
-                .write_all(bytes)
-                .map_err(|e| merr("PLUGIN_SPAWN", format!("write sealed runner: {e}")));
-            drop(wfile); // close the write handle: no writer may exist at exec
-            write_res?;
-            Ok(unsafe { std::fs::File::from_raw_fd(rfd) })
-        }
-
-        /// Fallback: 0700 file with an unguessable random name, created O_EXCL.
-        #[allow(dead_code)]
-        fn seal_named_file(
-            dir: &Path,
-            bytes: &[u8],
-        ) -> Result<(std::fs::File, PathBuf), PantheonError> {
-            for _ in 0..8 {
-                let path = dir.join(format!("runner-{}", random_hex32()));
-                let mut opts = std::fs::OpenOptions::new();
-                opts.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    opts.mode(0o700);
-                }
-                match opts.open(&path) {
-                    Ok(mut file) => {
-                        file.write_all(bytes).map_err(|e| {
-                            merr("PLUGIN_SPAWN", format!("write sealed runner: {e}"))
-                        })?;
-                        drop(file); // close the write handle (ETXTBSY, see seal_tmpfile)
-                        let ro =
-                            std::fs::OpenOptions::new()
-                                .read(true)
-                                .open(&path)
-                                .map_err(|e| {
-                                    merr(
-                                        "PLUGIN_SPAWN",
-                                        format!("re-open sealed runner {}: {e}", path.display()),
-                                    )
-                                })?;
-                        return Ok((ro, path));
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                    Err(e) => {
-                        return Err(merr(
-                            "PLUGIN_SPAWN",
-                            format!("create sealed runner {}: {e}", path.display()),
-                        ))
-                    }
-                }
-            }
-            Err(merr(
-                "PLUGIN_SPAWN",
-                "could not create a sealed runner file".to_string(),
-            ))
-        }
-
-        /// Build the Command that execs the sealed runner. On Linux the child
-        /// execs the already-open sealed fd via /proc/self/fd/N with argv[0]
-        /// set to the canonical runner path (so `$0`/shebang behavior is
-        /// unchanged) - no path component is re-resolved at exec time, and the
-        /// sealed file holds exactly the bytes the approval check bound, so a
-        /// rename swap, symlink swap, or in-place rewrite between the check
-        /// and execve cannot affect what executes.
-        #[cfg(target_os = "linux")]
-        #[allow(dead_code)]
-        fn exec_command(runner: &Path, sealed: &SealedRunner) -> Command {
-            use std::os::unix::io::AsRawFd;
-            use std::os::unix::process::CommandExt;
-            let fd = sealed.file.as_raw_fd();
-            // Clear CLOEXEC so the fd survives into the child; the child
-            // execs it directly.
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-            if flags >= 0 {
-                unsafe {
-                    libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                }
-            }
-            let mut cmd = Command::new(format!("/proc/self/fd/{fd}"));
-            cmd.arg0(runner.as_os_str());
-            cmd
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        #[allow(dead_code)]
-        fn exec_command(runner: &Path, sealed: &SealedRunner) -> Command {
-            // Best effort only: fd-exec is a Linux facility. Exec the sealed
-            // private path - the plugin dir itself is never re-resolved - but
-            // a same-uid writer that guesses the unguessable name inside the
-            // seal/exec window is not fully closed on this platform.
-            match &sealed.path {
-                Some(path) => Command::new(path),
-                None => Command::new(runner),
-            }
         }
 
         /// stdio + env policy for the plugin child. Shared by both spawn
@@ -4185,7 +4190,9 @@ pub mod supervisor {
                             // (which we drop). If it ignores TERM, escalate to
                             // SIGKILL so neither the group nor the thread leaks.
                             self.kill_group();
-                            self.child.take();
+                            if let Some(child) = self.child.take() {
+                                reap_in_background(child);
+                            }
                             self.stdin.take();
                             // SIGKILL is terminal, so one signal is enough. The
                             // reader thread is already wedged in read_line and is
@@ -4353,14 +4360,30 @@ pub mod supervisor {
                         libc::killpg(self.pgid, SIGKILL);
                     }
                 }
-                self.child.take();
+                if let Some(child) = self.child.take() {
+                    reap_in_background(child);
+                }
             }
         }
     }
 
-    // PluginSupervisor owns a raw Child; safe to move between threads as long as
-    // only one thread touches it at a time (callers share via Mutex).
-    unsafe impl Send for PluginSupervisor {}
+    /// Wait for a killed child on a short-lived thread. Dropping a
+    /// `std::process::Child` never reaps it, so every timeout, Drop and
+    /// bad-pid path left a zombie until Pantheon exited (audit REL-01).
+    /// The child was already signalled; `wait` returns as soon as it dies.
+    fn reap_in_background(mut child: std::process::Child) {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+
+    // Every field is Send (std process handles, strings, plain data), so
+    // the type is Send without the `unsafe impl` it used to carry, which
+    // would also have hidden a future non-Send field (audit LOW-09).
+    const _: fn() = || {
+        fn assert_send<T: Send>() {}
+        assert_send::<PluginSupervisor>();
+    };
 
     #[cfg(test)]
     mod tests {
@@ -4768,18 +4791,42 @@ pub mod safewrite {
         let tmp = path.with_file_name(tmp_name);
         let mut f = open_tmp_nofollow(&tmp)
             .map_err(|e| serr("SAFE_WRITE", format!("tmp create {}: {e}", tmp.display())))?;
-        {
+        // Write, fsync, publish. Every failure removes the tmp file (the
+        // old code left `.tmp.<pid>.<n>` litter), and a failed fsync is an
+        // error: reporting success for bytes the disk refused to persist
+        // broke the "atomic, durable" contract (audit REL-01).
+        let staged = {
             use std::io::Write;
             f.write_all(bytes)
-                .map_err(|e| serr("SAFE_WRITE", format!("tmp write {}: {e}", tmp.display())))?;
+                .map_err(|e| serr("SAFE_WRITE", format!("tmp write {}: {e}", tmp.display())))
+                .and_then(|_| {
+                    f.sync_all()
+                        .map_err(|e| serr("SAFE_FSYNC", format!("fsync {}: {e}", tmp.display())))
+                })
+                .and_then(|_| {
+                    std::fs::rename(&tmp, path).map_err(|e| {
+                        serr("SAFE_RENAME", format!("publish {}: {e}", path.display()))
+                    })
+                })
+        };
+        if let Err(e) = staged {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
-        let _ = f.sync_all();
-        std::fs::rename(&tmp, path)
-            .map_err(|e| serr("SAFE_RENAME", format!("publish {}: {e}", path.display())))?;
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 if let Ok(d) = std::fs::File::open(parent) {
-                    let _ = d.sync_all();
+                    // Directory fsync is unsupported on some filesystems
+                    // and platforms (EINVAL/EBADF, Windows); only a real
+                    // I/O failure is reported.
+                    if let Err(e) = d.sync_all() {
+                        if e.raw_os_error() == Some(libc::EIO) {
+                            return Err(serr(
+                                "SAFE_FSYNC",
+                                format!("fsync dir {}: {e}", parent.display()),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -5027,11 +5074,34 @@ pub mod safewrite {
                 .map_err(|e| serr("SAFE_MKDIR", format!("checkpoint dir: {e}")))?;
             let mut files = vec![];
             for (i, p) in paths.iter().enumerate() {
-                let fp = fingerprint_of(p)?;
-                let blob = if fp.existed {
-                    std::fs::read(p).unwrap_or_default()
-                } else {
-                    vec![]
+                // Read once and hash THOSE bytes. The old code fingerprinted
+                // one read and stored a second, `unwrap_or_default()`ed read:
+                // a file that changed or vanished in between was recorded as
+                // existing with an empty pre-image, and a rollback wrote an
+                // empty file over the user's content (audit COR-04).
+                let (fp, blob) = match std::fs::read(p) {
+                    Ok(b) => (
+                        Fingerprint {
+                            hash: fnv1a_hex(&b),
+                            len: b.len() as u64,
+                            existed: true,
+                        },
+                        b,
+                    ),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+                        Fingerprint {
+                            hash: fnv1a_hex(&[]),
+                            len: 0,
+                            existed: false,
+                        },
+                        vec![],
+                    ),
+                    Err(e) => {
+                        return Err(serr(
+                            "SAFE_READ",
+                            format!("checkpoint {}: {e}", p.display()),
+                        ))
+                    }
                 };
                 let name = format!("blob_{i}");
                 std::fs::write(dir.join("blobs").join(&name), &blob)
@@ -5163,19 +5233,22 @@ pub mod safewrite {
             )?;
             let mut applied = vec![];
             for f in &batch.files {
-                let before = fingerprint_of(&f.path)?;
-                let blob = std::fs::read(dir.join(&f.blob))
-                    .map_err(|e| serr("SAFE_READ", format!("staged blob {}: {e}", f.blob)))?;
-                if let Err(e) = atomic_write(&f.path, &blob) {
-                    let _ = self.restore_checkpoint(&cp.id);
-                    return Err(e);
+                let step = || -> Result<AppliedFile, PantheonError> {
+                    let before = fingerprint_of(&f.path)?;
+                    let blob = std::fs::read(dir.join(&f.blob))
+                        .map_err(|e| serr("SAFE_READ", format!("staged blob {}: {e}", f.blob)))?;
+                    atomic_write(&f.path, &blob)?;
+                    let after = fingerprint_of(&f.path)?;
+                    Ok(AppliedFile {
+                        path: f.path.clone(),
+                        before_hash: before.hash,
+                        after_hash: after.hash,
+                    })
+                };
+                match step() {
+                    Ok(a) => applied.push(a),
+                    Err(e) => return Err(self.rollback_after_failure(&cp.id, e)),
                 }
-                let after = fingerprint_of(&f.path)?;
-                applied.push(AppliedFile {
-                    path: f.path.clone(),
-                    before_hash: before.hash,
-                    after_hash: after.hash,
-                });
             }
             self.journal_append("commit", stage_id, Some(cp.id.clone()), ledger_seq, paths)?;
             Ok(ApplyReceipt {
@@ -5230,17 +5303,20 @@ pub mod safewrite {
             )?;
             let mut applied = vec![];
             for e in &edits {
-                let before = fingerprint_of(&e.path)?;
-                if let Err(err) = atomic_write(&e.path, &e.new_content) {
-                    let _ = self.restore_checkpoint(&cp.id);
-                    return Err(err);
+                let step = || -> Result<AppliedFile, PantheonError> {
+                    let before = fingerprint_of(&e.path)?;
+                    atomic_write(&e.path, &e.new_content)?;
+                    let after = fingerprint_of(&e.path)?;
+                    Ok(AppliedFile {
+                        path: e.path.clone(),
+                        before_hash: before.hash,
+                        after_hash: after.hash,
+                    })
+                };
+                match step() {
+                    Ok(a) => applied.push(a),
+                    Err(err) => return Err(self.rollback_after_failure(&cp.id, err)),
                 }
-                let after = fingerprint_of(&e.path)?;
-                applied.push(AppliedFile {
-                    path: e.path.clone(),
-                    before_hash: before.hash,
-                    after_hash: after.hash,
-                });
             }
             self.journal_append("commit", "direct", Some(cp.id.clone()), ledger_seq, paths)?;
             Ok(ApplyReceipt {
@@ -5249,6 +5325,31 @@ pub mod safewrite {
                 ledger_seq,
                 files: applied,
             })
+        }
+        /// Roll a half-applied batch back to its auto-checkpoint after
+        /// `cause`. Any error after the first write rolls back (a failed
+        /// post-write fingerprint used to return early with the batch half
+        /// applied), and a failed rollback is reported with the cause
+        /// instead of being dropped (audit COR-04).
+        fn rollback_after_failure(
+            &self,
+            checkpoint_id: &str,
+            cause: PantheonError,
+        ) -> PantheonError {
+            match self.restore_checkpoint(checkpoint_id) {
+                Ok(_) => cause,
+                Err(rb) => PantheonError::new(
+                    "SAFE_ROLLBACK_FAILED",
+                    Layer::Execution,
+                    false,
+                    format!(
+                        "{} ({}), and rolling back to checkpoint {checkpoint_id} also failed: {} ({})",
+                        cause.code, cause.cause, rb.code, rb.cause
+                    ),
+                    "inspect the files listed in the checkpoint and restore them manually",
+                    "",
+                ),
+            }
         }
         /// Restore one checkpoint's pre-images (atomic per file).
         pub fn restore_checkpoint(&self, id: &str) -> Result<Vec<PathBuf>, PantheonError> {
@@ -5260,6 +5361,19 @@ pub mod safewrite {
             for (f, target) in cp.files.iter().zip(confined) {
                 let blob = std::fs::read(dir.join("blobs").join(&f.blob))
                     .map_err(|e| serr("SAFE_READ", format!("checkpoint blob {}: {e}", f.blob)))?;
+                // A pre-image that does not match its recorded hash is not
+                // the file the checkpoint saw (truncated, tampered or a
+                // pre-fix empty capture): refuse rather than overwrite.
+                if f.existed && fnv1a_hex(&blob) != f.hash {
+                    return Err(serr(
+                        "SAFE_CHECKPOINT_CORRUPT",
+                        format!(
+                            "checkpoint {id} pre-image for {} does not match its hash; \
+                             refusing to restore it",
+                            target.display()
+                        ),
+                    ));
+                }
                 if f.existed {
                     atomic_write(&target, &blob)?;
                 } else if target.exists() {
