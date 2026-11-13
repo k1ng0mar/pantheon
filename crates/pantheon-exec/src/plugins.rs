@@ -825,6 +825,22 @@ pub fn install_catalog(
         .iter()
         .find(|e| e.name == name)
         .ok_or_else(|| merr("PLUGIN_NOT_FOUND", format!("'{name}' not in catalog")))?;
+    // Everything below comes from a remote catalog and reaches git argv:
+    // the SHA must be a full commit hash (a value like `--upload-pack=...`
+    // would be read as an option), and the repo must be an https URL
+    // (audit SEC-13).
+    if !is_full_commit_sha(&entry.sha) {
+        return Err(merr(
+            "PLUGIN_BAD_SHA",
+            format!("catalog sha for '{}' is not a 40-hex commit id", entry.name),
+        ));
+    }
+    if !entry.repo.starts_with("https://") {
+        return Err(merr(
+            "PLUGIN_BAD_REPO",
+            format!("catalog repo for '{}' must be an https:// URL", entry.name),
+        ));
+    }
     // The name comes from a remote catalog: slug-validate before it
     // touches the filesystem, and resolve under the canonical plugins root.
     let dest = plugin_install_dir(data_dir, &entry.name)?;
@@ -845,6 +861,12 @@ pub fn install_catalog(
     let tmp_dest = dest.with_file_name(format!(".{}", entry.name));
     std::fs::create_dir_all(&tmp_dest).map_err(|e| merr("PLUGIN_INSTALL_DIR", format!("{e}")))?;
     let clone_result = std::process::Command::new("git")
+        .args([
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+        ])
         .arg("clone")
         .arg("--depth")
         .arg("1")
@@ -862,6 +884,7 @@ pub fn install_catalog(
     let fetch = std::process::Command::new("git")
         .arg("fetch")
         .arg("origin")
+        .arg("--")
         .arg(&entry.sha)
         .current_dir(&tmp_dest)
         .output()
@@ -873,6 +896,7 @@ pub fn install_catalog(
     }
     let checkout = std::process::Command::new("git")
         .arg("checkout")
+        .arg("--detach")
         .arg(&entry.sha)
         .current_dir(&tmp_dest)
         .output()
@@ -904,7 +928,10 @@ pub fn install_catalog(
             .collect(),
         env_vars: vec![],
         runner: "run.sh".into(),
-        enabled: true,
+        // Installed, not enabled: the code just came from a third-party
+        // catalog, so it waits for the operator's approve/enable step
+        // like any other plugin (audit SEC-13).
+        enabled: false,
         sandbox: PluginSandbox::default(),
         provider: None,
     };
@@ -912,8 +939,16 @@ pub fn install_catalog(
         .map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("{e}")))?;
     std::fs::write(dest.join("manifest.yaml"), yaml)
         .map_err(|e| merr("PLUGIN_MANIFEST_WRITE", format!("{e}")))?;
-    println!("installed {}@{} from {}", entry.name, entry.sha, entry.repo);
+    println!(
+        "installed {}@{} from {} (disabled: review it, then `pantheon plugins enable {}`)",
+        entry.name, entry.sha, entry.repo, entry.name
+    );
     Ok(())
+}
+
+/// A full 40-hex-digit git commit id (lowercase or uppercase).
+pub fn is_full_commit_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 // ---------------------------------------------------------------------------

@@ -767,8 +767,9 @@ fn dashboard_encoded_api_prefix_requires_token() {
 }
 
 /// Round-1 closed shapes still fail safe after the P0 fix: paths that do
-/// not decode to `["api", ...]` are never routed to a handler - 404 from
-/// the Public group, or 401 when the first segment really is `api`.
+/// not decode to `["api", ...]` are never routed to a handler. Without a
+/// token every non-static path is a 401 (unknown paths default to the
+/// token-gated group, audit LOW-13); with one, the closed shapes 404.
 #[test]
 fn dashboard_closed_path_shapes_still_fail_safe() {
     let (port, token, _dir) = boot();
@@ -778,15 +779,16 @@ fn dashboard_closed_path_shapes_still_fail_safe() {
         let r = raw_request(port, "GET", path, &a, None);
         assert_eq!(r.status, 404, "GET {path} with token must be 404");
     }
-    // Without a token: still never a 200, and never routed to a handler.
+    // Without a token: never a 200, never routed to a handler.
     let none: Vec<(String, String)> = vec![];
-    for (path, want) in [
-        ("/API/runs", 404),     // Public -> dispatch 404s
-        ("/api%2f/runs", 404),  // one segment "api/runs": Public -> 404
-        ("/%2561pi/runs", 404), // decodes once to "%61pi": Public -> 404
-        ("/api/../runs", 401),  // first segment IS "api": token gate
+    for path in [
+        "/API/runs",
+        "/api%2f/runs",
+        "/%2561pi/runs",
+        "/api/../runs",
+        "/nope",
     ] {
         let r = raw_request(port, "GET", path, &none, None);
-        assert_eq!(r.status, want, "GET {path} without token must be {want}");
+        assert_eq!(r.status, 401, "GET {path} without token must be 401");
     }
 }

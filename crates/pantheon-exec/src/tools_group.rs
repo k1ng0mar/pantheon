@@ -721,6 +721,13 @@ pub mod http {
             .args([
                 "-sS",
                 "-L",
+                // http(s) only, on the first request and every redirect:
+                // without this the fallback would follow a redirect to
+                // file:// or gopher:// (audit SEC-12).
+                "--proto",
+                "=http,https",
+                "--proto-redir",
+                "=http,https",
                 "--max-redirs",
                 "5",
                 "--max-time",

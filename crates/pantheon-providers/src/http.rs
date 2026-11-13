@@ -23,6 +23,9 @@ use pantheon_api::message::Message;
 use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
+/// Upper bound for one SSE event's accumulated `data:` payload.
+const MAX_SSE_EVENT_BYTES: usize = 16 * 1024 * 1024;
+
 pub(crate) fn perr(code: &str, cause: String, retryable: bool) -> PantheonError {
     PantheonError::new(
         code,
@@ -617,20 +620,20 @@ fn send(
     validate_url(&req.url)?;
     let mut r = agent.post(&req.url);
     if req.use_sigv4 {
-        if let Some(creds) = crate::sigv4::SigV4Creds::from_env() {
-            let region = req.url.split('.').nth(1).unwrap_or("us-east-1");
-            let auth = crate::sigv4::sign_request(
-                "POST",
-                &req.url,
-                "",
-                &req.headers,
-                req.body.as_bytes(),
-                region,
-                "bedrock",
-                &creds,
-            );
-            r = r.header("Authorization", auth.as_str());
-        }
+        // Disabled until it is correct (audit COR-12). The hand-rolled
+        // signer computes the date with 365-day years and 30-day months,
+        // signs the full URL as the canonical URI, signs `x-amz-date` and
+        // the session token without sending them, and the request went out
+        // unsigned when credentials were missing: every real Bedrock call
+        // failed with an opaque 403. Fail loudly instead.
+        return Err(PantheonError::new(
+            "PROVIDER_SIGV4_UNSUPPORTED",
+            pantheon_api::error::Layer::Provider,
+            false,
+            "AWS SigV4 request signing (Amazon Bedrock) is not supported in this build".to_string(),
+            "use Bedrock through an OpenAI-compatible gateway, or another provider",
+            req.url.clone(),
+        ));
     }
     for (k, v) in &req.headers {
         r = r.header(k.as_str(), v.as_str());
@@ -964,6 +967,18 @@ impl ChatTransport for HttpTransport {
                     pending.push('\n');
                 }
                 pending.push_str(payload);
+                // One event is bounded: a provider that never ends its
+                // `data:` event grew this buffer until memory ran out
+                // (audit COR-11).
+                if pending.len() > MAX_SSE_EVENT_BYTES {
+                    return Err(perr(
+                        "PROVIDER_STREAM_TOO_LARGE",
+                        format!(
+                            "one streamed event exceeded {MAX_SSE_EVENT_BYTES} bytes without ending"
+                        ),
+                        false,
+                    ));
+                }
             }
         }
         if flush(&mut pending, on_payload)? {

@@ -175,7 +175,10 @@ impl SubprocessWorker {
         let args = swarm_child_argv(task_id.as_str(), agent.as_deref(), verdict_tool);
         let pid = spawn_turn_child_with_stdin(&args, task.as_bytes())
             .map_err(|e| SwarmError::worker(format!("spawn turn child: {e}")))?;
-        self.pids.lock().unwrap().insert(run_id.clone(), pid);
+        self.pids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(run_id.clone(), pid);
         Ok(run_id)
     }
 }
@@ -217,7 +220,12 @@ impl SwarmWorker for SubprocessWorker {
                 // have died without settling. A dead recorded PID means
                 // the turn is gone for good - report failure so the swarm
                 // can judge on what's there instead of polling forever.
-                let pid = self.pids.lock().unwrap().get(run_id).copied();
+                let pid = self
+                    .pids
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(run_id)
+                    .copied();
                 match pid {
                     Some(pid) if pid != 0 && !pid_alive(pid) => Ok(SwarmAgentStatus::Failed),
                     _ => Ok(SwarmAgentStatus::Working),

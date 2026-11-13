@@ -1549,13 +1549,32 @@ pub mod service {
         format!("*/5 * * * * {} schedule tick {CRON_MARKER}", exe.display())
     }
 
+    /// Retry a spawn that failed with ETXTBSY ("Text file busy"). The
+    /// kernel refuses to exec a file some process still holds open for
+    /// writing, and a sibling thread that forks while another thread is
+    /// writing an executable (an installer, a test fixture) holds that fd
+    /// until its own exec. The condition clears in milliseconds; Go's
+    /// os/exec retries the same way. Seen as flaky `stop_systemd` /
+    /// `cron_install_merges_idempotently` failures (audit COR-14).
+    fn retry_text_busy<T>(mut spawn: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        const ETXTBSY: i32 = 26;
+        let mut attempt = 0;
+        loop {
+            match spawn() {
+                Err(e) if e.raw_os_error() == Some(ETXTBSY) && cfg!(unix) && attempt < 50 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+    }
+
     fn run_cmd(env: &InstallEnv, bin: &str, args: &[&str]) -> Result<(), String> {
         let abs = env
             .which(bin)
             .ok_or_else(|| format!("{bin} not found on PATH"))?;
-        let status = Command::new(&abs)
-            .args(args)
-            .status()
+        let status = retry_text_busy(|| Command::new(&abs).args(args).status())
             .map_err(|e| format!("run {bin}: {e}"))?;
         if status.success() {
             Ok(())
@@ -1589,9 +1608,7 @@ pub mod service {
         let abs = env
             .which(bin)
             .ok_or_else(|| CaptureFailure::Unavailable(format!("{bin} not found on PATH")))?;
-        let out = Command::new(&abs)
-            .args(args)
-            .output()
+        let out = retry_text_busy(|| Command::new(&abs).args(args).output())
             .map_err(|e| CaptureFailure::Unavailable(format!("run {bin}: {e}")))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -1677,13 +1694,15 @@ pub mod service {
             return Ok(false);
         }
         let abs = env.which("crontab").ok_or("crontab not found on PATH")?;
-        let mut child = Command::new(&abs)
-            .arg("-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("run crontab: {e}"))?;
+        let mut child = retry_text_busy(|| {
+            Command::new(&abs)
+                .arg("-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        })
+        .map_err(|e| format!("run crontab: {e}"))?;
         let status = child
             .stdin
             .as_mut()

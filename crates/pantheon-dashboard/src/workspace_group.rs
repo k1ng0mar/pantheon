@@ -1149,6 +1149,12 @@ pub mod skills {
             if url.trim().is_empty() {
                 return bad_json("url is empty");
             }
+            // The dashboard fetches this URL server-side, so it gets the
+            // same SSRF guard as link previews: http(s) only and a host
+            // that resolves to public addresses (audit SEC-12).
+            if let Err(e) = crate::link_preview::guard_url(url) {
+                return err_json(400, "SKILL_IMPORT_URL", &e.msg);
+            }
             return match import_skill_from_url(&app.data_dir, url) {
                 Ok((dest, skill)) => json_ok(serde_json::json!({
                     "ok": true,

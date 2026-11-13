@@ -122,13 +122,27 @@ pub mod http {
         }
         /// A file download: sets `Content-Disposition: attachment`.
         pub fn download(filename: &str, content_type: &'static str, body: Vec<u8>) -> Self {
+            // Headers are written raw, so a filename built from request
+            // data (`run-{run_id}.md`) could inject CR/LF or break out of
+            // the quoted string (audit LOW-12). Keep printable ASCII minus
+            // `"` and `\`.
+            let safe: String = filename
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
             Self::Buffered {
                 status: 200,
                 content_type,
                 body,
                 extra_headers: vec![(
                     "Content-Disposition",
-                    format!("attachment; filename=\"{filename}\""),
+                    format!("attachment; filename=\"{safe}\""),
                 )],
             }
         }
@@ -376,8 +390,10 @@ pub mod http {
     pub fn handle_session(ctx: &AuthCtx, req: &Request) -> Response {
         match req.method.as_str() {
             "POST" => {
-                let ok = req.headers.get("x-pantheon-token").map(String::as_str)
-                    == Some(ctx.token.as_str());
+                let ok = req
+                    .headers
+                    .get("x-pantheon-token")
+                    .is_some_and(|t| token_eq(t, &ctx.token));
                 if !ok {
                     return Response::unauthorized();
                 }
@@ -441,7 +457,7 @@ pub mod http {
         match group {
             AuthGroup::Public => Ok(()),
             AuthGroup::DashboardApi => {
-                let header_ok = token_of(req) == Some(ctx.token.as_str());
+                let header_ok = token_of(req).is_some_and(|t| token_eq(t, &ctx.token));
                 if !header_ok && !ctx.valid_session(req) {
                     return Err(Response::unauthorized());
                 }
@@ -465,7 +481,7 @@ pub mod http {
                     .get("authorization")
                     .and_then(|v| v.strip_prefix("Bearer ").map(str::trim))
                     .or_else(|| req.headers.get("x-pantheon-token").map(String::as_str));
-                if provided != Some(ctx.token.as_str()) && !ctx.valid_session(req) {
+                if !provided.is_some_and(|t| token_eq(t, &ctx.token)) && !ctx.valid_session(req) {
                     return Err(agui_unauthorized());
                 }
                 Ok(())
@@ -496,32 +512,72 @@ pub mod http {
             .map(String::as_str)
             .ok_or_else(|| Response::forbidden("missing Host header"))?;
         if !ctx.bind_all {
-            let host_part = host.split(':').next().unwrap_or("");
-            let bind_ok = host_part == ctx.bind
-                || (is_loopback_bind(&ctx.bind)
-                    && (host_part == "localhost"
-                        || host_part == "127.0.0.1"
-                        || host_part == "::1"));
+            let host_part = host_header_name(host);
+            let bind_name = ctx
+                .bind
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_ascii_lowercase();
+            let bind_ok = host_part == bind_name
+                || (is_loopback_bind(&ctx.bind) && is_loopback_bind(&host_part));
             if !bind_ok {
                 return Err(Response::forbidden(
                     "Host does not match the dashboard bind address",
                 ));
             }
         }
+        // `authority_of` lowercases; compare against the lowercased Host
+        // so a mixed-case Host header is not a false cross-origin 403.
+        let host_lc = host.to_ascii_lowercase();
         if let Some(origin) = req.headers.get("origin") {
-            if authority_of(origin).as_deref() != Some(host) {
+            if authority_of(origin).as_deref() != Some(host_lc.as_str()) {
                 return Err(Response::forbidden("cross-origin request rejected"));
             }
         } else if let Some(referer) = req.headers.get("referer") {
-            if authority_of(referer).as_deref() != Some(host) {
+            if authority_of(referer).as_deref() != Some(host_lc.as_str()) {
                 return Err(Response::forbidden("cross-origin request rejected"));
             }
         }
         Ok(())
     }
 
-    fn is_loopback_bind(bind: &str) -> bool {
-        bind == "127.0.0.1" || bind == "localhost" || bind == "::1"
+    /// Constant-time token comparison: the time taken does not depend on
+    /// how many leading bytes match, so response timing cannot be used to
+    /// guess the token byte by byte (audit LOW-01). Length is not secret.
+    pub fn token_eq(provided: &str, expected: &str) -> bool {
+        let (a, b) = (provided.as_bytes(), expected.as_bytes());
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    }
+
+    /// Whether a bind address only accepts connections from this machine:
+    /// `localhost`, any `127.0.0.0/8` address, or `::1` (bracketed or
+    /// not). Everything else - a LAN IP, a public IP, a wildcard - is
+    /// reachable from the network, and the dashboard must treat it as
+    /// exposed: redact config, refuse raw export, warn at startup. The old
+    /// check keyed exposure to the wildcard binds only, so a LAN bind
+    /// (`192.168.1.10`) served raw config with no warning (audit SEC-05).
+    pub fn is_loopback_bind(bind: &str) -> bool {
+        let b = bind.trim().trim_start_matches('[').trim_end_matches(']');
+        b.eq_ignore_ascii_case("localhost")
+            || b.parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
+
+    /// The host part of a `Host` header, lowercased: `[::1]:7171` gives
+    /// `::1`, `LocalHost:80` gives `localhost`. Splitting on the first
+    /// `:` turned every IPv6 literal into `[`.
+    fn host_header_name(host: &str) -> String {
+        let host = host.trim();
+        let name = if let Some(rest) = host.strip_prefix('[') {
+            rest.split(']').next().unwrap_or("")
+        } else {
+            host.split(':').next().unwrap_or("")
+        };
+        name.to_ascii_lowercase()
     }
 
     /// The authority (`host[:port]`) of an absolute URL, lowercased.
@@ -627,12 +683,59 @@ pub mod http {
     /// The cap is [`MAX_BODY`] everywhere except the voice transcribe path
     /// ([`crate::voice_group::voice::MAX_VOICE_BODY_BYTES`]) and the dashboard upload
     /// route ([`MAX_UPLOAD_BODY`]).
-    fn read_request(stream: &TcpStream) -> Result<Option<Request>, Response> {
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() {
-            return Ok(None);
+    /// A reader that enforces an overall deadline, not just a per-read
+    /// timeout: before every read the socket timeout is shrunk to the time
+    /// left. With only `READ_TIMEOUT` per read, a client trickling one
+    /// byte every few seconds held a connection (one of `MAX_CONNS`)
+    /// indefinitely (audit SEC-14).
+    struct DeadlineReader<'a> {
+        stream: &'a TcpStream,
+        deadline: std::cell::Cell<std::time::Instant>,
+    }
+
+    impl std::io::Read for DeadlineReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let left = self
+                .deadline
+                .get()
+                .saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            self.stream.set_read_timeout(Some(left.min(READ_TIMEOUT)))?;
+            (&*self.stream).read(buf)
         }
+    }
+
+    /// Read one line, at most `cap` bytes. `None` on EOF, I/O error, or a
+    /// line longer than the cap (`Some(Err(()))`): `read_line` alone
+    /// buffered an unterminated line without limit (audit SEC-14).
+    fn read_line_capped<R: BufRead>(reader: &mut R, cap: usize) -> Option<Result<String, ()>> {
+        let mut buf = Vec::new();
+        match reader
+            .by_ref()
+            .take(cap as u64 + 1)
+            .read_until(b'\n', &mut buf)
+        {
+            Ok(0) => None,
+            Ok(_) if buf.len() > cap => Some(Err(())),
+            Ok(_) => Some(Ok(String::from_utf8_lossy(&buf).into_owned())),
+            Err(_) => None,
+        }
+    }
+
+    fn read_request(stream: &TcpStream) -> Result<Option<Request>, Response> {
+        let mut reader = BufReader::new(DeadlineReader {
+            stream,
+            deadline: std::cell::Cell::new(std::time::Instant::now() + HEAD_DEADLINE),
+        });
+        let too_large =
+            || Response::status_json(431, r#"{"error":"request headers too large"}"#.to_string());
+        let line = match read_line_capped(&mut reader, MAX_REQUEST_LINE) {
+            None => return Ok(None),
+            Some(Err(())) => return Err(too_large()),
+            Some(Ok(l)) => l,
+        };
         let line = line.trim_end_matches(['\r', '\n']);
         let mut parts = line.splitn(3, ' ');
         let (method, target, _version) = match (parts.next(), parts.next(), parts.next()) {
@@ -658,16 +761,14 @@ pub mod http {
         let mut headers = HashMap::new();
         let mut header_bytes = 0usize;
         loop {
-            let mut h = String::new();
-            if reader.read_line(&mut h).is_err() {
-                return Ok(None);
-            }
+            let h = match read_line_capped(&mut reader, MAX_HEADERS - header_bytes) {
+                None => return Ok(None),
+                Some(Err(())) => return Err(too_large()),
+                Some(Ok(h)) => h,
+            };
             header_bytes += h.len();
-            if header_bytes > MAX_HEADERS {
-                return Err(Response::status_json(
-                    431,
-                    r#"{"error":"request headers too large"}"#.to_string(),
-                ));
+            if header_bytes >= MAX_HEADERS {
+                return Err(too_large());
             }
             let h = h.trim_end_matches(['\r', '\n']);
             if h.is_empty() {
@@ -689,6 +790,11 @@ pub mod http {
                 r#"{"error":"request body too large"}"#.to_string(),
             ));
         }
+        // The body gets its own budget once the head is in.
+        reader
+            .get_ref()
+            .deadline
+            .set(std::time::Instant::now() + BODY_DEADLINE);
         let mut body = vec![0u8; len];
         if len > 0 && reader.read_exact(&mut body).is_err() {
             return Ok(None);
@@ -928,10 +1034,117 @@ pub mod http {
     /// A connection that trickles bytes (slowloris) is dropped after 10 s
     /// without a complete request head.
     pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    /// Longest request line accepted (method, target, version).
+    pub const MAX_REQUEST_LINE: usize = 8 * 1024;
+    /// Wall-clock budget for the whole request head.
+    pub const HEAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+    /// Wall-clock budget for the body after the head.
+    pub const BODY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
     // ---------------------------------------------------------------------------
     // Regression tests
     // ---------------------------------------------------------------------------
+
+    #[cfg(test)]
+    mod exposure_tests {
+        use super::*;
+
+        /// A LAN or public bind is exposed; only loopback is private
+        /// (audit SEC-05). The dashboard redacts config, refuses raw
+        /// export and warns whenever this returns false.
+        #[test]
+        fn only_loopback_binds_count_as_private() {
+            for b in [
+                "127.0.0.1",
+                "127.0.0.2",
+                "localhost",
+                "LocalHost",
+                "::1",
+                "[::1]",
+            ] {
+                assert!(is_loopback_bind(b), "{b} is loopback");
+            }
+            for b in [
+                "192.168.1.10",
+                "10.0.0.5",
+                "0.0.0.0",
+                "::",
+                "0",
+                "100.64.1.2",
+                "example.com",
+            ] {
+                assert!(!is_loopback_bind(b), "{b} is reachable from the network");
+            }
+        }
+
+        fn mutation(host: &str, origin: &str, bind: &str) -> Result<(), Response> {
+            let mut headers = HashMap::new();
+            headers.insert("host".to_string(), host.to_string());
+            headers.insert("origin".to_string(), origin.to_string());
+            let req = Request {
+                method: "POST".to_string(),
+                path: "/api/x".to_string(),
+                query: HashMap::new(),
+                headers,
+                body: Vec::new(),
+            };
+            guard_mutation(&req, &AuthCtx::new("t".into(), bind.into(), false))
+        }
+
+        /// IPv6-literal and mixed-case Host headers are the same origin,
+        /// not a false 403.
+        #[test]
+        fn host_guard_handles_ipv6_and_case() {
+            assert!(mutation("[::1]:7171", "http://[::1]:7171", "::1").is_ok());
+            assert!(mutation("LocalHost:7171", "http://localhost:7171", "127.0.0.1").is_ok());
+            assert!(
+                mutation("evil.example:7171", "http://evil.example:7171", "127.0.0.1").is_err()
+            );
+        }
+
+        #[test]
+        fn token_compare_is_exact() {
+            assert!(token_eq("abc123", "abc123"));
+            assert!(!token_eq("abc124", "abc123"));
+            assert!(!token_eq("abc12", "abc123"));
+            assert!(!token_eq("", "abc123"));
+        }
+
+        /// A filename from request data cannot inject headers.
+        #[test]
+        fn download_filename_cannot_inject_headers() {
+            match Response::download("run-x\r\nSet-Cookie: a=b\".md", "text/plain", Vec::new()) {
+                Response::Buffered { extra_headers, .. } => {
+                    let v = &extra_headers[0].1;
+                    assert!(!v.contains('\r') && !v.contains('\n'), "{v}");
+                    assert_eq!(v.matches('"').count(), 2, "{v}");
+                }
+                _ => panic!("expected buffered"),
+            }
+        }
+
+        /// An endless request line is refused at the cap instead of being
+        /// buffered without limit (audit SEC-14).
+        #[test]
+        fn oversized_request_line_is_refused() {
+            use std::io::Write as _;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let writer = std::thread::spawn(move || {
+                let mut c = std::net::TcpStream::connect(addr).unwrap();
+                let long = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(MAX_REQUEST_LINE * 2));
+                let _ = c.write_all(long.as_bytes());
+            });
+            let (stream, _) = listener.accept().unwrap();
+            let r = read_request(&stream);
+            let _ = writer.join();
+            match r {
+                Err(Response::Buffered { status, .. }) => assert_eq!(status, 431),
+                Err(_) => panic!("expected a buffered 431"),
+                Ok(_) => panic!("an oversized request line must be refused"),
+            }
+        }
+    }
 
     #[cfg(test)]
     mod mutation_guard_tests {
@@ -1385,10 +1598,15 @@ pub mod mcp_boot {
             .with_args(spec.args.clone())
             .with_env(env)
             .with_timeout(timeout);
-        // `None` policy: the manager gates spawns through the capability
-        // policy at session time; the boot probe mirrors the pre-policy
-        // ungated spawn for servers the operator already approved.
-        match McpClient::connect(&cfg, None) {
+        // The probe spawns the server the way a session would: through
+        // the capability gate and its sandbox profile. `None` used to
+        // skip both, so the boot probe ran configured servers unsandboxed
+        // on the host (audit SEC-15). The policy only grants McpEnable;
+        // whether the server is allowed at all was decided by configuring
+        // it.
+        let probe_policy = pantheon_api::capability::Policy::default()
+            .allow(pantheon_api::capability::Capability::McpEnable);
+        match McpClient::connect(&cfg, Some(&probe_policy)) {
             Ok(client) => {
                 let version = if client.negotiated_version.is_empty() {
                     "handshake ok".to_string()
@@ -1758,7 +1976,21 @@ pub mod rendezvous {
                 let _held = try_acquire(&dir).expect("acquire succeeds");
                 assert!(is_running(&dir), "held lock reports running");
             }
-            assert!(!is_running(&dir), "dropped lock reports not running");
+            // Dropping the guard closes the lock's descriptor, which releases
+            // the flock. A *forked child of this process* - another test's
+            // MCP boot probe spawns one - inherits a duplicate of that open
+            // file description and keeps the lock until it execs, so under
+            // parallel load the lock can read as held for a few milliseconds
+            // after the drop. Wait for the release instead of sampling once;
+            // a real leak (the lock never released) still fails.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while is_running(&dir) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "dropped lock still reports running after 2s: the flock was not released"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             // Re-acquire after release works: no stale state.
             let _again = try_acquire(&dir).expect("re-acquire succeeds");
             std::fs::remove_dir_all(&dir).ok();

@@ -1173,12 +1173,45 @@ pub mod skills {
         repo_url: &str,
         subpath: Option<&str>,
     ) -> Result<Vec<(String, PathBuf)>, PantheonError> {
-        let tmp = std::env::temp_dir().join(format!("pantheon-skillscan-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp)
+        // https only, and the URL after `--`: a repo string starting with
+        // `-` would otherwise be read as a git option (`--upload-pack=...`),
+        // and `ext::`/`file://` transports run commands or read local repos
+        // (audit SEC-12). `protocol.allow=never` + `https.allow=always`
+        // also stops submodule or redirect tricks from switching transport.
+        if !repo_url.starts_with("https://") {
+            return Err(serr(
+                "SKILL_REPO_URL",
+                format!("repo must be an https:// URL, got {repo_url}"),
+            ));
+        }
+        // A per-call directory: the old pid-only name was shared by
+        // concurrent imports in one process (each deleted the other's
+        // clone) and predictable in a shared /tmp.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!(
+            "pantheon-skillscan-{}-{}-{nonce:x}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&tmp)
             .map_err(|e| serr("SKILL_REPO_TMP", format!("create {}: {e}", tmp.display())))?;
         let clone = std::process::Command::new("git")
-            .args(["clone", "--depth", "1", "--filter=blob:none", repo_url])
+            .args([
+                "-c",
+                "protocol.allow=never",
+                "-c",
+                "protocol.https.allow=always",
+                "clone",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                "--",
+                repo_url,
+            ])
             .arg(&tmp)
             .output()
             .map_err(|e| serr("SKILL_REPO_CLONE", format!("git clone: {e}")))?;
@@ -1209,10 +1242,6 @@ pub mod skills {
     struct ClawhubSkill {
         #[serde(default)]
         display_name: String,
-        /// Raw SKILL.md body; not read directly (we re-fetch via the ZIP).
-        #[allow(dead_code)]
-        #[serde(default)]
-        description: String,
     }
 
     /// Ambiguous-slug response from ClawHub (`409`). Carries the owners the

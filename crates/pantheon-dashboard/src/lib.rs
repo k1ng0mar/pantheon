@@ -723,6 +723,7 @@ impl HttpMount for DashboardMount {
                     first,
                     Some(
                         "style.css"
+                            | "tokens.css"
                             | "fonts.css"
                             | "fonts"
                             | "app.js"
@@ -743,10 +744,13 @@ impl HttpMount for DashboardMount {
         if first == Some("agui") {
             return None;
         }
-        // Everything else (including unknown paths, which `dispatch` 404s)
-        // stays unauthenticated, preserving the old "404 without auth"
-        // behavior.
-        Some(AuthGroup::Public)
+        // Everything else requires the token. Defaulting unknown paths to
+        // Public made the auth decision depend on a second table (the
+        // route dispatch) staying in sync forever: any new top-level
+        // route added to `dispatch` and forgotten here would have been
+        // unauthenticated. Fail closed instead: an unknown path is a 401
+        // without the token and a 404 with it (audit LOW-13).
+        Some(AuthGroup::DashboardApi)
     }
 
     fn handle(&self, req: &Request) -> Response {
@@ -782,7 +786,9 @@ pub struct DashboardConfig {
 /// `--open` handling.
 pub fn run(cfg: DashboardConfig) -> ! {
     let token = pantheon_gateway::http::generate_token();
-    let bind_all = cfg.bind == "0.0.0.0" || cfg.bind == "::";
+    // Exposed = anything but loopback (audit SEC-05): a LAN bind is as
+    // reachable as a wildcard one.
+    let bind_all = !pantheon_gateway::http::is_loopback_bind(&cfg.bind);
     let url = format!("http://{}:{}", cfg.bind, cfg.port);
     println!("pantheon dashboard on {url}");
     eprintln!("dashboard token: {token} (paste it in the browser; it never appears in the URL)");
@@ -1295,18 +1301,20 @@ mod route_tests {
         let (app, dir) = test_app();
         let mount = DashboardMount::new(app);
         let group = |method: &str, path: &str| mount.auth_group(&plain_req(method, path));
-        // "API" is not "api": Public, and dispatch 404s it.
-        assert_eq!(group("GET", "/API/runs"), Some(AuthGroup::Public));
-        // %2F decodes AFTER splitting, so this is one segment "api/runs".
-        assert_eq!(group("GET", "/api%2f/runs"), Some(AuthGroup::Public));
-        // Double-encoded: one decode pass leaves "%61pi", not "api".
-        assert_eq!(group("GET", "/%2561pi/runs"), Some(AuthGroup::Public));
-        // Static shell and unknown paths stay public (404 without auth).
+        // Unknown shapes need the token (fail closed, audit LOW-13):
+        // "API" is not "api", "%2F" decodes after splitting, and a
+        // double-encoded "%2561pi" stays "%61pi" - none is a real route,
+        // and none may be reached without auth.
+        assert_eq!(group("GET", "/API/runs"), Some(AuthGroup::DashboardApi));
+        assert_eq!(group("GET", "/api%2f/runs"), Some(AuthGroup::DashboardApi));
+        assert_eq!(group("GET", "/%2561pi/runs"), Some(AuthGroup::DashboardApi));
+        assert_eq!(group("GET", "/nope"), Some(AuthGroup::DashboardApi));
+        assert_eq!(group("POST", "/"), Some(AuthGroup::DashboardApi));
+        // The static shell stays public.
         assert_eq!(group("GET", "/"), Some(AuthGroup::Public));
         assert_eq!(group("GET", "//"), Some(AuthGroup::Public));
         assert_eq!(group("GET", "/style.css"), Some(AuthGroup::Public));
-        assert_eq!(group("POST", "/"), Some(AuthGroup::Public));
-        assert_eq!(group("GET", "/nope"), Some(AuthGroup::Public));
+        assert_eq!(group("GET", "/tokens.css"), Some(AuthGroup::Public));
         // The AG-UI mount owns /agui/* in any encoding that decodes to it.
         assert_eq!(group("GET", "/agui"), None);
         assert_eq!(group("GET", "/agui/stream"), None);
