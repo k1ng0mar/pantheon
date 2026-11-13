@@ -141,3 +141,27 @@ fn verify_default_timeout_is_thirty_seconds() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The verdict is a whole word before `reason=`; reason prose cannot flip
+/// an inconclusive reply to Holds, and two different verdict words are
+/// Inconclusive (audit COR-11: the parser promised fail-closed).
+#[test]
+fn verdict_parser_ignores_verdict_words_inside_the_reason() {
+    use pantheon_providers::verify::{parse_verdict, VerifyVerdict};
+    assert!(matches!(
+        parse_verdict("ANSWER INCONCLUSIVE reason=unclear whether the claim holds"),
+        VerifyVerdict::Inconclusive { .. }
+    ));
+    assert!(matches!(
+        parse_verdict("ANSWER HOLDS FALSIFIED reason=x"),
+        VerifyVerdict::Inconclusive { .. }
+    ));
+    assert!(matches!(
+        parse_verdict("ANSWER UPHOLDS reason=the evidence agrees"),
+        VerifyVerdict::Inconclusive { .. }
+    ));
+    assert!(matches!(
+        parse_verdict("ANSWER HOLDS confidence=0.9"),
+        VerifyVerdict::Holds { .. }
+    ));
+}

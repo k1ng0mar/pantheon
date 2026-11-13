@@ -127,14 +127,14 @@ pub mod agui {
     > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
     fn turn_lock_for(run_id: &str) -> Arc<std::sync::Mutex<()>> {
-        let mut map = TURN_LOCKS.lock().unwrap();
+        let mut map = TURN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
         map.entry(run_id.to_string())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone()
     }
 
     fn release_turn_lock(run_id: &str, lock: &Arc<std::sync::Mutex<()>>) {
-        let mut map = TURN_LOCKS.lock().unwrap();
+        let mut map = TURN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
         // map + this clone only: nobody is holding or waiting on the lock.
         if Arc::strong_count(lock) <= 2 {
             map.remove(run_id);
@@ -201,7 +201,7 @@ pub mod agui {
                 // Serialize with any other in-flight turn for this run; the
                 // RPC already returned, so this only orders the workers.
                 let result = {
-                    let _guard = worker_lock.lock().unwrap();
+                    let _guard = worker_lock.lock().unwrap_or_else(|e| e.into_inner());
                     // FIFO queue drain (dashboard parity): a message queued
                     // while the run was busy rides this turn as the earliest
                     // input instead of sitting until a dashboard/TUI client
@@ -813,7 +813,7 @@ pub mod agui_serve {
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
     pub fn remember_thread(data_dir: &PathBuf, run_id: &str, thread_id: &str) {
-        let _guard = THREADS_LOCK.lock().unwrap();
+        let _guard = THREADS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let p = data_dir.join("threads.json");
         let mut map: HashMap<String, String> = std::fs::read_to_string(&p)
             .ok()
@@ -943,7 +943,7 @@ pub mod agui_serve {
             std::sync::Mutex<std::collections::HashMap<String, &'static str>>,
         > = std::sync::OnceLock::new();
         let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-        let mut cache = cache.lock().unwrap();
+        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&s) = cache.get(mime) {
             return s;
         }

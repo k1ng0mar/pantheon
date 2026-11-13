@@ -337,6 +337,12 @@ pub mod engine {
         /// invocation, and every retry costs a provider round trip. This is
         /// the cap that stops that. Any successful tool call resets the
         /// counter, so a long run that is making progress is never cut off.
+        ///
+        /// Default 5. `0` disables the cap. The field was removed in
+        /// `4d2083d` while its docs, the injected warning ("the run will
+        /// terminate") and the config comments stayed, so runs never
+        /// stopped (audit COR-06); restored.
+        pub max_consecutive_tool_failures: u32,
         /// Inject a one-time warning after this many consecutive failed tool
         /// calls, before the run terminates.
         ///
@@ -346,8 +352,9 @@ pub mod engine {
         /// both the streak and the warning state. The warning never extends
         /// the run and does not itself count as a tool call.
         ///
-        /// `0` disables the warning. Default 3 (the model gets one warning
-        /// two failures before termination).
+        /// Must be below `max_consecutive_tool_failures` to have any effect.
+        /// `0` disables the warning. Default 3 (with the default cap of 5 the
+        /// model gets one warning two failures before termination).
         pub warn_consecutive_tool_failures: u32,
     }
 
@@ -360,6 +367,7 @@ pub mod engine {
                 max_tokens: None,
                 max_delegate_depth: 2,
                 allow_child_spawn: true,
+                max_consecutive_tool_failures: 5,
                 warn_consecutive_tool_failures: 3,
             }
         }
@@ -814,7 +822,19 @@ pub mod subagent {
             let t_log = Arc::clone(&transcript);
             let st = Arc::clone(&child_state);
             std::thread::spawn(move || {
-                let outcome = work();
+                // A panicking child must still settle its status and wake
+                // the waiter: before, a panic skipped the status write and
+                // `notify_all`, and `subagent_wait` blocked forever on a
+                // plain Condvar wait (audit COR-05).
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                    .unwrap_or_else(|panic| {
+                        let msg = panic
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| panic.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "sub-agent panicked".to_string());
+                        Err(derr("SUBAGENT_PANIC", format!("sub-agent panicked: {msg}")))
+                    });
                 let line = match &outcome {
                     Ok(text) => format!("result: {text}"),
                     Err(e) => format!("error[{}]: {}", e.code, e.cause),
@@ -830,10 +850,10 @@ pub mod subagent {
                 };
                 let stored: Result<String, String> =
                     outcome.map_err(|e| format!("[{}] {}", e.code, e.cause));
-                if let Ok(mut s) = lock.lock() {
-                    s.0 = status;
-                    s.1 = Some(stored);
-                }
+                let mut s = lock.lock().unwrap_or_else(|e| e.into_inner());
+                s.0 = status;
+                s.1 = Some(stored);
+                drop(s);
                 cvar.notify_all();
             });
             Ok(handle)

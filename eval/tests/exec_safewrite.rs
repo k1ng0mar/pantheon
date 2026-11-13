@@ -261,3 +261,68 @@ fn torn_apply_recovery_does_not_rerun_on_next_start() {
         "a completed recovery must not restore again"
     );
 }
+
+/// A checkpoint pre-image that does not match its recorded hash is never
+/// written back: before the fix a pre-image captured as empty (the second
+/// read failed) silently replaced the user's file with nothing on
+/// rollback (audit COR-04).
+#[test]
+fn restore_refuses_a_pre_image_that_does_not_match_its_hash() {
+    let dir = fresh_state("ckpt-integrity");
+    let p = dir.join("f.txt");
+    write(&p, "precious\n");
+    let w = SafeWriter::new(dir.clone()).unwrap();
+    let cp = w.checkpoint(std::slice::from_ref(&p), 1).unwrap();
+    // Damage the stored pre-image, as the old double-read could.
+    let blob = dir
+        .join("checkpoints")
+        .join(&cp.id)
+        .join("blobs")
+        .join(&cp.files[0].blob);
+    std::fs::write(&blob, b"").unwrap();
+    write(&p, "edited\n");
+    let err = w.restore_checkpoint(&cp.id).unwrap_err();
+    assert_eq!(err.code, "SAFE_CHECKPOINT_CORRUPT");
+    assert_eq!(
+        read(&p),
+        "edited\n",
+        "a corrupt pre-image must not overwrite the file"
+    );
+}
+
+/// A checkpoint records exactly the bytes it hashed.
+#[test]
+fn checkpoint_pre_image_matches_its_hash() {
+    let dir = fresh_state("ckpt-hash");
+    let p = dir.join("f.txt");
+    write(&p, "content\n");
+    let w = SafeWriter::new(dir.clone()).unwrap();
+    let cp = w.checkpoint(std::slice::from_ref(&p), 1).unwrap();
+    let blob = std::fs::read(
+        dir.join("checkpoints")
+            .join(&cp.id)
+            .join("blobs")
+            .join(&cp.files[0].blob),
+    )
+    .unwrap();
+    assert_eq!(blob, b"content\n");
+    write(&p, "changed\n");
+    w.restore_checkpoint(&cp.id).unwrap();
+    assert_eq!(read(&p), "content\n");
+}
+
+/// A failed write removes its temp file instead of leaving litter.
+#[test]
+fn atomic_write_failure_leaves_no_temp_file() {
+    let dir = fresh_state("atomic-fail");
+    // The target is an existing directory: rename over it fails.
+    let target = dir.join("is-a-dir");
+    std::fs::create_dir_all(target.join("child")).unwrap();
+    assert!(atomic_write(&target, b"x").is_err());
+    let litter: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+        .collect();
+    assert!(litter.is_empty(), "temp files left behind: {litter:?}");
+}

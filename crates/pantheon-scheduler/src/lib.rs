@@ -42,9 +42,7 @@ pub use jobs::templates::{
     apply_defaults, builtin_templates, expand_template, is_reserved_var, render_prompt,
     ScheduleTemplate, TemplateSchedule, TemplateStore, TemplateVar,
 };
-pub use jobs::tick::{
-    occurrence_key, ClaimLedger, PausedCheck, RunOutcome, TickDecision, TickDriver,
-};
+pub use jobs::tick::{occurrence_key, PausedCheck, RunOutcome, TickDecision, TickDriver};
 
 /// Default ceiling for one job run: 10 minutes. A run that outlives it is
 /// abandoned (the tick stops waiting; Rust cannot kill the thread, so the
@@ -437,6 +435,63 @@ pub fn job_store_path(data_dir: &Path) -> PathBuf {
 /// other's writes.
 fn job_store_lock_path(data_dir: &Path) -> PathBuf {
     data_dir.join("schedule.lock")
+}
+
+/// Write a JSON store atomically: a unique temp file in the same
+/// directory, fsync, rename. Used by every scheduler store; the run
+/// history and templates were plain in-place `fs::write`s (a torn file
+/// then failed every later open) and the repair budget used one fixed temp
+/// name shared by concurrent writers (audit COR-10).
+pub(crate) fn write_json_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "store.json".into());
+    let tmp = dir.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        f.write_all(bytes)
+            .and_then(|_| f.sync_all())
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// An exclusive advisory lock on `<dir>/<name>`, held while the returned
+/// file lives.
+pub(crate) fn lock_named(dir: &Path, name: &str) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let path = dir.join(name);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    use fs2::FileExt as _;
+    file.lock_exclusive()
+        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+    Ok(file)
 }
 
 fn lock_store(data_dir: &Path, exclusive: bool) -> Result<std::fs::File, String> {

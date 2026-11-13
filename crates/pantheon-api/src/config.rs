@@ -921,6 +921,13 @@ pub struct BudgetSection {
     /// Max tool calls per run. Default 32.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<u32>,
+    /// Stop the run after this many consecutive failed tool calls.
+    /// Default 5. `0` disables the cap. Distinct from `max_tool_calls`:
+    /// that bounds total work, this bounds *fruitless* work, so a model
+    /// retrying the same broken command cannot burn the whole budget.
+    /// Any success resets the streak.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_tool_failures: Option<u32>,
     /// Max delegation depth. Default 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_delegate_depth: Option<u32>,

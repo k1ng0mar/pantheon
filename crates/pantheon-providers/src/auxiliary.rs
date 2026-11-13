@@ -1153,19 +1153,37 @@ pub mod verify {
     /// `Inconclusive`, never `Holds`.
     pub fn parse_verdict(raw: &str) -> VerifyVerdict {
         let line = answer_line(raw);
-        let upper = line.to_ascii_uppercase();
         let confidence = parse_confidence(&line);
         let reason = parse_reason(&line);
-        if upper.contains("FALSIFIED") {
+        // The verdict is a whole word in the part of the line BEFORE
+        // `reason=`. A substring search over the whole line read prose such
+        // as `INCONCLUSIVE reason=unclear whether it holds` as Holds, which
+        // broke the fail-closed promise (audit COR-11). Exactly one verdict
+        // word must be present; two different ones are Inconclusive.
+        let head = line
+            .split("reason=")
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        let words: Vec<&str> = head
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .filter(|w| matches!(*w, "FALSIFIED" | "HOLDS" | "INCONCLUSIVE"))
+            .collect();
+        let verdict = match words.first() {
+            Some(first) if words.iter().all(|w| w == first) => *first,
+            Some(_) => "INCONCLUSIVE",
+            None => "",
+        };
+        if verdict == "FALSIFIED" {
             let reason = if reason.is_empty() {
                 "verifier reported FALSIFIED without a reason".to_string()
             } else {
                 reason
             };
             VerifyVerdict::Falsified { reason }
-        } else if upper.contains("HOLDS") {
+        } else if verdict == "HOLDS" {
             VerifyVerdict::Holds { confidence }
-        } else if upper.contains("INCONCLUSIVE") {
+        } else if verdict == "INCONCLUSIVE" {
             VerifyVerdict::Inconclusive {
                 reason: if reason.is_empty() {
                     "verifier reported INCONCLUSIVE".to_string()

@@ -2678,7 +2678,7 @@ pub mod schedule_self_heal {
             max_tokens: Some(32_000),
             max_delegate_depth: 0,
             allow_child_spawn: false,
-
+            max_consecutive_tool_failures: 5,
             warn_consecutive_tool_failures: 3,
             max_cost_cents: None,
         });

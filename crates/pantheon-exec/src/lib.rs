@@ -140,7 +140,14 @@ pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
     ));
     text.push_str(&tail.join("\n"));
     if text.len() > policy.max_bytes {
-        text.truncate(policy.max_bytes);
+        // Cut on a char boundary: `String::truncate` panics mid-character,
+        // so multi-byte output (CJK, emoji) at the cap crashed the tool
+        // path (audit COR-03).
+        let mut cut = policy.max_bytes;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
         text.push_str("\n[... byte-cap ...]");
     }
     Compacted {

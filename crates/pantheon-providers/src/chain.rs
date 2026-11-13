@@ -279,8 +279,13 @@ pub(crate) fn backoff_delay(
 /// catalog credential could still serve.
 fn resolve_named_key(name: &str, broker: Option<&pantheon_secrets::SecretsBroker>) -> String {
     if let Some(b) = broker {
-        if let Ok(Some(v)) = b.resolve(name) {
-            return v.expose().to_string();
+        match b.resolve(name) {
+            Ok(Some(v)) => return v.expose().to_string(),
+            Ok(None) => {}
+            // Still non-fatal (the catalog credential may serve the turn),
+            // but no longer silent: a vault that fails to decrypt looked
+            // exactly like "no key configured" (audit COR-11).
+            Err(e) => eprintln!("pantheon: secret {name} could not be read from the vault: {e}"),
         }
     }
     std::env::var(name).unwrap_or_default()
@@ -432,8 +437,20 @@ impl<T: ChatTransport> ProviderChain<T> {
         // a 401 that `list`/`doctor` never warned about. Loopback
         // endpoints are exempt: keyless local providers are legitimate
         // and an empty key is how they are called.
-        let loopback =
-            base.contains("127.0.0.1") || base.contains("localhost") || base.contains("[::1]");
+        // Parsed host, not a substring: `https://evil.example/?localhost`
+        // and `localhost.evil.example` are not loopback (audit COR-11).
+        let loopback = url::Url::parse(&base)
+            .ok()
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h.trim_matches(['[', ']']).to_ascii_lowercase())
+            })
+            .is_some_and(|h| {
+                h == "localhost"
+                    || h.ends_with(".localhost")
+                    || h.parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
         if effective_key.trim().is_empty() && !loopback {
             let key_env = catalog::provider(&model.provider)
                 .map(|p| {

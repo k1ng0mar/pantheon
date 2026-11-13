@@ -67,9 +67,12 @@ pub struct ProviderMeta {
     pub label: String,
     pub base_url: String,
     pub api_mode: ApiMode,
-    /// Fields Codex validates that pantheon currently accepts silently.
-    /// A typo in a catalog row ships as a live provider with wrong behavior
-    /// instead of failing at load time.
+    /// Shell command whose stdout is the provider's bearer token, used
+    /// when no key is configured. Runs under `sh -c` as the Pantheon user,
+    /// on the host, without a sandbox, so it may only come from
+    /// operator-controlled sources: the embedded catalog or a
+    /// `PANTHEON_CATALOG` file. Custom providers from `config.toml` never
+    /// set it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,90 +190,34 @@ const DEFAULT_CATALOG: &str = include_str!("../catalog.yaml");
 
 static CATALOG: OnceLock<Catalog> = OnceLock::new();
 
-/// Remote catalog URL, overridable. The embedded catalog is always
-/// the fallback. This is manifest refresh with in repo fallback:
-/// fetch remote, merge over embedded, any failure keeps embedded.
-pub fn remote_catalog_url() -> String {
-    std::env::var("PANTHEON_CATALOG_REMOTE")
-        .unwrap_or_else(|_| "https://raw.githubusercontent.com/k1ng0mar/pantheon/main/crates/pantheon-providers/catalog.yaml".to_string())
-}
-
-/// Fetch the remote catalog text. Best effort, short timeout.
-/// Returns None on any failure so the caller keeps the fallback.
-pub fn fetch_remote_catalog(url: &str) -> Option<String> {
-    let out = std::process::Command::new("curl")
-        .args(["-sS", "--max-time", "4", url])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8(out.stdout).ok()
-}
-
-/// Merge a remote catalog over the embedded one. Remote providers
-/// replace by id, remote models merge into existing providers.
-/// Malformed remote YAML is ignored whole, never partial.
-pub fn merge_catalogs(mut base: Catalog, remote: &Catalog) -> Catalog {
-    for rp in &remote.providers {
-        if let Some(existing) = base.providers.iter_mut().find(|p| p.id == rp.id) {
-            for rm in &rp.models {
-                if !existing.models.iter().any(|m| m.model == rm.model) {
-                    existing.models.push(rm.clone());
-                }
-            }
-            if rp.base_url.trim().len() > existing.base_url.trim().len() {
-                existing.base_url = rp.base_url.clone();
-            }
-        } else {
-            base.providers.push(rp.clone());
-        }
-    }
-    base
-}
-
-/// Try the remote catalog, fall back to the embedded default on
-/// any failure. This is the refresh hook; it does not panic and
-/// does not block startup beyond the fetch timeout.
-pub fn catalog_with_remote_fallback() -> Catalog {
-    let embedded = match serde_yaml::from_str::<Catalog>(DEFAULT_CATALOG) {
-        Ok(c) => c,
-        Err(_) => return Catalog::default(),
-    };
-    let url = remote_catalog_url();
-    let Some(text) = fetch_remote_catalog(&url) else {
-        return embedded;
-    };
-    match serde_yaml::from_str::<Catalog>(&text) {
-        Ok(remote) => merge_catalogs(embedded, &remote),
-        Err(_) => {
-            // Fallback stays embedded on malformed remote.
-            // Reparse embedded to keep the return type simple.
-            serde_yaml::from_str::<Catalog>(DEFAULT_CATALOG).unwrap_or_default()
-        }
-    }
-}
-
-/// Load the catalog. Resolution order:
-/// 1. `PANTHEON_CATALOG` env var → file path
-/// 2. `<data_dir>/catalog.yaml` if it exists
-/// 3. Embedded default (compile-time)
-/// 4. Remote refresh merged over embedded, embedded fallback
-pub fn refresh_catalog(base: Catalog) -> Catalog {
-    let url = remote_catalog_url();
-    let Some(text) = fetch_remote_catalog(&url) else {
-        return base;
-    };
-    match serde_yaml::from_str::<Catalog>(&text) {
-        Ok(remote) => merge_catalogs(base, &remote),
-        Err(_) => base,
-    }
-}
-
+/// Load the catalog once per process. Resolution order:
+/// 1. `PANTHEON_CATALOG` env var: a YAML file path (operator-controlled;
+///    its rows may carry `auth_command`, which runs as the user).
+/// 2. The embedded default (compile-time `catalog.yaml`).
+///
+/// There is no remote refresh. An unused remote fetch-and-merge path used
+/// to live here: it accepted remote rows wholesale (including
+/// `auth_command`, which runs under `sh -c`) and let any longer remote
+/// `base_url` replace a provider's endpoint, so wiring it up would have
+/// handed command execution and key redirection to whoever served the
+/// URL (audit ZA C2). It had no callers and was removed.
+///
+/// Failures are loud, not silent: an unreadable `PANTHEON_CATALOG` and
+/// a catalog that does not parse are both reported on stderr with the
+/// path, so "every provider vanished" has a visible cause.
 fn load_catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| {
         let raw = if let Ok(p) = std::env::var("PANTHEON_CATALOG") {
-            std::fs::read_to_string(&p).ok()
+            match std::fs::read_to_string(&p) {
+                Ok(text) => Some(text),
+                Err(e) => {
+                    eprintln!(
+                        "pantheon: PANTHEON_CATALOG={p} could not be read ({e}); \
+                         using the embedded provider catalog"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -286,7 +233,13 @@ fn load_catalog() -> &'static Catalog {
                 c
             }
             Err(e) => {
-                eprintln!("catalog parse error: {}", e);
+                eprintln!(
+                    "pantheon: provider catalog does not parse ({e}); no providers are \
+                     available until it is fixed{}",
+                    std::env::var("PANTHEON_CATALOG")
+                        .map(|p| format!(" (PANTHEON_CATALOG={p})"))
+                        .unwrap_or_default()
+                );
                 Catalog::default()
             }
         }

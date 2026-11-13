@@ -854,11 +854,13 @@ fn swap_binary(current_exe: &Path, candidate: &Path) -> Result<PathBuf, String> 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(md) = std::fs::metadata(&staged) {
-            let mut perm = md.permissions();
-            perm.set_mode(0o755);
-            let _ = std::fs::set_permissions(&staged, perm);
-        }
+        // A binary that cannot be made executable must not be swapped in:
+        // the next launch would fail with EACCES and no old binary left.
+        let md = std::fs::metadata(&staged).map_err(|e| format!("cannot stat new binary ({e})"))?;
+        let mut perm = md.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&staged, perm)
+            .map_err(|e| format!("cannot make new binary executable ({e})"))?;
     }
     std::fs::rename(&staged, current_exe).map_err(|e| format!("cannot swap binary ({e})"))?;
     Ok(backup)
@@ -955,18 +957,12 @@ fn extract_tar(
         if entry.starts_with('/') || entry.starts_with('\\') {
             return Err(format!("extract failed: absolute member {entry:?}"));
         }
-        if entry
-            .split(['/', '\\'])
-            .any(|seg| seg == "..")
-        {
+        if entry.split(['/', '\\']).any(|seg| seg == "..") {
             return Err(format!(
                 "extract failed: member escapes its directory: {entry:?}"
             ));
         }
-        let base = entry
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(entry);
+        let base = entry.rsplit(['/', '\\']).next().unwrap_or(entry);
         if base == expected {
             candidates.push(entry.to_string());
         }

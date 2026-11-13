@@ -49,13 +49,23 @@ use pantheon_tools::session_search_tools::{register_session_search, SessionSearc
 /// be unit-tested without constructing a Session.
 fn should_warn_consecutive_failures(
     warn_at: u32,
+    cap: u32,
     tool_failures: u32,
     already_warned: bool,
 ) -> bool {
     if warn_at == 0 || already_warned || tool_failures < warn_at {
         return false;
     }
+    if cap == 0 || warn_at >= cap {
+        return false;
+    }
     true
+}
+
+/// Whether a failure streak has reached the consecutive-failure cap
+/// (`0` = no cap).
+fn consecutive_failure_cap_hit(cap: u32, tool_failures: u32) -> bool {
+    cap > 0 && tool_failures >= cap
 }
 
 /// What `publish_ui_batch` returns: consumed call indices + an optional
@@ -265,20 +275,20 @@ pub struct PluginCleanup {
     entries: Vec<(String, Arc<Mutex<PluginSupervisor>>)>,
     supervisor: Supervisor,
     run_id: String,
-    lease_healthy: Arc<std::sync::atomic::AtomicBool>,
+    lease_lost: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PluginCleanup {
     fn new(
         supervisor: Supervisor,
         run_id: &str,
-        lease_healthy: Arc<std::sync::atomic::AtomicBool>,
+        lease_lost: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self {
             entries: Vec::new(),
             supervisor,
             run_id: run_id.to_string(),
-            lease_healthy,
+            lease_lost,
         }
     }
     fn push(&mut self, entry: (String, Arc<Mutex<PluginSupervisor>>)) {
@@ -288,9 +298,7 @@ impl PluginCleanup {
 
 impl Drop for PluginCleanup {
     fn drop(&mut self) {
-        let healthy = !self
-            .lease_healthy
-            .load(std::sync::atomic::Ordering::Acquire)
+        let healthy = !self.lease_lost.load(std::sync::atomic::Ordering::Acquire)
             && self.supervisor.assert_lease(&self.run_id).is_ok();
         for (_, supervisor) in &self.entries {
             let Ok(mut supervisor) = supervisor.lock() else {
@@ -2470,6 +2478,11 @@ fn map_child_outcome(
 }
 
 /// Everything one agent run needs.
+/// Capability tokens an operator approval grants for the whole session
+/// rather than one call: shell network access, so package installs and
+/// fetches ask once (audit SEC-01, decision D1).
+pub const SESSION_GRANTABLE_CAPS: &[&str] = &["other.shell.network"];
+
 pub struct Session {
     pub supervisor: Supervisor,
     pub policy: Policy,
@@ -2489,6 +2502,13 @@ pub struct Session {
     /// root session. Delegated children carry the intersection computed at
     /// spawn, and grandchildren intersect again, never widen.
     pub credential_grants: Vec<String>,
+    /// Capabilities an operator approved for the rest of this session.
+    /// Only [`SESSION_GRANTABLE_CAPS`] are recorded: approving one call
+    /// that needs them (the shell going online for `cargo`/`npm`) clears
+    /// the same approval for later calls, so the operator is not asked on
+    /// every command (audit SEC-01, decision D1). A policy `Deny` still
+    /// wins, and delegated children start with an empty set.
+    pub session_grants: Mutex<std::collections::BTreeSet<String>>,
     /// Run budget (turns, tool calls, token cap, delegate depth).
     /// Interior-mutable so `/set` and `/tokens` can retune it live: the
     /// loop snapshots it when a turn starts, so a turn already in flight
@@ -2877,6 +2897,7 @@ impl Session {
             model_policy: Mutex::new(model_policy),
             secrets,
             credential_grants: Vec::new(),
+            session_grants: Mutex::new(std::collections::BTreeSet::new()),
             budget: Mutex::new(Budget::default()),
             budget_max_tokens: Mutex::new(None),
             loaded_tools: Mutex::new(std::collections::HashSet::new()),
@@ -2922,6 +2943,11 @@ impl Session {
             delegation_section: Mutex::new(None),
             ui_action_lock: Mutex::new(()),
         };
+        // Ledger rows (and the search sidecar) scrub every value this
+        // session's broker hands out, on top of the known key formats.
+        session
+            .supervisor
+            .install_ledger_redaction(session.secrets.redaction_registry());
         // Sandbox enforcement for MCP server spawns: the session's
         // capability policy gates every stdio connect through
         // `McpClient::connect` from here on.
@@ -4651,6 +4677,33 @@ Extracted:
         loop_.consult_gate_advisory(&judge, &choices, Some(&context))
     }
 
+    /// Whether an operator already approved `cap` for this session.
+    fn session_granted(&self, cap: &pantheon_api::capability::Capability) -> bool {
+        let token = cap.token();
+        SESSION_GRANTABLE_CAPS.contains(&token.as_str())
+            && self
+                .session_grants
+                .lock()
+                .map(|g| g.contains(&token))
+                .unwrap_or(false)
+    }
+
+    /// Record the session-grantable capabilities of a call the operator
+    /// approved, so later calls needing them do not park again.
+    fn remember_session_grants(&self, caps: &[pantheon_api::capability::Capability]) {
+        let Ok(mut grants) = self.session_grants.lock() else {
+            return;
+        };
+        for cap in caps {
+            let token = cap.token();
+            if SESSION_GRANTABLE_CAPS.contains(&token.as_str())
+                && self.policy.check(cap) == pantheon_api::capability::Decision::Approval
+            {
+                grants.insert(token);
+            }
+        }
+    }
+
     /// The final gate outcome for one capability, with the session's
     /// permission mode applied on top of the deterministic policy.
     ///
@@ -4668,7 +4721,10 @@ Extracted:
         cap: &pantheon_api::capability::Capability,
     ) -> Result<pantheon_agent::GateOutcome, PantheonError> {
         use pantheon_api::capability::Decision;
-        let decision = loop_.policy.check(cap);
+        let mut decision = loop_.policy.check(cap);
+        if decision == Decision::Approval && self.session_granted(cap) {
+            decision = Decision::Allow;
+        }
         let judge_verdict = if matches!(decision, Decision::Approval) {
             self.judge_verdict_for_call(loop_, run_id, call_name, call_args, cap)
         } else {
@@ -5362,7 +5418,7 @@ Extracted:
         reg: &mut ToolRegistry,
         run_id: &str,
         ledger_poison: &Arc<LedgerPoison>,
-        lease_healthy: &Arc<std::sync::atomic::AtomicBool>,
+        lease_lost: &Arc<std::sync::atomic::AtomicBool>,
     ) -> PluginCleanup {
         // Memory tools: the Memory group toggle joins the store's
         // presence - either absent means no memory tools.
@@ -5469,7 +5525,7 @@ Extracted:
         // Plugin supervisors spawned for this run. They get group-killed at
         // the end of the call to avoid orphaned processes.
         let mut plugin_supers =
-            PluginCleanup::new(self.supervisor.clone(), run_id, Arc::clone(lease_healthy));
+            PluginCleanup::new(self.supervisor.clone(), run_id, Arc::clone(lease_lost));
         // Per-turn plugin diagnostics: same policy as the registry build
         // (see `tool_diagnostics`) — a plugin spawn failure is non-fatal
         // and is recorded for `/status`, never printed into the session.
@@ -5929,12 +5985,8 @@ Extracted:
         // exactly as in the reloaded registry.
         // The guard is never touched again: it only has to stay alive
         // until the turn ends, when its `Drop` group-kills the plugins.
-        let _plugin_supers = self.register_turn_tools(
-            &mut reg,
-            run_id,
-            &ledger_poison,
-            &_lease_guard.health_flag(),
-        );
+        let _plugin_supers =
+            self.register_turn_tools(&mut reg, run_id, &ledger_poison, &_lease_guard.lost_flag());
         // Non-blocking sub-agent tools: same `AgentSpawn` gate as the
         // blocking `delegate`, so a policy that cannot spawn has neither
         // path. Built from the same spawner the loop's delegate path uses,
@@ -5989,7 +6041,7 @@ Extracted:
         reg.register(
             pantheon_api::message::ToolSchema {
                 name: "load_tools".into(),
-                description: format!("Load tools by name into the next turn. Pass names as a JSON array of tool names. Already loaded tools are ignored. Call this when a task needs a tool that is not in your current list. Available tools: {}", available_names.join(", ")).into(),
+                description: format!("Load tools by name into the next turn. Pass names as a JSON array of tool names. Already loaded tools are ignored. Call this when a task needs a tool that is not in your current list. Available tools: {}", available_names.join(", ")),
                 parameters: serde_json::json!({"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}}, "required": ["names"]}),
             },
             pantheon_api::capability::Capability::Other("load_tools".into()),
@@ -6620,6 +6672,7 @@ Extracted:
     ) -> Result<bool, PantheonError> {
         if !should_warn_consecutive_failures(
             loop_.budget.warn_consecutive_tool_failures,
+            loop_.budget.max_consecutive_tool_failures,
             tool_failures,
             *failure_warned,
         ) {
@@ -6905,9 +6958,13 @@ Extracted:
                 // resolved, so the run could never resume. The old code
                 // re-parked here, which made every grant-resume under an
                 // approval policy park again forever.
-                for cap in reg.required_capabilities(&tc.name, &tc.arguments) {
-                    let _ = self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, &cap)?;
+                let caps = reg.required_capabilities(&tc.name, &tc.arguments);
+                for cap in &caps {
+                    let _ = self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, cap)?;
                 }
+                // The grant answers this call, and for session-grantable
+                // capabilities it answers the rest of the session too.
+                self.remember_session_grants(&caps);
                 regated.push(tc);
             }
             let reexecute = regated;
@@ -7009,6 +7066,16 @@ Extracted:
                         *tool_failures,
                         failure_warned,
                     )?;
+                    // The streak is settled in the transcript; stop here
+                    // rather than spend another provider round trip on it.
+                    if consecutive_failure_cap_hit(
+                        loop_.budget.max_consecutive_tool_failures,
+                        *tool_failures,
+                    ) {
+                        return Ok(LoopOutcome::BudgetExhausted {
+                            cap: "max_consecutive_tool_failures",
+                        });
+                    }
                 }
             }
         }
@@ -7361,6 +7428,16 @@ Extracted:
                         *tool_failures,
                         failure_warned,
                     )?;
+                    // The streak is settled in the transcript; stop here
+                    // rather than spend another provider round trip on it.
+                    if consecutive_failure_cap_hit(
+                        loop_.budget.max_consecutive_tool_failures,
+                        *tool_failures,
+                    ) {
+                        return Ok(LoopOutcome::BudgetExhausted {
+                            cap: "max_consecutive_tool_failures",
+                        });
+                    }
                 }
                 self.drive(
                     loop_,
@@ -8977,6 +9054,63 @@ fn done_call_ids(entries: &[pantheon_storage::LedgerEntry]) -> std::collections:
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod session_grant_tests {
+    use super::*;
+    use pantheon_api::capability::Capability;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel};
+
+    fn session(policy: Policy) -> (Session, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let s = Session::new(
+            dir.path().to_path_buf(),
+            policy,
+            ModelPolicy {
+                reasoning_budget: None,
+                reasoning: ReasoningLevel::default(),
+                default: DefaultModel {
+                    provider: "local".into(),
+                    model: "default".into(),
+                    key_env: None,
+                },
+                fallbacks: FallbackChain { fallbacks: vec![] },
+                auxiliaries: vec![],
+            },
+            SecretsBroker::from_system_env(),
+        )
+        .expect("session");
+        (s, dir)
+    }
+
+    /// One approval of a networked shell call clears the shell network
+    /// capability for the rest of the session (decision D1), and only
+    /// that capability: GitPush still asks every time.
+    #[test]
+    fn approving_shell_network_once_grants_it_for_the_session() {
+        let (s, _d) = session(Policy::coder());
+        let net = Capability::Other("shell.network".into());
+        assert!(!s.session_granted(&net));
+        s.remember_session_grants(&[
+            Capability::ShellExecute,
+            Capability::NetworkOutbound,
+            net.clone(),
+            Capability::GitPush,
+        ]);
+        assert!(s.session_granted(&net));
+        assert!(!s.session_granted(&Capability::GitPush));
+    }
+
+    /// A capability the policy denies is never recorded, so a session
+    /// grant cannot widen a read-only preset.
+    #[test]
+    fn denied_capability_is_never_session_granted() {
+        let (s, _d) = session(Policy::researcher_readonly());
+        let net = Capability::Other("shell.network".into());
+        s.remember_session_grants(std::slice::from_ref(&net));
+        assert!(!s.session_granted(&net));
+    }
 }
 
 #[cfg(test)]
@@ -10672,8 +10806,11 @@ mod delegate_tool_tests {
             !started.contains(secret),
             "secret must not appear in recorded ToolStarted args: {started}"
         );
+        // The UI path marks the field `[redacted]`; the ledger's
+        // append-time scrub then also catches the `token` key and writes
+        // `[REDACTED]` (audit SEC-16). Either marker proves the value is gone.
         assert!(
-            started.contains("[redacted]"),
+            started.to_ascii_lowercase().contains("[redacted]"),
             "secret field is marked redacted: {started}"
         );
         let completed = entries.iter().any(|e| {
@@ -12035,7 +12172,7 @@ mod delegate_tool_tests {
 
 #[cfg(test)]
 mod consecutive_failure_warning_tests {
-    use super::should_warn_consecutive_failures;
+    use super::{consecutive_failure_cap_hit, should_warn_consecutive_failures};
     use pantheon_agent::Budget;
 
     #[test]
@@ -12043,36 +12180,37 @@ mod consecutive_failure_warning_tests {
         // Default budget: warn at 3, cap at 5.
         let b = Budget::default();
         assert_eq!(b.warn_consecutive_tool_failures, 3);
+        assert_eq!(b.max_consecutive_tool_failures, 5);
 
         // Below threshold: no warning.
-        assert!(!should_warn_consecutive_failures(3, 0, false));
-        assert!(!should_warn_consecutive_failures(3, 1, false));
-        assert!(!should_warn_consecutive_failures(3, 2, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 1, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 2, false));
         // At threshold: warn.
-        assert!(should_warn_consecutive_failures(3, 3, false));
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
         // Above threshold but below cap: still warn (if not already warned).
-        assert!(should_warn_consecutive_failures(3, 4, false));
+        assert!(should_warn_consecutive_failures(3, 5, 4, false));
     }
 
     #[test]
     fn warns_exactly_once_per_streak() {
         // Already warned: no second warning even as failures accumulate.
-        assert!(!should_warn_consecutive_failures(3, 3, true));
-        assert!(!should_warn_consecutive_failures(3, 4, true));
+        assert!(!should_warn_consecutive_failures(3, 5, 3, true));
+        assert!(!should_warn_consecutive_failures(3, 5, 4, true));
     }
 
     #[test]
     fn warning_disabled_when_threshold_zero() {
-        assert!(!should_warn_consecutive_failures(0, 3, false));
-        assert!(!should_warn_consecutive_failures(0, 4, false));
-        assert!(!should_warn_consecutive_failures(0, 5, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 3, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 4, false));
+        assert!(!should_warn_consecutive_failures(0, 5, 5, false));
     }
 
     #[test]
     fn warning_threshold_boundary() {
         // warn_at = cap - 1: warning fires exactly one failure before cap.
-        assert!(should_warn_consecutive_failures(4, 4, false));
-        assert!(!should_warn_consecutive_failures(4, 3, false));
+        assert!(should_warn_consecutive_failures(4, 5, 4, false));
+        assert!(!should_warn_consecutive_failures(4, 5, 3, false));
     }
 
     #[test]
@@ -12080,11 +12218,11 @@ mod consecutive_failure_warning_tests {
         // After a success, the caller resets tool_failures=0 and
         // failure_warned=false, so a new streak can warn again.
         // Simulate: first streak warned at 3, then success resets.
-        assert!(should_warn_consecutive_failures(3, 3, false));
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
         // After reset (failures=0, warned=false), no warning yet.
-        assert!(!should_warn_consecutive_failures(3, 0, false));
+        assert!(!should_warn_consecutive_failures(3, 5, 0, false));
         // New streak reaches threshold: warns again.
-        assert!(should_warn_consecutive_failures(3, 3, false));
+        assert!(should_warn_consecutive_failures(3, 5, 3, false));
     }
 
     // Integration test for the actual injection helper, using the real
@@ -12234,6 +12372,23 @@ mod consecutive_failure_warning_tests {
             assert!(!fired);
             assert!(messages.is_empty());
         }
+    }
+
+    /// The cap terminates the run (audit COR-06); `0` disables it.
+    #[test]
+    fn cap_terminates_the_streak() {
+        assert!(!consecutive_failure_cap_hit(5, 4));
+        assert!(consecutive_failure_cap_hit(5, 5));
+        assert!(consecutive_failure_cap_hit(5, 6));
+        assert!(!consecutive_failure_cap_hit(0, 100));
+    }
+
+    /// A warning at or past the cap would arrive after termination, so it
+    /// is suppressed; with the cap off, the warning is pointless too.
+    #[test]
+    fn no_warning_when_it_cannot_precede_the_cap() {
+        assert!(!should_warn_consecutive_failures(5, 5, 5, false));
+        assert!(!should_warn_consecutive_failures(3, 0, 3, false));
     }
 }
 

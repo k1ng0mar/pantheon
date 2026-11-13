@@ -1535,7 +1535,30 @@ pub mod openai {
             }
             if let Some(frag) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc in frag {
-                    let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+                    // Gateways that omit `index` used to merge every call
+                    // into slot 0, concatenating distinct calls' arguments
+                    // into one corrupt call (audit COR-11). Without an index:
+                    // a known id continues its call, a new id opens a slot,
+                    // and an id-less fragment continues the latest call.
+                    let idx = match tc.get("index").and_then(|i| i.as_u64()) {
+                        Some(i) => i as u32,
+                        None => {
+                            let id = tc
+                                .get("id")
+                                .and_then(|x| x.as_str())
+                                .filter(|s| !s.is_empty());
+                            let last = self.tools.keys().next_back().copied();
+                            match id {
+                                Some(id) => self
+                                    .tools
+                                    .iter()
+                                    .find(|(_, e)| e.0 == id)
+                                    .map(|(k, _)| *k)
+                                    .unwrap_or_else(|| last.map_or(0, |m| m + 1)),
+                                None => last.unwrap_or(0),
+                            }
+                        }
+                    };
                     let entry = self
                         .tools
                         .entry(idx)

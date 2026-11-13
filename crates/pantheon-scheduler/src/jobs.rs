@@ -558,24 +558,32 @@ pub mod repair_budget {
 
     impl RepairBudget {
         /// Open the budget file under `data_dir` (creating parent dirs on
-        /// first persist). A missing or corrupt file starts empty - the
-        /// fail-open here is deliberate and narrow: [`Self::try_consume`]
-        /// fails closed on write errors, so a repair never runs uncounted.
+        /// first persist). A missing file starts empty. A corrupt file is an
+        /// error: it used to read as an empty budget and the next persist
+        /// overwrote it, resetting the daily cap (audit COR-10).
         pub fn open(data_dir: &Path) -> Result<Self, String> {
             let path = data_dir.join(FILE_NAME);
-            let file: BudgetFile = match std::fs::read(&path) {
-                Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => BudgetFile::default(),
-                Err(e) => {
-                    return Err(format!(
-                        "repair-budget: cannot read {}: {e}",
-                        path.display()
-                    ))
-                }
-            };
+            let file = Self::read_file(&path)?;
             let mut budget = Self { path, file };
             budget.prune_old_days();
             Ok(budget)
+        }
+
+        fn read_file(path: &Path) -> Result<BudgetFile, String> {
+            match std::fs::read(path) {
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                    format!(
+                        "repair-budget: {} is corrupt ({e}); repairs stay disabled until it \
+                         is fixed or removed",
+                        path.display()
+                    )
+                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BudgetFile::default()),
+                Err(e) => Err(format!(
+                    "repair-budget: cannot read {}: {e}",
+                    path.display()
+                )),
+            }
         }
 
         /// Try to consume one repair investigation for `job_id` against
@@ -588,6 +596,22 @@ pub mod repair_budget {
             if max_per_day == 0 {
                 return false;
             }
+            // Read-modify-write under a cross-process lock, re-reading the
+            // file first: the gateway daemon and the TUI each hold their
+            // own instance, and writing back a copy loaded at `open` lost
+            // the other process's spends (audit COR-10). Any lock or read
+            // failure fails closed.
+            let Some(dir) = self.path.parent() else {
+                return false;
+            };
+            let Ok(_lock) = crate::lock_named(dir, "repair-budget.lock") else {
+                return false;
+            };
+            match Self::read_file(&self.path) {
+                Ok(f) => self.file = f,
+                Err(_) => return false,
+            }
+            self.prune_old_days();
             let day = day_string(now_ms);
             let used = self
                 .file
@@ -641,11 +665,9 @@ pub mod repair_budget {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("repair-budget: mkdir: {e}"))?;
             }
-            // Write-then-rename: a crash mid-write never leaves a torn file.
-            let tmp = self.path.with_extension("json.tmp");
-            std::fs::write(&tmp, &bytes).map_err(|e| format!("repair-budget: write: {e}"))?;
-            std::fs::rename(&tmp, &self.path).map_err(|e| format!("repair-budget: rename: {e}"))?;
-            Ok(())
+            // Unique temp + fsync + rename (the fixed `.json.tmp` name let
+            // two writers rename each other's partial files).
+            crate::write_json_atomic(&self.path, &bytes).map_err(|e| format!("repair-budget: {e}"))
         }
 
         fn prune_old_days(&mut self) {
@@ -739,11 +761,12 @@ pub mod repair_budget {
         }
 
         #[test]
-        fn corrupt_file_starts_empty() {
+        fn corrupt_file_fails_closed() {
+            // A corrupt file used to read as empty and be overwritten,
+            // resetting the daily cap (audit COR-10).
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(FILE_NAME), b"not json{{{").unwrap();
-            let mut b = RepairBudget::open(dir.path()).unwrap();
-            assert!(b.try_consume("task-a", 3, today_ms()));
+            assert!(RepairBudget::open(dir.path()).is_err());
         }
 
         #[test]
@@ -808,18 +831,21 @@ pub mod retention {
         if ledger_path.exists() {
             let ledger = pantheon_storage::ledger::Ledger::open(&ledger_path)
                 .map_err(|e| format!("retention: cannot open ledger: {e}"))?;
+            // The FTS sidecar lives in the same database file, and pruned
+            // history must not stay searchable. Open and prune it FIRST: the
+            // old order pruned the ledger, then skipped the index with only
+            // an eprintln when it would not open (or returned before the
+            // claims prune when its prune failed), leaving deleted text
+            // searchable (audit COR-08). Now an index failure fails the
+            // pass before any row is removed, and the next pass retries.
+            let search = pantheon_storage::search::SessionSearch::open(&ledger_path)
+                .map_err(|e| format!("retention: cannot open search index: {e}"))?;
+            report.search_chunks_pruned = search
+                .prune_before(cutoff)
+                .map_err(|e| format!("retention: prune search index: {e}"))?;
             report.events_pruned = ledger
                 .prune_events_before_active_safe(cutoff)
                 .map_err(|e| format!("retention: prune events: {e}"))?;
-            // The FTS sidecar lives in the same database file.
-            match pantheon_storage::search::SessionSearch::open(&ledger_path) {
-                Ok(search) => {
-                    report.search_chunks_pruned = search
-                        .prune_before(cutoff)
-                        .map_err(|e| format!("retention: prune search index: {e}"))?;
-                }
-                Err(e) => eprintln!("retention: search index unavailable, skipping: {e}"),
-            }
         }
         let claims_path = data_dir.join("claims.db");
         if claims_path.exists() {
@@ -1103,8 +1129,7 @@ pub mod run_history {
             }
             let text = serde_json::to_string_pretty(&self.stats)
                 .map_err(|e| format!("encode history: {e}"))?;
-            std::fs::write(&self.path, text)
-                .map_err(|e| format!("write {}: {e}", self.path.display()))
+            crate::write_json_atomic(&self.path, text.as_bytes())
         }
     }
 }
@@ -1636,7 +1661,7 @@ pub mod templates {
                 templates: self.user.clone(),
             })
             .map_err(|e| format!("cannot serialize templates: {e}"))?;
-            std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+            crate::write_json_atomic(&path, text.as_bytes())
         }
     }
 
@@ -1725,7 +1750,7 @@ pub mod tick {
     use crate::durable::DurableClaimLedger;
     use crate::{Job, OverlapPolicy};
     use pantheon_api::logging::now_ms;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
@@ -1742,46 +1767,6 @@ pub mod tick {
     /// one key.
     pub fn occurrence_key(job: &Job, occurrence: &str) -> String {
         format!("{}{}", job.idempotency_key, occurrence)
-    }
-
-    /// Which occurrences have already been claimed.
-    ///
-    /// In-memory on purpose: the caller persists keys in the ledger. A
-    /// recovered process rebuilds this from the ledger before the first tick.
-    #[derive(Debug, Default)]
-    pub struct ClaimLedger {
-        claimed: HashSet<String>,
-    }
-
-    impl ClaimLedger {
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        /// Claim an occurrence. `true` means this is the first claim and the run
-        /// should start; `false` means it is a replay and must not run twice.
-        pub fn claim(&mut self, key: &str) -> bool {
-            self.claimed.insert(key.to_string())
-        }
-
-        /// Has this occurrence already had a run started?
-        pub fn is_claimed(&self, key: &str) -> bool {
-            self.claimed.contains(key)
-        }
-
-        /// Release a claim after a run ends, so the key is not held forever by
-        /// long-lived processes.
-        pub fn release(&mut self, key: &str) -> bool {
-            self.claimed.remove(key)
-        }
-
-        pub fn len(&self) -> usize {
-            self.claimed.len()
-        }
-
-        pub fn is_empty(&self) -> bool {
-            self.claimed.is_empty()
-        }
     }
 
     /// How one fired run ended.
