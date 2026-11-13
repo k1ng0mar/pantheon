@@ -1,7 +1,7 @@
 {
   "name": "pantheon-desktop",
   "private": true,
-  "version": "0.3.37",
+  "version": "1.2.0",
   "description": "Pantheon Desktop - a native workspace for the Pantheon agent runtime.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://github.com/k1ng0mar/pantheon#readme",

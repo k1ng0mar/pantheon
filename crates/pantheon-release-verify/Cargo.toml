@@ -1,6 +1,6 @@
 [package]
 name = "pantheon-release-verify"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 license = "MIT"
 authors = ["Pantheon"]
