@@ -26,9 +26,10 @@
 //! | `pantheon::tui` | `pantheon-tui` | interactive terminal surface |
 //! | `pantheon::web` | `pantheon-web` | browser automation + web search |
 //!
-//! The terminal application (`pantheon-tui`, the `pantheon` binary) is
-//! deliberately not re-exported: it is the composition root, not library
-//! surface.
+//! `pantheon::tui` re-exports the terminal application crate
+//! (`pantheon-tui`, which also builds the `pantheon` binary) for embedders
+//! that drive its commands; it is the composition root rather than a
+//! stable library surface.
 
 pub use pantheon_agent as agent;
 pub use pantheon_agent::capability;

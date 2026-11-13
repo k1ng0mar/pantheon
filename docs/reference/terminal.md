@@ -84,7 +84,7 @@ pantheon plugins list|install <name>|enable <name>|disable <name>
 pantheon extensions                       # what actually loaded
 pantheon hook <name> [--session S] [--platform P]
 pantheon mcp list [--json]                # declared MCP servers (read-only for now)
-pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp> [path]
+pantheon migrate <detect|show|plan|apply|validate> <hermes|openclaw|omp|claude> [path]
                [--kind K] [--json] [--yes] [--merge-providers]
 ```
 

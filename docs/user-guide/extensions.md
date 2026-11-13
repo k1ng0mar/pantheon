@@ -62,7 +62,7 @@ enabled = true
 
 Both extend what the agent can do, and they are trusted completely differently - the approval UI surfaces this on purpose:
 
-- A **plugin** is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it. Tool plugins run as spawned runner processes behind the capability gate with full user privileges and no namespace sandbox. Hook plugins run as per-fire child processes with a scrubbed environment, sandboxed at the VeryHigh level whenever a capability policy is configured and spawned directly only when no policy is configured. See the security section above for which kind gets which isolation.
+- A **plugin** is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it. Tool plugins run as spawned runner processes behind the capability gate, inside the sandbox (High by default, VeryHigh on request) with a scrubbed environment, a private writable work directory and no network unless the manifest enables it. Hook plugins run as per-fire child processes with a scrubbed environment, sandboxed at the VeryHigh level whenever a capability policy is configured and spawned directly only when no policy is configured. See the security section above for which kind gets which isolation.
 - An **MCP server** is an out-of-process integration: Pantheon speaks the MCP protocol to it but never executes its code - the server may run on another machine entirely. Trust there is in the endpoint and its configuration, not in shipped code.
 
 ## Manage and debug

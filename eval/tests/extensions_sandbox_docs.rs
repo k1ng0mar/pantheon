@@ -4,9 +4,11 @@
 //! halves. Hook plugins (`pantheon-extensions` python runner) go through
 //! `build_sandboxed_checked` at the VeryHigh level whenever a capability
 //! policy is configured, and spawn directly only when no policy exists.
-//! Tool plugins (`pantheon-exec` supervisor) still spawn a sealed runner
-//! with no namespace sandbox. The user docs must keep those two facts
-//! distinct, and the code markers below pin the behavior the docs claim.
+//! Tool plugins (`pantheon-exec` supervisor) run their staged runner
+//! through the same sandbox runner at High (or VeryHigh) - the "no
+//! namespace sandbox" line went stale too (audit GP F10). The user docs
+//! must keep the two kinds distinct, and the code markers below pin the
+//! behavior the docs claim.
 
 /// User guide for hook and tool plugins.
 const EXTENSIONS_MD: &str = include_str!("../../docs/user-guide/extensions.md");
@@ -54,9 +56,18 @@ fn docs_distinguish_tool_and_hook_sandboxing() {
             "docs must not restore the blanket unsandboxed claim"
         );
     }
+    // Tool plugins run inside the sandbox runner (`PluginSupervisor::
+    // spawn_inner` builds them through `build_sandboxed_checked` at High or
+    // VeryHigh); the docs used to say "no namespace sandbox" (audit GP F10).
+    for doc in [EXTENSIONS_MD, ARCHITECTURE_MD] {
+        assert!(
+            !doc.contains("no namespace sandbox"),
+            "docs must not claim tool plugins are unsandboxed"
+        );
+    }
     assert!(
-        EXTENSIONS_MD.contains("no namespace sandbox"),
-        "docs must state that tool plugins have no namespace sandbox today"
+        EXTENSIONS_MD.contains("inside the sandbox (High by default, VeryHigh on request)"),
+        "docs must state the tool plugin sandbox level"
     );
     assert!(
         EXTENSIONS_MD.contains("spawned directly only when no policy is configured"),

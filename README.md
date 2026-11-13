@@ -86,11 +86,11 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 
 ## Mechanisms - and what each one buys you
 
-**The ledger.** Every lifecycle event - turn started, tool called, approval requested, cost stamped - is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: log lines are scrubbed, and blocked-command errors carry a digest and rule name, never raw text. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction. Two qualifications keep the claim honest: retention (`prune_events_before*`) and explicit run deletion (`delete_run`) remove rows, so "append-only" describes normal operation, not an absolute; and events carry no hash chain and no format version, so the ledger is an audit trail you control, **not tamper-evident** evidence against someone with write access to the file.
+**The ledger.** Every lifecycle event - turn started, tool called, approval requested, cost stamped - is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: every string in an event is scrubbed of known key formats and of every secret the broker has handed out, and blocked-command errors carry a digest and rule name, never raw text. A resumed session therefore sees `[REDACTED]` where a secret was pasted. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction. Two qualifications keep the claim honest: retention (`prune_events_before*`) and explicit run deletion (`delete_run`) remove rows, so "append-only" describes normal operation, not an absolute; and events carry no hash chain and no format version, so the ledger is an audit trail you control, **not tamper-evident** evidence against someone with write access to the file.
 
 **Approvals as first-class control.** The capability decision isn't binary: allow, deny, or *ask a human*. Approvals pause the run and resume it - settling the whole batch, not just one call - from the TUI, the web UI, or the messaging gateways. *Trust:* you can hand an agent real capabilities (shell, network, memory writes) and keep a human veto on the dangerous ones, without babysitting every step.
 
-**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run - there is no fallback to raw host execution. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway."
+**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run. The only way around that is an explicit operator opt-in, `PANTHEON_SANDBOX_FALLBACK=allow`, which runs the command directly on the host (environment scrubbed, limits applied, no namespace isolation) and says so on stderr and in the tool result. Model-run shell and terminal commands run in a user namespace with every capability dropped, cannot see Pantheon's data dir or common credential files (`~/.ssh`, `~/.aws`, `~/.config/gh`, ...), and are offline unless the call asks for network, which the default policy approves once per session. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway."
 
 **The danger gate.** Before shell text reaches execution, a pre-gate blocks `sh -c`/`eval` wrappers, `${IFS}` tricks, command substitution, backticks, `find -delete`/`-exec`, and obfuscated `rm`. Blocked errors name the rule, not the command - so a denied command containing a token can't leak it into the ledger. *Trust:* the most common prompt-injection-to-shell paths are dead before they reach your filesystem.
 
@@ -111,7 +111,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 | `pantheon` | Façade: re-exports every library crate under `pantheon::...` |
 | `pantheon-tui` | The terminal product - TUI, CLI verbs, session tabs, status bar |
 | `pantheon-runtime` | Supervisor: run lifecycle, quotas, recovery, checkpointing, swarm delegation |
-| `pantheon-agent` | Agent engine: the model turn loop with run budgets, capability policy/role maps |
+| `pantheon-agent` | Agent engine primitives: run budgets, capability policy/role maps, sub-agent registry (the production turn loop is `pantheon-runtime::Session::drive`) |
 | `pantheon-api` | Bottom protocol leaf: commands, events, shared types, config document, plugin approval, agent profiles |
 | `pantheon-exec` | Execution engine: process/fs/git surface, danger gate, confinement, sandbox levels, plugin approval |
 | `pantheon-tools` | Named, schema'd, capability-gated tools (shell, fs, memory, ...) |
@@ -193,4 +193,7 @@ See [docs/developer/contributing.md](docs/developer/contributing.md) for the wor
 
 ## License
 
-MIT (declared in the workspace `Cargo.toml`).
+MIT, see [LICENSE](LICENSE), except where a subdirectory carries its own
+license (listed in [NOTICE](NOTICE)). In particular, **Pantheon Desktop
+(`desktop/`) is a fork of PandaCode** (<https://github.com/aicodeking/pandacode>)
+under the PandaCode License, MIT with an attribution requirement.

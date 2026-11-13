@@ -43,9 +43,10 @@ signature), a three-direction exploration, the site or app as real code in
 the user's project, clean scan and matrix results, a scored critique per
 round, and collateral (favicon, social card) when shipping.
 
-`<skill>` below is this skill's folder: `~/.claude/skills/web-designer`
-(on Windows `%USERPROFILE%\.claude\skills\web-designer`; forward slashes work
-in every command below, in Git Bash, PowerShell and cmd).
+`<skill>` below is this skill's folder, `${CLAUDE_SKILL_DIR}` (in Pantheon
+`<data_dir>/skills/web-designer`, by default `~/.pantheon/skills/web-designer`;
+under Claude Code `~/.claude/skills/web-designer`). Forward slashes work in
+every command below, in Git Bash, PowerShell and cmd.
 
 ## The references
 

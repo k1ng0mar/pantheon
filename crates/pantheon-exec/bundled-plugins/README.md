@@ -48,8 +48,9 @@ mismatch, so what ships in the binary is exactly what lands on disk.
 Seeding is inert: an existing target directory is **never**
 overwritten, and every bundled plugin ships disabled - with one
 exception: `noisegate` ships with `enabled: true` in its manifest,
-per Umar's direct directive (it is the one bundled plugin on by
-default). Do not "normalize" it back to `false`. The config
+because it is deterministic, network-free, fail-open and only compacts
+tool output, so it carries no risk worth an opt-in. Do not "normalize"
+it back to `false`. The config
 file's `[plugins.<name>]` table is the single enablement state
 (`pantheon plugins enable <name>`, the dashboard, the TUI toggle
 screen, the agent's `enable_plugin` tool). For bundled plugins it

@@ -1,0 +1,34 @@
+Pantheon - licensing notice
+
+The repository is MIT licensed (see LICENSE) with these exceptions, each
+of which carries its own license file:
+
+desktop/
+  Pantheon Desktop is a fork of PandaCode:
+  https://github.com/aicodeking/pandacode
+  Licensed under the PandaCode License (MIT with an attribution
+  requirement), see desktop/LICENSE and desktop/packages/npx/LICENSE.
+  The attribution also appears in the app's Settings -> About screen.
+
+crates/pantheon-exec/bundled-plugins/hookify
+crates/pantheon-exec/bundled-plugins/security-guidance
+  Adapted from anthropics/claude-plugins-official
+  (https://github.com/anthropics/claude-plugins-official), Apache-2.0.
+  See each directory's LICENSE-APACHE2 and NOTICE for what was changed.
+
+crates/pantheon-exec/bundled-plugins/hermes-web-search-plus
+  Provider contracts ported from robbyczgw-cla/hermes-web-search-plus
+  (https://github.com/robbyczgw-cla/hermes-web-search-plus), MIT. See the
+  directory's LICENSE-MIT and NOTICE.
+
+crates/pantheon-exec/bundled-plugins/self-improving-agent
+  Adapted from pskoett's self-improving-agent skill (OpenClaw), MIT-0, as
+  declared in its plugin.yaml.
+
+desktop/src/vendor/enriched-markdown
+  Software Mansion's Enriched Markdown engine, MIT. See its LICENSE.
+
+Bundled skills under crates/pantheon-exec/bundled-skills/ that were
+written elsewhere name their origin in their SKILL.md frontmatter
+(`origin:`); several do not yet state a license, which is tracked in
+docs/developer/audit-2026-11-12.md.

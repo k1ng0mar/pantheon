@@ -41,7 +41,7 @@ check its result when touching platform code.
 `PANTHEON_BIN=target/debug/pantheon`. The harness is a stdlib-only
 regression suite over the real binary: 22 cases covering the run lifecycle,
 audit export, memory round-trip, plugin discovery, setup/config, swarm
-spawn refusal, and the send/gateway path. Twelve of those cases carry
+spawn refusal, and the send/gateway path. Fifteen of those cases carry
 `skip: "needs binary"`, so without the build step they never ran anywhere by
 default.
 

@@ -1,8 +1,7 @@
 # Pantheon eval harness
 
-Regression suite derived from real Pantheon wave-1 features and
-Hermes-history behaviors (WAVE2/TEAMS item: "eval/ - 20-30 Hermes-history
-tasks as regression suite" - this is the seed, wave-3 lane: freebuff).
+Regression suite derived from real Pantheon features and from behaviors
+in the history of the Hermes agent that Pantheon migrates from.
 
 Stdlib-only (`python3 eval/run.py`); drives the real `pantheon` CLI built
 from this workspace. Every case runs in a fresh sandbox
