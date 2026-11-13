@@ -1,6 +1,6 @@
 {
   "name": "pantheon",
-  "version": "0.3.37",
+  "version": "1.2.0",
   "description": "Install Pantheon, the open-source desktop app for coding agents, with npx pantheon.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
