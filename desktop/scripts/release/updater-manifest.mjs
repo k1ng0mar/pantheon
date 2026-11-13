@@ -19,8 +19,7 @@ export async function signaturesIn(directory) {
   return signatures;
 }
 
-async function main() {
-  const [directory, releaseVersion, notesFile] = process.argv.slice(2);
+export async function main(directory, releaseVersion, notesFile) {
   if (!directory || !releaseVersion || !notesFile) throw new Error('Usage: updater-manifest.mjs <assets-dir> <version> <notes.md>');
   const manifest = updaterManifest(releaseVersion, await readFile(notesFile, 'utf8'), await signaturesIn(directory));
   await writeFile(resolve(directory, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -28,5 +27,5 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+  main(...process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });
 }

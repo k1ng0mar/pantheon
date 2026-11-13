@@ -34,12 +34,21 @@ test('missing variables fail without revealing other values', () => {
 });
 
 test('the Cargo.lock version is set with either line ending', () => {
-  const lock = ['[[package]]', 'name = "pancakes"', 'version = "1.0.0"', '', '[[package]]', 'name = "pantheon"', 'version = "0.3.0"', 'dependencies = [', ' "serde",', ']', ''];
+  const lock = ['[[package]]', 'name = "pancakes"', 'version = "1.0.0"', '', '[[package]]', 'name = "pantheon-desktop"', 'version = "0.3.0"', 'dependencies = [', ' "serde",', ']', ''];
   for (const eol of ['\n', '\r\n']) {
-    assert.equal(cargoLockVersion(lock.join(eol), '0.3.1'), lock.join(eol).replace('version = "0.3.0"', 'version = "0.3.1"'));
+    assert.equal(cargoLockVersion(lock.join(eol), '0.3.1', 'pantheon-desktop'), lock.join(eol).replace('version = "0.3.0"', 'version = "0.3.1"'));
   }
-  assert.throws(() => cargoLockVersion('[[package]]\r\nname = "other"\r\nversion = "1.0.0"\r\n', '0.3.1'), /No pantheon package/);
-  assert.throws(() => cargoLockVersion(lock.join('\n'), '0.3.1;x'));
+  // The name comes from Cargo.toml. A hardcoded `pantheon` made this throw
+  // after the rebrand, so the lock was left at the old version.
+  assert.throws(() => cargoLockVersion(lock.join('\n'), '0.3.1', 'pantheon'), /No pantheon package/);
+  assert.throws(() => cargoLockVersion(lock.join('\n'), '0.3.1'), /No package name/);
+  assert.throws(() => cargoLockVersion(lock.join('\n'), '0.3.1;x', 'pantheon-desktop'));
+});
+
+test('desktop releases use their own tag namespace', async () => {
+  const { releaseTag } = await import('./common.mjs');
+  assert.equal(releaseTag('1.2.0'), 'desktop-v1.2.0');
+  assert.throws(() => releaseTag('v1.2.0'));
 });
 
 test('the updater manifest points every signed platform at its release asset', async () => {
@@ -48,15 +57,15 @@ test('the updater manifest points every signed platform at its release asset', a
   assert.deepEqual(manifest, {
     version: '0.3.1', notes: 'Notes', pub_date: '2026-10-18T00:00:00Z',
     platforms: {
-      'darwin-aarch64': { signature: 'sig-mac', url: 'https://github.com/k1ng0mar/pantheon/releases/download/v0.3.1/Pantheon-macOS-arm64.app.tar.gz' },
-      'darwin-x86_64': { signature: 'sig-intel', url: 'https://github.com/k1ng0mar/pantheon/releases/download/v0.3.1/Pantheon-macOS-x64.app.tar.gz' },
-      'linux-x86_64': { signature: 'sig-linux', url: 'https://github.com/k1ng0mar/pantheon/releases/download/v0.3.1/Pantheon-Linux-x86_64.AppImage' },
-      'linux-aarch64': { signature: 'sig-arm', url: 'https://github.com/k1ng0mar/pantheon/releases/download/v0.3.1/Pantheon-Linux-aarch64.AppImage' },
+      'darwin-aarch64': { signature: 'sig-mac', url: 'https://github.com/k1ng0mar/pantheon/releases/download/desktop-v0.3.1/Pantheon-macOS-arm64.app.tar.gz' },
+      'darwin-x86_64': { signature: 'sig-intel', url: 'https://github.com/k1ng0mar/pantheon/releases/download/desktop-v0.3.1/Pantheon-macOS-x64.app.tar.gz' },
+      'linux-x86_64': { signature: 'sig-linux', url: 'https://github.com/k1ng0mar/pantheon/releases/download/desktop-v0.3.1/Pantheon-Linux-x86_64.AppImage' },
+      'linux-aarch64': { signature: 'sig-arm', url: 'https://github.com/k1ng0mar/pantheon/releases/download/desktop-v0.3.1/Pantheon-Linux-aarch64.AppImage' },
     },
   });
   assert.throws(() => updaterManifest('0.3.1', '', {}), /No signed updater files/);
   assert.throws(() => updaterManifest('0.3.1', '', { 'windows-x86_64': ' ' }), /Missing updater signature/);
   const fork = updaterManifest('0.3.1', '', { 'windows-x86_64': 'sig-win' }, '2026-10-18T00:00:00Z', 'someone/pantheon');
-  assert.equal(fork.platforms['windows-x86_64'].url, 'https://github.com/someone/pantheon/releases/download/v0.3.1/Pantheon-Windows-x64-setup.exe');
+  assert.equal(fork.platforms['windows-x86_64'].url, 'https://github.com/someone/pantheon/releases/download/desktop-v0.3.1/Pantheon-Windows-x64-setup.exe');
   assert.throws(() => updaterManifest('0.3.1', '', { 'windows-x86_64': 'sig' }, undefined, 'evil.example/x?y'), /Not a GitHub repository/);
 });

@@ -51,14 +51,30 @@ export function version(value) {
   return value;
 }
 
+/** Desktop releases live in their own tag namespace (`desktop-vX.Y.Z`) so they
+ * can never collide with the CLI's `v*` tags; the workflow enforces it and the
+ * updater manifest's asset URLs have to match it. */
+export function releaseTag(value) {
+  return `desktop-v${version(value)}`;
+}
+
 export async function json(path) { return JSON.parse(await readFile(path, 'utf8')); }
 
-/** Cargo.lock text with the `pantheon` package at `next`. Keeps the file's line endings,
- * so a Windows checkout with CRLF is updated too, and fails instead of leaving it unchanged. */
-export function cargoLockVersion(lock, next) {
-  const entry = /(\[\[package\]\]\r?\nname = "pantheon"\r?\nversion = )"[^"]+"/;
-  if (!entry.test(lock)) throw new Error('No pantheon package in src-tauri/Cargo.lock.');
-  return lock.replace(entry, `$1"${version(next)}"`);
+/** Cargo.lock text with the named package at `next`. Keeps the file's line endings,
+ * so a Windows checkout with CRLF is updated too, and fails instead of leaving it unchanged.
+ * The name is required: the package is `pantheon-desktop`, and a hardcoded `pantheon`
+ * made this throw after the rebrand, stranding the lock at the old version. */
+export function cargoLockVersion(lock, next, name) {
+  const pkg = String(name ?? '').trim();
+  if (!pkg) throw new Error('No package name to set in src-tauri/Cargo.lock.');
+  const eol = lock.includes('\r\n') ? '\r\n' : '\n';
+  const head = '[[package]]' + eol + 'name = "' + pkg + '"' + eol + 'version = "';
+  const at = lock.indexOf(head);
+  if (at < 0) throw new Error(`No ${pkg} package in src-tauri/Cargo.lock.`);
+  const from = at + head.length;
+  const to = lock.indexOf('"', from);
+  if (to < 0) throw new Error(`No ${pkg} package in src-tauri/Cargo.lock.`);
+  return lock.slice(0, from) + version(next) + lock.slice(to);
 }
 
 export async function digest(path) {
@@ -90,7 +106,7 @@ export function updaterManifest(releaseVersion, notes, signatures, pubDate = new
   for (const [target, signature] of Object.entries(signatures)) {
     const config = targetConfig(target);
     if (typeof signature !== 'string' || !signature.trim()) throw new Error(`Missing updater signature for ${target}.`);
-    platforms[target] = { signature: signature.trim(), url: `https://github.com/${repository}/releases/download/v${v}/${config.updaterAsset}` };
+    platforms[target] = { signature: signature.trim(), url: `https://github.com/${repository}/releases/download/${releaseTag(v)}/${config.updaterAsset}` };
   }
   if (!Object.keys(platforms).length) throw new Error('No signed updater files to publish.');
   return { version: v, notes: String(notes ?? '').trim(), pub_date: pubDate, platforms };
