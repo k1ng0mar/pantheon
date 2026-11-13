@@ -7328,7 +7328,6 @@ fn spawn_turn(
                     msg: "turn worker panicked (see process logs); state reset to ready"
                         .to_string(),
                 });
-                return;
             }
             Ok(Err(e)) => {
                 let _ = tx2.send(TuiEvent::Error {
@@ -11138,7 +11137,7 @@ fn do_edit(
     tx: &std::sync::mpsc::Sender<TuiEvent>,
     arg: &str,
 ) {
-    if state.ready == false {
+    if !state.ready {
         state.add_status("/edit: wait for the turn to finish".into());
         return;
     }
@@ -11186,7 +11185,7 @@ fn do_continue(
     tx: &std::sync::mpsc::Sender<TuiEvent>,
     arg: &str,
 ) {
-    if state.ready == false {
+    if !state.ready {
         state.add_status("/continue: wait for the turn to finish".into());
         return;
     }
@@ -11203,7 +11202,7 @@ fn do_continue(
 }
 
 fn do_clear_context(state: &mut TuiState, session: &Arc<Session>) {
-    if state.ready == false {
+    if !state.ready {
         state.add_status("/clear-context: wait for the turn to finish".into());
         return;
     }

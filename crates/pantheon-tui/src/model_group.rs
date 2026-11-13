@@ -1730,7 +1730,7 @@ pub mod model {
         .into_iter()
         .flatten()
         {
-            push(sec.0, sec.1.as_deref());
+            push(sec.0, sec.1);
         }
         for (name, sec) in &cfg.custom_providers {
             if name != except_provider {

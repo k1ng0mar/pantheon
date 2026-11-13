@@ -159,7 +159,11 @@ impl ToolRegistry {
 
     /// Set the always-loaded core set (auto mode start state).
     pub fn set_core_tools(&mut self, names: &[String]) {
-        self.loaded = names.iter().cloned().filter(|n| self.tools.contains_key(n)).collect();
+        self.loaded = names
+            .iter()
+            .filter(|&n| self.tools.contains_key(n))
+            .cloned()
+            .collect();
     }
 
     pub fn is_loaded(&self, name: &str) -> bool {
@@ -451,7 +455,11 @@ mod call_context_tests {
     fn loaded_schemas_start_empty_and_load_by_name() {
         let mut reg = probe_registry();
         reg.register(
-            pantheon_api::message::ToolSchema { name: "extra".into(), description: "x".into(), parameters: serde_json::json!({}) },
+            pantheon_api::message::ToolSchema {
+                name: "extra".into(),
+                description: "x".into(),
+                parameters: serde_json::json!({}),
+            },
             pantheon_api::capability::Capability::FilesystemRead,
             |_| Ok("x".into()),
         );

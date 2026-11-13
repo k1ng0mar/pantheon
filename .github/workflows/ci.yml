@@ -11,6 +11,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: CI only reads the repository. Without this block the
+# job token got the repository's default scope (audit, CI hardening).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # Release-profile assertions are the point of this job; debug misses them.
@@ -21,11 +26,11 @@ jobs:
     name: fmt, clippy, test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # No toolchain input: the action reads the pinned channel from
       # rust-toolchain.toml, so CI and local fmt/clippy resolution can
       # never drift apart (the audit-F9 failure mode).
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           # rust-analyzer: the LSP tests drive the real server, and a
           # rustup shim with no installed component is on PATH but exits
@@ -34,8 +39,7 @@ jobs:
 
       # Dependency cache. Keyed on the lockfile so an unchanged manifest
       # reuses the compiled deps.
-      - uses: Swatinem/rust-cache@v2
-
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: fmt
         run: cargo fmt --all --check
 
@@ -43,18 +47,53 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features
 
       - name: test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
+
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Every PR, not only the weekly drift job: an advisory against a
+      # locked dependency (RUSTSEC-2026-0459, libsqlite3-sys) sat in the
+      # tree between weekly runs.
+      - uses: taiki-e/install-action@f84dff0ad3f25ff0e5dc531e626734a4e7d11ac7 # cargo-audit
+      - run: cargo audit
+
+  sandbox-root:
+    name: sandbox tests as root
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # Root takes paths the unprivileged runner never reaches: NPROC is
+      # not enforced (the probe leak, audit COR-01), capabilities exist to
+      # drop (SEC-10), and the VeryHigh seccomp/Landlock tier and the
+      # credential masks can actually be exercised (COR-02, SEC-01).
+      # Build as the runner user, run the test binaries as root.
+      - name: build sandbox test binaries
+        run: cargo test -p pantheon-eval --test sandbox_runner --test sandbox_secrets --no-run --locked
+      - name: run as root
+        run: |
+          for t in sandbox_runner sandbox_secrets; do
+            bin=$(cargo test -p pantheon-eval --test "$t" --no-run --locked --message-format=json \
+              | jq -r 'select(.reason=="compiler-artifact" and .executable!=null) | .executable' | tail -1)
+            sudo env HOME=/root PATH=/usr/bin:/bin "$bin"
+          done
 
   build:
     name: release build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Reads the pinned channel from rust-toolchain.toml, like the check
       # job. `@stable` here meant the release smoke test ran on a different
       # compiler than the artifacts actually ship with.
-      - uses: dtolnay/rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --release --workspace
       # The installer promises a working binary. Prove the artifact runs,
       # so a green test suite cannot ship a binary that does not start.
@@ -75,6 +114,8 @@ jobs:
     # merge blocker would freeze every PR on pre-existing breakage. Flip it
     # to false once this job has been green for a full week; the tracking
     # issue is in docs/developer/ci.md.
+    # EXPIRES 2026-12-31: after that date this must be false, green or not
+    # (the audit found it with no end condition).
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -82,9 +123,9 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: test the platform-branching crates
         run: cargo test -p pantheon-helper -p pantheon-exec -p pantheon-api
 
@@ -92,9 +133,9 @@ jobs:
     name: eval harness (real CLI)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # The harness drives the real binary, so it needs a build. Debug is
       # enough and much faster than release.
       - name: build the CLI
@@ -112,13 +153,13 @@ jobs:
     name: desktop typecheck + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # `desktop/` is excluded from the Cargo workspace, and its own
       # `desktop/.github/workflows/ci.yml` is inert in this monorepo:
       # GitHub only reads the workflow directory at the repository root.
       # Without this job the desktop's TypeScript is never typechecked
       # and its 137 unit tests never run.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           # Type stripping (needed: the tests import src/*.ts directly) is
           # on by default from Node 22.18; the tag resolves to latest 22.x.
@@ -146,17 +187,17 @@ jobs:
     env:
       RUSTFLAGS: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: desktop/src-tauri
       - name: install Linux native dependencies
@@ -181,8 +222,8 @@ jobs:
     # latency. That makes the job slow, so the timeout is generous.
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
@@ -207,7 +248,7 @@ jobs:
     name: installer smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: run installer against latest release
         env:
           PANTHEON_NO_INIT: "1"

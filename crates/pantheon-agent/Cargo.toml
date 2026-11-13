@@ -7,8 +7,6 @@ authors.workspace = true
 
 [dependencies]
 pantheon-api = { path = "../pantheon-api" }
-# agent_profile is serde-shaped (config.toml `[agents.*]` tables).
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [dev-dependencies]

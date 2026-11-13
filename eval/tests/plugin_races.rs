@@ -389,9 +389,16 @@ fn hook_fire_uses_canonical_plugin_dir() {
 /// Returns the first load that gets a manifest; panics if the swapper
 /// never leaves the path readable, which means the fixture is broken
 /// rather than merely racing.
+///
+/// Bounded by wall-clock time, not an attempt count: a fixed 200 x 1 ms
+/// budget lost the race on a loaded runner (the swapper thread was not
+/// scheduled for the whole window), which made the suite flaky. Five
+/// seconds is far beyond any real swap interval yet still fails fast on
+/// a genuinely broken fixture.
 fn load_while_swapping(dir: &Path) -> PythonPlugin {
     let mut last: Option<pantheon_api::error::PantheonError> = None;
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
         match PythonPlugin::load(dir) {
             Ok(p) => return p,
             Err(e) if e.code == "EXT_MANIFEST_READ" || e.code == "EXT_NO_ENTRY" => {
