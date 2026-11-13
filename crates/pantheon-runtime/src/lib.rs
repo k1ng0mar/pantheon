@@ -296,7 +296,10 @@ impl RunLeaseGuard {
         !self.lost.load(std::sync::atomic::Ordering::Acquire)
             && self.supervisor.assert_lease(&self.run_id).is_ok()
     }
-    pub fn health_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+    /// The lease-lost flag (`true` once the heartbeat failed to renew).
+    /// Renamed from `health_flag`, which named the opposite of what it
+    /// holds (audit GP F01).
+    pub fn lost_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         Arc::clone(&self.lost)
     }
 }
@@ -420,6 +423,17 @@ impl Supervisor {
     }
     fn ledger(&self) -> &Ledger {
         &self.inner.ledger
+    }
+
+    /// Scrub a secrets broker's handed-out values from everything this
+    /// supervisor's ledger stores, on top of the known-format redactor
+    /// (audit SEC-16, decision D2).
+    pub fn install_ledger_redaction(
+        &self,
+        registry: std::sync::Arc<pantheon_secrets::RedactionRegistry>,
+    ) {
+        self.ledger()
+            .set_redactor(std::sync::Arc::new(move |text: &str| registry.scrub(text)));
     }
     pub fn data_dir(&self) -> &PathBuf {
         &self.inner.data_dir
@@ -629,6 +643,9 @@ impl Supervisor {
             E::SessionTitled { run_id, title, .. } => (run_id, "title", title.clone()),
             _ => return Ok(()),
         };
+        // Same scrubbing as the ledger row: the search sidecar lives in the
+        // same database file (audit SEC-16).
+        let text = self.ledger().scrub_text(&text);
         let chunk = pantheon_storage::search::SessionChunk {
             chunk_id: format!("{run_id}:{seq}:{kind}"),
             run_id: run_id.clone(),

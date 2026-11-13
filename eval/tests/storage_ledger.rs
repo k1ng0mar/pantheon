@@ -466,7 +466,10 @@ fn prune_events_before_drops_old_and_keeps_new() {
         ledger.replay("r_old").unwrap().is_empty(),
         "old events must be gone"
     );
-    assert_eq!(ledger.status("r_old").unwrap().as_deref(), Some("completed"));
+    assert_eq!(
+        ledger.status("r_old").unwrap().as_deref(),
+        Some("completed")
+    );
     assert_eq!(
         ledger.replay("r_new").unwrap().len(),
         1,
@@ -499,4 +502,78 @@ fn append_returns_the_stored_global_seq_not_the_rowid() {
         .unwrap();
     assert_eq!(c.id, 3, "rowid keeps climbing");
     assert_eq!(c.seq, 2, "stored seq is MAX(seq)+1 over remaining rows");
+}
+
+/// Deleting a run removes its pinned messages too: orphaned pins would
+/// resurface on a recreated run id (audit COR-09).
+#[test]
+fn delete_run_removes_message_pins() {
+    let ledger = Ledger::open_in_memory().unwrap();
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "run-pins".into(),
+        })
+        .unwrap();
+    ledger.pin_message("run-pins", "msg-1", true).unwrap();
+    assert_eq!(
+        ledger.pinned_messages("run-pins").unwrap(),
+        vec!["msg-1".to_string()]
+    );
+    ledger.delete_run("run-pins").unwrap();
+    assert!(
+        ledger.pinned_messages("run-pins").unwrap().is_empty(),
+        "pins must go with the run"
+    );
+}
+
+/// Secrets never reach the ledger file: known key formats and values the
+/// installed redactor knows are scrubbed from every string at append
+/// time, while ordinary words that merely contain a key prefix survive
+/// (audit SEC-16, decision D2).
+#[test]
+fn ledger_rows_are_redacted_at_append() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("ledger.db");
+    let ledger = Ledger::open(&path).unwrap();
+    ledger.set_redactor(std::sync::Arc::new(|t: &str| {
+        t.replace("vault-value-0123456789", "[REDACTED]")
+    }));
+    ledger
+        .append(&Event::RunStarted {
+            run_id: "run-redact".into(),
+        })
+        .unwrap();
+    ledger
+        .append(&Event::UserMessage {
+            run_id: "run-redact".into(),
+            text: "use sk-test-ABCDEFGHIJKLMNOP and AKIAABCDEFGHIJKLMNOP and \
+                   vault-value-0123456789 for the task-list"
+                .into(),
+        })
+        .unwrap();
+    drop(ledger);
+    let conn = Connection::open(&path).unwrap();
+    let rows: Vec<String> = conn
+        .prepare("SELECT event_json FROM events")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let all = rows.join("\n");
+    for leaked in [
+        "sk-test-ABCDEFGHIJKLMNOP",
+        "AKIAABCDEFGHIJKLMNOP",
+        "vault-value-0123456789",
+    ] {
+        assert!(!all.contains(leaked), "{leaked} reached the ledger: {all}");
+    }
+    assert!(
+        all.contains("task-list"),
+        "ordinary words must survive: {all}"
+    );
+    // Rows still deserialize: the redaction keeps the event structure.
+    let ledger = Ledger::open(&path).unwrap();
+    let entries = ledger.replay("run-redact").unwrap();
+    assert_eq!(entries.len(), 2);
 }

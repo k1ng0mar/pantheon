@@ -692,6 +692,13 @@ pub mod dotenv {
     const SECURITY_BOUNDARY_ENV_KEYS: &[&str] = &[
         "PANTHEON_SANDBOX_FALLBACK",
         "PANTHEON_ALLOW_LOOPBACK_PROVIDERS",
+        // A catalog file's `auth_command` runs under `sh -c` on the host.
+        "PANTHEON_CATALOG",
+        // Loader injection into every child Pantheon spawns.
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
     ];
 
     /// Whether `key` is one of [`SECURITY_BOUNDARY_ENV_KEYS`] (exact match:

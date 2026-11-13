@@ -95,6 +95,38 @@ pub mod ledger {
 
     pub struct Ledger {
         conn: Mutex<Connection>,
+        /// Extra scrubber applied to every string in an event before it is
+        /// stored, on top of [`pantheon_api::logging::redact`]: the
+        /// runtime installs the secrets broker's exact-value registry here
+        /// (see [`Ledger::set_redactor`]).
+        redactor: std::sync::RwLock<Option<Redactor>>,
+    }
+
+    /// A scrubber for ledger text: returns its input with secrets replaced.
+    pub type Redactor = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>;
+
+    /// Scrub every string leaf of a JSON value in place. Keys and structure
+    /// are untouched, so the row still deserializes into its `Event`.
+    fn scrub_strings(v: &mut serde_json::Value, scrub: &dyn Fn(&str) -> String) {
+        match v {
+            serde_json::Value::String(s) => {
+                let cleaned = scrub(s);
+                if cleaned != *s {
+                    *s = cleaned;
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    scrub_strings(item, scrub);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (_, item) in map.iter_mut() {
+                    scrub_strings(item, scrub);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Artifact size cap: generative-UI blobs are small by design; the ledger
@@ -421,6 +453,7 @@ pub mod ledger {
             migrate(&conn)?;
             Ok(Self {
                 conn: Mutex::new(conn),
+                redactor: std::sync::RwLock::new(None),
             })
         }
         pub fn open_in_memory() -> Result<Self, PantheonError> {
@@ -432,12 +465,45 @@ pub mod ledger {
             migrate(&conn)?;
             Ok(Self {
                 conn: Mutex::new(conn),
+                redactor: std::sync::RwLock::new(None),
             })
         }
+
+        /// Install an extra scrubber for every append (replacing any
+        /// previous one). The runtime passes the secrets broker's
+        /// redaction registry, so values the broker handed out are
+        /// scrubbed even when they match no known key format.
+        pub fn set_redactor(&self, redactor: Redactor) {
+            if let Ok(mut slot) = self.redactor.write() {
+                *slot = Some(redactor);
+            }
+        }
+
+        /// The event as stored: every string scrubbed by the known-format
+        /// redactor and the installed registry (audit SEC-16, decision D2).
+        /// The README promised append-time redaction; before this the row
+        /// was the raw `serde_json` of the event, so a key pasted into a
+        /// prompt (`UserMessage`) or echoed in tool output reached disk.
+        fn redacted_json(&self, event: &Event) -> Result<String, PantheonError> {
+            let mut value =
+                serde_json::to_value(event).map_err(|e| err("LEDGER_SER", e.to_string()))?;
+            scrub_strings(&mut value, &|t: &str| self.scrub_text(t));
+            serde_json::to_string(&value).map_err(|e| err("LEDGER_SER", e.to_string()))
+        }
+
+        /// The append-time scrubber, for other text this database stores
+        /// (the session-search sidecar indexes event text in the same file).
+        pub fn scrub_text(&self, text: &str) -> String {
+            let text = pantheon_api::logging::redact(text);
+            match self.redactor.read().ok().and_then(|r| r.clone()) {
+                Some(f) => f(&text),
+                None => text,
+            }
+        }
+
         pub fn append(&self, event: &Event) -> Result<LedgerEntry, PantheonError> {
             let run_id = run_id_of(event).to_string();
-            let json =
-                serde_json::to_string(event).map_err(|e| err("LEDGER_SER", e.to_string()))?;
+            let json = self.redacted_json(event)?;
             let ts = now_ms();
             let mut raw_conn = self
                 .conn
@@ -1408,7 +1474,14 @@ pub mod ledger {
         /// Persist the run's agent mode. Only `"plan"`/`"build"` are stored;
         /// anything else is a caller bug.
         pub fn set_run_mode(&self, run_id: &str, mode: &str) -> Result<(), PantheonError> {
-            debug_assert!(mode == "plan" || mode == "build");
+            // Checked in release builds too: a `debug_assert!` let any
+            // string be persisted, and an unknown mode read back as "build".
+            if mode != "plan" && mode != "build" {
+                return Err(err(
+                    "LEDGER_BAD_MODE",
+                    format!("run mode must be \"plan\" or \"build\", got {mode:?}"),
+                ));
+            }
             let conn = self
                 .conn
                 .lock()
@@ -1741,6 +1814,14 @@ pub mod ledger {
                 params![run_id],
             )
             .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
+            // Pinned messages are run-keyed too; leaving them orphaned let
+            // a recreated run id resurrect another run's pins (audit
+            // COR-09). There are no foreign keys to cascade this.
+            tx.execute(
+                "DELETE FROM message_pins WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
             tx.commit()
                 .map_err(|e| err("LEDGER_DELETE", e.to_string()))?;
             Ok((events, runs))
@@ -2035,11 +2116,18 @@ pub mod ledger {
                 if status != "running" {
                     continue;
                 }
-                self.settle_stuck_run(
+                // A run whose holder renewed its lease between the scan and
+                // the settle is alive, not stuck: skip it and keep going.
+                // Propagating that refusal aborted the whole startup sweep,
+                // leaving every later stuck run unsettled (audit COR-07).
+                match self.settle_stuck_run(
                     &run_id,
                     "startup recovery: lease expired with no live holder; the turn was interrupted",
-                )?;
-                settled.push(run_id);
+                ) {
+                    Ok(()) => settled.push(run_id),
+                    Err(e) if e.code == "REPAIR_LEASE_ACTIVE" || e.code == "REPAIR_NOT_STUCK" => {}
+                    Err(e) => return Err(e),
+                }
             }
             Ok(settled)
         }

@@ -3744,7 +3744,9 @@ pub mod agui {
         // The dashboard control plane mounts on the same listener (one token,
         // one port). `open_browser` stays off for `serve`; the dashboard
         // command owns that flag.
-        let bind_all = host == "0.0.0.0" || host == "::";
+        // Exposed = anything but loopback (audit SEC-05): a LAN bind is as
+        // reachable as a wildcard one.
+        let bind_all = !pantheon_gateway::http::is_loopback_bind(&host);
         let dash_mount = std::sync::Arc::new(pantheon_dashboard::DashboardMount::new(
             pantheon_dashboard::App {
                 data_dir: dir.clone(),

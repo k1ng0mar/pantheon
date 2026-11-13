@@ -1507,14 +1507,16 @@ pub mod logins {
             let tmp = self.meta_path.with_extension("json.tmp");
             {
                 use std::io::Write as _;
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp)
-                    .map_err(SecretsError::Io)?;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create(true).truncate(true);
+                // `OpenOptionsExt` is Unix-only: unguarded, this file did
+                // not compile for Windows.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                let mut f = opts.open(&tmp).map_err(SecretsError::Io)?;
                 f.write_all(text.as_bytes()).map_err(SecretsError::Io)?;
                 f.sync_all().map_err(SecretsError::Io)?;
             }
@@ -2004,9 +2006,12 @@ pub mod secure_forms {
     impl Verifier for ProviderModelsVerifier {
         fn verify(&self, value: &SecretValue) -> VerifyOutcome {
             let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+            // No redirects: a redirect would carry the bearer token to a
+            // host the caller never validated (audit SEC-04).
             let agent = ureq::Agent::config_builder()
                 .timeout_global(Some(std::time::Duration::from_secs(15)))
                 .http_status_as_error(false)
+                .max_redirects(0)
                 .build()
                 .new_agent();
             match agent
@@ -2165,23 +2170,47 @@ pub mod secure_forms {
                 "secure-forms metadata could not be serialised: {e}"
             ))
         })?;
+        // Owner-only from creation, not chmod-after-write: the old
+        // `fs::write` used the process umask (world-readable under 022)
+        // and discarded the chmod error, so the file could stay readable
+        // (audit REL-02). A failed permission set now fails the write.
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| {
-            SecretsError::Backend(format!("secure-forms metadata could not be written: {e}"))
-        })?;
+        let _ = std::fs::remove_file(&tmp);
+        {
+            use std::io::Write;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&tmp).map_err(|e| {
+                SecretsError::Backend(format!("secure-forms metadata could not be written: {e}"))
+            })?;
+            f.write_all(text.as_bytes())
+                .and_then(|_| f.sync_all())
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp);
+                    SecretsError::Backend(format!(
+                        "secure-forms metadata could not be written: {e}"
+                    ))
+                })?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(
+                |e| {
+                    let _ = std::fs::remove_file(&tmp);
+                    SecretsError::Backend(format!("secure-forms metadata permissions: {e}"))
+                },
+            )?;
         }
         std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
             SecretsError::Backend(format!("secure-forms metadata could not be stored: {e}"))
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-        }
         Ok(())
     }
 

@@ -10,23 +10,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub fn data_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("PANTHEON_DATA_DIR").filter(|d| !d.is_empty()) {
-        return PathBuf::from(d);
-    }
-    if let Some(h) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        return PathBuf::from(h).join(".pantheon");
-    }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
-        return PathBuf::from(xdg).join("pantheon");
-    }
-    let user = std::env::var_os("USER")
-        .or_else(|| std::env::var_os("USERNAME"))
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "default".into());
-    std::env::temp_dir()
-        .join("pantheon")
-        .join(user)
-        .join(".pantheon")
+    pantheon_api::data_dir::resolve()
 }
 /// Report a fatal error and exit. Every user-reachable failure path goes
 /// through here so the process never panics on bad state.
@@ -94,7 +78,9 @@ fn cmd_dashboard(args: &[String]) {
     // and keeps the dashboard's historic default port.
     let dir = data_dir();
     let token = crate::agui::resolve_serve_token("pantheon dashboard");
-    let bind_all = bind == "0.0.0.0" || bind == "::";
+    // Exposed = anything but loopback (audit SEC-05): a LAN bind is as
+    // reachable as a wildcard one.
+    let bind_all = !pantheon_gateway::http::is_loopback_bind(&bind);
     let dash_mount = std::sync::Arc::new(pantheon_dashboard::DashboardMount::new(
         pantheon_dashboard::App {
             data_dir: dir.clone(),

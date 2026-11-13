@@ -2846,6 +2846,22 @@ pub mod logging {
         out = redact_prefix(&out, "api-key: ");
         out = redact_prefix(&out, "api-key=");
         out = redact_prefix(&out, "PANTHEON_SECRET_");
+        // Further token formats with a length floor, so a short word that
+        // happens to share the prefix stays (audit LOW-08).
+        for (prefix, min) in [
+            ("github_pat_", 20),
+            ("sk_live_", 16),
+            ("rk_live_", 16),
+            ("sk_test_", 16),
+            ("hf_", 30),
+            ("npm_", 30),
+            ("xoxa-", 10),
+            ("xapp-", 10),
+            ("glsa_", 20),
+        ] {
+            out = redact_prefix_min(&out, prefix, min);
+        }
+        out = redact_aws_key_ids(&out);
         out = redact_embedded_json(&out);
         out = redact_json_values(&out);
         out
@@ -2967,20 +2983,70 @@ pub mod logging {
     /// Redact a secret that starts with a known prefix. The secret runs until
     /// the next whitespace or end of string.
     fn redact_prefix(input: &str, prefix: &str) -> String {
+        redact_prefix_min(input, prefix, 0)
+    }
+
+    /// Redact `prefix` + value, where the value runs to the next
+    /// whitespace. The prefix must start a token (start of text, or after a
+    /// character that is not alphanumeric): matching anywhere turned
+    /// ordinary words into leaks of nothing - `task-list` contains `sk-` and
+    /// became `ta[REDACTED]` - which the ledger, replayed to rebuild
+    /// sessions, cannot afford (audit SEC-16). `min_value` skips matches
+    /// whose value is shorter (token formats with a known length floor).
+    fn redact_prefix_min(input: &str, prefix: &str, min_value: usize) -> String {
         if !input.contains(prefix) {
             return input.to_string();
         }
         let mut out = String::with_capacity(input.len());
         let mut rest = input;
         while let Some(pos) = rest.find(prefix) {
+            let boundary = rest[..pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            let after = &rest[pos + prefix.len()..];
+            let end = after.find(char::is_whitespace).unwrap_or(after.len());
+            if !boundary || end < min_value {
+                // Not a secret: keep the prefix text and move past it.
+                out.push_str(&rest[..pos + prefix.len()]);
+                rest = after;
+                continue;
+            }
             out.push_str(&rest[..pos]);
             out.push_str("[REDACTED]");
-            rest = &rest[pos + prefix.len()..];
-            // Consume the secret value: everything up to the next whitespace
-            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            rest = &rest[end..];
+            rest = &after[end..];
         }
         out.push_str(rest);
+        out
+    }
+
+    /// AWS access key ids: `AKIA`/`ASIA` + exactly 16 uppercase letters or
+    /// digits, as a whole token. A bare `AKIA`/`ASIA` prefix match would
+    /// redact words like `ASIA-PACIFIC`.
+    fn redact_aws_key_ids(input: &str) -> String {
+        if !input.contains("AKIA") && !input.contains("ASIA") {
+            return input.to_string();
+        }
+        let b = input.as_bytes();
+        let mut out = String::with_capacity(input.len());
+        let mut i = 0;
+        while i < b.len() {
+            let starts = (b[i..].starts_with(b"AKIA") || b[i..].starts_with(b"ASIA"))
+                && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+                && b.len() >= i + 20
+                && b[i + 4..i + 20]
+                    .iter()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                && (b.len() == i + 20 || !b[i + 20].is_ascii_alphanumeric());
+            if starts {
+                out.push_str("[REDACTED]");
+                i += 20;
+            } else {
+                let ch = input[i..].chars().next().unwrap_or('\0');
+                out.push(ch);
+                i += ch.len_utf8().max(1);
+            }
+        }
         out
     }
 

@@ -2400,7 +2400,14 @@ pub mod carry {
     #[cfg(unix)]
     fn restrict_permissions(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        // Not fatal (the writer already created the file owner-only), but
+        // never silent: a key store left group/world-readable must be seen.
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            eprintln!(
+                "pantheon migrate: could not restrict {} to owner-only: {e}",
+                path.display()
+            );
+        }
     }
     #[cfg(not(unix))]
     fn restrict_permissions(_path: &Path) {}

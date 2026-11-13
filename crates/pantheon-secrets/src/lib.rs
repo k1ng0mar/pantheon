@@ -38,10 +38,6 @@ pub use broker_group::error;
 pub use broker_group::error::SecretsError;
 pub use broker_group::filevault;
 pub use broker_group::filevault::EncryptedFileVault;
-pub use broker_group::grants;
-pub use broker_group::grants::{
-    intersect_grants, CredentialGrant, CredentialPurpose, ScopedBroker,
-};
 pub use broker_group::keychain;
 pub use broker_group::keychain::KeychainVault;
 pub use broker_group::redaction;
