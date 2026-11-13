@@ -20,7 +20,7 @@ export function pandaSvg(id: string): string {
   const panda = PANDAS.find(p => p.id === id);
   if (!panda) return '';
   return `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="${panda.color}"/>`
-    + `<g fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 22 32 10l21 12M13 22h38M17 29v18M26 29v18M38 29v18M47 29v18M11 47h42"/></g></svg>`;
+    + `<g fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 22 32 10l21 12M13 22h38M17 29v18M47 29v18M11 47h42M32 27v20M32 27h9v8h-9"/></g></svg>`;
 }
 
 export function botAvatarHtml(avatar: string, name: string, cls = ''): string {
