@@ -22,7 +22,7 @@ use crossterm::{
 };
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     DefaultTerminal, Frame,
@@ -5550,44 +5550,6 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
-/// Brand purple gradient, top to bottom: #C4B5FD → #7223FF → #4B00CD. The bottom
-/// stays clear of the near-black end of the app-icon gradient, which disappeared
-/// against the terminal background on the wordmark's last row.
-const WORDMARK_TOP: (u8, u8, u8) = (196, 181, 253);
-const WORDMARK_MID: (u8, u8, u8) = (114, 35, 255);
-const WORDMARK_BOT: (u8, u8, u8) = (75, 0, 205);
-
-/// Chunky 5-row PANTHEON wordmark, 47 columns wide.
-const WORDMARK: [&str; 5] = [
-    "█████  ███  █   █ █████ █   █ █████  ███  █   █",
-    "█   █ █   █ ██  █   █   █   █ █     █   █ ██  █",
-    "█████ █████ █ █ █   █   █████ ████  █   █ █ █ █",
-    "█     █   █ █  ██   █   █   █ █     █   █ █  ██",
-    "█     █   █ █   █   █   █   █ █████  ███  █   █",
-];
-
-/// Wordmark row color: vertical gradient TOP → MID → BOT.
-fn wordmark_color(row: usize) -> Color {
-    let t = (row as f64 / 4.0).clamp(0.0, 1.0);
-    let lerp = |a: u8, b: u8, t: f64| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
-    let (r, g, b) = if t <= 0.5 {
-        let u = t * 2.0;
-        (
-            lerp(WORDMARK_TOP.0, WORDMARK_MID.0, u),
-            lerp(WORDMARK_TOP.1, WORDMARK_MID.1, u),
-            lerp(WORDMARK_TOP.2, WORDMARK_MID.2, u),
-        )
-    } else {
-        let u = (t - 0.5) * 2.0;
-        (
-            lerp(WORDMARK_MID.0, WORDMARK_BOT.0, u),
-            lerp(WORDMARK_MID.1, WORDMARK_BOT.1, u),
-            lerp(WORDMARK_MID.2, WORDMARK_BOT.2, u),
-        )
-    };
-    Color::Rgb(r, g, b)
-}
-
 /// Center `line` in `width` columns (pads left; over-wide lines pass
 /// through unpadded and clip as usual).
 fn centered_line(line: Line<'static>, width: usize) -> Line<'static> {
@@ -5696,11 +5658,12 @@ fn render_splash_bottom(f: &mut Frame, area: Rect, state: &TuiState) {
     );
 }
 
-/// New-session splash: big gradient PANTHEON wordmark, update hint,
-/// centered composer input, and a bottom line with the context limit
-/// only (MCP/plugin/version metadata lives in the sidebar). Rendered while the transcript is empty (fresh or /clear'ed
-/// session). The centered input mirrors `state.input` - the same draft
-/// the composer edits - so typing works before the first block exists.
+/// New-session splash: the lockup dot-matrix (mark over wordmark, revealed on a
+/// loop), update hint, centered composer input, and a bottom line with the
+/// context limit only (MCP/plugin/version metadata lives in the sidebar).
+/// Rendered while the transcript is empty (fresh or /clear'ed session). The
+/// centered input mirrors `state.input` - the same draft the composer edits - so
+/// typing works before the first block exists.
 fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     let w = area.width as usize;
@@ -5720,35 +5683,28 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
         return;
     }
 
-    let big = w >= 55;
-    // The input zone's height decides how much room the logo has: the mark is
-    // sized from what is left after the wordmark and the composer, so a short
-    // terminal shrinks the logo instead of pushing the composer off screen.
+    // The input zone's height decides how much room the artwork has: the lockup
+    // is sized from what is left after the composer, so a short terminal shrinks
+    // it instead of pushing the composer off screen.
     let zone_rows: usize = if state.pending_reflect.is_some() {
         9
     } else {
         5
     };
+    let artwork = crate::logo::splash(w, h, zone_rows, state.elapsed.as_secs_f64());
     let mut head: Vec<Line> = Vec::new();
-    for (cells, color) in crate::logo::mark_rows(w, h, WORDMARK.len(), zone_rows) {
-        head.push(centered_line(
-            Line::from(Span::styled(cells, Style::default().fg(color))),
-            w,
-        ));
-    }
-    if big {
-        for (r, row) in WORDMARK.iter().enumerate() {
-            head.push(centered_line(
-                Line::from(Span::styled(
-                    row.to_string(),
-                    Style::default()
-                        .fg(wordmark_color(r))
-                        .add_modifier(Modifier::BOLD),
-                )),
-                w,
-            ));
+    if let Some(rows) = artwork.rows() {
+        for row in rows.iter() {
+            let spans: Vec<Span> = row
+                .iter()
+                .map(|(text, colour)| Span::styled(text.clone(), Style::default().fg(*colour)))
+                .collect();
+            head.push(centered_line(Line::from(spans), w));
         }
-    } else {
+    }
+    if !artwork.has_wordmark() {
+        // The lockup carries its own wordmark; the mark-only and text-only
+        // fallbacks still need the plain heading beneath them.
         head.push(centered_line(
             Line::from(Span::styled(
                 "PANTHEON",
