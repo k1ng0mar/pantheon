@@ -92,10 +92,8 @@ fn inside(x: f64, y: f64, outline: &[(f64, f64)]) -> bool {
     hits
 }
 
-/// The mark on a `cols * 2` by `rows * 4` dot grid.
-fn dots(cols: usize, rows: usize) -> Vec<Vec<bool>> {
-    let dots_w = cols * 2;
-    let dots_h = rows * 4;
+/// The mark on a `dots_w` by `dots_h` grid.
+fn dots_grid(dots_w: usize, dots_h: usize) -> Vec<Vec<bool>> {
     (0..dots_h)
         .map(|dy| {
             // sample the dot centre in the mark's own space
@@ -115,11 +113,32 @@ fn dots(cols: usize, rows: usize) -> Vec<Vec<bool>> {
         .collect()
 }
 
-/// The mark as Braille cells, one `String` per terminal row, trimmed of the
-/// blank cells that only pad the widest row.
+/// Braille packs 2x4 dots into one cell.
+fn dots(cols: usize, rows: usize) -> Vec<Vec<bool>> {
+    dots_grid(cols * 2, rows * 4)
+}
+
+/// Drop the rows and cells that are only blank padding, so the visible mark is
+/// centred and a narrow terminal never wraps on invisible width.
+fn trim(mut lines: Vec<String>, blank: char) -> Vec<String> {
+    for line in &mut lines {
+        while line.ends_with(blank) {
+            line.pop();
+        }
+    }
+    while lines.first().is_some_and(|line| line.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// The mark as Braille cells, one `String` per terminal row.
 fn braille_rows(cols: usize, rows: usize) -> Vec<String> {
     let grid = dots(cols, rows);
-    let mut lines: Vec<String> = (0..rows)
+    let lines: Vec<String> = (0..rows)
         .map(|row| {
             let mut bits = Vec::with_capacity(cols);
             for cell in 0..cols {
@@ -136,20 +155,29 @@ fn braille_rows(cols: usize, rows: usize) -> Vec<String> {
             bits.into_iter().collect()
         })
         .collect();
-    // Trailing blank cells are padding, not shape: drop them so a narrow
-    // terminal never wraps on invisible width, and centre the visible mark.
-    for line in &mut lines {
-        while line.ends_with('\u{2800}') {
-            line.pop();
-        }
-    }
-    while lines.first().is_some_and(|line| line.is_empty()) {
-        lines.remove(0);
-    }
-    while lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-    lines
+    trim(lines, '\u{2800}')
+}
+
+/// The mark as half-block cells: two vertical dots per cell. Coarser than
+/// Braille, but `▀▄█` is far more widely covered by monospace fonts, so it is
+/// the fallback for terminals that cannot show the Braille patterns.
+fn half_block_rows(cols: usize, rows: usize) -> Vec<String> {
+    let grid = dots_grid(cols, rows * 2);
+    let lines: Vec<String> = (0..rows)
+        .map(|row| {
+            (0..cols)
+                .map(
+                    |cell| match (grid[row * 2][cell], grid[row * 2 + 1][cell]) {
+                        (true, true) => '█',
+                        (true, false) => '▀',
+                        (false, true) => '▄',
+                        (false, false) => ' ',
+                    },
+                )
+                .collect()
+        })
+        .collect();
+    trim(lines, ' ')
 }
 
 /// Brand gradient for the dot-matrix rows: light lavender at the top, the brand
@@ -193,6 +221,25 @@ pub fn mark_width(
     (rows >= MIN_MARK_ROWS && cols >= MIN_MARK_COLS).then_some(cols)
 }
 
+/// How the mark is drawn. Braille is the default; `PANTHEON_LOGO=block` switches
+/// to half-block cells for fonts without the Braille patterns, and `=off` drops
+/// the mark (the wordmark still renders) for anyone who wants a text-only splash.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Braille,
+    Block,
+    Off,
+}
+
+fn mode() -> Mode {
+    static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("PANTHEON_LOGO").as_deref() {
+        Ok("block") | Ok("half") => Mode::Block,
+        Ok("off") | Ok("none") => Mode::Off,
+        _ => Mode::Braille,
+    })
+}
+
 /// The mark as coloured rows for the splash: `(cells, colour)` per terminal row.
 pub fn mark_rows(
     term_w: usize,
@@ -200,11 +247,18 @@ pub fn mark_rows(
     wordmark_rows: usize,
     zone_rows: usize,
 ) -> Vec<(String, ratatui::style::Color)> {
+    if mode() == Mode::Off {
+        return Vec::new();
+    }
     let Some(cols) = mark_width(term_w, term_h, wordmark_rows, zone_rows) else {
         return Vec::new();
     };
     let rows = (cols as f64 / MARK_ASPECT).ceil() as usize;
-    braille_rows(cols, rows)
+    let lines = match mode() {
+        Mode::Block => half_block_rows(cols, rows),
+        _ => braille_rows(cols, rows),
+    };
+    lines
         .into_iter()
         .enumerate()
         .map(|(index, cells)| {
@@ -246,6 +300,23 @@ mod tests {
         let middle = &grid[rows * 2];
         assert!(
             middle.iter().any(|&dot| !dot),
+            "the P counter must stay open"
+        );
+    }
+
+    #[test]
+    fn half_block_fallback_keeps_the_same_shape() {
+        let cols = 40;
+        let rows = (cols as f64 / MARK_ASPECT).ceil() as usize;
+        let lines = half_block_rows(cols, rows);
+        assert_eq!(lines.len(), rows);
+        assert!(lines.iter().all(|line| line.chars().count() <= cols));
+        // same silhouette as the Braille pass, at half the vertical resolution
+        let grid = dots_grid(cols, rows * 2);
+        let centre = grid[0].iter().filter(|&&dot| dot).count();
+        assert!(centre <= 2, "the top row is still the pediment peak");
+        assert!(
+            grid[rows].iter().any(|&dot| !dot),
             "the P counter must stay open"
         );
     }
