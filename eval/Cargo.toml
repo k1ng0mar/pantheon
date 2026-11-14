@@ -35,6 +35,7 @@ pantheon-tui = { path = "../crates/pantheon-tui" }
 pantheon-nightly = { path = "../crates/pantheon-nightly" }
 pantheon-dashboard = { path = "../crates/pantheon-dashboard" }
 pantheon-web = { path = "../crates/pantheon-web" }
+ratatui = "0.30"
 serde_json.workspace = true
 toml.workspace = true
 tempfile = "3"

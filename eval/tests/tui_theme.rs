@@ -64,12 +64,22 @@ fn theme_choice_persists_across_loads() {
 
 #[test]
 fn splash_wordmark_uses_the_active_theme_color() {
-    // The renderer reads the palette from the theme: the dark wordmark
-    // must carry dark's primary, not the default cyan.
-    let lines = pantheon_tui::terminal::splash_lines(80, &Theme::dark());
-    let last = lines.last().unwrap();
-    let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
-    assert_eq!(text.trim(), "PANTHEON");
-    assert_eq!(last.spans[0].style.fg, Some(Theme::dark().primary));
-    assert_ne!(last.spans[0].style.fg, Some(Theme::pantheon().primary));
+    // The wordmark is text, so it carries the active theme's heading. The mark
+    // above it keeps its own brand gradient regardless of theme.
+    let dark = Theme::dark();
+    let rows = pantheon_tui::logo::splash(120, 40, 5, 0.0, dark.heading)
+        .rows()
+        .expect("artwork")
+        .clone();
+    let band: Vec<ratatui::style::Color> = rows
+        .last()
+        .expect("wordmark row")
+        .iter()
+        .filter(|(text, _)| text.chars().any(|c| c != ' '))
+        .map(|&(_, colour)| colour)
+        .collect();
+    assert!(!band.is_empty(), "the wordmark band must carry ink");
+    assert!(band.iter().all(|&c| c == dark.heading), "band={band:?}");
+    // and it is a real theme read, not a hardcoded colour
+    assert_ne!(dark.heading, Theme::pantheon().heading);
 }

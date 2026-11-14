@@ -94,7 +94,6 @@ const DISSOLVE_END: f64 = 8.6;
 const MARK_TOP: (u8, u8, u8) = (185, 156, 255);
 const MARK_MID: (u8, u8, u8) = (123, 77, 255);
 const MARK_BOTTOM: (u8, u8, u8) = (92, 50, 232);
-const WORD_COLOUR: (u8, u8, u8) = (229, 220, 255);
 
 // ---------------------------------------------------------------------------
 // Modes
@@ -289,17 +288,28 @@ fn mark_colour(ny: f64) -> (u8, u8, u8) {
     (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
-/// Cell colour: the row's brand colour lifted toward white by the glint. The
-/// result is quantised so a slow gradient does not cost one span per cell.
-fn cell_colour(nx: f64, ny: f64, wordmark: bool, phase: &Phase) -> Color {
+/// Cell colour. The mark carries the brand gradient; the wordmark is text, so
+/// it keeps the colour the caller passed (the active theme's heading) and is
+/// lifted toward white by the glint only where that colour has channels. Text
+/// also skips the quantiser: the band is a handful of rows, so the exact hue
+/// matters more there than the span count.
+fn cell_colour(nx: f64, ny: f64, wordmark: bool, word: Color, phase: &Phase) -> Color {
+    let k = (phase.glint_at(nx, ny) * 1.6).clamp(0.0, 1.0);
     let base = if wordmark {
-        WORD_COLOUR
+        match word {
+            Color::Rgb(r, g, b) => (r, g, b),
+            other => return other,
+        }
     } else {
         mark_colour(ny)
     };
-    let k = (phase.glint_at(nx, ny) * 1.6).clamp(0.0, 1.0);
-    let mix = |v: u8| ((v as f64 + (255.0 - v as f64) * k).round() as u8) & 0xF8;
-    Color::Rgb(mix(base.0), mix(base.1), mix(base.2))
+    let mix = |v: u8| (v as f64 + (255.0 - v as f64) * k).round() as u8;
+    let rgb = (mix(base.0), mix(base.1), mix(base.2));
+    if wordmark {
+        Color::Rgb(rgb.0, rgb.1, rgb.2)
+    } else {
+        Color::Rgb(rgb.0 & 0xF8, rgb.1 & 0xF8, rgb.2 & 0xF8)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,8 +343,9 @@ impl Splash {
 
 /// The splash for a terminal `term_w` by `term_h`. `zone_rows` is the composer's
 /// height, reserved before the artwork takes what is left; `t` is seconds and
-/// drives the reveal loop.
-pub fn splash(term_w: usize, term_h: usize, zone_rows: usize, t: f64) -> Splash {
+/// drives the reveal loop; `word` is the wordmark's colour, taken from the
+/// active theme.
+pub fn splash(term_w: usize, term_h: usize, zone_rows: usize, t: f64, word: Color) -> Splash {
     if mode() == Mode::Off {
         return Splash::None;
     }
@@ -347,14 +358,14 @@ pub fn splash(term_w: usize, term_h: usize, zone_rows: usize, t: f64) -> Splash 
             let dots_h = rows * dots_per_cell().1;
             let wordmark_from =
                 (WORDMARK_TOP as f64 / LOCKUP_H as f64 * dots_h as f64).ceil() as usize;
-            return Splash::Lockup(draw(&lockup, cols, rows, Some(wordmark_from), &phase));
+            return Splash::Lockup(draw(&lockup, cols, rows, Some(wordmark_from), word, &phase));
         }
     }
 
     let mark = Band::mark();
     match fit(term_w, available, &mark) {
         Some((cols, rows)) if cols >= MIN_MARK_COLS => {
-            Splash::Mark(draw(&mark, cols, rows, None, &phase))
+            Splash::Mark(draw(&mark, cols, rows, None, word, &phase))
         }
         _ => Splash::None,
     }
@@ -366,6 +377,7 @@ fn draw(
     cols: usize,
     rows: usize,
     wordmark_from: Option<usize>,
+    word: Color,
     phase: &Phase,
 ) -> Vec<Vec<(String, Color)>> {
     let (dot_w, dot_h) = dots_per_cell();
@@ -393,7 +405,7 @@ fn draw(
     } else {
         pack_braille(&dots, cols)
     };
-    colour(cells, cols, rows, dot_h, wordmark_from, phase)
+    colour(cells, cols, rows, dot_h, wordmark_from, word, phase)
 }
 
 /// Braille packs 2x4 dots into one cell.
@@ -442,6 +454,7 @@ fn colour(
     rows: usize,
     dot_h: usize,
     wordmark_from: Option<usize>,
+    word: Color,
     phase: &Phase,
 ) -> Vec<Vec<(String, Color)>> {
     let coloured: Vec<Vec<(char, Color)>> = cells
@@ -454,7 +467,7 @@ fn colour(
                     let nx = (cell as f64 + 0.5) / cols as f64;
                     let ny = (row as f64 + 0.5) / rows as f64;
                     let wordmark = wordmark_from.is_some_and(|from| row * dot_h >= from);
-                    (ch, cell_colour(nx, ny, wordmark, phase))
+                    (ch, cell_colour(nx, ny, wordmark, word, phase))
                 })
                 .collect()
         })
@@ -494,6 +507,9 @@ fn group(mut cells: Vec<Vec<(char, Color)>>) -> Vec<Vec<(String, Color)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wordmark colour that survives the cell quantiser unchanged.
+    const WORD: Color = Color::Rgb(104, 152, 200);
 
     fn revealed(
         band: &Band,
@@ -536,11 +552,11 @@ mod tests {
 
     #[test]
     fn lockup_fits_a_normal_terminal_but_not_a_short_one() {
-        assert!(matches!(splash(120, 40, 5, 0.0), Splash::Lockup(_)));
-        assert!(matches!(splash(100, 30, 5, 0.0), Splash::Lockup(_)));
+        assert!(matches!(splash(120, 40, 5, 0.0, WORD), Splash::Lockup(_)));
+        assert!(matches!(splash(100, 30, 5, 0.0, WORD), Splash::Lockup(_)));
         // 80x24 is too short for the wordmark, so the mark takes the room
-        assert!(matches!(splash(80, 24, 5, 0.0), Splash::Mark(_)));
-        assert!(matches!(splash(40, 12, 5, 0.0), Splash::None));
+        assert!(matches!(splash(80, 24, 5, 0.0, WORD), Splash::Mark(_)));
+        assert!(matches!(splash(40, 12, 5, 0.0, WORD), Splash::None));
     }
 
     #[test]
@@ -549,9 +565,34 @@ mod tests {
             let band = Band::lockup();
             let aspect = 2.0 * band.width() as f64 / band.height() as f64;
             let rows = (cols as f64 / aspect).ceil() as usize;
-            let rows_out = splash(200, 200, 0, 0.0).rows().expect("artwork").len();
+            let rows_out = splash(200, 200, 0, 0.0, WORD)
+                .rows()
+                .expect("artwork")
+                .len();
             assert!(rows_out >= rows.saturating_sub(1));
         }
+    }
+
+    #[test]
+    fn wordmark_takes_the_colour_it_is_given() {
+        // The wordmark is text, so it follows the theme like every other
+        // heading; the mark keeps its brand gradient either way.
+        let rows = splash(120, 40, 5, 0.0, WORD)
+            .rows()
+            .expect("artwork")
+            .clone();
+        let band: Vec<Color> = rows
+            .last()
+            .expect("wordmark row")
+            .iter()
+            .filter(|(text, _)| text.chars().any(|c| c != ' '))
+            .map(|&(_, colour)| colour)
+            .collect();
+        assert!(!band.is_empty(), "the wordmark band must carry ink");
+        assert!(
+            band.iter().all(|&c| c == WORD),
+            "wordmark band must be {WORD:?}"
+        );
     }
 
     #[test]
@@ -585,15 +626,15 @@ mod tests {
         let dots_h = rows * dot_h;
         let mut ink = 0;
         let mut lit_count = 0;
-        for y in 0..dots_h {
-            for x in 0..dots_w {
+        for (y, line) in lit.iter().enumerate() {
+            for (x, &dot) in line.iter().enumerate() {
                 let sx =
                     band.x0 + ((x as f64 + 0.5) * band.width() as f64 / dots_w as f64) as usize;
                 let sy =
                     band.y0 + ((y as f64 + 0.5) * band.height() as f64 / dots_h as f64) as usize;
                 if lockup_bit(sx.min(band.x1), sy.min(band.y1)) {
                     ink += 1;
-                    if lit[y][x] {
+                    if dot {
                         lit_count += 1;
                     }
                 }
@@ -618,7 +659,7 @@ mod tests {
     fn off_mode_draws_nothing() {
         // mode() is process-global and defaults to Braille, so assert the enum
         // plumbing rather than mutating the environment.
-        assert!(matches!(Splash::None.rows(), None));
+        assert!(Splash::None.rows().is_none());
         assert!(!Splash::None.has_wordmark());
         assert!(Splash::Lockup(Vec::new()).has_wordmark());
         assert!(!Splash::Mark(Vec::new()).has_wordmark());

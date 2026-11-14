@@ -2481,6 +2481,7 @@ dependencies = [
  "pantheon-tools",
  "pantheon-tui",
  "pantheon-web",
+ "ratatui",
  "rusqlite",
  "serde_json",
  "serde_yaml",

@@ -5691,7 +5691,7 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
     } else {
         5
     };
-    let artwork = crate::logo::splash(w, h, zone_rows, state.elapsed.as_secs_f64());
+    let artwork = crate::logo::splash(w, h, zone_rows, state.elapsed.as_secs_f64(), th.heading);
     let mut head: Vec<Line> = Vec::new();
     if let Some(rows) = artwork.rows() {
         for row in rows.iter() {
