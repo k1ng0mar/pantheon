@@ -5550,10 +5550,12 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
-/// Umar's brand purple gradient, top to bottom: #7223FF → #4B00CD → #0C0046.
-const WORDMARK_TOP: (u8, u8, u8) = (114, 35, 255);
-const WORDMARK_MID: (u8, u8, u8) = (75, 0, 205);
-const WORDMARK_BOT: (u8, u8, u8) = (12, 0, 70);
+/// Brand purple gradient, top to bottom: #C4B5FD → #7223FF → #4B00CD. The bottom
+/// stays clear of the near-black end of the app-icon gradient, which disappeared
+/// against the terminal background on the wordmark's last row.
+const WORDMARK_TOP: (u8, u8, u8) = (196, 181, 253);
+const WORDMARK_MID: (u8, u8, u8) = (114, 35, 255);
+const WORDMARK_BOT: (u8, u8, u8) = (75, 0, 205);
 
 /// Chunky 5-row PANTHEON wordmark, 47 columns wide.
 const WORDMARK: [&str; 5] = [
@@ -5719,7 +5721,21 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     let big = w >= 55;
+    // The input zone's height decides how much room the logo has: the mark is
+    // sized from what is left after the wordmark and the composer, so a short
+    // terminal shrinks the logo instead of pushing the composer off screen.
+    let zone_rows: usize = if state.pending_reflect.is_some() {
+        9
+    } else {
+        5
+    };
     let mut head: Vec<Line> = Vec::new();
+    for (cells, color) in crate::logo::mark_rows(w, h, WORDMARK.len(), zone_rows) {
+        head.push(centered_line(
+            Line::from(Span::styled(cells, Style::default().fg(color))),
+            w,
+        ));
+    }
     if big {
         for (r, row) in WORDMARK.iter().enumerate() {
             head.push(centered_line(
@@ -5760,11 +5776,6 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
     // proposals are pending - it owns the keyboard then, like the
     // bottom row does), plus the dim key hint under it.
     let box_w = 64.min(w.saturating_sub(8)).max(20) as u16;
-    let zone_rows: usize = if state.pending_reflect.is_some() {
-        9
-    } else {
-        5 // 4-row composer box + hint line
-    };
     let top_pad = h.saturating_sub(head.len() + zone_rows + 1) / 2;
 
     let mut lines: Vec<Line> = vec![Line::from(""); top_pad];

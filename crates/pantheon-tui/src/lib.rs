@@ -135,6 +135,7 @@ pub use render_group::widget::{
 // reaches past it.
 
 pub use pantheon_api::dotenv;
+mod logo;
 mod markdown;
 pub mod terminal;
 
