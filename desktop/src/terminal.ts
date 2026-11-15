@@ -67,7 +67,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
   const preferences = await call<TerminalPreferences>('get_terminal_preferences').catch(() => ({} as TerminalPreferences));
   if (preferences.source) container.dataset.terminalSettings = preferences.source;
   const theme = () => ({ ...terminalTheme(), ...paletteTerminal(), ...preferences.theme });
-  const terminal = new Terminal({ fontFamily: preferences.fontFamily ? `${JSON.stringify(preferences.fontFamily)}, monospace` : '"SF Mono", "Cascadia Code", Menlo, monospace', fontSize: 12 * textScale(), lineHeight: preferences.lineHeight ?? 1.5, cursorStyle: preferences.cursorStyle ?? 'block', cursorBlink: preferences.cursorBlink ?? true, scrollback: 1500, minimumContrastRatio: 4.5, theme: theme() });
+  const terminal = new Terminal({ fontFamily: preferences.fontFamily ? `${JSON.stringify(preferences.fontFamily)}, monospace` : '"Cascadia Code", ui-monospace, "SF Mono", Menlo, monospace', fontSize: 12 * textScale(), lineHeight: preferences.lineHeight ?? 1.5, cursorStyle: preferences.cursorStyle ?? 'block', cursorBlink: preferences.cursorBlink ?? true, scrollback: 1500, minimumContrastRatio: 4.5, theme: theme() });
   const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(surface);
   if (surface.clientWidth && surface.clientHeight) fit.fit();
   let terminalId = '', exited = false, hasOutput = false, disposed = false, inserted = false;

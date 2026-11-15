@@ -91,6 +91,7 @@
   --diffs-font-family: var(--mono);
   --diffs-font-size: .86rem;
   --diffs-line-height: 1.45rem;
+  font-variant-ligatures: none;
 }
 .diff-viewer-raw {
   padding: 12px 16px;
