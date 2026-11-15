@@ -10,10 +10,8 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="fonts.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -24,7 +22,7 @@
             codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'sans-serif']
           }
         }
@@ -43,15 +41,15 @@
     .logo-mark:hover { transform: scale(1.08); }
     .logo-mark img { height: 38px; width: auto; }
     .cmdbox { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 20px; padding: 1.25rem 1.4rem; }
-    .cmdbox code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; }
-    code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
+    .cmdbox code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: #141417; }
+    code { font-family: 'Cascadia Code', monospace; font-size: .85em; color: #5c1de0; }
     pre { background: #f1efeb; border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; overflow-x: auto; }
-    pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: #141417; }
-    .copy-btn { border: 1px solid #e9e6e1; background: #fafaf9; color: #6f6f76; border-radius: 999px; padding: .45rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; flex: none; min-height: 44px; }
+    pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: #141417; }
+    .copy-btn { border: 1px solid #e9e6e1; background: #fafaf9; color: #6f6f76; border-radius: 999px; padding: .45rem 1rem; font-family: 'Cascadia Code', monospace; font-size: .75rem; flex: none; min-height: 44px; }
     .copy-btn:hover { color: #141417; border-color: #6f6f76; }
     .copy-btn[data-state="done"] { color: #2e7d46; border-color: #2e7d46; }
-    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
-    .tab-btn { font-family: 'JetBrains Mono', monospace; font-size: .8rem; padding: .7rem 1.2rem; border: 1px solid #e9e6e1; border-radius: 999px; color: #6f6f76; min-height: 44px; margin-right: .5rem; margin-bottom: .5rem; background: transparent; }
+    .eyebrow { font-family: 'Cascadia Code', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
+    .tab-btn { font-family: 'Cascadia Code', monospace; font-size: .8rem; padding: .7rem 1.2rem; border: 1px solid #e9e6e1; border-radius: 999px; color: #6f6f76; min-height: 44px; margin-right: .5rem; margin-bottom: .5rem; background: transparent; }
     .tab-btn:hover { color: #141417; border-color: #6f6f76; }
     .tab-btn[aria-selected="true"] { color: #fff; background: #141417; border-color: #141417; }
     .tab-panel { border: 1px solid #e9e6e1; border-radius: 10px; padding: 1.25rem; background: #f1efeb; }

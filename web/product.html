@@ -10,13 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts on this static marketing page (D8): the app self-hosts
-       its faces (crates/pantheon-dashboard/assets/fonts/). See the home page's
-       Privacy section for the visitor-facing statement. -->
+       its faces (crates/pantheon-dashboard/assets/fonts/), and this page
+       self-hosts its monospace too (fonts.css, Cascadia Code). Only the
+       display faces come from Fontshare. See the home page's Privacy section
+       for the visitor-facing statement. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="fonts.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -27,7 +27,7 @@
             codebg: '#f1efeb', brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'sans-serif']
           }
         }
@@ -45,12 +45,12 @@
       filter: drop-shadow(0 2px 8px rgba(114,35,255,.25)); transition: transform .2s; }
     .logo-mark:hover { transform: scale(1.08); }
     .logo-mark img { height: 38px; width: auto; }
-    code { font-family: 'JetBrains Mono', monospace; font-size: .85em; color: #5c1de0; }
+    code { font-family: 'Cascadia Code', monospace; font-size: .85em; color: #5c1de0; }
     .btn-primary { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; background: #7223FF; color: #fff; font-weight: 600; font-size: 1rem; border-radius: 999px; }
     .btn-primary:hover { background: #5c1de0; }
     .btn-ghost { display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: .85rem 2rem; border: 1px solid #e9e6e1; color: #141417; font-weight: 500; font-size: 1rem; border-radius: 999px; }
     .btn-ghost:hover { border-color: #141417; }
-    .eyebrow { font-family: 'JetBrains Mono', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
+    .eyebrow { font-family: 'Cascadia Code', monospace; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: #7223FF; }
     a.link { color: #7223FF; }
     a.link:hover { text-decoration: underline; text-underline-offset: 3px; }
     .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }

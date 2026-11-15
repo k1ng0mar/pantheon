@@ -10,16 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts are a documented exception for this static site (D8):
-       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
-       assets/fonts/, so the app itself never requests a font CDN. This site
-       also loads the Tailwind CDN script. The home page's Privacy section
-       tells visitors that this site loads them and the app does not. Keep the
-       claims in sync if the site ever self-hosts. -->
+       the app self-hosts its faces (crates/pantheon-dashboard/assets/fonts/)
+       and this site self-hosts its own too (fonts.css, Cascadia Code and
+       Inter). Only the display faces come from Fontshare, and the site loads
+       the Tailwind CDN script. The home page's Privacy section tells visitors
+       which providers see their IP, so keep those claims in sync. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
     (function() {
       var saved = localStorage.getItem('pantheon-theme');
@@ -28,6 +25,7 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="tokens.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,7 +37,7 @@
             brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'Inter', 'sans-serif']
           }
         }
@@ -72,9 +70,9 @@
       margin: 1.5rem 0;
       position: relative;
     }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
+    .doc pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
     .doc code:not(pre code) {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: .85em;
       color: var(--accent-strong);
       background: var(--accent-soft);
@@ -105,7 +103,7 @@
       position: absolute;
       top: 10px;
       right: 10px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: 11px;
       padding: 4px 8px;
       border-radius: 6px;
@@ -222,7 +220,7 @@ model = &quot;gpt-4o-mini&quot;
 target_percent = 50   # summary size as % of the absorbed transcript chars (1-100, default 12)
 </code></pre>
 <p class="my-3 leading-relaxed">Higher keeps more detail (less aggressive), lower compresses harder. <code>0</code> and values over <code>100</code> are config errors. The default <code>12</code> preserves the historic summary budget.</p>
-<p class="my-3 leading-relaxed">Note: <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code>, <code>[vision]</code>, <code>[search_synthesis]</code>, <code>[mcp_synthesis]</code>, and <code>[judge]</code> have no features using them yet. They exist so you can pin models ahead of time. (<code>[judge]</code> is validated by <code>doctor</code> but the production agent loop is built with <code>judge: None</code>, so it currently changes nothing - the engine supports it, installation into the runtime loop is still open.) Everything else is wired: <code>[compression]</code>/<code>[title_gen]</code> run in the session, <code>[embeddings]</code> powers semantic recall, <code>[scheduled]</code> sets the model for background runs, <code>[verify]</code> checks delegated results, and <code>[reflect]</code>/<code>[consolidation]</code>/<code>[repair]</code> serve the nightly pass (<code>[repair]</code> is the only slot the fix loop uses to revise drafts; <code>[reflect]</code> still handles pre-pass proposal refinement and replay transcript scoring).</p>
+<p class="my-3 leading-relaxed">Note: <code>[extraction]</code>, <code>[rerank]</code>, <code>[planner]</code>, <code>[search_synthesis]</code>, and <code>[mcp_synthesis]</code> have no features using them yet. They exist so you can pin models ahead of time. <code>[vision]</code>, <code>[video]</code> and <code>[judge]</code> <strong>are</strong> wired: vision and video run host-side passes over attached media, and <code>[judge]</code> adjudicates approval-gated tool calls in <code>PermissionMode::Smart</code> (an unreachable judge parks the call for a human rather than running it). Everything else is wired: <code>[compression]</code>/<code>[title_gen]</code> run in the session, <code>[embeddings]</code> powers semantic recall, <code>[scheduled]</code> sets the model for background runs, <code>[verify]</code> checks delegated results, and <code>[reflect]</code>/<code>[consolidation]</code>/<code>[repair]</code> serve the nightly pass (<code>[repair]</code> is the only slot the fix loop uses to revise drafts; <code>[reflect]</code> still handles pre-pass proposal refinement and replay transcript scoring).</p>
 <p class="my-3 leading-relaxed"><code>[verify]</code> is the exception to the &quot;leave a section out and it uses your main model&quot; rule: <strong>absent <code>[verify]</code> means no verification happens at all</strong> (off by default, no <code>auto</code> entry). Pin a section and every delegated subagent&#x27;s claimed result is adversarially checked by that model before the parent accepts it:</p>
 <pre><code>
 [verify]
@@ -288,6 +286,22 @@ max_iterations     = 3       # pipeline iterations
 max_iterations     = 10      # exchanges allowed per /goal before it stops and asks
 </code></pre>
 <p class="my-3 leading-relaxed">Every key is optional; <code>0</code> counts as unset. These are the defaults for a session. <code>/set &lt;key&gt; &lt;value&gt;</code> changes them live for the current session, and <code>/tokens [n|off]</code> manages the per-response output cap on its own. There is no spending cap: cost is tracked for statistics only.</p>
+<h2 id="safety-caps-you-can-tune" class="text-xl font-bold tracking-tight mt-10 mb-3">Safety caps you can tune</h2>
+<pre><code>
+[limits]
+voice_audio_bytes    = 26214400  # decoded voice audio per request (25 MiB)
+voice_text_chars     = 64000     # speak text per request
+image_bytes          = 26214400  # per image attachment (25 MiB)
+images_per_message   = 10
+videos_per_message   = 5
+video_frames         = 16        # frames sampled per video
+search_synthesis_chars = 4000
+mcp_synthesis_chars  = 3000
+vision_chars         = 4000
+video_chars          = 6000
+planner_steps        = 20
+</code></pre>
+<p class="my-3 leading-relaxed">Every key is optional. Environment overrides win over the file: <code>PANTHEON_LIMIT_VOICE_AUDIO_BYTES=52428800</code> and so on, one per field, uppercased with underscores.</p>
 <h2 id="time-awareness" class="text-xl font-bold tracking-tight mt-10 mb-3">Time awareness</h2>
 <pre><code>
 [temporal]
@@ -332,9 +346,13 @@ soul_file    = &quot;agents/zeus/SOUL.md&quot;
 <p class="my-3 leading-relaxed"><code>agent = &quot;zeus&quot;</code> picks which agent this install runs as (it must name a table above). No <code>[agents]</code> table means anonymous runs. See <a href="agents.html">Agents</a>.</p>
 <blockquote><strong>Removed keys.</strong> Older configs may carry a top-level <code>profile = &quot;...&quot;</code> label or a</blockquote>
 <blockquote><code>[tools]</code> table. Both were inert - <code>profile</code> never selected an agent (that is</blockquote>
-<blockquote>what <code>agent</code> does), and <code>[tools]</code> never gated tool registration (registration</blockquote>
-<blockquote>is unconditional). They were removed; old files still load, the keys are</blockquote>
-<blockquote>simply ignored. There is no replacement to configure.</blockquote>
+<blockquote>what <code>agent</code> does), and <code>profile</code> never selected an agent (that is</blockquote>
+<blockquote>what <code>agent</code> does) and was removed; old files still load and the key is</blockquote>
+<blockquote>ignored.</blockquote>
+<p class="my-3 leading-relaxed">&gt;</p>
+<blockquote><code>[tools]</code> is <strong>not</strong> removed and <strong>not</strong> inert: it gates tool-group</blockquote>
+<blockquote>registration (absent means every group enabled; the runtime registers only</blockquote>
+<blockquote>the enabled groups). It is documented below.</blockquote>
 <h2 id="delegation-routes" class="text-xl font-bold tracking-tight mt-10 mb-3">Delegation routes</h2>
 <pre><code>
 [delegation]

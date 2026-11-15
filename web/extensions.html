@@ -10,16 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts are a documented exception for this static site (D8):
-       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
-       assets/fonts/, so the app itself never requests a font CDN. This site
-       also loads the Tailwind CDN script. The home page's Privacy section
-       tells visitors that this site loads them and the app does not. Keep the
-       claims in sync if the site ever self-hosts. -->
+       the app self-hosts its faces (crates/pantheon-dashboard/assets/fonts/)
+       and this site self-hosts its own too (fonts.css, Cascadia Code and
+       Inter). Only the display faces come from Fontshare, and the site loads
+       the Tailwind CDN script. The home page's Privacy section tells visitors
+       which providers see their IP, so keep those claims in sync. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
     (function() {
       var saved = localStorage.getItem('pantheon-theme');
@@ -28,6 +25,7 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="tokens.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,7 +37,7 @@
             brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'Inter', 'sans-serif']
           }
         }
@@ -72,9 +70,9 @@
       margin: 1.5rem 0;
       position: relative;
     }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
+    .doc pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
     .doc code:not(pre code) {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: .85em;
       color: var(--accent-strong);
       background: var(--accent-soft);
@@ -105,7 +103,7 @@
       position: absolute;
       top: 10px;
       right: 10px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: 11px;
       padding: 4px 8px;
       border-radius: 6px;
@@ -224,7 +222,7 @@ enabled = true
 <h2 id="plugins-vs-mcps-the-trust-distinction" class="text-xl font-bold tracking-tight mt-10 mb-3">Plugins vs MCPs: the trust distinction</h2>
 <p class="my-3 leading-relaxed">Both extend what the agent can do, and they are trusted completely differently - the approval UI surfaces this on purpose:</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li>A <strong>plugin</strong> is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it. Tool plugins run as spawned runner processes behind the capability gate with full user privileges and no namespace sandbox. Hook plugins run as per-fire child processes with a scrubbed environment, sandboxed at the VeryHigh level whenever a capability policy is configured and spawned directly only when no policy is configured. See the security section above for which kind gets which isolation.</li>
+<li>A <strong>plugin</strong> is code Pantheon itself runs on your machine: the runtime loads its manifest and executes it. Tool plugins run as spawned runner processes behind the capability gate, inside the sandbox (High by default, VeryHigh on request) with a scrubbed environment, a private writable work directory and no network unless the manifest enables it. Hook plugins run as per-fire child processes with a scrubbed environment, sandboxed at the VeryHigh level whenever a capability policy is configured and spawned directly only when no policy is configured. See the security section above for which kind gets which isolation.</li>
 <li>An <strong>MCP server</strong> is an out-of-process integration: Pantheon speaks the MCP protocol to it but never executes its code - the server may run on another machine entirely. Trust there is in the endpoint and its configuration, not in shipped code.</li>
 </ul>
 <h2 id="manage-and-debug" class="text-xl font-bold tracking-tight mt-10 mb-3">Manage and debug</h2>
@@ -236,7 +234,7 @@ pantheon hook &lt;name&gt; [--session S]  # run a hook once and see what it adds
 pantheon doctor &lt;plugin_dir&gt;        # preflight check: manifest, hooks, files
 </code></pre>
 <p class="my-3 leading-relaxed">When something does not work, check in this order: <code>doctor</code> (usually a typo in the manifest), <code>extensions</code> (did it load?), then run the hook by hand (<code>echo &#x27;{&quot;hook&quot;:&quot;pre_llm_call&quot;,...}&#x27; | python3 __init__.py</code>).</p>
-<p class="my-3 leading-relaxed">A note on MCP servers: <code>pantheon mcp list</code> shows declared MCP servers and whether each could load, but agents cannot reach MCP servers yet. No launcher exists yet either.</p>
+<p class="my-3 leading-relaxed">A note on MCP servers: <code>pantheon mcp</code> is a full surface — <code>list</code>, <code>add</code>, <code>remove</code>, <code>enable</code>, <code>disable</code>, <code>approve</code>, <code>status</code>, <code>health</code>, <code>login</code>/<code>logout</code>/<code>auth</code>, and <code>resources</code>/<code>templates</code>/<code>prompts</code> for inspection. Agents reach declared servers through the capability-gated <code>tools/call</code> path, with per-server approval, health reporting and backoff; see <a href="mcp.html">MCP</a>.</p>
 <h2 id="see-also" class="text-xl font-bold tracking-tight mt-10 mb-3">See also</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li><a href="memory.html">Memory</a>: skills, the knowledge half of extensibility</li>

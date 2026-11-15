@@ -10,16 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts are a documented exception for this static site (D8):
-       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
-       assets/fonts/, so the app itself never requests a font CDN. This site
-       also loads the Tailwind CDN script. The home page's Privacy section
-       tells visitors that this site loads them and the app does not. Keep the
-       claims in sync if the site ever self-hosts. -->
+       the app self-hosts its faces (crates/pantheon-dashboard/assets/fonts/)
+       and this site self-hosts its own too (fonts.css, Cascadia Code and
+       Inter). Only the display faces come from Fontshare, and the site loads
+       the Tailwind CDN script. The home page's Privacy section tells visitors
+       which providers see their IP, so keep those claims in sync. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
     (function() {
       var saved = localStorage.getItem('pantheon-theme');
@@ -28,6 +25,7 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="tokens.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,7 +37,7 @@
             brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'Inter', 'sans-serif']
           }
         }
@@ -72,9 +70,9 @@
       margin: 1.5rem 0;
       position: relative;
     }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
+    .doc pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
     .doc code:not(pre code) {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: .85em;
       color: var(--accent-strong);
       background: var(--accent-soft);
@@ -105,7 +103,7 @@
       position: absolute;
       top: 10px;
       right: 10px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: 11px;
       padding: 4px 8px;
       border-radius: 6px;

@@ -10,16 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts are a documented exception for this static site (D8):
-       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
-       assets/fonts/, so the app itself never requests a font CDN. This site
-       also loads the Tailwind CDN script. The home page's Privacy section
-       tells visitors that this site loads them and the app does not. Keep the
-       claims in sync if the site ever self-hosts. -->
+       the app self-hosts its faces (crates/pantheon-dashboard/assets/fonts/)
+       and this site self-hosts its own too (fonts.css, Cascadia Code and
+       Inter). Only the display faces come from Fontshare, and the site loads
+       the Tailwind CDN script. The home page's Privacy section tells visitors
+       which providers see their IP, so keep those claims in sync. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
     (function() {
       var saved = localStorage.getItem('pantheon-theme');
@@ -28,6 +25,7 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="tokens.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,7 +37,7 @@
             brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'Inter', 'sans-serif']
           }
         }
@@ -72,9 +70,9 @@
       margin: 1.5rem 0;
       position: relative;
     }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
+    .doc pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
     .doc code:not(pre code) {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: .85em;
       color: var(--accent-strong);
       background: var(--accent-soft);
@@ -105,7 +103,7 @@
       position: absolute;
       top: 10px;
       right: 10px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: 11px;
       padding: 4px 8px;
       border-radius: 6px;
@@ -215,7 +213,7 @@
 <h2 id="providers" class="text-xl font-bold tracking-tight mt-10 mb-3">Providers</h2>
 <p class="my-3 leading-relaxed">Transport adapters only: OpenAI-compatible and Anthropic behind one <code>ModelTurn</code> interface, no SDKs above the provider crate. Default model, failure-only backup chain, per-job helper models. No routing; agents never pick models.</p>
 <h2 id="surfaces" class="text-xl font-bold tracking-tight mt-10 mb-3">Surfaces</h2>
-<p class="my-3 leading-relaxed">Terminal app, terminal commands, web (<code>serve</code>), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default (gates fail closed); foreign plugin formats load through a compat adapter in <code>pantheon-migration</code> that only maps real matches. Tool plugins run with the operator&#x27;s full user privileges behind a scrubbed environment and no namespace sandbox. Hook plugins run behind the capability policy at the VeryHigh sandbox level whenever a policy is configured, and spawn directly only when no policy is configured. Either way secrets are scrubbed from the child environment, and enabling a third-party plugin requires explicit recorded approval.</p>
+<p class="my-3 leading-relaxed">Terminal app, terminal commands, web (<code>serve</code>), and chat gateways (Discord, Telegram) all drive the same assistant off the same record. Extensions add hooks and tools through a manifest + stdio contract, fail-open by default (gates fail closed); foreign plugin formats load through a compat adapter in <code>pantheon-migration</code> that only maps real matches. Tool plugins run behind the capability gate inside the sandbox runner (High by default, VeryHigh when the manifest asks), with a scrubbed environment, a private work directory as the only writable path, and no network unless the manifest enables it; there is no direct-spawn fallback unless the manifest itself opts in. Hook plugins run behind the capability policy at the VeryHigh sandbox level whenever a policy is configured, and spawn directly only when no policy is configured. Either way secrets are scrubbed from the child environment, and enabling a third-party plugin requires explicit recorded approval.</p>
 <h2 id="migration" class="text-xl font-bold tracking-tight mt-10 mb-3">Migration</h2>
 <p class="my-3 leading-relaxed"><code>pantheon migrate hermes|openclaw|omp|claude</code>: detect → plan → approve → backup → apply → validate. The apply is transactional (stage → validate → commit): everything found is imported or archived with a reason, nothing silently dropped, credentials never written outside <code>&lt;data_dir&gt;/.env</code>.</p>
 <h2 id="locked-decisions" class="text-xl font-bold tracking-tight mt-10 mb-3">Locked decisions</h2>

@@ -10,16 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts are a documented exception for this static site (D8):
-       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
-       assets/fonts/, so the app itself never requests a font CDN. This site
-       also loads the Tailwind CDN script. The home page's Privacy section
-       tells visitors that this site loads them and the app does not. Keep the
-       claims in sync if the site ever self-hosts. -->
+       the app self-hosts its faces (crates/pantheon-dashboard/assets/fonts/)
+       and this site self-hosts its own too (fonts.css, Cascadia Code and
+       Inter). Only the display faces come from Fontshare, and the site loads
+       the Tailwind CDN script. The home page's Privacy section tells visitors
+       which providers see their IP, so keep those claims in sync. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
     (function() {
       var saved = localStorage.getItem('pantheon-theme');
@@ -28,6 +25,7 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="tokens.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,7 +37,7 @@
             brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'Inter', 'sans-serif']
           }
         }
@@ -72,9 +70,9 @@
       margin: 1.5rem 0;
       position: relative;
     }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
+    .doc pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
     .doc code:not(pre code) {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: .85em;
       color: var(--accent-strong);
       background: var(--accent-soft);
@@ -105,7 +103,7 @@
       position: absolute;
       top: 10px;
       right: 10px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: 11px;
       padding: 4px 8px;
       border-radius: 6px;
@@ -184,36 +182,40 @@
 <tr><td>Official skills</td><td>Cloudflare&#x27;s own skill library (workers, wrangler, durable-objects, agents-sdk, ...)</td><td>Imported on request from github.com/cloudflare/skills</td></tr>
 </tbody></table>
 <h2 id="setup" class="text-xl font-bold tracking-tight mt-10 mb-3">Setup</h2>
-<pre><code>
-pantheon cloudflare setup
-</code></pre>
-<p class="my-3 leading-relaxed">The setup walks the chain and does what it is allowed to:</p>
-<p>1. Detects node, npm, and the cf CLI. Offers <code>npm install -g cf</code> after a</p>
-<p class="my-3 leading-relaxed">   confirm. Node 22+ required.</p>
-<p>2. Checks <code>CLOUDFLARE_API_TOKEN</code> in the environment. Never reads or</p>
-<p class="my-3 leading-relaxed">   prints the value.</p>
-<p>3. Offers to import Cloudflare&#x27;s official skills from</p>
-<p class="my-3 leading-relaxed">   github.com/cloudflare/skills into the data dir (shallow clone through</p>
-<p class="my-3 leading-relaxed">   the existing skills-import path).</p>
-<p>4. Writes the <code>[cloudflare]</code> config section.</p>
-<p class="my-3 leading-relaxed"><code>pantheon cloudflare status</code> reports what is present, authenticated, and</p>
-<p class="my-3 leading-relaxed">enabled without changing anything. <code>pantheon doctor</code> carries a</p>
-<p class="my-3 leading-relaxed">cloudflare section with a fix hint per gap.</p>
+<p class="my-3 leading-relaxed">There is no <code>pantheon cloudflare</code> command and no <code>[cloudflare]</code> config</p>
+<p class="my-3 leading-relaxed">section: Cloudflare is reached entirely through the three channels above,</p>
+<p class="my-3 leading-relaxed">so there is nothing Pantheon-specific to configure. In particular:</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>cf CLI</strong> — install it yourself (<code>npm install -g cf</code>, Node 22+) and</li>
+</ul>
+<p class="my-3 leading-relaxed">export <code>CLOUDFLARE_API_TOKEN</code>. Pantheon classifies <code>cf</code> invocations by</p>
+<p class="my-3 leading-relaxed">capability (<code>cloudflare.write</code> / <code>cloudflare.destroy</code> park for approval)</p>
+<p class="my-3 leading-relaxed">and scrubs everything else from the child environment.</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>cf-ops plugin</strong> — bundled but disabled by default; enable it with</li>
+</ul>
+<p class="my-3 leading-relaxed"><code>pantheon extensions approve cf-ops</code> (or the <code>/plugins</code> screen).</p>
+<ul class="list-disc pl-6 my-3 space-y-1">
+<li><strong>Cloudflare skills</strong> — import them explicitly through the skills path</li>
+</ul>
+<p class="my-3 leading-relaxed">(<code>pantheon skills import &lt;source&gt;</code>); nothing is cloned automatically.</p>
+<p class="my-3 leading-relaxed"><code>pantheon doctor</code> does <strong>not</strong> carry a Cloudflare section. The closest</p>
+<p class="my-3 leading-relaxed">signal it reports is <code>security.exec_sandbox</code>, which tells you whether the</p>
+<p class="my-3 leading-relaxed">sandboxed shell the <code>cf</code> CLI runs under is available; a missing</p>
+<p class="my-3 leading-relaxed"><code>CLOUDFLARE_API_TOKEN</code> is reported by <code>cf</code> itself, not by the doctor.</p>
 <h2 id="authentication-and-the-token-path" class="text-xl font-bold tracking-tight mt-10 mb-3">Authentication and the token path</h2>
 <p class="my-3 leading-relaxed">cf resolves credentials in this order: the <code>CLOUDFLARE_API_TOKEN</code></p>
 <p class="my-3 leading-relaxed">environment variable, then named OAuth profiles (<code>cf auth login</code>). The</p>
 <p class="my-3 leading-relaxed">API token is the automation path and the one Pantheon wires.</p>
 <p class="my-3 leading-relaxed">The token reaches a <code>cf</code> child process through one sanctioned path:</p>
-<p>1. <code>[cloudflare].enabled = true</code> in config.toml (the operator&#x27;s</p>
-<p class="my-3 leading-relaxed">   declaration; the default section is disabled and injects nothing).</p>
-<p>2. The runtime resolves <code>api_token_secret</code> (default</p>
-<p class="my-3 leading-relaxed">   <code>CLOUDFLARE_API_TOKEN</code>) through the secrets broker at call time.</p>
-<p>3. The shell tool&#x27;s env hook injects it only for <code>cf</code> commands, past the</p>
+<p>1. <code>CLOUDFLARE_API_TOKEN</code> is exported in the operator&#x27;s environment (or</p>
+<p class="my-3 leading-relaxed">   provided as a vault secret under that name). There is no</p>
+<p class="my-3 leading-relaxed">   <code>[cloudflare].enabled</code> switch — the credential is present or it is not.</p>
+<p>2. The shell tool&#x27;s env hook injects it only for <code>cf</code> commands, past the</p>
 <p class="my-3 leading-relaxed">   sandbox&#x27;s env scrub, into the child&#x27;s environment.</p>
-<p class="my-3 leading-relaxed">The token never appears in the ledger, logs, or tool output. Putting it</p>
-<p class="my-3 leading-relaxed">in the command text (<code>env CLOUDFLARE_API_TOKEN=x cf ...</code>) defeats the</p>
-<p class="my-3 leading-relaxed">redaction layer and lands it in the transcript; the plugin runner</p>
-<p class="my-3 leading-relaxed">rejects that shape.</p>
+<p class="my-3 leading-relaxed">The token never appears in the ledger, logs, or tool output. Passing it</p>
+<p class="my-3 leading-relaxed">inline as an <code>env</code> prefix on the command defeats the redaction layer and</p>
+<p class="my-3 leading-relaxed">lands it in the transcript; the plugin runner rejects that shape.</p>
 <h2 id="capability-classification" class="text-xl font-bold tracking-tight mt-10 mb-3">Capability classification</h2>
 <p class="my-3 leading-relaxed">Every <code>cf ...</code> invocation through the shell tool is classified by</p>
 <p class="my-3 leading-relaxed"><code>pantheon-exec::cloudflare</code>:</p>
@@ -272,9 +274,10 @@ pantheon skills import --repo https://github.com/cloudflare/skills --sub skills
 </ul>
 <p class="my-3 leading-relaxed">  <code>CLOUDFLARE_ZONE_ID</code>.</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
-<li>Token injection appears dead: check <code>[cloudflare].enabled</code>, then</li>
+<li>Token injection appears dead: check <code>CLOUDFLARE_API_TOKEN</code> is exported</li>
 </ul>
-<p class="my-3 leading-relaxed">  <code>pantheon cloudflare status</code>.</p>
+<p class="my-3 leading-relaxed">  in the environment the shell tool inherits, then run</p>
+<p class="my-3 leading-relaxed">  <code>cf auth whoami</code> to confirm the token works.</p>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li>A cf call parked for approval: the approval prompt shows the exact</li>
 </ul>

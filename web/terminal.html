@@ -10,16 +10,13 @@
   <meta property="og:image" content="logo.png">
   <link rel="icon" href="logo.png">
   <!-- Third-party fonts are a documented exception for this static site (D8):
-       the dashboard at crates/pantheon-dashboard self-hosts the same faces from
-       assets/fonts/, so the app itself never requests a font CDN. This site
-       also loads the Tailwind CDN script. The home page's Privacy section
-       tells visitors that this site loads them and the app does not. Keep the
-       claims in sync if the site ever self-hosts. -->
+       the app self-hosts its faces (crates/pantheon-dashboard/assets/fonts/)
+       and this site self-hosts its own too (fonts.css, Cascadia Code and
+       Inter). Only the display faces come from Fontshare, and the site loads
+       the Tailwind CDN script. The home page's Privacy section tells visitors
+       which providers see their IP, so keep those claims in sync. -->
   <link rel="preconnect" href="https://api.fontshare.com">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://api.fontshare.com/v2/css?f[]=array@400,500,600,700&f[]=alpino@400,500,600,700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
     (function() {
       var saved = localStorage.getItem('pantheon-theme');
@@ -28,6 +25,7 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="tokens.css">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -39,7 +37,7 @@
             brand: '#7223FF', branddark: '#5c1de0'
           },
           fontFamily: {
-            mono: ['JetBrains Mono', 'monospace'],
+            mono: ['Cascadia Code', 'monospace'],
             sans: ['Alpino', 'Inter', 'sans-serif']
           }
         }
@@ -72,9 +70,9 @@
       margin: 1.5rem 0;
       position: relative;
     }
-    .doc pre code { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
+    .doc pre code { font-family: 'Cascadia Code', monospace; font-size: .85rem; color: var(--ink); background: none; padding: 0; }
     .doc code:not(pre code) {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: .85em;
       color: var(--accent-strong);
       background: var(--accent-soft);
@@ -105,7 +103,7 @@
       position: absolute;
       top: 10px;
       right: 10px;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: 'Cascadia Code', monospace;
       font-size: 11px;
       padding: 4px 8px;
       border-radius: 6px;
@@ -175,7 +173,14 @@
 
   <main class="doc max-w-3xl mx-auto px-6 pt-24 pb-16">
 <h1 id="terminal-reference" class="text-3xl font-bold tracking-tight mb-2">Terminal reference</h1><div class="hairline my-6"></div>
-<p class="my-3 leading-relaxed">Every <code>pantheon</code> command, its flags, and its exit codes. If it is not listed here, it does not exist; a typo exits with code 2 and a suggestion.</p>
+<p class="my-3 leading-relaxed">Every <code>pantheon</code> command, its flags, and its exit codes. The public</p>
+<p class="my-3 leading-relaxed">surface is organised into the namespaces below; every historic top-level</p>
+<p class="my-3 leading-relaxed">spelling (<code>runs</code>, <code>send</code>, <code>audit</code>, <code>mcp</code>, <code>worktree</code>, ...) still dispatches</p>
+<p class="my-3 leading-relaxed">as an alias. A typo exits with code 2 and a suggestion.</p>
+<blockquote>This page covers the verbs most scripts use. <code>pantheon --help</code> lists the</blockquote>
+<blockquote>full namespace set (<code>session</code>, <code>agent</code>, <code>tools</code>, <code>workspace</code>, <code>tasks</code>,</blockquote>
+<blockquote><code>desktop</code>, <code>serve</code>, <code>config</code>, <code>setup</code>, <code>doctor</code>, <code>maintenance</code>), and</blockquote>
+<blockquote><code>pantheon &lt;namespace&gt; --help</code> lists that namespace&#x27;s subcommands.</blockquote>
 <h2 id="conventions" class="text-xl font-bold tracking-tight mt-10 mb-3">Conventions</h2>
 <ul class="list-disc pl-6 my-3 space-y-1">
 <li>Exit 0 means it worked. Exit 1 means something failed (the message names an error code like <code>SAFE_STALE</code>). Exit 2 means you used it wrong.</li>
@@ -236,7 +241,7 @@ pantheon plugins list|install &lt;name&gt;|enable &lt;name&gt;|disable &lt;name&
 pantheon extensions                       # what actually loaded
 pantheon hook &lt;name&gt; [--session S] [--platform P]
 pantheon mcp list [--json]                # declared MCP servers (read-only for now)
-pantheon migrate &lt;detect|show|plan|apply|validate&gt; &lt;hermes|openclaw|omp&gt; [path]
+pantheon migrate &lt;detect|show|plan|apply|validate&gt; &lt;hermes|openclaw|omp|claude&gt; [path]
                [--kind K] [--json] [--yes] [--merge-providers]
 </code></pre>
 <p class="my-3 leading-relaxed"><code>migrate apply</code> is the only one that writes (<code>backup, apply, check</code>, needs <code>--yes</code> or the source name typed out).</p>
@@ -246,7 +251,8 @@ pantheon schedule &lt;task&gt; [--every 30m | --cron &quot;*/5 * * * *&quot;] [-
                [--timeout 10m] [--overlap skip|replace|queue]
 pantheon schedule list|pause|resume|cancel|run &lt;id&gt;
 pantheon schedule tick [--watch]      # fire due jobs now; --watch keeps looping
-pantheon swarm status [&lt;id&gt;] | list   # past agent collaborations; never starts new work
+pantheon swarm status [&lt;id&gt;] | list   # query recorded collaborations (read-only)
+pantheon swarm &lt;N&gt; &quot;&lt;task&gt;&quot; [--roles a,b]   # SPAWN a real multi-agent run
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # the local web page + API
 pantheon pipeline --spec &quot;task&quot; [RUN_ID]
