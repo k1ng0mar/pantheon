@@ -4,7 +4,7 @@ import { CLASSIC, SWATCHES, palette, type AccentChoice, type VsixTheme } from '.
 import { loadPantheonTint, pantheonAccentSource, setPantheonTint } from './pantheon-theme';
 
 /* Colors: the accent (wallpaper, classic, a swatch or any color) and VS Code themes
- * imported from a .vsix or installed from Open VSX by extension ID. */
+ * imported from a .vsix file the user picks. */
 
 export type ThemeSettingsHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -40,7 +40,6 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
       <div class="vsix-list" role="radiogroup" aria-labelledby="vsix-heading" aria-busy="true"></div>
       <div class="vsix-actions">
         <button type="button" class="secondary-button" data-colors="import">${icon('download')}Import .vsix…</button>
-        <form class="vsix-install"><input name="extension" placeholder="publisher.extension" aria-label="Open VSX extension ID" autocomplete="off" spellcheck="false" maxlength="201" required><button class="secondary-button">Install</button></form>
       </div>
       <p class="vsix-status" role="status" aria-live="polite"></p>
     </section>`;
@@ -81,7 +80,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
       return `<div class="vsix-row"><button type="button" role="radio" class="vsix-choice" aria-checked="${id === active}" data-theme-id="${escape(id)}"><span class="vsix-swatches" aria-hidden="true">${swatches}</span><span class="vsix-name"><strong>${escape(theme?.name ?? 'Pantheon')}</strong><small>${escape(theme ? `${theme.extension} · ${theme.kind === 'dark' ? 'Dark' : 'Light'}` : 'Built in · accent and wallpaper apply')}</small></span></button>${theme ? `<button type="button" class="icon-button vsix-remove" data-remove="${escape(id)}" aria-label="Remove ${escape(theme.name)}" title="Remove">${icon('trash')}</button>` : ''}</div>`;
     };
     list.setAttribute('aria-busy', 'false');
-    list.innerHTML = row(null) + themes.map(row).join('') + (themes.length ? '' : '<p class="vsix-empty">Import a .vsix or install one by ID, such as <code>dracula-theme.theme-dracula</code>.</p>');
+    list.innerHTML = row(null) + themes.map(row).join('') + (themes.length ? '' : '<p class="vsix-empty">Import a .vsix file to add its themes.</p>');
   }
   async function load(): Promise<void> {
     try { themes = await options.call<VsixTheme[]>('themes_list'); }
@@ -140,11 +139,6 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
     if (input.type === 'color') palette.setAccent({ mode: 'custom', color: input.value });
   });
   host.addEventListener('change', event => { if ((event.target as HTMLInputElement).type === 'color') renderAccents(); });
-  host.querySelector<HTMLFormElement>('.vsix-install')!.addEventListener('submit', event => {
-    event.preventDefault();
-    const input = (event.target as HTMLFormElement).querySelector<HTMLInputElement>('input')!, id = input.value.trim();
-    if (id) void added(options.call<VsixTheme[]>('theme_install', { extensionId: id }), id).then(() => { if (!busy) input.value = ''; });
-  });
   const onPalette = () => { if (!disposed) renderAccents(); };
   window.addEventListener('pantheon-palette-change', onPalette);
   renderAccents();

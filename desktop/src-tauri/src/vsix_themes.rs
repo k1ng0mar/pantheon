@@ -1,4 +1,4 @@
-//! VS Code color themes from `.vsix` packages, imported from a file or Open VSX.
+//! VS Code color themes from `.vsix` packages the user picks themselves.
 //! Only the workbench `colors` map is kept (validated hex values under dotted keys);
 //! nothing in a package is executed. Each theme is stored as one JSON file.
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,6 @@ use std::{
     collections::BTreeMap,
     io::{Cursor, Read},
     path::{Component, Path, PathBuf},
-    time::Duration,
 };
 use tauri::{AppHandle, Manager};
 
@@ -15,7 +14,6 @@ const MAX_PACKAGE: u64 = 64 * 1024 * 1024;
 const MAX_JSON: u64 = 4 * 1024 * 1024;
 const MAX_COLORS: usize = 3000;
 const MAX_INCLUDES: usize = 4;
-const OPEN_VSX: &str = "https://open-vsx.org/api";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -268,60 +266,6 @@ pub async fn theme_import(app: AppHandle, path: String) -> crate::Result<Vec<The
     .await
 }
 
-/// `publisher.extension`, as Open VSX and the VS Code marketplace name it.
-pub fn parse_extension_id(id: &str) -> Result<(String, String), String> {
-    let id = id.trim();
-    let (publisher, name) = id.split_once('.').ok_or("Use the extension ID, such as dracula-theme.theme-dracula.")?;
-    let ok = |part: &str| !part.is_empty() && part.len() <= 100 && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
-    if !ok(publisher) || !ok(name) {
-        return Err("Use the extension ID, such as dracula-theme.theme-dracula.".into());
-    }
-    Ok((publisher.to_string(), name.to_string()))
-}
-
-/// Download an extension package from Open VSX.
-pub async fn fetch_vsix(publisher: &str, name: &str) -> Result<Vec<u8>, String> {
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-    let client = reqwest::Client::builder()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::limited(4))
-        .connect_timeout(Duration::from_secs(6))
-        .timeout(Duration::from_secs(60))
-        .user_agent(concat!("Pantheon/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|_| "Could not start the download.".to_string())?;
-    let unreachable = |_| "Could not reach Open VSX. Try again later.".to_string();
-    let meta = client.get(format!("{OPEN_VSX}/{publisher}/{name}")).send().await.map_err(unreachable)?;
-    if meta.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("Open VSX has no extension {publisher}.{name}."));
-    }
-    let meta: Value = meta.error_for_status().map_err(unreachable)?.json().await.map_err(unreachable)?;
-    let url = meta["files"]["download"].as_str().ok_or("Open VSX listed no download for that extension.")?.to_string();
-    let response = client.get(url).send().await.map_err(unreachable)?.error_for_status().map_err(unreachable)?;
-    if response.content_length().is_some_and(|len| len > MAX_PACKAGE) {
-        return Err("That package is larger than 64 MB.".into());
-    }
-    let bytes = response.bytes().await.map_err(unreachable)?;
-    if bytes.len() as u64 > MAX_PACKAGE {
-        return Err("That package is larger than 64 MB.".into());
-    }
-    Ok(bytes.to_vec())
-}
-
-#[tauri::command]
-pub async fn theme_install(app: AppHandle, extension_id: String) -> crate::Result<Vec<Theme>> {
-    let (publisher, name) = parse_extension_id(&extension_id)?;
-    let bytes = fetch_vsix(&publisher, &name).await?;
-    crate::blocking(move || {
-        let themes = read_vsix(&bytes)?;
-        save(&app, &themes)?;
-        Ok(themes)
-    })
-    .await
-}
-
 #[tauri::command]
 pub async fn theme_remove(app: AppHandle, id: String) -> crate::Result<()> {
     if !valid_id(&id) {
@@ -387,9 +331,6 @@ mod tests {
     fn non_theme_packages_and_bad_ids_are_refused() {
         assert!(read_vsix(b"not a zip").is_err());
         assert!(read_vsix(&vsix(&[("extension/package.json", r#"{"name":"x","contributes":{}}"#)])).unwrap_err().contains("no color themes"));
-        assert_eq!(parse_extension_id(" dracula-theme.theme-dracula ").unwrap(), ("dracula-theme".into(), "theme-dracula".into()));
-        assert!(parse_extension_id("no-dot").is_err());
-        assert!(parse_extension_id("a/b.c").is_err());
         assert!(!valid_id("../x") && valid_id("dracula-theme.theme-dracula.dracula"));
         assert_eq!(join("extension/themes", "../x.json").as_deref(), Some("extension/x.json"));
         assert_eq!(join("extension", "../../x.json"), None);
@@ -408,16 +349,5 @@ mod tests {
         }
     }
 
-
-    /// Installs from the real Open VSX: `cargo test -- --ignored vsix_themes::tests::live_open_vsx`.
-    #[test]
-    #[ignore]
-    fn live_open_vsx_install_parses() {
-        let bytes = tauri::async_runtime::block_on(fetch_vsix("dracula-theme", "theme-dracula")).unwrap();
-        let themes = read_vsix(&bytes).unwrap();
-        assert!(themes.iter().any(|t| t.colors.get("editor.background").map(String::as_str) == Some("#282a36")), "{:?}", themes.iter().map(|t| &t.name).collect::<Vec<_>>());
-        let missing = tauri::async_runtime::block_on(fetch_vsix("pantheon-nobody", "no-such-theme")).unwrap_err();
-        assert!(missing.contains("no extension"), "{missing}");
-    }
 
 }

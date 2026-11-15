@@ -318,7 +318,6 @@ const previewSimulator = (() => {
 })();
 /** Imported VS Code themes, as the native importer would store them. */
 const previewThemes = (() => {
-  const dracula = { id: 'dracula-theme.theme-dracula.dracula', name: 'Dracula', extension: 'Dracula Official', kind: 'dark', colors: { 'editor.background': '#282a36', 'editor.foreground': '#f8f8f2', 'sideBar.background': '#21222c', 'activityBar.background': '#343746', 'button.background': '#44475a', 'button.foreground': '#f8f8f2', 'focusBorder': '#bd93f9', 'list.hoverBackground': '#44475a75', 'descriptionForeground': '#6272a4', 'terminal.ansiGreen': '#50fa7b', 'terminal.ansiRed': '#ff5555', 'errorForeground': '#ff5555', 'panel.border': '#bd93f9' } };
   const tokyo = { id: 'enkia.tokyo-night.tokyo-night', name: 'Tokyo Night', extension: 'Tokyo Night', kind: 'dark', colors: { 'editor.background': '#1a1b26', 'editor.foreground': '#a9b1d6', 'sideBar.background': '#16161e', 'button.background': '#3d59a1dd', 'button.foreground': '#ffffff', 'focusBorder': '#545c7e33', 'textLink.foreground': '#7aa2f7', 'list.hoverBackground': '#13131a', 'descriptionForeground': '#515670', 'terminal.ansiGreen': '#73daca', 'terminal.ansiRed': '#f7768e' } };
   const githubLight = { id: 'github.github-vscode-theme.github-light-default', name: 'GitHub Light Default', extension: 'GitHub Theme', kind: 'light', colors: { 'editor.background': '#ffffff', 'editor.foreground': '#1f2328', 'sideBar.background': '#f6f8fa', 'button.background': '#1f883d', 'button.foreground': '#ffffff', 'focusBorder': '#0969da', 'list.hoverBackground': '#eaeef280', 'descriptionForeground': '#656d76', 'panel.border': '#d0d7de' } };
   let installed: any[] = [githubLight];
@@ -326,11 +325,6 @@ const previewThemes = (() => {
   return {
     list: () => structuredClone(installed),
     import(path: string) { if (!/\.vsix$/i.test(path)) throw new Error('Choose a .vsix file.'); return add([tokyo]); },
-    install(id: string) {
-      if (!/^[\w-]+\.[\w.-]+$/.test(id.trim())) throw new Error('Use the extension ID, such as dracula-theme.theme-dracula.');
-      if (id.trim() !== 'dracula-theme.theme-dracula') throw new Error(`Open VSX has no extension ${id.trim()}.`);
-      return add([dracula]);
-    },
     remove(id: string) { installed = installed.filter(t => t.id !== id); },
   };
 })();
@@ -1227,7 +1221,6 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'themes_list': result = previewThemes.list(); break;
     case 'theme_import': result = previewThemes.import(String(args.path ?? '')); break;
-    case 'theme_install': result = previewThemes.install(String(args.extensionId ?? '')); break;
     case 'theme_remove': previewThemes.remove(String(args.id ?? '')); result = null; break;
     case 'android_setup': {
       for (const [step, label] of ['Installing Java (openjdk@21)…', 'Installing Android command-line tools…', 'Accepting the Android SDK licenses…', 'Downloading the emulator and Android 15 (about 2 GB)…', 'Creating a Pixel 9 emulator…'].entries()) {

@@ -4092,7 +4092,6 @@ pub fn run() {
                 cloud::commands::cloud_input,
                 vsix_themes::themes_list,
                 vsix_themes::theme_import,
-                vsix_themes::theme_install,
                 vsix_themes::theme_remove,
                 token_saver::token_saver_tools,
                 token_saver::token_saver_install,

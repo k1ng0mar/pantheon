@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// The preview stores imported themes in memory; Open VSX knows only Dracula.
+// The preview stores imported themes in memory.
 const accent = (page: Page) => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim());
 const token = (page: Page, name: string) => page.evaluate(name => getComputedStyle(document.documentElement).getPropertyValue(name).trim(), name);
 const pin = (page: Page, scene: string) => page.addInitScript(scene => {
@@ -37,22 +37,17 @@ test('the accent follows the wallpaper scene and falls back to classic yellow wi
   await expect.poll(() => accent(page)).toBe(blue);
 });
 
-test('a VS Code theme from Open VSX recolors the app and holds still when the wallpaper changes', async ({ page }) => {
+test('a VS Code theme recolors the app and holds still when the wallpaper changes', async ({ page }) => {
   await pin(page, 'wed-night');
   await page.goto('/');
   await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper', 'wed-night', { timeout: 15000 });
   await openColors(page);
-  const id = page.getByRole('textbox', { name: 'Open VSX extension ID' });
-  await id.fill('nobody.nothing');
-  await page.getByRole('button', { name: 'Install', exact: true }).click();
-  await expect(page.locator('.vsix-status')).toContainText('Open VSX has no extension nobody.nothing');
-  await id.fill('dracula-theme.theme-dracula');
-  await page.getByRole('button', { name: 'Install', exact: true }).click();
-  await expect(page.locator('.vsix-status')).toContainText('Using Dracula');
+  await page.getByRole('button', { name: 'Import .vsix…' }).click();
+  await expect(page.locator('.vsix-status')).toContainText('Using Tokyo Night');
   await expect(page.locator('html')).toHaveAttribute('data-vsix', '');
-  expect(await token(page, '--bg')).toBe('#282a36');
-  expect(await token(page, '--text')).toBe('#f8f8f2');
-  const dracula = await accent(page);
+  expect(await token(page, '--bg')).toBe('#1a1b26');
+  expect(await token(page, '--text')).toBe('#a9b1d6');
+  const tokyo = await accent(page);
   await expect(page.getByRole('radio', { name: 'Wallpaper', exact: true })).toBeDisabled();
   await expect(page.locator('.colors-note')).toBeVisible();
   // Another scene, same colors.
@@ -60,13 +55,10 @@ test('a VS Code theme from Open VSX recolors the app and holds still when the wa
   await page.reload();
   await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper', 'mon-afternoon', { timeout: 15000 });
   await page.waitForTimeout(300);
-  expect(await accent(page)).toBe(dracula);
-  expect(await token(page, '--bg')).toBe('#282a36');
-  // Import from a file, then go back to Pantheon's own colors.
-  await openColors(page);
-  await page.getByRole('button', { name: 'Import .vsix…' }).click();
-  await expect(page.locator('.vsix-status')).toContainText('Using Tokyo Night');
+  expect(await accent(page)).toBe(tokyo);
   expect(await token(page, '--bg')).toBe('#1a1b26');
+  // Back to Pantheon's own colors.
+  await openColors(page);
   await page.getByRole('button', { name: 'Remove Tokyo Night' }).click();
   await expect(page.locator('.vsix-status')).toContainText('Theme removed');
   await expect(page.locator('html')).not.toHaveAttribute('data-vsix', '');
