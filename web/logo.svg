@@ -7,36 +7,13 @@
     </linearGradient>
   </defs>
 
-  <g fill="url(#pantheon-gradient)">
-    <!-- Top Roof Bar -->
-    <polygon points="250,85 370,145 370,167 250,107 130,167 130,145" />
-
-    <!-- Lower Roof Bar (Frieze) -->
-    <polygon points="250,125 356,178 356,200 250,147 144,200 144,178" />
-
-    <!-- Left Pillar -->
-    <polygon points="158,212 198,212 198,322 158,302 146,312 158,298" />
-
-    <!-- Center 'P' Pillar (Outer contour + Precise inner cutout) -->
-    <path fill-rule="evenodd" d="
-      M 250,165
-      L 292,186
-      L 292,270
-      L 248,292
-      L 248,335
-      L 230,358
-      L 208,335
-      L 208,186
-      Z
-      M 250,187
-      L 272,198
-      L 272,248
-      L 250,259
-      L 228,259
-      L 228,198
-      Z" />
-
-    <!-- Right Pillar -->
-    <polygon points="302,212 342,212 342,298 354,312 342,302 302,322" />
+  <!-- The temple-with-P mark, traced from the dithered lockup so the outlines
+       are the brand artwork itself.  fill-rule evenodd keeps the P counter open. -->
+  <g fill="url(#pantheon-gradient)" fill-rule="evenodd">
+    <path d="M 243.7 164.4 L 251.6 163.7 L 277.9 169.6 L 278.9 174.3 L 290.6 185.9 L 290.9 278.6 L 290.5 281.9 L 287.8 283.9 L 254.9 303.9 L 247.9 306.7 L 247.9 280.2 L 260.6 273.6 L 260.9 194.2 L 259.2 190.9 L 248.4 182.3 L 237.6 192.5 L 237.4 356.3 L 235.0 356.3 L 207.2 334.8 L 207.3 187.6 L 208.5 184.3 L 219.5 174.3 L 220.4 169.6 Z" />
+    <polygon points="245.7,85.0 254.9,85.9 368.4,134.4 368.4,152.1 250.0,108.4 130.0,152.1 130.0,134.3" />
+    <polygon points="312.4,177.7 314.1,176.3 319.0,177.1 342.1,182.6 342.1,288.5 352.2,301.7 314.1,319.0 312.5,318.9 311.9,316.6" />
+    <polygon points="177.2,177.7 184.2,176.3 185.3,177.7 185.3,318.3 184.2,319.2 145.7,301.7 155.4,290.2 155.5,182.6" />
+    <polygon points="247.5,128.0 355.2,154.9 356.3,156.1 355.7,171.0 248.4,149.4 143.2,171.5 142.1,169.4 142.1,156.1 143.2,154.9" />
   </g>
 </svg>
