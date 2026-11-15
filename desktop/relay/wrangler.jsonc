@@ -3,8 +3,8 @@
   "name": "pantheon-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-02",
-  // The bambooed.ai zone must be on the same Cloudflare account. Forks: use your own domain or remove this.
-  "routes": [{ "pattern": "relay.bambooed.ai", "custom_domain": true }],
+  // The exoseed.africa zone must be on the same Cloudflare account. Forks: use your own domain or remove this.
+  "routes": [{ "pattern": "relay.exoseed.africa", "custom_domain": true }],
   "durable_objects": { "bindings": [{ "name": "ACCOUNT", "class_name": "Account" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Account"] }],
   "ratelimits": [

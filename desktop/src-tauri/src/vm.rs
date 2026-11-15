@@ -338,8 +338,8 @@ mod tests {
 
     #[test]
     fn parses_tarts_vnc_url_and_keeps_it_local() {
-        let (password, address) = parse_vnc_url("vnc://:august-symptom-bulb-panda@127.0.0.1:64282").unwrap();
-        assert_eq!(password.as_deref(), Some("august-symptom-bulb-panda"));
+        let (password, address) = parse_vnc_url("vnc://:august-symptom-bulb-cedar@127.0.0.1:64282").unwrap();
+        assert_eq!(password.as_deref(), Some("august-symptom-bulb-cedar"));
         assert_eq!(address.port(), 64282);
         assert_eq!(parse_vnc_url("vnc://127.0.0.1:5900").unwrap().0, None);
         assert!(parse_vnc_url("vnc://:x@10.0.0.2:5900").is_err());

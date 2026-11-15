@@ -107,19 +107,19 @@ mod tests {
 
     #[test]
     fn appimage_entries_are_removed_and_the_rest_is_kept() {
-        let mount = "/tmp/.mount_pandacjIIGkD";
+        let mount = "/tmp/.mount_templeK7xQz";
         let found = overrides(&[
             ("APPIMAGE", "/home/me/.local/bin/pantheon"),
             ("APPDIR", mount),
             ("ARGV0", "pantheon"),
             ("OWD", "/home/me"),
-            ("PATH", "/tmp/.mount_pandacjIIGkD/usr/bin:/home/me/.local/bin:/usr/bin"),
-            ("LD_LIBRARY_PATH", "/tmp/.mount_pandacjIIGkD/usr/lib:/tmp/.mount_pandacjIIGkD/lib"),
-            ("PYTHONHOME", "/tmp/.mount_pandacjIIGkD/usr"),
-            ("GDK_PIXBUF_MODULE_FILE", "/tmp/.mount_pandacjIIGkD/usr/lib/loaders.cache"),
-            ("XDG_DATA_DIRS", "/tmp/.mount_pandacjIIGkD/usr/share:/usr/local/share:/usr/share"),
+            ("PATH", "/tmp/.mount_templeK7xQz/usr/bin:/home/me/.local/bin:/usr/bin"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_templeK7xQz/usr/lib:/tmp/.mount_templeK7xQz/lib"),
+            ("PYTHONHOME", "/tmp/.mount_templeK7xQz/usr"),
+            ("GDK_PIXBUF_MODULE_FILE", "/tmp/.mount_templeK7xQz/usr/lib/loaders.cache"),
+            ("XDG_DATA_DIRS", "/tmp/.mount_templeK7xQz/usr/share:/usr/local/share:/usr/share"),
             // A sibling mount sharing the prefix is not inside APPDIR.
-            ("OTHER", "/tmp/.mount_pandacjIIGkDx/lib"),
+            ("OTHER", "/tmp/.mount_templeK7xQzx/lib"),
             ("HOME", "/home/me"),
         ]);
         assert_eq!(

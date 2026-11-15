@@ -44,8 +44,8 @@ fn browser_rows_cover_every_backend() {
         "wizard rows must match the browser backends"
     );
     assert!(
-        !rows.iter().any(|r| r.id == "lightpanda"),
-        "extraction-only lightpanda must not be offered as the browser backend"
+        !rows.iter().any(|r| r.id == "lightspark"),
+        "extraction-only lightspark must not be offered as the browser backend"
     );
     let gsd = rows.iter().find(|r| r.id == "gsd").expect("gsd row");
     assert!(gsd.recommended, "gsd is the documented default backend");

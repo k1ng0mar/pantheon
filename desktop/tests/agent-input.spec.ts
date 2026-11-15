@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const form = (page: Page) => page.locator('.agent-input');
-const question = { kind: 'questions', questions: [{ id: 'theme', header: 'Theme', question: 'Which theme should I use?', options: [{ label: 'Yellow', description: 'Warm accents' }, { label: 'Green', description: 'Bamboo accents' }], isOther: true }] };
+const question = { kind: 'questions', questions: [{ id: 'theme', header: 'Theme', question: 'Which theme should I use?', options: [{ label: 'Yellow', description: 'Warm accents' }, { label: 'Green', description: 'Moss accents' }], isOther: true }] };
 async function emit(page: Page, kind: string, data?: unknown, sessionId = 'session-1', requestId = 'run:request-1', text = ''): Promise<void> {
   await page.evaluate(event => (window as any).__inputEmit(event), { sessionId, requestId, kind, text, data });
 }
@@ -68,11 +68,11 @@ test('agent input sends choices and secret answers and clears native cancellatio
 
 test('agent input retries failed replies and keeps submissions attached to their original task', async ({ page }) => {
   await emit(page, 'input_request', question);
-  await form(page).getByRole('radio', { name: 'Green Bamboo accents' }).check();
+  await form(page).getByRole('radio', { name: 'Green Moss accents' }).check();
   await page.evaluate(() => { (window as any).__inputFail = true; });
   await form(page).getByRole('button', { name: 'Submit answers' }).click();
   await expect(form(page).getByRole('alert')).toHaveText('Temporary reply failure');
-  await expect(form(page).getByRole('radio', { name: 'Green Bamboo accents' })).toBeChecked();
+  await expect(form(page).getByRole('radio', { name: 'Green Moss accents' })).toBeChecked();
   await page.evaluate(() => { (window as any).__inputHold = true; });
   await form(page).getByRole('button', { name: 'Submit answers' }).click();
   await expect(form(page).getByRole('button', { name: 'Sending…' })).toBeDisabled();
@@ -92,13 +92,13 @@ test('agent input renders primitive integration forms and refuses unsupported sc
   await emit(page, 'input_request', { kind: 'form', message: 'Configure this integration', schema: { type: 'object', properties: {
     name: { type: 'string', title: 'Display name', minLength: 2 }, count: { type: 'integer', title: 'Retries', minimum: 1, maximum: 5 }, enabled: { type: 'boolean', title: 'Enabled', default: true }, color: { type: 'string', title: 'Color', enum: ['yellow', 'green'] }, permissions: { type: 'array', title: 'Permissions', items: { type: 'string', enum: ['read', 'write'] }, minItems: 1 },
   }, required: ['name', 'count', 'color', 'permissions'] } });
-  await form(page).getByRole('textbox', { name: 'Display name', exact: true }).fill('Bamboo');
+  await form(page).getByRole('textbox', { name: 'Display name', exact: true }).fill('Moss');
   await form(page).getByRole('spinbutton', { name: 'Retries', exact: true }).fill('3');
   await form(page).getByRole('combobox', { name: 'Color', exact: true }).selectOption({ label: 'green' });
   await form(page).getByRole('group', { name: 'Permissions', exact: true }).getByRole('checkbox', { name: 'read', exact: true }).check();
   await form(page).getByRole('button', { name: 'Submit answers' }).click();
   await expect(form(page)).toBeHidden();
-  expect((await answers(page))[0].response).toEqual({ action: 'accept', content: { name: 'Bamboo', count: 3, enabled: true, color: 'green', permissions: ['read'] } });
+  expect((await answers(page))[0].response).toEqual({ action: 'accept', content: { name: 'Moss', count: 3, enabled: true, color: 'green', permissions: ['read'] } });
   await emit(page, 'input_request', { kind: 'form', message: 'Nested settings', schema: { type: 'object', properties: { nested: { type: 'object', properties: {} } } } }, 'session-1', 'unsupported');
   await expect(form(page).getByRole('alert')).toContainText('cannot display yet');
   await expect(form(page).getByRole('button', { name: 'Submit answers' })).toBeHidden();

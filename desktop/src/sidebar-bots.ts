@@ -53,7 +53,7 @@ function avatarColor(id: string): string {
 }
 
 export function botAvatar(bot: Bot, cls = 'bot-card-face'): string {
-  // Pandas and uploaded images bring their own art; text glyphs keep the per-bot color.
+  // Marks and uploaded images bring their own art; text glyphs keep the per-bot color.
   return botAvatarHtml(bot.avatar, bot.name, cls).replace('<span ', `<span style="--bot-color:${avatarColor(bot.id)}" `);
 }
 
