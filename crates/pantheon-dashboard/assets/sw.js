@@ -11,7 +11,7 @@ const STATIC_ASSETS = [
   "/style.css",
   "/fonts.css",
   "/fonts/inter-latin.woff2",
-  "/fonts/jetbrains-mono-latin.woff2",
+  "/fonts/cascadia-code.woff2",
   "/app.js",
   "/manifest.json",
   "/icon-192.png",

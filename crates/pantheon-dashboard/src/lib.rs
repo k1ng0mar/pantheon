@@ -372,7 +372,7 @@ const APP_JS: &str = include_str!("../assets/app.js");
 const MANIFEST_JSON: &str = include_str!("../assets/manifest.json");
 const FONTS_CSS: &str = include_str!("../assets/fonts.css");
 const FONT_INTER: &[u8] = include_bytes!("../assets/fonts/inter-latin.woff2");
-const FONT_JETBRAINS: &[u8] = include_bytes!("../assets/fonts/jetbrains-mono-latin.woff2");
+const FONT_CASCADIA: &[u8] = include_bytes!("../assets/fonts/cascadia-code.woff2");
 const SW_JS: &str = include_str!("../assets/sw.js");
 const DESKTOP_HTML: &str = include_str!("../assets/desktop.html");
 const ICON_192: &[u8] = include_bytes!("../assets/icon-192.png");
@@ -425,8 +425,8 @@ fn dispatch(app: &App, req: &Request) -> Response {
     if req.method == "GET" && segs == ["fonts", "inter-latin.woff2"] {
         return Response::ok_bytes("font/woff2", FONT_INTER);
     }
-    if req.method == "GET" && segs == ["fonts", "jetbrains-mono-latin.woff2"] {
-        return Response::ok_bytes("font/woff2", FONT_JETBRAINS);
+    if req.method == "GET" && segs == ["fonts", "cascadia-code.woff2"] {
+        return Response::ok_bytes("font/woff2", FONT_CASCADIA);
     }
     if req.method == "GET" && segs == ["app.js"] {
         return Response::ok_js(APP_JS);

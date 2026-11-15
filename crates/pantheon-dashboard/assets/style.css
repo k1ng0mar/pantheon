@@ -39,6 +39,9 @@ body {
   text-rendering: optimizeLegibility;
 }
 .mono { font-family: var(--mono); }
+/* Cascadia Code ships its programming ligatures; code and diffs read better
+   without them, so keep the glyphs literal there. */
+.mono, code, pre, .ui-diff-line { font-variant-ligatures: none; }
 .text-faint { color: var(--text-faint); }
 a { color: var(--accent-strong); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -1084,7 +1087,7 @@ code.inline {
 .ui-tab summary { cursor: pointer; font-weight: 600; }
 .ui-layout { display: flex; flex-direction: column; gap: 8px; }
 .ui-diff-file { margin-bottom: 8px; }
-.ui-diff-line { font-family: monospace; font-size: 12px; padding: 1px 8px; white-space: pre-wrap; }
+.ui-diff-line { font-family: var(--mono); font-size: 12px; padding: 1px 8px; white-space: pre-wrap; }
 .ui-diff-add { background: rgba(46, 160, 67, 0.15); }
 .ui-diff-del { background: rgba(248, 81, 73, 0.15); }
 .ui-approval { border: 1px solid var(--warn-border, #d4a017); border-radius: 8px; padding: 10px; background: var(--warn-soft, rgba(212, 160, 23, 0.08)); }
