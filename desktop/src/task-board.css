@@ -104,4 +104,4 @@ html[data-native-platform=macos] .board-view .workspace-header{padding-left:var(
 
 .board-completed-note .secondary-button{display:block;margin:9px auto 0;font-size:.75rem;padding:5px 10px}
 
-.board-eyebrow>.icon{width:15px;height:15px;color:var(--bamboo)}
+.board-eyebrow>.icon{width:15px;height:15px;color:var(--accent)}

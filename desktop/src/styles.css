@@ -5,7 +5,7 @@
 /* Code and diffs keep literal glyphs: Cascadia's programming ligatures stay
    opt-in rather than the default anywhere monospaced. */
 code,pre{font-variant-ligatures:none}
-:root{--titlebar-height:calc(55px / var(--page-zoom,1));--traffic-light-gutter:calc(104px / var(--page-zoom,1));font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;color:var(--text);background:var(--bg);font-synthesis:none;font-size:14px;line-height:1.5;font-weight:400;--bg:#ffffff;--sidebar:#f5f5f3;--panel:#fbfbfa;--raised:#f1f1ef;--border:#e3e3df;--muted:#656560;--faint:#71716c;--text:#242423;--accent:#7223ff;--accent-dim:#ede6ff;--accent-rgb:114 35 255;--accent-deep-rgb:75 0 205;--on-accent:#ffffff;--accent-hover:#5f1dff;--accent-tint:#f7f3ff;--accent-tint-strong:#f7f3ff;--mono:"Cascadia Code",ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light;font-optical-sizing:auto;--accent-ink:#4b00cd;--focus:#4b00cd;--success:#237345;--danger:#b03535;--bamboo:#7223ff;--bamboo-art-opacity:.1}
+:root{--titlebar-height:calc(55px / var(--page-zoom,1));--traffic-light-gutter:calc(104px / var(--page-zoom,1));font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;color:var(--text);background:var(--bg);font-synthesis:none;font-size:14px;line-height:1.5;font-weight:400;--bg:#ffffff;--sidebar:#f5f5f3;--panel:#fbfbfa;--raised:#f1f1ef;--border:#e3e3df;--muted:#656560;--faint:#71716c;--text:#242423;--accent:#7223ff;--accent-dim:#ede6ff;--accent-rgb:114 35 255;--accent-deep-rgb:75 0 205;--on-accent:#ffffff;--accent-hover:#5f1dff;--accent-tint:#f7f3ff;--accent-tint-strong:#f7f3ff;--mono:"Cascadia Code",ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light;font-optical-sizing:auto;--accent-ink:#4b00cd;--focus:#4b00cd;--success:#237345;--danger:#b03535;}
 *{box-sizing:border-box}
 html,body,#app{margin:0;width:100%;height:100%;overflow:hidden}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -368,7 +368,7 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .secondary-button:hover{background:#f0f0ec}
 .new-task-page .transcript{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 30px;scrollbar-gutter:auto}
 .new-task-welcome{width:100%;text-align:center;padding:16px 0 5vh;margin-block:auto}
-.new-task-mark,.welcome-mark{display:inline-flex;width:58px;height:58px;align-items:center;justify-content:center;color:var(--bamboo);background:radial-gradient(ellipse,color-mix(in srgb,var(--bamboo) 10%,transparent),transparent 72%)}
+.new-task-mark,.welcome-mark{display:inline-flex;width:58px;height:58px;align-items:center;justify-content:center;color:var(--accent);background:radial-gradient(ellipse,color-mix(in srgb,var(--accent) 10%,transparent),transparent 72%)}
 .new-task-mark{margin-bottom:23px}
 :is(.new-task-mark,.welcome-mark) .icon{width:42px;height:42px;stroke-width:1.3}
 .new-task-welcome h1{max-width:880px;margin:0 auto;color:var(--text);font-size:clamp(1.65rem,3vw,2.5rem);font-weight:400;letter-spacing:-.028em;line-height:1.3;text-wrap:balance;overflow-wrap:anywhere}
@@ -736,7 +736,7 @@ html[data-theme="dark"]{
   --bg:#1c1c1b;--sidebar:#232321;--panel:#222220;--raised:#31312e;--border:#3b3b36;
   --text:#f3f1e9;--muted:#b1b0a7;--faint:#a09f95;
   --accent:#a78bff;--accent-dim:#2e1a5e;--accent-ink:#c4b5fd;--focus:#a78bff;--on-accent:#1a0533;--accent-tint:#241b3a;--accent-tint-strong:#211839;
-  --success:#83cf9c;--danger:#ff9e96;--bamboo:#a78bff;--bamboo-art-opacity:.075;
+  --success:#83cf9c;--danger:#ff9e96;
 }
 html[data-theme="dark"] .sidebar{background:radial-gradient(ellipse at 75% -15%,rgb(var(--accent-rgb) / .11),transparent 72%) 0 0/100% 190px no-repeat,var(--sidebar)}
 html[data-theme="dark"] .brand-name{color:var(--muted)}
@@ -817,11 +817,7 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
   html[data-theme="dark"] .task-item.selected{outline-color:var(--focus)}
 }
 
-/* Original vector bamboo stays decorative and costs no animation work at idle. */
-.project-board::before,.browser-home::before{content:"";position:absolute;pointer-events:none;z-index:-1;width:210px;height:350px;right:-24px;bottom:0;background:var(--bamboo);opacity:var(--bamboo-art-opacity);-webkit-mask:url('/bamboo-grove.svg') right bottom/contain no-repeat;mask:url('/bamboo-grove.svg') right bottom/contain no-repeat}
-.project-board::before{width:280px;height:450px;right:20px;bottom:35px}
-#resource-status>.icon{color:var(--bamboo)}
-@media(prefers-contrast:more){.project-board::before,.browser-home::before{display:none}}
+#resource-status>.icon{color:var(--accent)}
 
 
 .provider-handoff{margin:16px 0 16px 34px;color:var(--muted);font-size:.8rem;max-width:70ch}.provider-handoff summary{display:flex;align-items:center;gap:7px;cursor:pointer;list-style:none}.provider-handoff summary::-webkit-details-marker{display:none}.provider-handoff summary :is(.icon,.provider-logo){width:16px;height:16px;flex-shrink:0}.provider-handoff p{margin:8px 0;line-height:1.6}.provider-handoff summary:focus-visible{outline:2px solid var(--focus);outline-offset:4px;border-radius:2px}

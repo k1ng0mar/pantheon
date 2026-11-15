@@ -77,7 +77,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
     const active = palette.vsix?.id ?? '';
     const row = (theme: VsixTheme | null) => {
       const id = theme?.id ?? '';
-      const swatches = theme ? swatchesOf(theme).map(color => `<i style="--swatch:${escape(color)}"></i>`).join('') : '<i class="vsix-bamboo"></i>';
+      const swatches = theme ? swatchesOf(theme).map(color => `<i style="--swatch:${escape(color)}"></i>`).join('') : '<i class="vsix-default"></i>';
       return `<div class="vsix-row"><button type="button" role="radio" class="vsix-choice" aria-checked="${id === active}" data-theme-id="${escape(id)}"><span class="vsix-swatches" aria-hidden="true">${swatches}</span><span class="vsix-name"><strong>${escape(theme?.name ?? 'Pantheon')}</strong><small>${escape(theme ? `${theme.extension} · ${theme.kind === 'dark' ? 'Dark' : 'Light'}` : 'Built in · accent and wallpaper apply')}</small></span></button>${theme ? `<button type="button" class="icon-button vsix-remove" data-remove="${escape(id)}" aria-label="Remove ${escape(theme.name)}" title="Remove">${icon('trash')}</button>` : ''}</div>`;
     };
     list.setAttribute('aria-busy', 'false');

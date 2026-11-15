@@ -18,7 +18,7 @@
 .vsix-choice[aria-checked="true"]{background:var(--accent-dim);color:var(--accent-ink)}
 .vsix-swatches{display:flex;flex-shrink:0;border-radius:.16rem;overflow:hidden;box-shadow:0 0 0 1px var(--border)}
 .vsix-swatches i{width:.8rem;height:1.6rem;background:var(--swatch)}
-.vsix-swatches .vsix-bamboo{width:3.2rem;background:linear-gradient(90deg,var(--bg),var(--panel) 40%,var(--accent))}
+.vsix-swatches .vsix-default{width:3.2rem;background:linear-gradient(90deg,var(--bg),var(--panel) 40%,var(--accent))}
 .vsix-name{display:flex;flex-direction:column;min-width:0}
 .vsix-name strong{font-size:.82rem;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vsix-name small{font-size:.7rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
