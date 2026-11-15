@@ -385,7 +385,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
       await Promise.race([engine, new Promise(resolve => setTimeout(resolve, 1500))]);
       const r = await api("history");
       if (r.bot) {
-        botName = r.bot.name; role = r.bot.role || ""; image = /^data:image\/(png|jpeg|webp|gif);base64,/.test(r.bot.avatar || "") ? r.bot.avatar : ""; glyph = (r.bot.avatar && !image && !r.bot.avatar.startsWith("panda:")) ? r.bot.avatar : r.bot.name.slice(0, 1).toUpperCase();
+        botName = r.bot.name; role = r.bot.role || ""; image = /^data:image\/(png|jpeg|webp|gif);base64,/.test(r.bot.avatar || "") ? r.bot.avatar : ""; glyph = (r.bot.avatar && !image && !r.bot.avatar.startsWith("temple:")) ? r.bot.avatar : r.bot.name.slice(0, 1).toUpperCase();
         document.getElementById("name").textContent = r.bot.name; document.title = r.bot.name; showAvatar(document.getElementById("avatar"));
         status.textContent = r.bot.paused ? "Paused" : (role || "On your computer");
       }

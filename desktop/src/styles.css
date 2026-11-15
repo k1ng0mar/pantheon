@@ -851,7 +851,7 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
 .bot-welcome-setup button:hover{border-color:color-mix(in srgb,var(--accent) 70%,var(--border));color:var(--text)}
 .bot-welcome-setup .icon{width:13px;height:13px}
 @media(max-width:650px){.breadcrumb>.bot-crumb-settings span,.bot-crumb-where{display:none}.bot-avatar.bot-welcome-avatar{width:44px;height:44px;font-size:1.25rem;margin-bottom:14px}}
-/* Bot icons (src/bot-avatars.ts): a panda badge or an uploaded image fills the circle. */
+/* Bot icons (src/bot-avatars.ts): a temple mark badge or an uploaded image fills the circle. */
 .bot-avatar.has-art{padding:0;overflow:hidden;background:none;box-shadow:none}
 .bot-avatar.has-art>:is(svg,img),.avatar-swatch>:is(svg,img){display:block;width:100%;height:100%;border-radius:50%;object-fit:cover}
 .avatar-picker{display:flex;flex-wrap:wrap;align-items:center;gap:8px}

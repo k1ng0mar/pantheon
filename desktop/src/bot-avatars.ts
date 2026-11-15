@@ -1,11 +1,10 @@
 /** Bot icons: ten temple marks on colored badges, or an image the user uploaded (stored as a
- *  small data: URL). Legacy bots keep their emoji or the first letter of their name. Avatar ids
- *  keep the legacy panda: prefix so stored bots keep their badge. */
+ *  small data: URL). Legacy bots keep their emoji or the first letter of their name. */
 
-export const PANDAS: { id: string; name: string; color: string }[] = [
+export const MARKS: { id: string; name: string; color: string }[] = [
   ['Orange', '#f97316'], ['Amber', '#f59e0b'], ['Coral', '#fb7185'], ['Pink', '#ec4899'], ['Violet', '#8b5cf6'],
   ['Blue', '#3b82f6'], ['Teal', '#14b8a6'], ['Green', '#22c55e'], ['Slate', '#64748b'], ['Cream', '#e6d2a8'],
-].map(([name, color], i) => ({ id: `panda:${i}`, name, color }));
+].map(([name, color], i) => ({ id: `temple:${i}`, name, color }));
 
 const IMAGE = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$/;
 const UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
@@ -16,16 +15,16 @@ const INK = '#1d1d1f';
 const escape = (value: string): string => value.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 /** A temple mark on its preset color; '' for an unknown id. */
-export function pandaSvg(id: string): string {
-  const panda = PANDAS.find(p => p.id === id);
-  if (!panda) return '';
-  return `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="${panda.color}"/>`
+export function markSvg(id: string): string {
+  const mark = MARKS.find(p => p.id === id);
+  if (!mark) return '';
+  return `<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="${mark.color}"/>`
     + `<g fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11 22 32 10l21 12M13 22h38M17 29v18M47 29v18M11 47h42M32 27v20M32 27h9v8h-9"/></g></svg>`;
 }
 
 export function botAvatarHtml(avatar: string, name: string, cls = ''): string {
   const value = avatar.trim();
-  const art = pandaSvg(value) || (IMAGE.test(value) ? `<img alt="" src="${escape(value)}">` : '');
+  const art = markSvg(value) || (IMAGE.test(value) ? `<img alt="" src="${escape(value)}">` : '');
   const content = art || escape(value || name.trim().slice(0, 1).toUpperCase() || '?');
   return `<span class="bot-avatar${art ? ' has-art' : ''}${cls ? ` ${escape(cls)}` : ''}" aria-hidden="true">${content}</span>`;
 }
@@ -35,7 +34,7 @@ function customSwatch(url: string, pressed: boolean): string {
 }
 
 export function avatarPicker(current: string): string {
-  const swatches = PANDAS.map(p => `<button type="button" class="avatar-swatch" data-avatar-choice="${p.id}" aria-pressed="${p.id === current}" aria-label="${p.name} panda">${pandaSvg(p.id)}</button>`).join('');
+  const swatches = MARKS.map(p => `<button type="button" class="avatar-swatch" data-avatar-choice="${p.id}" aria-pressed="${p.id === current}" aria-label="${p.name} mark">${markSvg(p.id)}</button>`).join('');
   return `<div class="avatar-picker" role="radiogroup" aria-label="Icon"><input type="hidden" name="avatar" value="${escape(current)}">${swatches}`
     + `${IMAGE.test(current) ? customSwatch(current, true) : ''}<button type="button" class="avatar-upload" data-avatar-upload-button>Upload…</button>`
     + `<input type="file" hidden accept="${UPLOAD_TYPES.join(',')}" data-avatar-upload><span class="avatar-error" role="alert" hidden></span></div>`;
