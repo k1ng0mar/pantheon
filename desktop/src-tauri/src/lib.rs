@@ -3743,21 +3743,6 @@ pub fn run() {
                 eprintln!("Jev settings are unavailable; browser testing remains disabled.");
             }
             let database_path = dir.join("pantheon.sqlite3");
-            // New installs use pantheon.sqlite3. Existing installs keep
-            // their existing database through a one-time rename, including
-            // SQLite sidecars, so the Pantheon rebrand does not orphan them.
-            let legacy_path = dir.join("kingcode.sqlite3");
-            if !database_path.exists() && legacy_path.exists() {
-                let _ = std::fs::rename(&legacy_path, &database_path);
-                let _ = std::fs::rename(
-                    dir.join("kingcode.sqlite3-wal"),
-                    dir.join("pantheon.sqlite3-wal"),
-                );
-                let _ = std::fs::rename(
-                    dir.join("kingcode.sqlite3-shm"),
-                    dir.join("pantheon.sqlite3-shm"),
-                );
-            }
             // Retain the bundle identifier so upgrades reuse existing data.
             let store =
                 Store::open(&database_path).map_err(std::io::Error::other)?;

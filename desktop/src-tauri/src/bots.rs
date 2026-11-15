@@ -292,7 +292,6 @@ mod avatar_tests {
         use super::avatar;
         assert_eq!(avatar("temple:7"), "temple:7");
         assert_eq!(avatar("temple:12"), "temp");
-        assert_eq!(avatar("panda:7"), "pand");
         assert_eq!(avatar("data:image/png;base64,iVBORw0KGgo="), "data:image/png;base64,iVBORw0KGgo=");
         assert_eq!(avatar("data:image/svg+xml;base64,PHN2Zz4="), "data");
         assert_eq!(avatar("data:image/png;base64,<script>"), "data");
@@ -319,16 +318,6 @@ pub(crate) fn migrate_capabilities(db: &rusqlite::Connection) -> Result<()> {
         }
     }
     db.execute_batch(SCHEMA).map_err(|e| e.to_string())
-}
-
-/// Bot icons were stored under a `panda:` prefix before the mark became ours. Stored bots keep
-/// their badge: rewrite the id, and leave anything else (an uploaded image, a glyph) alone.
-pub(crate) fn migrate_avatars(db: &rusqlite::Connection) -> Result<()> {
-    db.execute_batch(
-        "UPDATE bots SET avatar='temple:' || substr(avatar,7)
-         WHERE length(avatar)=7 AND substr(avatar,1,6)='panda:' AND substr(avatar,7,1) BETWEEN '0' AND '9';",
-    )
-    .map_err(|e| e.to_string())
 }
 
 const MAX_REFERENCES: usize = 50;
