@@ -10,7 +10,7 @@
 .nf-card:hover { transform: translateY(-4px); box-shadow: 0 0 0 1px #cfd8bf, 0 28px 60px -30px #31452866; }
 .nf-wide { grid-column: span 2; }
 .nf-visual { position: relative; height: 290px; margin: 10px 10px 0; border-radius: 20px; overflow: hidden; color: #eef2e6; background: #24372d; isolation: isolate; }
-.nf-visual::before { content: ''; position: absolute; inset: -20px; z-index: -1; background: linear-gradient(#17251bb8, #13271fd6), url('/assets/morning-bamboo-800.webp') center / cover; transform: scale(1.04); transition: transform 1.6s cubic-bezier(.2,.8,.2,1); }
+.nf-visual::before { content: ''; position: absolute; inset: -20px; z-index: -1; background: linear-gradient(#17251bb8, #13271fd6), url('/assets/sun-morning-800.webp') center / cover; transform: scale(1.04); transition: transform 1.6s cubic-bezier(.2,.8,.2,1); }
 .nf-card:hover .nf-visual::before { transform: scale(1.1) translateY(-6px); }
 .nf-copy { padding: 26px 28px 30px; }
 .nf-copy h3 { margin: 14px 0 12px; font-size: clamp(24px, 2.2vw, 30px); line-height: 1.1; }

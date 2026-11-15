@@ -375,9 +375,9 @@ test('quick look opens both active threads and returns to the list', async ({ pa
 test('scenery switches real images and honors reduced motion', async ({ page }, info) => {
   await page.goto('/');
   for (const [key, file, greeting] of [
-    ['afternoon', 'lake-dawn', 'Let your thoughts wander.'],
-    ['night', 'twilight-lake', 'Good ideas stay up late.'],
-    ['morning', 'morning-bamboo', 'A little room to breathe.'],
+    ['afternoon', 'mon-afternoon', 'Let your thoughts wander.'],
+    ['night', 'thu-night', 'Good ideas stay up late.'],
+    ['morning', 'sun-morning', 'A little room to breathe.'],
   ]) {
     const button = page.locator(`button[data-wallpaper="${key}"]`);
     await button.click();

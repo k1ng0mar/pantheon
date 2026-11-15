@@ -139,7 +139,7 @@
   .wallpaper-controls button { display: flex; align-items: center; gap: 9px; padding: 9px 15px 9px 9px; background: transparent; border: 1px solid transparent; border-radius: 100px; font-size: 12px; color: #66715c; transition: background .2s,border-color .2s; }
   .wallpaper-controls button[aria-pressed=true] { border-color: #d9dfca; background: #fff; color: #324329; }
   .swatch { display: block; height: 24px; width: 24px; border-radius: 50%; box-shadow: inset 0 0 0 1px #00000005; }
-  .swatch.morning { background: linear-gradient(130deg,#d4e1b3,#6e8d69); }.swatch.afternoon { background: linear-gradient(130deg,#cfdecc,#7bada4); }.swatch.night { background: linear-gradient(130deg,#456c68,#172f37); }
+  .swatch.morning { background: linear-gradient(130deg,#d4e1b3,#6e8d69); }.swatch.afternoon { background: linear-gradient(130deg,#e8d9b8,#4f86b8); }.swatch.night { background: linear-gradient(130deg,#2b4a7a,#0e1c33); }
   .lightweight { display: grid; grid-template-columns: 1fr 1fr; gap: 13%; padding-block: 35px 140px; }
   .light-copy h2 { font-size: clamp(36px,4vw,56px); }
   .light-copy > p:last-child { font-size: 17px; color: var(--muted); max-width: 450px; margin-top: 24px; }
@@ -172,7 +172,7 @@
 }
 @layer demo {
   .app-window { color: #f0f1e8; background: #24372d; border-radius: 14px; overflow: hidden; box-shadow: 0 25px 70px #17322038,0 1px 0 #fff9 inset; font-size: 11px; text-align: left; position: relative; isolation: isolate; }
-  .app-window::before { content: ''; position: absolute; z-index: -2; inset: 0; background: linear-gradient(#17251bb3,#13271fd1),url('/assets/morning-bamboo-800.webp') center/cover; }
+  .app-window::before { content: ''; position: absolute; z-index: -2; inset: 0; background: linear-gradient(#17251bb3,#13271fd1),url('/assets/sun-morning-800.webp') center/cover; }
   .app-header { height: 45px; display: flex; align-items: center; gap: 15px; padding-inline: 17px; background: #243b302e; font-size: 9px; }
   .traffic-lights { display: flex; gap: 5px; margin-right: 14px; }.traffic-lights i { width: 8px; height: 8px; background: #f96d61; border-radius: 50%; }.traffic-lights i:nth-child(2) { background: #efc54a; }.traffic-lights i:nth-child(3) { background: #67bd7b; }
   .app-brand { font-weight: 600; font-size: 11px; min-width: 85px; }

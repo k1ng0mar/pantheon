@@ -149,9 +149,9 @@ function closeQuickReader() {
 }
 document.querySelector('.quick-back').addEventListener('click', closeQuickReader);
 const scenery = {
-  morning: ['morning-bamboo', 'A little room to breathe.', 'Monday morning, made softer.'],
-  afternoon: ['lake-dawn', 'Let your thoughts wander.', 'A mountain view. A clearer mind.'],
-  night: ['twilight-lake', 'Good ideas stay up late.', 'The world gets quiet. The possibilities don’t.'],
+  morning: ['sun-morning', 'A little room to breathe.', 'Green hills, windmills, a slower start.'],
+  afternoon: ['mon-afternoon', 'Let your thoughts wander.', 'Sun on the water. Room to think.'],
+  night: ['thu-night', 'Good ideas stay up late.', 'Aurora over a quiet village.'],
 };
 let sceneryRequest = 0;
 document.querySelectorAll('[data-wallpaper][type=button]').forEach(button => button.addEventListener('click', async () => {

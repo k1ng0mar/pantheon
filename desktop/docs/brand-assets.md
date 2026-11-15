@@ -22,7 +22,7 @@ ff361d2db319ff823a8d5c2385e338e57d530477455e9407ad8dc8e824b93020  github-copilot
 
 ## Pantheon artwork
 
-The app icon (`public/icon.svg`), decorative bamboo grove (`public/bamboo-grove.svg`), and interface bamboo mark in `src/dom.ts` are original vector artwork created for Pantheon. Native icons are generated from the app SVG with the Tauri icon command. Decorative grove silhouettes use theme-aware CSS masks; they do not animate, receive pointer events, or appear in the accessibility tree. Other provider logos remain unchanged.
+The app icon (`public/icon.svg`) and the interface mark in `src/dom.ts` are original vector artwork created for Pantheon. Native icons are generated from the app SVG with the Tauri icon command. Other provider logos remain unchanged.
 
 - OpenCode: `https://opencode.ai/favicon-96x96-v3.png` (official website favicon, retrieved 2026-09-16).
 - Z.AI / GLM: `https://z-cdn.chatglm.cn/z-ai/static/logo.svg` (official chat.z.ai logo, retrieved 2026-09-16).
