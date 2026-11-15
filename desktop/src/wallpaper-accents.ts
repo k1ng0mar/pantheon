@@ -1,9 +1,9 @@
 /* Each built-in scene's dominant hue, from dominantColor() in palette-core.ts over its
  * 64×40 thumbnail. Regenerate when wallpapers change; accentTokens() tunes it for use. */
 export const wallpaperAccents: Readonly<Record<string, string>> = {
-  'mon-morning': '#e0cead',
+  'mon-morning': '#859ac1',
   'mon-afternoon': '#427bad',
-  'mon-night': '#304552',
+  'mon-night': '#163e4f',
   'tue-morning': '#f6b2ae',
   'tue-afternoon': '#7c7e4a',
   'tue-night': '#394a6b',
