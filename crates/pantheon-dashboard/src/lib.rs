@@ -1322,6 +1322,37 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The bundled monospace ships with the shell, and the retired JetBrains
+    /// file stays gone: a bookmarked or precached URL must not resurrect it.
+    #[test]
+    fn cascadia_font_is_served_and_the_retired_mono_is_gone() {
+        let (app, dir) = test_app();
+        for (path, want) in [
+            ("/fonts/cascadia-code.woff2", 200),
+            ("/fonts/jetbrains-mono-latin.woff2", 404),
+        ] {
+            let res = dispatch(&app, &plain_req("GET", path));
+            let (status, content_type, len) = match res {
+                Response::Buffered {
+                    status,
+                    content_type,
+                    body,
+                    ..
+                } => (status, content_type, body.len()),
+                _ => (0, "", 0),
+            };
+            assert_eq!(status, want, "{path}");
+            if want == 200 {
+                assert_eq!(content_type, "font/woff2");
+                assert!(
+                    len > 40_000,
+                    "the subset still carries braille and box drawing"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `PUT/DELETE /api/memory/:id` dispatch to the memory handlers, not
     /// the unknown-route 404: an unknown id must come back with the
     /// handlers' uppercase `NOT_FOUND` code (the unknown-route arm uses
