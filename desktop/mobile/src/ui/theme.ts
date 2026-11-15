@@ -29,4 +29,4 @@ export function useColors(): Colors {
   return Platform.OS === 'ios' ? ios : scheme === 'dark' ? dark : light;
 }
 
-export const mono = Platform.select({ ios: 'Menlo', default: 'monospace' });
+export const mono = 'Cascadia Code';

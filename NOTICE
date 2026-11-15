@@ -28,6 +28,14 @@ crates/pantheon-exec/bundled-plugins/self-improving-agent
 desktop/src/vendor/enriched-markdown
   Software Mansion's Enriched Markdown engine, MIT. See its LICENSE.
 
+Fonts
+  Inter (Rasmus Andersson) and Cascadia Code (Microsoft Corporation) are
+  bundled as self-hosted woff2 subsets, both SIL Open Font License 1.1.
+  Cascadia Code is vendored as a variable font covering weights 200 to 700.
+  The license text ships beside each copy as fonts/OFL.txt under
+  crates/pantheon-dashboard/assets, desktop/public and
+  desktop/mobile/assets.
+
 Bundled skills under crates/pantheon-exec/bundled-skills/ that were
 written elsewhere name their origin in their SKILL.md frontmatter
 (`origin:`); several do not yet state a license, which is tracked in
