@@ -383,6 +383,16 @@ where
     let identity = Identity { id: &id, secret: &secret };
     let mine = introduction_value(remote, false)?;
     let (socket, joined) = pair_out(socket, &identity, code, mine).await?;
+    // An empty code means a trusted computer coming back. The HMAC proves the peer holds
+    // its own key, but with no code nothing ties that key to the one saved at pairing, so
+    // check the pin here before trusting or pinning anything. A code, by contrast, binds
+    // the key in the proof and lets a changed key re-pair.
+    if code.is_empty() {
+        let known = remote.lock().settings.trusted.get(&joined.id).is_some_and(|pinned| pinned == &joined.public_key);
+        if !known {
+            return Err("That computer's key changed. Check the fingerprint and pair again.".into());
+        }
+    }
     Ok((socket, register(remote, joined, address)))
 }
 
@@ -748,6 +758,100 @@ mod tests {
         assert!(error.contains("not right"), "{error}");
         assert!(server.await.unwrap().is_none());
         assert_eq!(attempts.lock().unwrap().failed, 1, "one wrong code is one failure");
+    }
+
+    /// A returning host on a plain socket must match the pin saved at pairing. A stranger
+    /// on the path can answer with its own key and an empty-code proof that passes the HMAC,
+    /// because with no code there is nothing binding the key. The saved pin is the anchor.
+    #[tokio::test]
+    async fn a_returning_host_must_match_the_saved_pin() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let viewer_secret = crypto::generate();
+        let real_host_secret = crypto::generate();
+        let attacker_secret = crypto::generate();
+        let attacker_public = crypto::public_key(&attacker_secret);
+
+        let dir = test_dir("viewer-return");
+        secrets::set_key(&dir, &crypto::encode_secret(&viewer_secret)).unwrap();
+        let viewer_state = Remote::new(&dir);
+        viewer_state.lock().settings.trusted.insert("host-1".to_string(), crypto::public_key(&real_host_secret));
+
+        // The attacker answers the viewer's pair frame with its own key and a proof built
+        // using the empty code. The proof is valid for its own key, so the HMAC alone passes.
+        let attacker = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let text = read_text(&mut socket).await.unwrap();
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            let device: Introduction = serde_json::from_value(frame["device"].clone()).unwrap();
+            let viewer_nonce = frame["nonce"].as_str().unwrap().to_string();
+            let host_nonce = nonce();
+            let key = crypto::pair_key(&attacker_secret, "host-1", &device.public_key, &device.id).unwrap();
+            let confirm = confirmation(&key, "host", "", &device.id, "host-1", &viewer_nonce, &host_nonce);
+            let reply = json!({
+                "type": "pair-ok",
+                "device": introduction("host-1", true, &attacker_public),
+                "nonce": host_nonce,
+                "confirm": confirm,
+            });
+            socket.send(Message::text(reply.to_string())).await.unwrap();
+            let _ = read_text(&mut socket).await;
+            socket.send(Message::text(json!({"type": "pair-done"}).to_string())).await.unwrap();
+        });
+
+        let request = format!("ws://{address}/").into_client_request().unwrap();
+        let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let joined = pair_join(&viewer_state, socket, format!("{address}"), "").await;
+        assert!(joined.is_err(), "a host on the path must not replace the pinned key with an empty code");
+        let _ = attacker.await;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_saved_host_reconnects_on_its_pin() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let viewer_secret = crypto::generate();
+        let host_secret = crypto::generate();
+        let host_public = crypto::public_key(&host_secret);
+
+        let dir = test_dir("viewer-saved");
+        secrets::set_key(&dir, &crypto::encode_secret(&viewer_secret)).unwrap();
+        let viewer_state = Remote::new(&dir);
+        viewer_state.lock().settings.trusted.insert("host-1".to_string(), host_public.clone());
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let text = read_text(&mut socket).await.unwrap();
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            let device: Introduction = serde_json::from_value(frame["device"].clone()).unwrap();
+            let viewer_nonce = frame["nonce"].as_str().unwrap().to_string();
+            let host_nonce = nonce();
+            let key = crypto::pair_key(&host_secret, "host-1", &device.public_key, &device.id).unwrap();
+            let confirm = confirmation(&key, "host", "", &device.id, "host-1", &viewer_nonce, &host_nonce);
+            let reply = json!({
+                "type": "pair-ok",
+                "device": introduction("host-1", true, &host_public),
+                "nonce": host_nonce,
+                "confirm": confirm,
+            });
+            socket.send(Message::text(reply.to_string())).await.unwrap();
+            let text = read_text(&mut socket).await.unwrap();
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["type"], "pair-confirm");
+            socket.send(Message::text(json!({"type": "pair-done"}).to_string())).await.unwrap();
+        });
+
+        let request = format!("ws://{address}/").into_client_request().unwrap();
+        let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let joined = pair_join(&viewer_state, socket, format!("{address}"), "").await;
+        assert!(joined.is_ok(), "a saved host on its pin reconnects");
+        let (_, host_row) = joined.unwrap();
+        assert_eq!(host_row.id, "host-1");
+        server.await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
