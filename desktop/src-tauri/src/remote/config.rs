@@ -57,6 +57,30 @@ pub(crate) struct Settings {
     /// Devices allowed to drive this one: device id → the public key pinned when trusted.
     #[serde(default)]
     pub trusted: std::collections::BTreeMap<String, String>,
+    /// Direct computer-to-computer links, alongside the relay account.
+    #[serde(default)]
+    pub direct: DirectSettings,
+}
+
+/// The direct listener and the computers this one paired with.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DirectSettings {
+    /// The port a direct listener bound. 0 means none is open.
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub hosts: Vec<PairedHost>,
+}
+
+/// A computer this one paired with directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairedHost {
+    pub address: String,
+    pub device_id: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 impl Settings {
@@ -203,6 +227,21 @@ mod tests {
         assert!(parsed.host_enabled);
         assert_eq!(parsed.account.unwrap().avatar_url, "u");
         assert!(parsed.trusted.is_empty());
+        assert!(parsed.direct.hosts.is_empty() && parsed.direct.port == 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn direct_settings_round_trip() {
+        let dir = std::env::temp_dir().join(format!("pantheon-remote-direct-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut settings = load(&dir);
+        settings.direct.port = 7447;
+        settings.direct.hosts.push(PairedHost { address: "192.168.1.5:7447".into(), device_id: "dev-1".into(), name: "Studio".into() });
+        save(&dir, &settings).unwrap();
+        let loaded = load(&dir);
+        assert_eq!(loaded.direct.port, 7447);
+        assert_eq!(loaded.direct.hosts, vec![PairedHost { address: "192.168.1.5:7447".into(), device_id: "dev-1".into(), name: "Studio".into() }]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -165,6 +165,38 @@ test('the trust toggle shows without host mode', async ({ page }) => {
   await expect(panel.getByRole('checkbox', { name: 'Trusted: Studio iMac' })).toBeChecked();
 });
 
+test('a direct connection pairs with a code and needs no sign-in', async ({ page }) => {
+  const panel = await openRemoteSettings(page);
+  await expect(panel.getByRole('heading', { name: 'Direct connection' })).toBeVisible();
+  await panel.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(panel.getByText('Listening on port 7447')).toBeVisible();
+  await expect(panel.getByLabel('Pairing code')).toHaveText('ABCD2345');
+  await expect(panel.getByText(/expires in 10 min/)).toBeVisible();
+
+  await panel.getByLabel('Computer address').fill('192.168.1.5:7447');
+  await panel.getByLabel('Code from that computer').fill('ABCD2345');
+  await panel.getByRole('button', { name: 'Pair', exact: true }).click();
+  const paired = panel.locator('.remote-device[data-host="direct-192-168-1-5-7447"]');
+  await expect(paired).toBeVisible();
+  await expect(paired.getByRole('img', { name: 'Online' })).toBeVisible();
+  await expect(paired).toContainText('192.168.1.5:7447');
+
+  await paired.getByRole('button', { name: 'Forget' }).click();
+  await expect(paired).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(panel.getByText('Listening on port 7447')).toHaveCount(0);
+  await expect(panel.getByRole('button', { name: 'Open', exact: true })).toBeVisible();
+});
+
+test('a direct connection is refused without a code', async ({ page }) => {
+  const panel = await openRemoteSettings(page);
+  await panel.getByLabel('Computer address').fill('192.168.1.5:7447');
+  await panel.getByRole('button', { name: 'Pair', exact: true }).click();
+  await expect(panel.getByRole('alert')).toContainText('Enter the pairing code');
+  await expect(panel.locator('[data-host]')).toHaveCount(0);
+});
+
+
 const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
 async function openPicker(page: Page) {
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();

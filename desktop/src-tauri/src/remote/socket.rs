@@ -203,11 +203,11 @@ async fn refresh_token(app: tauri::AppHandle, old: String) {
 }
 
 /// An opened request, the pair key to answer with, and whether the caller is trusted here.
-type Request = (Value, crypto::Key, bool);
+pub(crate) type Request = (Value, crypto::Key, bool);
 
 /// One relay frame: presence, delivery failures and errors, or an encrypted message.
 /// Responses and events are handled at once; only requests wait in their peer's queue.
-fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<String, mpsc::Sender<Request>>) {
+pub(crate) fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<String, mpsc::Sender<Request>>) {
     if text == "pong" {
         return;
     }
@@ -394,8 +394,13 @@ fn send_sealed(app: &tauri::AppHandle, to: &str, key: &crypto::Key, message: &Va
     }
     let state = remote(app);
     let inner = state.lock();
-    let outbox = inner.outbox.as_ref().ok_or("Not connected to the relay.")?;
-    outbox.send(frame).map_err(|_| "Not connected to the relay.".into())
+    // The relay carries a frame for any device; a direct link only its own.
+    let relayed = inner.outbox.as_ref().is_some_and(|outbox| outbox.send(frame.clone()).is_ok());
+    let linked = inner.direct_peers.get(to).is_some_and(|peer| peer.send(frame).is_ok());
+    if !relayed && !linked {
+        return Err("That computer is not connected.".into());
+    }
+    Ok(())
 }
 
 /// Requests and task content, sealed only to a device trusted here with its current key.

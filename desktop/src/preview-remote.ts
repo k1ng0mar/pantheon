@@ -1,12 +1,16 @@
 /** Browser preview for Pantheon Connect: in-memory sample account and computers, no network. Native builds use src-tauri/src/remote. */
-import type { RemoteDevice, RemoteSignIn, RemoteStatus, RemoteTarget } from './remote-types';
+import type { RemoteDirect, RemoteDirectHost, RemoteDevice, RemoteSignIn, RemoteStatus, RemoteTarget } from './remote-types';
 
 const THIS = 'dev-this';
 let signedIn = false, hostEnabled = false;
 let devices: RemoteDevice[] = [], cancelSignIn: (() => void) | undefined;
 const offline = new Set<string>();
 const trusted = new Set<string>(['dev-studio', 'dev-laptop']);
-const status = (): RemoteStatus => ({ configured: true, signedIn, account: signedIn ? { login: 'octocat' } : undefined, device: { id: THIS, name: 'This Mac', fingerprint: '3fa91c07d2b64e58' }, hostEnabled, connected: signedIn });
+let listening = false, listeningPort = 7447, pairingCode = 'ABCD2345', codeExpires = 0;
+let paired: RemoteDirectHost[] = [];
+const linked = new Set<string>();
+const direct = (): RemoteDirect => ({ listening, port: listeningPort, connected: [...linked], hosts: paired });
+const status = (): RemoteStatus => ({ configured: true, signedIn, account: signedIn ? { login: 'octocat' } : undefined, device: { id: THIS, name: 'This Mac', fingerprint: '3fa91c07d2b64e58' }, hostEnabled, connected: signedIn, direct: direct() });
 const sampleDevices = (): RemoteDevice[] => [
   { id: THIS, name: 'This Mac', platform: 'macOS', fingerprint: '3fa91c07d2b64e58', host: hostEnabled, online: true, trusted: true, lastSeen: Date.now(), current: true },
   { id: 'dev-studio', name: 'Studio iMac', platform: 'macOS', fingerprint: '9b02e4aa71c3d605', host: true, online: !offline.has('dev-studio'), trusted: trusted.has('dev-studio'), lastSeen: Date.now(), current: false },
@@ -32,6 +36,21 @@ function handle(command: string, args: Record<string, any>, emit: (name: string,
     case 'remote_revoke_device': devices = devices.filter(d => d.id !== args.deviceId); emit('remote://presence', devices); return {};
     // Other trusted computers with remote control on; preview.ts mocks remote_repo_check and remote_start_task.
     case 'remote_targets': return (signedIn ? sampleDevices() : []).filter(d => !d.current && d.host && d.trusted).map((d): RemoteTarget => ({ deviceId: d.id, name: d.name, platform: d.platform, online: d.online }));
+    case 'remote_direct_start': listening = true; listeningPort = Number(args.port) || 7447; pairingCode = 'ABCD2345'; codeExpires = Date.now() + 600_000; return { port: listeningPort, direct: direct() };
+    case 'remote_direct_stop': listening = false; linked.clear(); emit('remote://status', status()); return status();
+    case 'remote_direct_code': return { code: pairingCode, expiresIn: Math.max(0, Math.round((codeExpires - Date.now()) / 1000)) };
+    case 'remote_direct_connect': {
+      const address = String(args.address ?? '').trim();
+      if (!address) throw new Error('Enter the computer’s address as host:port.');
+      const deviceId = `direct-${address.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+      if (!String(args.code ?? '').trim() && !paired.some(host => host.deviceId === deviceId)) throw new Error('Enter the pairing code that computer shows.');
+      paired = paired.filter(host => host.deviceId !== deviceId);
+      paired.push({ address, deviceId, name: address });
+      linked.add(deviceId);
+      emit('remote://status', status());
+      return { direct: direct() };
+    }
+    case 'remote_direct_forget': paired = paired.filter(host => host.deviceId !== args.deviceId); linked.delete(String(args.deviceId)); emit('remote://status', status()); return { direct: direct() };
     default: throw new Error(`Unknown preview command: ${command}`);
   }
 }

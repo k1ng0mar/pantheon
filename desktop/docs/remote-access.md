@@ -11,8 +11,31 @@ view. Nothing is sent anywhere until the user signs in.
 | Piece | Where | Job |
 |---|---|---|
 | Relay | `relay/` (Cloudflare Worker + one Durable Object per account) | Sign-in, device list, forwards encrypted frames between an account's devices. Stores no task content. |
-| Native | `src-tauri/src/remote/` | Sign-in, secrets in a private file (`secrets.rs`), one WebSocket to the relay, host RPC (`host.rs`, `start.rs`), mirrors (`mirror.rs`), client calls. |
+| Native | `src-tauri/src/remote/` | Sign-in, secrets in a private file (`secrets.rs`), one WebSocket to the relay, host RPC (`host.rs`, `start.rs`), mirrors (`mirror.rs`), client calls, and the direct listener (`direct.rs`). |
 | UI | `src/remote*.ts`, `src/remote-settings.css` | Settings → Remote access, and choosing where a new task runs. |
+
+## Direct connections
+
+A computer can also be reached directly, with no relay and no sign-in. One computer listens
+(`remote_direct_start`, port 7447, and **Allow remote control** must already be on) and shows an
+8-character code (`remote_direct_code`, good for 10 minutes). The other types that computer's
+`host:port` and the code (`remote_direct_connect`). Nothing else is set up: no account, no
+provider, no server.
+
+- Plain WebSocket on `ws://host:port/`, so only loopback, private, link-local and `.local`
+  addresses are accepted. A public address is refused until TLS lands.
+- Pairing is one frame each way: the joining computer sends `{ type: "pair", code, device }`,
+  the host answers `{ type: "pair-ok", device }` or `{ type: "pair-fail", error }`. `device` is
+  the same row the relay's presence carries: `{ id, name, platform, publicKey, host }`.
+- Five wrong codes lock the listener for 60 seconds.
+- A computer already trusted here, presenting the same public key, comes back with no code.
+- Both sides pin each other's key, exactly as the relay path does, and the link then carries the
+  same `{ from, to, body, ref }` frames. `host.rs`, the mirrors, the trust pins and the approval
+  flow are untouched.
+- `remote_direct_forget` drops the address, the pin and the device row.
+
+The relay keeps working in the same build. A frame goes out through the relay outbox when one is
+configured and the destination is not linked here, and through the direct link when it is.
 
 ## Mirrors
 
@@ -292,7 +315,7 @@ Requests from one peer are answered in order, except `task.start` (above).
 
 | Command | Args | Returns |
 |---|---|---|
-| `remote_status` | | `{ configured, signedIn, account?: { login, avatarUrl }, device: { id, name, fingerprint }, hostEnabled, connected }` |
+| `remote_status` | | `{ configured, signedIn, account?: { login, avatarUrl }, device: { id, name, fingerprint }, hostEnabled, connected, direct }` |
 | `remote_sign_in_start` | | `{ userCode, verificationUri, expiresIn }` |
 | `remote_sign_in_finish` | | status (waits for the device flow, error on expiry, denial or cancel) |
 | `remote_sign_in_cancel` | | status. Stops the device-flow poll. |
@@ -306,6 +329,11 @@ Requests from one peer are answered in order, except `task.start` (above).
 | `list_providers` | `{ force?, deviceId? }` | as without `deviceId`, from that host (see Model lists) |
 | `list_provider_models` | `{ provider, force?, deviceId? }` | as without `deviceId`, from that host |
 | `remote_start_task` | `{ deviceId, projectId, prompt, provider, model, mode?, effort?, worktree?, branch?, sessionId? }` | the mirror `Session` plus `sessionId`. `branch` defaults to the checkout's. An empty New task draft without its own worktree passed as `sessionId` becomes the mirror; otherwise a new task is made. On failure nothing is left: a new row is deleted, a draft stays a draft. |
+| `remote_direct_start` | `{ port? }` | `{ port, direct }`. Starts the listener; `port` defaults to 7447. Requires **Allow remote control**. |
+| `remote_direct_stop` | | status. Stops the listener and drops every direct link. |
+| `remote_direct_code` | | `{ code, expiresIn }`. The code another computer types here. |
+| `remote_direct_connect` | `{ address, code }` | `{ direct }`. Pairs with `host:port`; `code` may be empty for a computer already trusted here. |
+| `remote_direct_forget` | `{ deviceId }` | `{ direct }`. Forgets a paired computer. |
 
 Window events: `remote://status` (status), `remote://presence` (devices), and for mirrors the
 ordinary `agent-event` and `sessions-changed`.

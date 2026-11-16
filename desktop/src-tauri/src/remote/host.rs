@@ -592,7 +592,8 @@ fn buffer(app: &tauri::AppHandle, session_id: &str, mut add: impl FnMut(&mut Sub
     let Some(state) = app.try_state::<super::Remote>() else { return };
     let schedule = {
         let mut inner = state.lock();
-        if !inner.settings.host_enabled || inner.outbox.is_none() || !inner.subscribers.values().any(|s| s.sessions.contains(session_id)) {
+        let connected = inner.outbox.is_some() || !inner.direct_peers.is_empty();
+        if !inner.settings.host_enabled || !connected || !inner.subscribers.values().any(|s| s.sessions.contains(session_id)) {
             return;
         }
         if !prune_subscribers(&mut inner, Instant::now()) {

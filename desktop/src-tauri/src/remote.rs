@@ -6,6 +6,7 @@ pub(crate) mod catalog;
 mod client;
 mod config;
 mod crypto;
+mod direct;
 mod host;
 pub(crate) mod mirror;
 mod secrets;
@@ -93,10 +94,18 @@ pub(crate) struct Inner {
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     /// Other computers' harnesses and models, for their mirrors' model pickers.
     catalog: catalog::Cache,
+    /// Computers linked straight to this one: device id → its outgoing queue.
+    direct_peers: HashMap<String, tokio::sync::mpsc::UnboundedSender<String>>,
+    /// The code a computer types to pair with this one, while it is still fresh.
+    pairing: Option<direct::Pairing>,
+    /// The port the direct listener bound, when it is up.
+    direct_port: Option<u16>,
+    /// Bumped when the listener stops, so a dying accept loop lets go of its peers.
+    direct_generation: u64,
 }
 
 impl Inner {
-    fn fail_pending(&mut self, device: Option<&str>, error: &str) {
+    pub(crate) fn fail_pending(&mut self, device: Option<&str>, error: &str) {
         let ids: Vec<String> = self.pending.iter().filter(|(_, (d, _))| device.is_none_or(|device| d == device)).map(|(id, _)| id.clone()).collect();
         for id in ids {
             if let Some((_, reply)) = self.pending.remove(&id) {
@@ -161,14 +170,14 @@ impl Remote {
         self.key.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn save(&self, settings: &config::Settings) {
+    pub(crate) fn save(&self, settings: &config::Settings) {
         if let Err(error) = config::save(&self.dir, settings) {
             eprintln!("{error}");
         }
     }
 
     /// The device's X25519 key from the secrets file. Never creates one.
-    fn secret(&self) -> Result<StaticSecret> {
+    pub(crate) fn secret(&self) -> Result<StaticSecret> {
         let mut key = self.key();
         if let Some(secret) = key.as_ref() {
             return Ok(secret.clone());
@@ -204,6 +213,7 @@ impl Remote {
             "device": {"id": inner.settings.device_id, "name": config::device_name(), "fingerprint": fingerprint},
             "hostEnabled": inner.settings.host_enabled,
             "connected": inner.connected,
+            "direct": direct::status(&inner),
         });
         if let Some(account) = &inner.settings.account {
             status["account"] = json!({"login": account.login, "avatarUrl": account.avatar_url});
@@ -217,7 +227,7 @@ impl Remote {
     }
 }
 
-fn remote(app: &tauri::AppHandle) -> tauri::State<'_, Remote> {
+pub(crate) fn remote(app: &tauri::AppHandle) -> tauri::State<'_, Remote> {
     app.state::<Remote>()
 }
 
@@ -225,7 +235,7 @@ fn emit_status(app: &tauri::AppHandle) {
     let _ = app.emit("remote://status", remote(app).status());
 }
 
-fn emit_presence(app: &tauri::AppHandle) {
+pub(crate) fn emit_presence(app: &tauri::AppHandle) {
     let _ = app.emit("remote://presence", remote(app).devices_view());
 }
 
@@ -410,8 +420,8 @@ pub async fn remote_set_host_enabled(app: tauri::AppHandle, enabled: bool) -> Re
 
 #[tauri::command]
 pub async fn remote_devices(app: tauri::AppHandle) -> Result<Vec<Value>> {
-    // Presence carries the list; the relay is asked only before the first presence frame.
-    if !remote(&app).lock().presence {
+    // Presence carries the list; a build with no relay has none, so the local list stands.
+    if !remote(&app).lock().presence && config::build().is_some() {
         socket::refresh_devices(&app).await?;
     }
     Ok(remote(&app).devices_view())
@@ -422,7 +432,7 @@ pub async fn remote_devices(app: tauri::AppHandle) -> Result<Vec<Value>> {
 #[tauri::command]
 pub async fn remote_set_trusted(app: tauri::AppHandle, device_id: String, trusted: bool) -> Result<Vec<Value>> {
     valid_device_id(&device_id)?;
-    if trusted && !remote(&app).lock().presence {
+    if trusted && !remote(&app).lock().presence && config::build().is_some() {
         socket::refresh_devices(&app).await?;
     }
     let state = remote(&app);
@@ -496,6 +506,47 @@ fn targets(inner: &Inner) -> Vec<Value> {
         .filter(|d| d.id != inner.settings.device_id && d.host && inner.settings.is_trusted(&d.id, &d.public_key))
         .map(|d| json!({"deviceId": d.id, "name": d.name, "platform": d.platform, "online": d.online}))
         .collect()
+}
+
+/// Opens this computer to paired computers on the same network.
+#[tauri::command]
+pub async fn remote_direct_start(app: tauri::AppHandle, port: Option<u16>) -> Result<Value> {
+    let bound = direct::enable(app.clone(), port.unwrap_or(direct::DEFAULT_PORT)).await?;
+    let state = remote(&app);
+    let status = direct::status(&state.lock());
+    Ok(json!({"port": bound, "direct": status}))
+}
+
+/// Closes the direct listener and drops every direct connection.
+#[tauri::command]
+pub async fn remote_direct_stop(app: tauri::AppHandle) -> Result<Value> {
+    direct::disable(&app);
+    Ok(remote(&app).status())
+}
+
+/// The code another computer types to pair with this one, and how long it is good for.
+#[tauri::command]
+pub async fn remote_direct_code(app: tauri::AppHandle) -> Result<Value> {
+    if remote(&app).lock().direct_port.is_none() {
+        return Err("Open a direct connection first.".into());
+    }
+    let code = direct::code(&app);
+    let state = remote(&app);
+    let expires = state.lock().pairing.as_ref().map(|pairing| pairing.expires);
+    let seconds = expires.map(|expires| expires.saturating_duration_since(std::time::Instant::now()).as_secs()).unwrap_or(0);
+    Ok(json!({"code": code, "expiresIn": seconds}))
+}
+
+/// Pairs this computer with another one on the same network.
+#[tauri::command]
+pub async fn remote_direct_connect(app: tauri::AppHandle, address: String, code: String) -> Result<Value> {
+    direct::connect(app.clone(), address, code).await
+}
+
+/// Forgets a paired computer, its key and its address.
+#[tauri::command]
+pub async fn remote_direct_forget(app: tauri::AppHandle, device_id: String) -> Result<Value> {
+    direct::forget(&app, &device_id)
 }
 
 #[cfg(test)]
