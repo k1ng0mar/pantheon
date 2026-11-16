@@ -6,7 +6,7 @@ let signedIn = false, hostEnabled = false;
 let devices: RemoteDevice[] = [], cancelSignIn: (() => void) | undefined;
 const offline = new Set<string>();
 const trusted = new Set<string>(['dev-studio', 'dev-laptop']);
-let listening = false, listeningPort = 7447, pairingCode = 'ABCD2345', codeExpires = 0;
+let listening = false, listeningPort = 7447, pairingCode = 'ABCD23456789', codeExpires = 0;
 let paired: RemoteDirectHost[] = [];
 const linked = new Set<string>();
 const direct = (): RemoteDirect => ({ listening, port: listeningPort, connected: [...linked], hosts: paired });
@@ -36,7 +36,7 @@ function handle(command: string, args: Record<string, any>, emit: (name: string,
     case 'remote_revoke_device': devices = devices.filter(d => d.id !== args.deviceId); emit('remote://presence', devices); return {};
     // Other trusted computers with remote control on; preview.ts mocks remote_repo_check and remote_start_task.
     case 'remote_targets': return (signedIn ? sampleDevices() : []).filter(d => !d.current && d.host && d.trusted).map((d): RemoteTarget => ({ deviceId: d.id, name: d.name, platform: d.platform, online: d.online }));
-    case 'remote_direct_start': listening = true; listeningPort = Number(args.port) || 7447; pairingCode = 'ABCD2345'; codeExpires = Date.now() + 600_000; return { port: listeningPort, direct: direct() };
+    case 'remote_direct_start': listening = true; listeningPort = Number(args.port) || 7447; pairingCode = 'ABCD23456789'; codeExpires = Date.now() + 600_000; return { port: listeningPort, direct: direct() };
     case 'remote_direct_stop': listening = false; linked.clear(); emit('remote://status', status()); return status();
     case 'remote_direct_code': return { code: pairingCode, expiresIn: Math.max(0, Math.round((codeExpires - Date.now()) / 1000)) };
     case 'remote_direct_connect': {

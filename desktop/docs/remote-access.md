@@ -17,18 +17,23 @@ view. Nothing is sent anywhere until the user signs in.
 ## Direct connections
 
 A computer can also be reached directly, with no relay and no sign-in. One computer listens
-(`remote_direct_start`, port 7447, and **Allow remote control** must already be on) and shows an
-8-character code (`remote_direct_code`, good for 10 minutes). The other types that computer's
+(`remote_direct_start`, port 7447, and **Allow remote control** must already be on) and shows a
+12-character code (`remote_direct_code`, good for 10 minutes). The other types that computer's
 `host:port` and the code (`remote_direct_connect`). Nothing else is set up: no account, no
 provider, no server.
 
 - Plain WebSocket on `ws://host:port/`, so only loopback, private, link-local and `.local`
   addresses are accepted. A public address is refused until TLS lands.
-- Pairing is one frame each way: the joining computer sends `{ type: "pair", code, device }`,
-  the host answers `{ type: "pair-ok", device }` or `{ type: "pair-fail", error }`. `device` is
-  the same row the relay's presence carries: `{ id, name, platform, publicKey, host }`.
+- Pairing is three frames: the joining computer sends `{ type: "pair", nonce, device }`, the host
+  answers `{ type: "pair-ok", nonce, confirm, device }`, and the joining computer answers
+  `{ type: "pair-confirm", confirm }` (or the host sends `{ type: "pair-fail", error }`). The code
+  is never sent: each `confirm` is HMAC-SHA256 over the shared key and the transcript (both ids,
+  the code, both nonces), so only the two parties holding the private key and the code can
+  complete it. That is what binds the code to the key exchange, not just a gate on a request.
+- `device` is the same row the relay's presence carries: `{ id, name, platform, publicKey, host }`.
 - Five wrong codes lock the listener for 60 seconds.
-- A computer already trusted here, presenting the same public key, comes back with no code.
+- A computer already trusted here, presenting the same public key, comes back with no code: its
+  key alone is the proof.
 - Both sides pin each other's key, exactly as the relay path does, and the link then carries the
   same `{ from, to, body, ref }` frames. `host.rs`, the mirrors, the trust pins and the approval
   flow are untouched.

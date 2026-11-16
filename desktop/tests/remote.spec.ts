@@ -170,11 +170,11 @@ test('a direct connection pairs with a code and needs no sign-in', async ({ page
   await expect(panel.getByRole('heading', { name: 'Direct connection' })).toBeVisible();
   await panel.getByRole('button', { name: 'Open', exact: true }).click();
   await expect(panel.getByText('Listening on port 7447')).toBeVisible();
-  await expect(panel.getByLabel('Pairing code')).toHaveText('ABCD2345');
+  await expect(panel.getByLabel('Pairing code')).toHaveText('ABCD23456789');
   await expect(panel.getByText(/expires in 10 min/)).toBeVisible();
 
   await panel.getByLabel('Computer address').fill('192.168.1.5:7447');
-  await panel.getByLabel('Code from that computer').fill('ABCD2345');
+  await panel.getByLabel('Code from that computer').fill('ABCD23456789');
   await panel.getByRole('button', { name: 'Pair', exact: true }).click();
   const paired = panel.locator('.remote-device[data-host="direct-192-168-1-5-7447"]');
   await expect(paired).toBeVisible();

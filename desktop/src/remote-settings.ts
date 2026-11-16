@@ -115,7 +115,7 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     else if (target.hasAttribute('data-direct-stop')) void host.call<RemoteStatus>('remote_direct_stop').then(next => { apply(next); pairCode = ''; pairSeconds = 0; render(); }, fail);
     else if (target.hasAttribute('data-direct-copy')) void navigator.clipboard.writeText(pairCode).then(() => host.notify('Code copied'), () => host.notify('Couldn’t copy; select the code instead'));
     else if (target.hasAttribute('data-direct-join')) void joinDirect();
-    else if (target.dataset.directConnect) void host.call<{ direct: RemoteDirect }>('remote_direct_connect', { address: target.dataset.directConnect, code: field('data-direct-code') }).then(next => { status!.direct = next.direct; error = ''; render(); }, fail);
+    else if (target.dataset.directConnect) void host.call<{ direct: RemoteDirect }>('remote_direct_connect', { address: target.dataset.directConnect, code: '' }).then(next => { status!.direct = next.direct; error = ''; render(); }, fail);
     else if (target.dataset.directForget) void host.call<{ direct: RemoteDirect }>('remote_direct_forget', { deviceId: target.dataset.directForget }).then(next => { status!.direct = next.direct; render(); }, fail);
   });
   root.addEventListener('change', event => {

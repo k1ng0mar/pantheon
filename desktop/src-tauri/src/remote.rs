@@ -162,6 +162,13 @@ pub(crate) struct Remote {
 }
 
 impl Remote {
+    /// A standalone instance: the same state a window would hold, for driving the
+    /// protocol in a test.
+    #[cfg(test)]
+    pub(crate) fn new(dir: &std::path::Path) -> Self {
+        Self { dir: dir.to_owned(), inner: Mutex::new(Inner { settings: config::load(dir), ..Default::default() }), key: Mutex::new(None) }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }

@@ -6,8 +6,10 @@ use super::{config, crypto, host, remote, socket, Device, Inner};
 use crate::Result;
 use chacha20poly1305::{aead::OsRng, AeadCore, XChaCha20Poly1305};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -17,11 +19,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use x25519_dalek::StaticSecret;
 
 /// The port a direct host listens on when the user has not chosen one.
 pub(crate) const DEFAULT_PORT: u16 = 7447;
 const CODE: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-const CODE_LEN: usize = 8;
+/// 12 of 32 symbols is 60 bits: the code is also the secret that authenticates the key
+/// exchange, so it must survive an offline guess by whoever records a handshake.
+const CODE_LEN: usize = 12;
 /// A pairing code is good for this long, and for every computer that types it.
 const CODE_TTL: Duration = Duration::from_secs(10 * 60);
 /// Wrong codes allowed before the listener refuses them for `LOCKOUT`.
@@ -52,18 +57,43 @@ pub(crate) struct Introduction {
     pub host: bool,
 }
 
-/// A short, unambiguous code: 8 of 32 symbols, so no `0/O` or `1/I` guessing.
+/// A short, unambiguous code: 12 of 32 symbols, so no `0/O` or `1/I` guessing.
 fn generate_code() -> String {
     let random = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     (0..CODE_LEN).map(|i| CODE[random[i] as usize % CODE.len()] as char).collect()
 }
 
-/// Compares two codes without short-circuiting, so a wrong prefix costs as much as a
+/// Compares two strings without short-circuiting, so a wrong prefix costs as much as a
 /// wrong last symbol.
-fn same_code(expected: &str, typed: &str) -> bool {
-    !expected.is_empty()
-        && expected.len() == typed.len()
-        && expected.bytes().zip(typed.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+fn same_text(expected: &str, given: &str) -> bool {
+    expected.len() == given.len()
+        && expected.bytes().zip(given.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+}
+
+/// This computer's half of a pairing: its id and the key that proves it holds the
+/// matching private key.
+struct Identity<'a> {
+    id: &'a str,
+    secret: &'a StaticSecret,
+}
+
+/// A fresh random nonce, as lowercase hex.
+fn nonce() -> String {
+    let random = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    random.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// HMAC-SHA256 over the pair key and the whole pairing transcript. Only a party holding
+/// both the private key and the code can produce it, so a swapped key or a wrong code
+/// fails here rather than at the first frame. An empty code is a trusted computer coming
+/// back, where the key itself is the proof.
+fn confirmation(key: &crypto::Key, role: &str, code: &str, viewer: &str, host: &str, viewer_nonce: &str, host_nonce: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("a 32-byte key");
+    for part in [role, code, viewer, host, viewer_nonce, host_nonce] {
+        mac.update(part.as_bytes());
+        mac.update(&[0u8]);
+    }
+    mac.finalize().into_bytes().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Loopback, private and link-local addresses, plus `.local` names: the ones a plain
@@ -214,15 +244,11 @@ pub(crate) async fn connect(app: AppHandle, address: String, code: String) -> Re
         .await
         .map_err(|_| "That computer did not answer in time.")?
         .map_err(|_| "Could not reach that computer. Check the address and that it is listening.")?;
-    let mine = introduction_value(&app, false)?;
-    let (socket, joined) = match pair_out(socket, &code, mine).await {
-        Ok(paired) => paired,
-        Err(error) => return Err(error),
-    };
-    let host = register(app.clone(), joined, address);
+    let state = remote(&app);
+    let (socket, host) = pair_join(&state, socket, address, &code).await?;
+    super::emit_presence(&app);
     tauri::async_runtime::spawn(linked(app.clone(), socket, host.id.clone()));
     tauri::async_runtime::spawn(super::mirror::subscribe_all(app.clone()));
-    let state = remote(&app);
     let status = status(&state.lock());
     Ok(status)
 }
@@ -263,29 +289,73 @@ async fn accept(app: AppHandle, listener: TcpListener, generation: u64) {
 
 async fn serve(app: AppHandle, stream: TcpStream, generation: u64, attempts: Arc<Mutex<Attempts>>) {
     let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { return };
-    let (expected, trusted, reply) = {
-        let state = remote(&app);
+    let state = remote(&app);
+    let expected = {
         let inner = state.lock();
-        let expected = inner
-            .pairing
-            .as_ref()
-            .filter(|pairing| pairing.expires > Instant::now())
-            .map(|pairing| pairing.code.clone());
-        (expected, inner.settings.trusted.clone(), introduction_value(&app, true).ok())
+        inner.pairing.as_ref().filter(|pairing| pairing.expires > Instant::now()).map(|pairing| pairing.code.clone())
     };
-    let Some((socket, introduction)) = pair_in(socket, expected.as_deref(), &trusted, reply, &attempts).await else { return };
-    if remote(&app).lock().direct_generation != generation {
+    let Some((socket, introduction)) = pair_host(&state, socket, expected, &attempts).await else { return };
+    if state.lock().direct_generation != generation {
         return;
     }
     let id = introduction.id.clone();
-    register_host(&app, introduction);
+    super::emit_presence(&app);
     linked(app.clone(), socket, id).await;
 }
 
-/// Reads the pairing frame and answers with this computer's own row. A computer already
-/// trusted here, with the same key, may come back without a code.
+/// The accepting half of a pairing: read the joining computer, prove the code, pin it
+/// and hand back the open socket. No window is needed, so a test can drive two of these.
+async fn pair_host<S>(remote: &super::Remote, socket: S, expected: Option<String>, attempts: &Mutex<Attempts>) -> Option<(S, Introduction)>
+where
+    S: Stream<Item = std::result::Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
+{
+    let (id, secret) = {
+        let inner = remote.lock();
+        (inner.settings.device_id.clone(), remote.secret().ok()?)
+    };
+    let trusted = remote.lock().settings.trusted.clone();
+    let identity = Identity { id: &id, secret: &secret };
+    let reply = introduction_value(remote, true).ok();
+    let (socket, introduction) = pair_in(socket, &identity, expected.as_deref(), &trusted, reply, attempts).await?;
+    register_host(remote, introduction.clone());
+    Some((socket, introduction))
+}
+
+/// The joining half of a pairing: prove the code to the host, pin it and hand back the
+/// open socket. No window is needed, so a test can drive two of these.
+async fn pair_join<S>(remote: &super::Remote, socket: S, address: String, code: &str) -> Result<(S, Introduction)>
+where
+    S: Stream<Item = std::result::Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
+{
+    let (id, secret) = {
+        let inner = remote.lock();
+        (inner.settings.device_id.clone(), remote.secret()?)
+    };
+    let identity = Identity { id: &id, secret: &secret };
+    let mine = introduction_value(remote, false)?;
+    let (socket, joined) = pair_out(socket, &identity, code, mine).await?;
+    Ok((socket, register(remote, joined, address)))
+}
+
+/// Reads one text frame, or None on a timeout, a close, or anything but text.
+async fn read_text<S>(stream: &mut S) -> Option<String>
+where
+    S: Stream<Item = std::result::Result<Message, WsError>> + Unpin,
+{
+    let framed = tokio::time::timeout(TIMEOUT, stream.next()).await.ok()?.and_then(|framed| framed.ok());
+    match framed {
+        Some(Message::Text(text)) => Some(text.to_string()),
+        _ => None,
+    }
+}
+
+/// Reads the joining computer's frame and answers with this computer's own row. The code
+/// never crosses the socket: it is folded into an HMAC over the exchanged key, so a wrong
+/// code or a swapped key fails the proof instead of merely gating a request. A computer
+/// already trusted here, with the same key, proves itself with the key alone.
 async fn pair_in<S>(
     socket: S,
+    identity: &Identity<'_>,
     expected: Option<&str>,
     trusted: &std::collections::BTreeMap<String, String>,
     reply: Option<Value>,
@@ -295,11 +365,7 @@ where
     S: Stream<Item = std::result::Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
 {
     let (mut sink, mut stream) = socket.split();
-    let framed = tokio::time::timeout(TIMEOUT, stream.next()).await.ok()?.and_then(|framed| framed.ok());
-    let text = match framed {
-        Some(Message::Text(text)) => text,
-        _ => return None,
-    };
+    let text = read_text(&mut stream).await?;
     let value: Value = serde_json::from_str(&text).ok()?;
     if value["type"].as_str() != Some("pair") {
         return None;
@@ -308,6 +374,13 @@ where
     if host::valid_id(&introduction.id).is_err() || crypto::fingerprint(&introduction.public_key).is_empty() {
         return None;
     }
+    let viewer_nonce = match value["nonce"].as_str() {
+        Some(nonce) if (32..=128).contains(&nonce.len()) => nonce,
+        _ => return None,
+    };
+    // A trusted computer comes back on its key alone; anyone else needs the code on screen.
+    let known = trusted.get(&introduction.id).is_some_and(|pinned| pinned == &introduction.public_key);
+    let code = if known { "" } else { expected? };
     let refused = {
         let locked = attempts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         locked.refused()
@@ -316,53 +389,73 @@ where
         let _ = sink.send(Message::text(json!({"type": "pair-fail", "error": "Too many wrong codes. Try again in a minute."}).to_string())).await;
         return None;
     }
-    let known = trusted.get(&introduction.id).is_some_and(|pinned| pinned == &introduction.public_key);
-    let accepted = known || expected.is_some_and(|code| same_code(code, value["code"].as_str().unwrap_or_default()));
-    if !accepted {
+    let key = crypto::pair_key(identity.secret, identity.id, &introduction.public_key, &introduction.id).ok()?;
+    let host_nonce = nonce();
+    let proof = confirmation(&key, "host", code, &introduction.id, identity.id, viewer_nonce, &host_nonce);
+    let reply = reply?;
+    sink.send(Message::text(json!({"type": "pair-ok", "device": reply, "nonce": host_nonce, "confirm": proof}).to_string())).await.ok()?;
+    // The joining computer answers with its own proof, which only its private key and the
+    // code can produce. This is where a wrong code or a swapped key is caught, and where a
+    // wrong code is counted against the listener.
+    let text = read_text(&mut stream).await?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    if value["type"].as_str() != Some("pair-confirm") {
+        return None;
+    }
+    let want = confirmation(&key, "viewer", code, &introduction.id, identity.id, viewer_nonce, &host_nonce);
+    if !same_text(&want, value["confirm"].as_str().unwrap_or_default()) {
         attempts.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).failure();
-        let _ = sink.send(Message::text(json!({"type": "pair-fail", "error": "That code is not right."}).to_string())).await;
+        let _ = sink.send(Message::text(json!({"type": "pair-fail", "error": "That code is not right, or that computer is not who it says it is."}).to_string())).await;
         return None;
     }
     attempts.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).success();
-    let reply = reply?;
-    sink.send(Message::text(json!({"type": "pair-ok", "device": reply}).to_string())).await.ok()?;
+    let _ = sink.send(Message::text(json!({"type": "pair-done"}).to_string())).await;
     Some((sink.reunite(stream).ok()?, introduction))
 }
 
-/// Sends this computer's pairing frame and reads the host's row.
-async fn pair_out<S>(socket: S, code: &str, introduction: Value) -> Result<(S, Introduction)>
+/// Sends this computer's pairing frame and reads the host's row, refusing to trust it
+/// until its proof checks out. The code is never sent: it only feeds the proof.
+async fn pair_out<S>(socket: S, identity: &Identity<'_>, code: &str, introduction: Value) -> Result<(S, Introduction)>
 where
     S: Stream<Item = std::result::Result<Message, WsError>> + Sink<Message, Error = WsError> + Unpin,
 {
     let (mut sink, mut stream) = socket.split();
-    let frame = json!({"type": "pair", "code": code, "device": introduction});
+    let viewer_nonce = nonce();
+    let frame = json!({"type": "pair", "nonce": viewer_nonce, "device": introduction});
     sink.send(Message::text(frame.to_string())).await.map_err(|_| "Could not reach that computer.")?;
-    let framed = tokio::time::timeout(TIMEOUT, stream.next()).await.map_err(|_| "That computer did not answer in time.")?;
-    let framed = framed.ok_or("That computer closed the connection.")?;
-    let text = match framed {
-        Ok(Message::Text(text)) => text,
-        _ => return Err("That computer closed the connection.".into()),
-    };
+    let text = read_text(&mut stream).await.ok_or("That computer closed the connection.")?;
     let value: Value = serde_json::from_str(&text).map_err(|_| "That computer sent an unreadable reply.".to_string())?;
-    match value["type"].as_str() {
-        Some("pair-ok") => {
-            let introduction: Introduction = serde_json::from_value(value["device"].clone()).map_err(|_| "That computer sent an unreadable reply.".to_string())?;
-            if host::valid_id(&introduction.id).is_err() || crypto::fingerprint(&introduction.public_key).is_empty() {
-                return Err("That computer sent an unusable identity.".into());
-            }
-            Ok((sink.reunite(stream).map_err(|_| "That computer closed the connection.")?, introduction))
-        }
-        Some("pair-fail") => Err(value["error"].as_str().unwrap_or("That code is not right.").chars().take(200).collect()),
-        _ => Err("That computer did not answer the pairing request.".into()),
+    let introduction: Introduction = match value["type"].as_str() {
+        Some("pair-ok") => serde_json::from_value(value["device"].clone()).map_err(|_| "That computer sent an unreadable reply.".to_string())?,
+        Some("pair-fail") => return Err(value["error"].as_str().unwrap_or("That code is not right.").chars().take(200).collect()),
+        _ => return Err("That computer did not answer the pairing request.".into()),
+    };
+    if host::valid_id(&introduction.id).is_err() || crypto::fingerprint(&introduction.public_key).is_empty() {
+        return Err("That computer sent an unusable identity.".into());
     }
+    let host_nonce = value["nonce"].as_str().unwrap_or_default();
+    let key = crypto::pair_key(identity.secret, identity.id, &introduction.public_key, &introduction.id)?;
+    let host_proof = confirmation(&key, "host", code, identity.id, &introduction.id, &viewer_nonce, host_nonce);
+    let accepted = same_text(&host_proof, value["confirm"].as_str().unwrap_or_default());
+    // Sent either way: the host has to see a wrong code to count it against the listener.
+    let proof = confirmation(&key, "viewer", code, identity.id, &introduction.id, &viewer_nonce, host_nonce);
+    sink.send(Message::text(json!({"type": "pair-confirm", "confirm": proof}).to_string())).await.map_err(|_| "Could not reach that computer.")?;
+    let verdict = read_text(&mut stream).await.ok_or("That computer closed the connection.")?;
+    if !accepted {
+        return Err("That code is not right, or that computer is not who it says it is.".into());
+    }
+    let value: Value = serde_json::from_str(&verdict).map_err(|_| "That computer sent an unreadable reply.".to_string())?;
+    if value["type"].as_str() != Some("pair-done") {
+        return Err("That computer did not finish pairing.".into());
+    }
+    Ok((sink.reunite(stream).map_err(|_| "That computer closed the connection.")?, introduction))
 }
 
 /// This computer's row, as it introduces itself. `host` is whether remote control is on.
-fn introduction_value(app: &tauri::AppHandle, host: bool) -> Result<Value> {
-    let state = remote(app);
+fn introduction_value(remote: &super::Remote, host: bool) -> Result<Value> {
     let (id, public_key) = {
-        let inner = state.lock();
-        (inner.settings.device_id.clone(), crypto::public_key(&state.secret()?))
+        let inner = remote.lock();
+        (inner.settings.device_id.clone(), crypto::public_key(&remote.secret()?))
     };
     Ok(json!({
         "id": id,
@@ -374,11 +467,10 @@ fn introduction_value(app: &tauri::AppHandle, host: bool) -> Result<Value> {
 }
 
 /// Pins a computer that just paired with this one and lists it as connected.
-fn register_host(app: &tauri::AppHandle, introduction: Introduction) {
+fn register_host(remote: &super::Remote, introduction: Introduction) {
     let id = introduction.id.clone();
-    let state = remote(app);
     let settings = {
-        let mut inner = state.lock();
+        let mut inner = remote.lock();
         inner.settings.trusted.insert(id.clone(), introduction.public_key.clone());
         inner.devices.retain(|device| device.id != id);
         inner.devices.push(Device {
@@ -392,16 +484,14 @@ fn register_host(app: &tauri::AppHandle, introduction: Introduction) {
         });
         inner.settings.clone()
     };
-    state.save(&settings);
-    super::emit_presence(app);
+    remote.save(&settings);
 }
 
 /// Pins the host this computer paired with, remembers its address and lists it.
-fn register(app: AppHandle, introduction: Introduction, address: String) -> Introduction {
+fn register(remote: &super::Remote, introduction: Introduction, address: String) -> Introduction {
     let id = introduction.id.clone();
-    let state = remote(&app);
     let settings = {
-        let mut inner = state.lock();
+        let mut inner = remote.lock();
         inner.settings.trusted.insert(id.clone(), introduction.public_key.clone());
         inner.devices.retain(|device| device.id != id);
         inner.devices.push(Device {
@@ -417,8 +507,7 @@ fn register(app: AppHandle, introduction: Introduction, address: String) -> Intr
         inner.settings.direct.hosts.push(super::config::PairedHost { address, device_id: id.clone(), name: introduction.name.clone() });
         inner.settings.clone()
     };
-    state.save(&settings);
-    super::emit_presence(&app);
+    remote.save(&settings);
     introduction
 }
 
@@ -463,6 +552,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::{secrets, Remote};
+
+    /// The code the host shows and the joining computer types.
+    const PAIR_CODE: &str = "ABCD23456789";
+
+    fn identity<'a>(id: &'a str, secret: &'a StaticSecret) -> Identity<'a> {
+        Identity { id, secret }
+    }
+
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("pantheon-direct-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn codes_are_long_and_unambiguous() {
@@ -475,12 +578,27 @@ mod tests {
     }
 
     #[test]
-    fn a_code_matches_only_itself() {
-        assert!(same_code("ABCD2345", "ABCD2345"));
-        assert!(!same_code("ABCD2345", "ABCD2346"));
-        assert!(!same_code("ABCD2345", "ABCD234"));
-        assert!(!same_code("ABCD2345", ""));
-        assert!(!same_code("", ""));
+    fn text_compares_without_short_circuiting() {
+        assert!(same_text(PAIR_CODE, PAIR_CODE));
+        assert!(!same_text(PAIR_CODE, "ABCD2345678"));
+        assert!(!same_text(PAIR_CODE, "ABCD23456788"));
+        assert!(same_text("", ""));
+    }
+
+    /// The proof covers the key, the code and both nonces, so a swapped key or a guessed
+    /// code stops the handshake instead of merely gating a request.
+    #[test]
+    fn the_proof_binds_the_key_the_code_and_the_nonces() {
+        let viewer = crypto::generate();
+        let host = crypto::generate();
+        let pair = crypto::pair_key(&viewer, "viewer", &crypto::public_key(&host), "host").unwrap();
+        let base = confirmation(&pair, "host", PAIR_CODE, "viewer", "host", "n1", "n2");
+        assert_eq!(base, confirmation(&pair, "host", PAIR_CODE, "viewer", "host", "n1", "n2"));
+        assert_ne!(base, confirmation(&pair, "host", "ABCD2345678", "viewer", "host", "n1", "n2"), "a wrong code");
+        assert_ne!(base, confirmation(&pair, "host", PAIR_CODE, "viewer", "host", "n1", "n3"), "a replayed nonce");
+        assert_ne!(base, confirmation(&pair, "viewer", PAIR_CODE, "viewer", "host", "n1", "n2"), "the other role");
+        let other = crypto::pair_key(&viewer, "viewer", &crypto::public_key(&crypto::generate()), "host").unwrap();
+        assert_ne!(base, confirmation(&other, "host", PAIR_CODE, "viewer", "host", "n1", "n2"), "another key");
     }
 
     #[test]
@@ -507,8 +625,8 @@ mod tests {
         assert!(!attempts.refused());
     }
 
-    fn introduction(id: &str, host: bool) -> Value {
-        json!({"id": id, "name": id, "platform": "linux", "publicKey": crypto::public_key(&crypto::generate()), "host": host})
+    fn introduction(id: &str, host: bool, public_key: &str) -> Value {
+        json!({"id": id, "name": id, "platform": "linux", "publicKey": public_key, "host": host})
     }
 
     #[tokio::test]
@@ -516,26 +634,32 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
         let attempts = Arc::new(Mutex::new(Attempts::default()));
+        let host_secret = crypto::generate();
+        let viewer_secret = crypto::generate();
+        let host_public = crypto::public_key(&host_secret);
 
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            pair_in(socket, Some("ABCD2345"), &std::collections::BTreeMap::new(), Some(introduction("host-1", true)), &attempts).await
+            let host = identity("host-1", &host_secret);
+            let trusted = std::collections::BTreeMap::new();
+            pair_in(socket, &host, Some(PAIR_CODE), &trusted, Some(introduction("host-1", true, &host_public)), &attempts).await
         });
 
         let request = format!("ws://{address}/").into_client_request().unwrap();
         let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        let (mut viewer, host) = pair_out(socket, "ABCD2345", introduction("viewer-1", false)).await.unwrap();
-        assert_eq!((host.id.as_str(), host.host), ("host-1", true));
+        let viewer = identity("viewer-1", &viewer_secret);
+        let (mut client, host_row) = pair_out(socket, &viewer, PAIR_CODE, introduction("viewer-1", false, &crypto::public_key(&viewer_secret))).await.unwrap();
+        assert_eq!((host_row.id.as_str(), host_row.host), ("host-1", true));
 
         let (mut host_side, viewer_row) = server.await.unwrap().unwrap();
         assert_eq!((viewer_row.id.as_str(), viewer_row.host), ("viewer-1", false));
 
         // Paired is not the same as silent: both directions still carry frames.
-        viewer.send(Message::text("ping")).await.unwrap();
+        client.send(Message::text("ping")).await.unwrap();
         assert_eq!(host_side.next().await.unwrap().unwrap(), Message::text("ping"));
         host_side.send(Message::text("pong")).await.unwrap();
-        assert_eq!(viewer.next().await.unwrap().unwrap(), Message::text("pong"));
+        assert_eq!(client.next().await.unwrap().unwrap(), Message::text("pong"));
     }
 
     #[tokio::test]
@@ -543,41 +667,99 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
         let attempts = Arc::new(Mutex::new(Attempts::default()));
+        let shared = attempts.clone();
+        let host_secret = crypto::generate();
+        let viewer_secret = crypto::generate();
+        let host_public = crypto::public_key(&host_secret);
 
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            pair_in(socket, Some("ABCD2345"), &std::collections::BTreeMap::new(), Some(introduction("host-1", true)), &attempts).await
+            let host = identity("host-1", &host_secret);
+            let trusted = std::collections::BTreeMap::new();
+            pair_in(socket, &host, Some(PAIR_CODE), &trusted, Some(introduction("host-1", true, &host_public)), &shared).await
         });
 
         let request = format!("ws://{address}/").into_client_request().unwrap();
         let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        let error = pair_out(socket, "WRONG123", introduction("viewer-1", false)).await.unwrap_err();
+        let viewer = identity("viewer-1", &viewer_secret);
+        let error = pair_out(socket, &viewer, "WRONG1234567", introduction("viewer-1", false, &crypto::public_key(&viewer_secret))).await.unwrap_err();
         assert!(error.contains("not right"), "{error}");
         assert!(server.await.unwrap().is_none());
+        assert_eq!(attempts.lock().unwrap().failed, 1, "one wrong code is one failure");
     }
 
     #[tokio::test]
     async fn a_trusted_computer_comes_back_without_a_code() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
-        let viewer = introduction("viewer-1", false);
-        let key = viewer["publicKey"].as_str().unwrap().to_string();
+        let viewer_secret = crypto::generate();
+        let viewer_public = crypto::public_key(&viewer_secret);
         let mut trusted = std::collections::BTreeMap::new();
-        trusted.insert("viewer-1".to_string(), key);
+        trusted.insert("viewer-1".to_string(), viewer_public.clone());
+        let host_secret = crypto::generate();
+        let host_public = crypto::public_key(&host_secret);
 
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            // The host is not showing a code at all: `None` would refuse everyone else.
-            pair_in(socket, None, &trusted, Some(introduction("host-1", true)), &Mutex::new(Attempts::default())).await
+            let host = identity("host-1", &host_secret);
+            // No code on screen at all: only the pinned key gets in.
+            pair_in(socket, &host, None, &trusted, Some(introduction("host-1", true, &host_public)), &Mutex::new(Attempts::default())).await
         });
 
         let request = format!("ws://{address}/").into_client_request().unwrap();
         let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        let (_, host) = pair_out(socket, "", viewer).await.unwrap();
-        assert_eq!(host.id, "host-1");
+        let viewer = identity("viewer-1", &viewer_secret);
+        let (_, host_row) = pair_out(socket, &viewer, "", introduction("viewer-1", false, &viewer_public)).await.unwrap();
+        assert_eq!(host_row.id, "host-1");
         assert!(server.await.unwrap().is_some());
+    }
+
+    /// Two independent computers, each with its own state, key and device id, pair over a
+    /// real socket and pin one another. This is the shape a LAN pair takes, without a
+    /// window in the middle.
+    #[tokio::test]
+    async fn two_computers_pair_and_pin_one_another() {
+        let dir_a = test_dir("host");
+        let dir_b = test_dir("viewer");
+        let a = Remote::new(&dir_a);
+        let b = Remote::new(&dir_b);
+        let secret_a = crypto::generate();
+        let secret_b = crypto::generate();
+        secrets::set_key(&dir_a, &crypto::encode_secret(&secret_a)).unwrap();
+        secrets::set_key(&dir_b, &crypto::encode_secret(&secret_b)).unwrap();
+        let id_a = a.lock().settings.device_id.clone();
+        let id_b = b.lock().settings.device_id.clone();
+        assert_ne!(id_a, id_b, "two computers must not share a device id");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let attempts = Arc::new(Mutex::new(Attempts::default()));
+        let host = async {
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            pair_host(&a, socket, Some(PAIR_CODE.to_string()), &attempts).await
+        };
+        let join = async {
+            let request = format!("ws://{address}/").into_client_request().unwrap();
+            let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+            pair_join(&b, socket, format!("{address}"), PAIR_CODE).await
+        };
+        let (host_result, join_result) = futures_util::join!(host, join);
+
+        let (_host_socket, viewer_row) = host_result.unwrap();
+        let (_join_socket, host_row) = join_result.unwrap();
+        assert_eq!((host_row.id.as_str(), viewer_row.id.as_str()), (id_a.as_str(), id_b.as_str()));
+        // Each side pinned the other's key, so the trust outlives this socket.
+        assert!(a.lock().settings.is_trusted(&id_b, &crypto::public_key(&secret_b)), "the host pinned the viewer");
+        assert!(b.lock().settings.is_trusted(&id_a, &crypto::public_key(&secret_a)), "the viewer pinned the host");
+        let saved_a = super::config::load(&dir_a);
+        let saved_b = super::config::load(&dir_b);
+        assert!(saved_a.is_trusted(&id_b, &crypto::public_key(&secret_b)), "the host's pin is on disk");
+        assert!(saved_b.is_trusted(&id_a, &crypto::public_key(&secret_a)), "the viewer's pin is on disk");
+        let _ = std::fs::remove_dir_all(dir_a);
+        let _ = std::fs::remove_dir_all(dir_b);
     }
 
     #[test]
@@ -588,5 +770,98 @@ mod tests {
         assert!(serde_json::from_value::<Introduction>(json!({"id": "dev-1"})).is_ok());
         assert!(host::valid_id(&intro.id).is_ok());
         assert!(crypto::fingerprint(&intro.public_key).len() == 16);
+    }
+
+    /// One side of a pairing, run as its own process. `two_networks_pair` drives two of
+    /// these in separate network namespaces, which is the shape of a real two-computer
+    /// link.
+    #[tokio::test]
+    async fn pair_side() {
+        let side = std::env::var("PANTHEON_PAIR_SIDE").unwrap_or_default();
+        if side.is_empty() {
+            return;
+        }
+        let dir = std::env::var("PANTHEON_PAIR_DIR").expect("PANTHEON_PAIR_DIR");
+        let code = std::env::var("PANTHEON_PAIR_CODE").expect("PANTHEON_PAIR_CODE");
+        let address = std::env::var("PANTHEON_PAIR_ADDRESS").expect("PANTHEON_PAIR_ADDRESS");
+        let port: u16 = std::env::var("PANTHEON_PAIR_PORT").expect("PANTHEON_PAIR_PORT").parse().unwrap();
+        let path = std::path::Path::new(&dir);
+        let remote = Remote::new(path);
+        let secret = crypto::generate();
+        secrets::set_key(path, &crypto::encode_secret(&secret)).unwrap();
+        let attempts = Arc::new(Mutex::new(Attempts::default()));
+        let paired = if side == "host" {
+            let listener = TcpListener::bind(("0.0.0.0", port)).await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            pair_host(&remote, socket, Some(code), &attempts).await.is_some()
+        } else {
+            let request = format!("ws://{address}:{port}/").into_client_request().unwrap();
+            let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+            pair_join(&remote, socket, format!("{address}:{port}"), &code).await.is_ok()
+        };
+        let id = remote.lock().settings.device_id.clone();
+        let pinned = remote.lock().settings.trusted.keys().cloned().collect::<Vec<String>>();
+        let result = json!({
+            "side": side,
+            "paired": paired,
+            "id": id,
+            "pinned": pinned,
+            "failed": attempts.lock().unwrap().failed,
+        });
+        std::fs::write(format!("{dir}.result"), result.to_string()).unwrap();
+    }
+
+    /// Two computers, two network namespaces joined by a veth pair, pairing over that
+    /// link with a code. Host and viewer are separate processes, so this is the same path
+    /// a LAN pair takes. Needs root and the namespaces already up; `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore = "needs two network namespaces joined by a veth pair"]
+    async fn two_networks_pair() {
+        let exe = std::env::current_exe().unwrap();
+        let host_address = "10.99.0.1";
+        let port = 7447;
+        let side = |side: &str, namespace: &str, dir: &std::path::Path, code: &str| {
+            let mut command = std::process::Command::new("sudo");
+            // `sudo` drops the environment, so the sides are passed as `env` arguments
+            // rather than as this process's own variables.
+            command.args(["ip", "netns", "exec", namespace, "env"]);
+            command.arg(format!("PANTHEON_PAIR_SIDE={side}"));
+            command.arg(format!("PANTHEON_PAIR_DIR={}", dir.display()));
+            command.arg(format!("PANTHEON_PAIR_CODE={code}"));
+            command.arg(format!("PANTHEON_PAIR_ADDRESS={host_address}"));
+            command.arg(format!("PANTHEON_PAIR_PORT={port}"));
+            command.arg(&exe);
+            command.args(["--exact", "remote::direct::tests::pair_side", "--nocapture"]);
+            command
+        };
+        let read = |dir: &std::path::Path| -> Value {
+            let text = std::fs::read_to_string(format!("{}.result", dir.display())).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        for (label, code) in [("a right code", PAIR_CODE), ("a wrong code", "WRONG1234567")] {
+            let host_dir = test_dir(&format!("net-host-{label}"));
+            let viewer_dir = test_dir(&format!("net-viewer-{label}"));
+            let host = side("host", "pantheon-a", &host_dir, PAIR_CODE).spawn().expect("spawn the host");
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let viewer = side("join", "pantheon-b", &viewer_dir, code).output().expect("run the viewer");
+            assert!(viewer.status.success(), "{label}: viewer: {}{}", String::from_utf8_lossy(&viewer.stdout), String::from_utf8_lossy(&viewer.stderr));
+            let host = host.wait_with_output().expect("wait for the host");
+            assert!(host.status.success(), "{label}: host: {}{}", String::from_utf8_lossy(&host.stdout), String::from_utf8_lossy(&host.stderr));
+            let host = read(&host_dir);
+            let viewer = read(&viewer_dir);
+            if code == PAIR_CODE {
+                assert_eq!(host["paired"], json!(true), "{label}: the host paired");
+                assert_eq!(viewer["paired"], json!(true), "{label}: the viewer paired");
+                assert!(host["pinned"].as_array().unwrap().contains(&viewer["id"]), "{label}: the host pinned the viewer");
+                assert!(viewer["pinned"].as_array().unwrap().contains(&host["id"]), "{label}: the viewer pinned the host");
+            } else {
+                assert_eq!(host["paired"], json!(false), "{label}: a wrong code is refused");
+                assert_eq!(viewer["paired"], json!(false), "{label}: the viewer is not paired");
+                assert_eq!(host["failed"], json!(1), "{label}: the host counted one wrong code");
+            }
+            let _ = std::fs::remove_dir_all(&host_dir);
+            let _ = std::fs::remove_dir_all(&viewer_dir);
+        }
     }
 }
