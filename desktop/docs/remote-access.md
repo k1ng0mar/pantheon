@@ -19,11 +19,12 @@ view. Nothing is sent anywhere until the user signs in.
 A computer can also be reached directly, with no relay and no sign-in. One computer listens
 (`remote_direct_start`, port 7447, and **Allow remote control** must already be on) and shows a
 12-character code (`remote_direct_code`, good for 10 minutes). The other types that computer's
-`host:port` and the code (`remote_direct_connect`). Nothing else is set up: no account, no
-provider, no server.
+address and the code (`remote_direct_connect`). Nothing else is set up: no account, no provider,
+no server. The pairing is the same on every transport; only the wire changes.
 
-- Plain WebSocket on `ws://host:port/`, so only loopback, private, link-local and `.local`
-  addresses are accepted. A public address is refused until TLS lands.
+- The address is `host:port`, a Tailscale address, or `wss://host[:port]`. Loopback, private,
+  link-local and `.local` hosts, plus Tailscale CGNAT addresses (`100.64.0.0/10`) and `.ts.net`
+  names, take a plain socket. A public host is refused on plain and accepted behind TLS.
 - Pairing is three frames: the joining computer sends `{ type: "pair", nonce, device }`, the host
   answers `{ type: "pair-ok", nonce, confirm, device }`, and the joining computer answers
   `{ type: "pair-confirm", confirm }` (or the host sends `{ type: "pair-fail", error }`). The code
@@ -38,6 +39,21 @@ provider, no server.
   same `{ from, to, body, ref }` frames. `host.rs`, the mirrors, the trust pins and the approval
   flow are untouched.
 - `remote_direct_forget` drops the address, the pin and the device row.
+
+### Reaching a computer elsewhere
+
+Tailscale and a self-hosted endpoint carry the same pairing; the code still proves the key
+exchange, so a stranger on the wire cannot impersonate either side.
+
+- **Tailscale.** Put both computers on the same tailnet and join by its MagicDNS name
+  (`studio.ts.net:7447`) or CGNAT address (`100.126.202.84:7447`). The wire is WireGuard; no
+  extra configuration.
+- **Self-hosted endpoint.** Point the joining computer at `wss://your-endpoint`, where TLS ends.
+  Pantheon's listener is plain, so a reverse proxy (Caddy, nginx) terminates TLS and forwards to
+  the host's port. The endpoint needs a certificate the joining computer trusts (a public one,
+  e.g. Let's Encrypt); a self-signed one is not accepted.
+- The host listens on all interfaces. On a public box keep port 7447 firewalled and reach it
+  through Tailscale or the endpoint, not straight through the router.
 
 The relay keeps working in the same build. A frame goes out through the relay outbox when one is
 configured and the destination is not linked here, and through the direct link when it is.
@@ -337,7 +353,7 @@ Requests from one peer are answered in order, except `task.start` (above).
 | `remote_direct_start` | `{ port? }` | `{ port, direct }`. Starts the listener; `port` defaults to 7447. Requires **Allow remote control**. |
 | `remote_direct_stop` | | status. Stops the listener and drops every direct link. |
 | `remote_direct_code` | | `{ code, expiresIn }`. The code another computer types here. |
-| `remote_direct_connect` | `{ address, code }` | `{ direct }`. Pairs with `host:port`; `code` may be empty for a computer already trusted here. |
+| `remote_direct_connect` | `{ address, code }` | `{ direct }`. Pairs with a computer's address (see Reaching a computer elsewhere); `code` may be empty for a computer already trusted here. |
 | `remote_direct_forget` | `{ deviceId }` | `{ direct }`. Forgets a paired computer. |
 
 Window events: `remote://status` (status), `remote://presence` (devices), and for mirrors the

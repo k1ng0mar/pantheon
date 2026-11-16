@@ -96,44 +96,92 @@ fn confirmation(key: &crypto::Key, role: &str, code: &str, viewer: &str, host: &
     mac.finalize().into_bytes().iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Loopback, private and link-local addresses, plus `.local` names: the ones a plain
-/// WebSocket is safe on. A public address needs TLS, which is the tailnet work.
-fn local_host(host: &str) -> bool {
-    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".local") {
-        return true;
+/// Which kind of computer an address reaches. The pairing is identical; only the wire
+/// differs: your network is a plain socket, Tailscale rides WireGuard, and anything else
+/// needs TLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostKind {
+    /// Loopback, private or link-local, plus `.local` names: a plain socket is fine.
+    Local,
+    /// A tailnet address (CGNAT ip or `.ts.net` name). WireGuard carries it.
+    Tailscale,
+    /// Anything else: acceptable only behind TLS.
+    Public,
+}
+
+fn host_kind(name: &str) -> HostKind {
+    let lower = name.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".local") {
+        return HostKind::Local;
     }
-    match host.parse::<IpAddr>() {
+    if lower == "ts.net" || lower.ends_with(".ts.net") {
+        return HostKind::Tailscale;
+    }
+    match name.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => {
             let [a, b, _, _] = v4.octets();
-            a == 10 || a == 127 || (a == 172 && (16..32).contains(&b)) || (a == 192 && b == 168) || (a == 169 && b == 254)
+            if a == 100 && (64..=127).contains(&b) {
+                HostKind::Tailscale
+            } else if a == 10 || a == 127 || (a == 172 && (16..32).contains(&b)) || (a == 192 && b == 168) || (a == 169 && b == 254) {
+                HostKind::Local
+            } else {
+                HostKind::Public
+            }
         }
         Ok(IpAddr::V6(v6)) => {
             let segments = v6.segments();
-            v6.is_loopback() || (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80
+            if v6.is_loopback() || (segments[0] & 0xfe00) == 0xfc00 || (segments[0] & 0xffc0) == 0xfe80 {
+                HostKind::Local
+            } else {
+                HostKind::Public
+            }
         }
-        Err(_) => false,
+        Err(_) => HostKind::Public,
     }
 }
 
-/// `host:port` for a computer on this network, as a plain WebSocket URL.
-fn ws_url(address: &str) -> Result<String> {
+fn parse_port(text: &str) -> Result<u16> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("Enter the computer's address as host:port.".into());
+    }
+    let port = text.parse::<u16>().map_err(|_| "That port is not usable.".to_string())?;
+    if port == 0 {
+        return Err("That port is not usable.".into());
+    }
+    Ok(port)
+}
+
+/// The WebSocket URL for a computer address: `host:port` on your network or tailnet, or
+/// `wss://host[:port]` for a self-hosted endpoint. A public host is refused on a plain
+/// socket and accepted behind TLS.
+fn connect_url(address: &str) -> Result<String> {
     let address = address.trim();
     if address.is_empty() || address.len() > MAX_ADDRESS || address.contains(char::is_whitespace) {
         return Err("That address is not usable.".into());
     }
-    let (name, port) = address.rsplit_once(':').ok_or("Enter the computer's address as host:port.")?;
-    if name.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+    // An optional scheme; the bare form is plain, and only `wss://` turns on TLS. The prefix
+    // is ASCII, so slicing the original at its length keeps the host's own case.
+    let lowered = address.to_ascii_lowercase();
+    let (scheme, rest): (&str, &str) = if lowered.starts_with("wss://") {
+        ("wss", &address[6..])
+    } else if lowered.starts_with("ws://") {
+        ("ws", &address[5..])
+    } else {
+        ("ws", address)
+    };
+    let (given, port) = match rest.rsplit_once(':') {
+        Some((given, port)) => (given, Some(port)),
+        None => (rest, None),
+    };
+    let given = given.trim_start_matches('[').trim_end_matches(']').trim();
+    if given.is_empty() {
         return Err("Enter the computer's address as host:port.".into());
     }
-    let port: u16 = port.parse().map_err(|_| "That port is not usable.".to_string())?;
-    if port == 0 {
-        return Err("That port is not usable.".into());
+    let port = port.map(parse_port).transpose()?.unwrap_or(if scheme == "wss" { 443 } else { DEFAULT_PORT });
+    if scheme == "ws" && host_kind(given) == HostKind::Public {
+        return Err("That address is public, so it needs TLS: enter it as wss://host:port, or use a Tailscale address.".into());
     }
-    let name = name.trim_start_matches('[').trim_end_matches(']');
-    if !local_host(name) {
-        return Err("That address is not on this network. A public address needs TLS, which is not built yet.".into());
-    }
-    Ok(format!("ws://{name}:{port}/"))
+    Ok(format!("{scheme}://{given}:{port}/"))
 }
 
 /// Wrong pairing codes, so a stranger on the network cannot guess one all night.
@@ -236,9 +284,10 @@ pub(crate) fn disable(app: &tauri::AppHandle) {
     }
 }
 
-/// Connects this computer to a host on the same network and pairs with its code.
+/// Connects this computer to a host on this network, over Tailscale, or through a
+/// self-hosted `wss://` endpoint, and pairs with its code.
 pub(crate) async fn connect(app: AppHandle, address: String, code: String) -> Result<Value> {
-    let url = ws_url(&address)?;
+    let url = connect_url(&address)?;
     let request = url.into_client_request().map_err(|_| "That address is not usable.")?;
     let (socket, _) = tokio::time::timeout(TIMEOUT, tokio_tungstenite::connect_async(request))
         .await
@@ -602,14 +651,26 @@ mod tests {
     }
 
     #[test]
-    fn only_a_local_address_gets_a_plain_socket() {
-        assert_eq!(ws_url("192.168.1.5:7447").unwrap(), "ws://192.168.1.5:7447/");
-        assert_eq!(ws_url("10.0.0.2:1").unwrap(), "ws://10.0.0.2:1/");
-        assert_eq!(ws_url("127.0.0.1:7447").unwrap(), "ws://127.0.0.1:7447/");
-        assert_eq!(ws_url("studio.local:7447").unwrap(), "ws://studio.local:7447/");
-        assert_eq!(ws_url("[::1]:7447").unwrap(), "ws://::1:7447/");
-        for address in ["8.8.8.8:7447", "example.com:7447", "192.168.1.5", "192.168.1.5:0", "192.168.1.5:x", ":7447", ""] {
-            assert!(ws_url(address).is_err(), "{address}");
+    fn addresses_get_the_right_scheme() {
+        // Plain: your network, with or without a port.
+        assert_eq!(connect_url("192.168.1.5:7447").unwrap(), "ws://192.168.1.5:7447/");
+        assert_eq!(connect_url("10.0.0.2").unwrap(), "ws://10.0.0.2:7447/");
+        assert_eq!(connect_url("127.0.0.1:1").unwrap(), "ws://127.0.0.1:1/");
+        assert_eq!(connect_url("studio.local:7447").unwrap(), "ws://studio.local:7447/");
+        assert_eq!(connect_url("[::1]:7447").unwrap(), "ws://::1:7447/");
+        assert_eq!(connect_url("ws://192.168.1.5:7447").unwrap(), "ws://192.168.1.5:7447/");
+        // Tailscale rides WireGuard, so it stays plain.
+        assert_eq!(connect_url("100.126.202.84").unwrap(), "ws://100.126.202.84:7447/");
+        assert_eq!(connect_url("100.64.1.2:8443").unwrap(), "ws://100.64.1.2:8443/");
+        assert_eq!(connect_url("studio.ts.net:7447").unwrap(), "ws://studio.ts.net:7447/");
+        // A public host is accepted behind TLS.
+        assert_eq!(connect_url("wss://connect.example.com").unwrap(), "wss://connect.example.com:443/");
+        assert_eq!(connect_url("wss://connect.example.com:8443").unwrap(), "wss://connect.example.com:8443/");
+        assert_eq!(connect_url("wss://8.8.8.8").unwrap(), "wss://8.8.8.8:443/");
+        assert_eq!(connect_url("WSS://Host:8443").unwrap(), "wss://Host:8443/");
+        // But a public host on a plain socket is refused, as are malformed addresses.
+        for address in ["8.8.8.8:7447", "example.com:7447", "ws://8.8.8.8:7447", "192.168.1.5:0", "192.168.1.5:x", ":7447", ""] {
+            assert!(connect_url(address).is_err(), "{address}");
         }
     }
 
@@ -796,7 +857,9 @@ mod tests {
             let socket = tokio_tungstenite::accept_async(stream).await.unwrap();
             pair_host(&remote, socket, Some(code), &attempts).await.is_some()
         } else {
-            let request = format!("ws://{address}:{port}/").into_client_request().unwrap();
+            // Through the same address parser the app uses, so a tailnet or TLS address is
+            // classified here rather than assumed.
+            let request = connect_url(&format!("{address}:{port}")).unwrap().into_client_request().unwrap();
             let (socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
             pair_join(&remote, socket, format!("{address}:{port}"), &code).await.is_ok()
         };
@@ -814,13 +877,9 @@ mod tests {
 
     /// Two computers, two network namespaces joined by a veth pair, pairing over that
     /// link with a code. Host and viewer are separate processes, so this is the same path
-    /// a LAN pair takes. Needs root and the namespaces already up; `cargo test -- --ignored`.
-    #[tokio::test]
-    #[ignore = "needs two network namespaces joined by a veth pair"]
-    async fn two_networks_pair() {
+    /// a real pair takes. Needs root and the namespaces already up; `cargo test -- --ignored`.
+    async fn two_networks(host_address: &str, port: u16) {
         let exe = std::env::current_exe().unwrap();
-        let host_address = "10.99.0.1";
-        let port = 7447;
         let side = |side: &str, namespace: &str, dir: &std::path::Path, code: &str| {
             let mut command = std::process::Command::new("sudo");
             // `sudo` drops the environment, so the sides are passed as `env` arguments
@@ -863,5 +922,21 @@ mod tests {
             let _ = std::fs::remove_dir_all(&host_dir);
             let _ = std::fs::remove_dir_all(&viewer_dir);
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "needs two network namespaces joined by a veth pair"]
+    async fn two_networks_pair() {
+        two_networks("10.99.0.1", 7447).await;
+    }
+
+    /// The same two computers on a CGNAT (`100.64.0.0/10`) link, which is the address range
+    /// Tailscale hands out. The address still has to classify as tailnet, not as a public
+    /// host that needs TLS. A different port keeps the two tests from fighting for the one
+    /// the namespaces share.
+    #[tokio::test]
+    #[ignore = "needs two network namespaces joined by a veth pair"]
+    async fn two_networks_pair_over_tailnet() {
+        two_networks("100.64.0.1", 7448).await;
     }
 }
