@@ -2476,23 +2476,38 @@ pub mod python_runner {
     /// The shim: imports the plugin `__init__`, calls `register(ctx)` with a
     /// capturing ctx, dispatches the requested hook, prints result JSON.
     ///
-    /// Hash-bound at load: the host passes the expected sha256 of the
-    /// verified `__init__.py` as argv[4]. The shim reads the entrypoint ONCE,
-    /// refuses to run when the bytes differ from what the host verified
-    /// (a swap between the host's check and this read fails closed here),
-    /// and executes EXACTLY the bytes it hashed - there is no
-    /// check-then-use gap inside the child between hashing and importing.
+    /// Hash-bound at load: the host passes the sha256 of the whole verified
+    /// plugin tree as argv[4]. The shim recomputes that digest from the files
+    /// on disk and refuses to run when any file changed, including sibling
+    /// modules imported by `__init__.py`. It then executes exactly the
+    /// entrypoint bytes the host verified - there is no check-then-use gap
+    /// inside the child between hashing and importing.
     const SHIM: &str = r#"
-import hashlib, importlib.util, json, sys
+import hashlib, importlib.util, json, os, sys
 plug_dir, hook_name, payload_json, expected_sha = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 entry = plug_dir + "/__init__.py"
 result = {"context": None}
 try:
+    files = []
+    for root, dirs, names in os.walk(plug_dir):
+        dirs.sort()
+        for name in sorted(names):
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, plug_dir).replace(os.sep, "/")
+            files.append((rel, path))
+    files.sort()
+    digest = hashlib.sha256()
+    for rel, path in files:
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        with open(path, "rb") as f:
+            digest.update(f.read())
+        digest.update(b"\1")
+    if digest.hexdigest() != expected_sha:
+        raise RuntimeError(
+            "plugin tree changed after host verification; refusing to run swapped code")
     with open(entry, "rb") as f:
         src = f.read()
-    if hashlib.sha256(src).hexdigest() != expected_sha:
-        raise RuntimeError(
-            "plugin __init__.py changed after host verification; refusing to run swapped code")
     spec = importlib.util.spec_from_file_location(
         "pantheon_plugin", entry)
     mod = importlib.util.module_from_spec(spec)
@@ -2559,18 +2574,62 @@ print(json.dumps(result))
             .filter(|c| !c.trim().is_empty()))
     }
 
+    /// Deterministic digest of every file in the plugin tree. The shim
+    /// recomputes this same byte sequence before importing, so a sibling
+    /// module swapped after the host's approval check fails closed in the
+    /// child instead of being imported as trusted code.
+    fn plugin_tree_hash(dir: &Path) -> Result<String, PantheonError> {
+        let mut files = Vec::new();
+        collect_plugin_files(dir, &mut files)
+            .map_err(|e| xerr("EXT_TAMPERED", format!("walk {}: {e}", dir.display()), false))?;
+        files.sort_by(|a, b| {
+            relative_plugin_path(a, dir).cmp(&relative_plugin_path(b, dir))
+        });
+        let mut bytes = Vec::new();
+        for file in &files {
+            let rel = relative_plugin_path(file, dir);
+            bytes.extend_from_slice(rel.as_bytes());
+            bytes.push(0);
+            let contents = std::fs::read(file)
+                .map_err(|e| xerr("EXT_TAMPERED", format!("read {}: {e}", file.display()), false))?;
+            bytes.extend_from_slice(&contents);
+            bytes.push(1);
+        }
+        Ok(pantheon_api::approval::bytes_hash(&bytes))
+    }
+
+    fn collect_plugin_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                collect_plugin_files(&path, out)?;
+            } else if kind.is_file() || kind.is_symlink() {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn relative_plugin_path(file: &Path, dir: &Path) -> String {
+        file.strip_prefix(dir)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
     /// Hash-bind at spawn for hook plugins. The manager's approval check runs
     /// at load time; the plugin dir is re-verified immediately before every
     /// hook fire and the CANONICAL dir is what the child receives.
     ///
     /// Returns the canonical dir plus the expected sha256 of the verified
-    /// `__init__.py`, which the SHIM re-checks inside the child before
+    /// plugin tree, which the SHIM recomputes inside the child before
     /// importing (see `SHIM`). The entrypoint bytes are sandwiched around the
     /// approval hash - read, hash+approve, re-read and compare - so the
-    /// expected hash is bound to bytes that were part of an approved tree:
-    /// a swap at any point fails closed here, and a swap after this function
-    /// returns fails closed in the SHIM. Either way swapped bytes never
-    /// execute.
+    /// expected hash is bound to a tree that was approved: a swap at any
+    /// point fails closed here, and a swap after this function returns fails
+    /// closed in the SHIM. Either way swapped code never executes.
     ///
     /// Callers must not execute on `Err`; `fire_hook` collapses this to
     /// silence, `fire_hook_full` surfaces it so gates can distinguish
@@ -2621,23 +2680,21 @@ print(json.dumps(result))
                         plugin.manifest.name
                     )));
                 }
-                let expected = pantheon_api::approval::bytes_hash(&before);
+                let expected = plugin_tree_hash(&canon_dir)?;
                 return Ok((canon_dir, expected));
             }
         }
         // Standalone (no scope) or bundled: no approval hash to bind against.
-        // Still hand the SHIM the current bytes' hash so a swap between here
+        // Still hand the SHIM the whole tree's hash so a swap between here
         // and the child's import fails closed instead of executing.
-        let entry = canon_dir.join("__init__.py");
-        let bytes = std::fs::read(&entry)
-            .map_err(|e| tampered(format!("read {}: {e}", entry.display())))?;
         if !canon_dir.join("plugin.yaml").is_file() {
             return Err(tampered(format!(
                 "plugin manifest missing in {}",
                 canon_dir.display()
             )));
         }
-        Ok((canon_dir, pantheon_api::approval::bytes_hash(&bytes)))
+        let expected = plugin_tree_hash(&canon_dir)?;
+        Ok((canon_dir, expected))
     }
 
     /// Fire one hook and return the full answer, INCLUDING an error for
@@ -2685,7 +2742,7 @@ print(json.dumps(result))
             // entrypoint bytes sandwiched around the hash, fail closed on
             // any divergence since load. The canonical dir - not the raw
             // configured path - is what the child loads `__init__.py` from,
-            // and the SHIM executes exactly the bytes this hash covers.
+            // and the SHIM checks the whole tree this hash covers.
             let (canon_dir, expected_sha) = verify_hook_spawn(plugin)?;
             (canon_dir.to_string_lossy().to_string(), expected_sha)
         };
@@ -2946,6 +3003,19 @@ print(json.dumps(result))
                 platform: "test".to_string(),
                 extra: HashMap::new(),
             }
+        }
+
+        #[test]
+        fn plugin_tree_hash_changes_when_an_imported_sibling_changes() {
+            let dir = chatty_plugin_dir();
+            let before = plugin_tree_hash(&dir).expect("hash plugin tree");
+            std::fs::write(dir.join("helper.py"), "VALUE = 'A'\n").unwrap();
+            let with_sibling = plugin_tree_hash(&dir).expect("hash plugin tree");
+            assert_ne!(before, with_sibling);
+            std::fs::write(dir.join("helper.py"), "VALUE = 'B'\n").unwrap();
+            let swapped = plugin_tree_hash(&dir).expect("hash plugin tree");
+            assert_ne!(with_sibling, swapped);
+            let _ = std::fs::remove_dir_all(dir);
         }
 
         /// Item 1 regression, helper level: 200KB on stdout *and* stderr
