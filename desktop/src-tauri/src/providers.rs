@@ -187,6 +187,12 @@ fn tool_write_paths(name: &str, input: &str) -> Option<Vec<String>> {
         .and_then(|input| explicit_write_paths(name, &input))
 }
 
+/// Write targets from a tool call with already parsed JSON arguments. Used by
+/// team workers, whose tool host has to gate writes against their file scope.
+pub(crate) fn tool_write_paths_value(name: &str, args: &Value) -> Option<Vec<String>> {
+    muse::write_paths(name, args).or_else(|| explicit_write_paths(name, args))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolActivity {

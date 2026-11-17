@@ -195,7 +195,7 @@ fn tool_status(status: &str) -> &'static str {
 }
 
 /// Paths a Muse file tool writes, from its JSON arguments.
-fn write_paths(tool: &str, args: &Value) -> Option<Vec<String>> {
+pub(crate) fn write_paths(tool: &str, args: &Value) -> Option<Vec<String>> {
     match tool {
         "bash" | "shell" => Some(vec![]),
         "apply_patch" => Some(

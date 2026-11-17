@@ -5,6 +5,17 @@ use std::time::Instant;
 fn pending_approval(agent: &RunningAgent, id: &str) -> String {
     let scoped = format!("{}:{id}", agent.run_id);
     agent.approvals.lock().unwrap().insert(scoped.clone());
+    agent.pending_requests.lock().unwrap().insert(
+        scoped.clone(),
+        AgentEvent {
+            session_id: "task".into(),
+            kind: "approval".into(),
+            text: String::new(),
+            request_id: Some(scoped.clone()),
+            data: None,
+            tool: None,
+        },
+    );
     scoped
 }
 

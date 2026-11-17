@@ -2430,3 +2430,14 @@ fn lead_guidance_is_bounded_to_two_kilobytes() {
     team.config.lead_guidance = None;
     assert!(team.config.validate().is_ok());
 }
+
+#[test]
+fn worker_write_scope_gates_explicit_file_tools() {
+    let files = vec!["src/lib.rs".to_string(), "tests".to_string()];
+    assert!(scope_allows_write(&files, false, Some(vec!["src/lib.rs".into()])));
+    assert!(scope_allows_write(&files, false, Some(vec!["tests/a.rs".into()])));
+    assert!(scope_allows_write(&files, false, Some(vec![])));
+    assert!(!scope_allows_write(&files, false, Some(vec!["src/main.rs".into()])));
+    assert!(!scope_allows_write(&files, false, Some(vec!["../secret".into()])));
+    assert!(!scope_allows_write(&files, true, Some(vec!["src/lib.rs".into()])));
+}

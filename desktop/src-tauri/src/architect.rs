@@ -945,26 +945,31 @@ pub fn host(
     stopped: Arc<AtomicBool>,
     admission: &Admission,
 ) -> Option<ToolHost> {
-    let actor = {
+    let (actor, scope) = {
         let state = app.state::<AppState>();
         let store = state.store.lock().ok()?;
         let team = load(&store, &admission.parent).ok()??;
         if team.generation != admission.generation || !active(&team.status) {
             return None;
         }
-        coordination::Actor::resolve(&team, &session_id)?
+        let scope = team
+            .workers
+            .iter()
+            .find(|worker| worker.session_id == session_id)
+            .map(|worker| (worker.files.clone(), worker.read_only));
+        (coordination::Actor::resolve(&team, &session_id)?, scope)
     };
     let generation = admission.generation;
     let parent = admission.parent.clone();
-    let worker = matches!(actor, coordination::Actor::Worker { .. });
+    let worker = scope.is_some();
     let mut tools = if worker { vec![] } else { catalog() };
     tools.extend(coordination::tools(worker));
     Some(ToolHost {
         tools,
         approval_tools: HashSet::new(),
         handler: Arc::new(move |name, args| {
-            let (app, sid, stopped, actor) =
-                (app.clone(), parent.clone(), stopped.clone(), actor.clone());
+            let (app, sid, stopped, actor, scope) =
+                (app.clone(), parent.clone(), stopped.clone(), actor.clone(), scope.clone());
             Box::pin(async move {
                 if stopped.load(Ordering::SeqCst) {
                     return Err("Team agent has stopped.".into());
@@ -993,6 +998,15 @@ pub fn host(
                     }
                     Ok(result)
                 } else {
+                    if let Some((files, read_only)) = &scope {
+                        let paths = crate::providers::tool_write_paths_value(&name, &args);
+                        if !scope_allows_write(files, *read_only, paths) {
+                            return Err(format!(
+                                "This worker may only edit its assigned files: {}",
+                                files.join(", ")
+                            ));
+                        }
+                    }
                     dispatch(&app, &sid, generation, &name, args, &stopped)
                 }
             })
@@ -1040,6 +1054,35 @@ fn validate_files(files: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+/// A worker may only write inside its declared file scopes. An unknown write
+/// target (a shell command) stays with the provider's own approval rules;
+/// an explicit file tool target must match a declared file or directory.
+fn scope_allows_write(files: &[String], read_only: bool, paths: Option<Vec<String>>) -> bool {
+    if read_only {
+        return false;
+    }
+    let Some(paths) = paths else {
+        return true;
+    };
+    paths.iter().all(|path| {
+        let path = path.replace('\\', "/");
+        let path = path.trim();
+        let path = path.strip_prefix("./").unwrap_or(path);
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.split('/').any(|part| part == ".." || part.is_empty())
+        {
+            return false;
+        }
+        let path = path.to_ascii_lowercase();
+        files.iter().any(|scope| {
+            let scope = scope.trim_end_matches('/').to_ascii_lowercase();
+            path == scope || path.starts_with(&format!("{scope}/"))
+        })
+    })
+}
+
 fn overlaps(a: &[String], b: &[String]) -> bool {
     a.is_empty()
         || b.is_empty()
