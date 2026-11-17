@@ -131,7 +131,9 @@ impl RunningAgent {
             .pending_requests
             .lock()
             .map_err(|error| error.to_string())?;
-        if self.stopped.load(Ordering::SeqCst) || !approvals.contains(&request_id) {
+        if self.stopped.load(Ordering::SeqCst)
+            || pending_request_kind(&approvals, &pending_requests, &request_id) != Some("approval")
+        {
             return Err("This approval is no longer pending.".into());
         }
         let original_id = request_id
@@ -240,6 +242,20 @@ fn remove_pending_request(
     }
 }
 
+/// The kind of a pending request, when the id is still live. Both approvals
+/// and questions share the pending set, so responders must check the stored
+/// event kind instead of trusting set membership alone.
+fn pending_request_kind<'a>(
+    approvals: &HashSet<String>,
+    pending_requests: &'a HashMap<String, AgentEvent>,
+    request_id: &str,
+) -> Option<&'a str> {
+    if !approvals.contains(request_id) {
+        return None;
+    }
+    pending_requests.get(request_id).map(|event| event.kind.as_str())
+}
+
 #[cfg(test)]
 mod pending_request_tests {
     use super::*;
@@ -269,6 +285,33 @@ mod pending_request_tests {
         update_pending_request(&mut approvals, Some(&mut pending), request_id, &cancelled);
         assert!(!approvals.contains(request_id));
         assert!(!pending.contains_key(request_id));
+    }
+
+    #[test]
+    fn pending_request_kind_separates_approval_from_question() {
+        let request_id = "run-id:provider-id";
+        let mut approvals = HashSet::new();
+        let mut pending = HashMap::new();
+        let request = AgentEvent {
+            session_id: "task-id".into(),
+            kind: "approval".into(),
+            text: "Allow tool".into(),
+            request_id: Some(request_id.into()),
+            data: None,
+            tool: None,
+        };
+        update_pending_request(&mut approvals, Some(&mut pending), request_id, &request);
+        assert_eq!(pending_request_kind(&approvals, &pending, request_id), Some("approval"));
+
+        let question = AgentEvent {
+            kind: "input_request".into(),
+            ..request
+        };
+        update_pending_request(&mut approvals, Some(&mut pending), request_id, &question);
+        assert_eq!(
+            pending_request_kind(&approvals, &pending, request_id),
+            Some("input_request")
+        );
     }
 }
 
@@ -2529,8 +2572,11 @@ async fn respond_user_input(
         let agent = agents
             .get(&session_id)
             .ok_or("This agent is no longer running.")?;
-        let pending = agent.approvals.lock().map_err(|e| e.to_string())?;
-        if agent.stopped.load(Ordering::SeqCst) || !pending.contains(&request_id) {
+        let approvals = agent.approvals.lock().map_err(|e| e.to_string())?;
+        let pending = agent.pending_requests.lock().map_err(|e| e.to_string())?;
+        if agent.stopped.load(Ordering::SeqCst)
+            || pending_request_kind(&approvals, &pending, &request_id) != Some("input_request")
+        {
             return Err("This question is no longer pending.".into());
         }
         let original_id = request_id
