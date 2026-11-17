@@ -696,11 +696,29 @@ impl DashboardMount {
     /// token/bind the dashboard was configured with. The CLI hands this
     /// to the gateway's [`ServerConfig`](pantheon_gateway::http::ServerConfig).
     pub fn auth_ctx(&self) -> AuthCtx {
+        let mut trusted: Vec<String> = std::env::var("PANTHEON_DASHBOARD_TRUSTED_HOSTS")
+            .ok()
+            .into_iter()
+            .flat_map(|value| value.split(',').map(str::to_owned).collect::<Vec<_>>())
+            .collect();
+        if self.app.bind_all {
+            let bind_host = self
+                .app
+                .bind
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_ascii_lowercase();
+            if !bind_host.is_empty() && !matches!(bind_host.as_str(), "0.0.0.0" | "::" | "*") {
+                trusted.push(bind_host);
+            }
+        }
         AuthCtx::new(
             self.app.token.clone(),
             self.app.bind.clone(),
             self.app.bind_all,
         )
+        .with_trusted_hosts(trusted)
     }
 }
 

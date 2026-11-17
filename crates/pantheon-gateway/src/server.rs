@@ -317,6 +317,10 @@ pub mod http {
         pub bind: String,
         pub bind_all: bool,
         pub sessions: SessionStore,
+        /// Host names whose Origin/Referer is trusted for mutations when the
+        /// dashboard is bound to a non-loopback address. Empty means no web
+        /// client is trusted for mutations on this listener.
+        trusted_hosts: Vec<String>,
     }
 
     impl AuthCtx {
@@ -326,7 +330,27 @@ pub mod http {
                 bind,
                 bind_all,
                 sessions: SessionStore::default(),
+                trusted_hosts: Vec::new(),
             }
+        }
+
+        /// Trust these host names for bind-all mutations. Entries may include
+        /// a port; only the host part is kept so the dashboard's own port
+        /// does not have to be repeated here.
+        pub fn with_trusted_hosts<I, S>(mut self, hosts: I) -> Self
+        where
+            I: IntoIterator<Item = S>,
+            S: AsRef<str>,
+        {
+            let mut trusted: Vec<String> = hosts
+                .into_iter()
+                .map(|host| host_header_name(host.as_ref()))
+                .filter(|host| !host.is_empty())
+                .collect();
+            trusted.sort();
+            trusted.dedup();
+            self.trusted_hosts = trusted;
+            self
         }
 
         /// Mint a session id valid for [`SESSION_TTL_SECS`].
@@ -511,7 +535,31 @@ pub mod http {
             .get("host")
             .map(String::as_str)
             .ok_or_else(|| Response::forbidden("missing Host header"))?;
-        if !ctx.bind_all {
+        if ctx.bind_all {
+            // A wildcard or LAN bind has no fixed bind host to compare against.
+            // Trust only names the operator configured; the request's own Host
+            // header cannot vouch for itself, or DNS rebinding chooses the
+            // accepted authority.
+            let host_name = host_header_name(host);
+            if !ctx.trusted_hosts.iter().any(|trusted| trusted == &host_name) {
+                return Err(Response::forbidden(
+                    "Host is not an allowed dashboard host",
+                ));
+            }
+            if let Some(origin) = req.headers.get("origin") {
+                let authority = authority_of(origin).unwrap_or_default();
+                if host_header_name(&authority) != host_name {
+                    return Err(Response::forbidden("cross-origin request rejected"));
+                }
+            } else if let Some(referer) = req.headers.get("referer") {
+                let authority = authority_of(referer).unwrap_or_default();
+                if host_header_name(&authority) != host_name {
+                    return Err(Response::forbidden("cross-origin request rejected"));
+                }
+            }
+            return Ok(());
+        }
+        {
             let host_part = host_header_name(host);
             let bind_name = ctx
                 .bind
@@ -1154,6 +1202,11 @@ pub mod http {
             AuthCtx::new("test-token".to_string(), "127.0.0.1".to_string(), false)
         }
 
+        fn bind_all_ctx(hosts: &[&str]) -> AuthCtx {
+            AuthCtx::new("test-token".to_string(), "0.0.0.0".to_string(), true)
+                .with_trusted_hosts(hosts.iter().copied())
+        }
+
         fn patch_req(host: &str, origin: Option<&str>) -> Request {
             let mut headers = HashMap::new();
             headers.insert("host".to_string(), host.to_string());
@@ -1217,6 +1270,55 @@ pub mod http {
         fn patch_without_origin_is_allowed() {
             let req = patch_req("127.0.0.1:7171", None);
             assert!(check_auth(&req, AuthGroup::DashboardApi, &ctx()).is_ok());
+        }
+
+        #[test]
+        fn bind_all_rejects_a_host_outside_the_trusted_list() {
+            let req = patch_req(
+                "attacker.example.com:7171",
+                Some("http://attacker.example.com:7171"),
+            );
+            let res = check_auth(
+                &req,
+                AuthGroup::DashboardApi,
+                &bind_all_ctx(&["dashboard.local"]),
+            );
+            assert_eq!(status_of(&res), Some(403));
+        }
+
+        #[test]
+        fn bind_all_accepts_a_trusted_host_and_origin() {
+            let req = patch_req(
+                "dashboard.local:7171",
+                Some("http://dashboard.local:7171"),
+            );
+            assert!(check_auth(
+                &req,
+                AuthGroup::DashboardApi,
+                &bind_all_ctx(&["dashboard.local"]),
+            )
+            .is_ok());
+        }
+
+        #[test]
+        fn bind_all_rejects_an_origin_from_another_host() {
+            let req = patch_req(
+                "dashboard.local:7171",
+                Some("http://attacker.example.com:7171"),
+            );
+            let res = check_auth(
+                &req,
+                AuthGroup::DashboardApi,
+                &bind_all_ctx(&["dashboard.local"]),
+            );
+            assert_eq!(status_of(&res), Some(403));
+        }
+
+        #[test]
+        fn bind_all_without_trusted_hosts_fails_closed() {
+            let req = patch_req("192.168.1.10:7171", None);
+            let res = check_auth(&req, AuthGroup::DashboardApi, &bind_all_ctx(&[]));
+            assert_eq!(status_of(&res), Some(403));
         }
 
         fn read_request_from(written: &[u8]) -> Result<Option<Request>, Response> {
