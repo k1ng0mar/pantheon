@@ -41,7 +41,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Read and check the version
         id: version
         run: |
@@ -81,8 +81,8 @@ jobs:
       # an ad-hoc signature instead (see docs/releasing.md).
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
           cache: npm
@@ -121,7 +121,7 @@ jobs:
         if: runner.os != 'macOS'
         timeout-minutes: 4
         run: node scripts/release/ci-startup-smoke.mjs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: pantheon-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
           path: desktop/release/${{ needs.prepare.outputs.version }}/
@@ -148,8 +148,8 @@ jobs:
       GRYPE_VERSION: '0.121.0'
       GRYPE_SHA256: 64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: desktop/assets
           pattern: pantheon-${{ needs.prepare.outputs.version }}-*
@@ -171,7 +171,7 @@ jobs:
       - name: Show coverage
         if: always()
         run: cat sbom/SBOM-COVERAGE.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: pantheon-sbom-${{ needs.prepare.outputs.version }}
@@ -193,15 +193,15 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: desktop/assets
           pattern: pantheon-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Download SBOMs and scan coverage
         continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: desktop/assets
           name: pantheon-sbom-${{ needs.prepare.outputs.version }}
@@ -262,8 +262,8 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
