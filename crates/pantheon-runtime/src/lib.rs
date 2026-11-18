@@ -35,6 +35,7 @@ pub use control_group::agui_serve::{remember_thread, snapshot_frames};
 pub use control_group::computer;
 pub use control_group::desktop_takeover;
 pub use orchestration_group::delegate_budget;
+pub use orchestration_group::harness;
 pub use orchestration_group::judge;
 pub use orchestration_group::operation;
 pub use orchestration_group::operation::{

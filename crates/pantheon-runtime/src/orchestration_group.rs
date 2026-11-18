@@ -1,4 +1,44 @@
-//! orchestration_group: delegate_budget, swarm, swarm_exec, swarm_persist, operation, pipeline, pipeline_runner, judge, partial_handoff, temporal in one file.
+//! orchestration_group: harness, delegate_budget, swarm, swarm_exec, swarm_persist, operation, pipeline, pipeline_runner, judge, partial_handoff, temporal in one file.
+
+pub mod harness {
+    //! Initializer artifacts for long running work.
+    //!
+    //! A fresh harness context needs to know what was planned and what is
+    //! done. These files are the durable handoff, not conversation state.
+
+    use serde::{Deserialize, Serialize};
+    use std::path::Path;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Feature {
+        pub description: String,
+        pub passes: bool,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct FeatureList {
+        pub features: Vec<Feature>,
+    }
+
+    pub fn initialize_harness_artifacts(
+        root: &Path,
+        task: &str,
+    ) -> Result<FeatureList, String> {
+        let list = FeatureList {
+            features: vec![Feature {
+                description: task.trim().to_string(),
+                passes: false,
+            }],
+        };
+        std::fs::write(
+            root.join("feature_list.json"),
+            serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::write(root.join("progress.txt"), "session start\n").map_err(|e| e.to_string())?;
+        Ok(list)
+    }
+}
 
 pub mod delegate_budget {
     //! Root-owned atomic delegation budget (Umar's Decision B).
