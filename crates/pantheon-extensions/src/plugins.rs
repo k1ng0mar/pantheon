@@ -1658,6 +1658,30 @@ pub mod manager {
                 .map(|p| p.manifest.name.clone())
                 .collect()
         }
+
+        /// Remove a loaded plugin and every registration keyed to it. Called
+        /// when a plugin is disabled at runtime; leaving hooks behind would
+        /// keep firing code that the operator just turned off.
+        pub fn unload_plugin(&mut self, name: &str) -> Result<(), PantheonError> {
+            let before = self.plugins.len();
+            self.plugins.retain(|p| p.manifest.name != name);
+            if self.plugins.len() == before {
+                return Err(merr(
+                    "EXT_UNLOAD_NOT_FOUND",
+                    format!("plugin {name} is not loaded"),
+                ));
+            }
+            self.timeout_streaks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+            self.seen_once
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(plugin, _, _)| plugin != name);
+            Ok(())
+        }
+
         /// Fire `hook` on all providers, concatenate contexts. Never fails the
         /// turn. `extra` carries per-call context (e.g. the user message for
         /// pre_llm_call) that plugins may read.
@@ -2009,6 +2033,26 @@ pub mod manager {
 
         fn approve(ext_dir: &Path, dir: &Path, name: &str, version: &str) {
             approval::record_approval_for(ext_dir, name, version, dir).unwrap();
+        }
+
+        #[test]
+        fn unload_removes_plugin_and_its_hook_registration() {
+            let root = scratch("unload");
+            let ext = root.join("ext");
+            let dir = ext.join("demo");
+            write_plugin(
+                &dir,
+                "name: demo\nversion: \"1.0\"\nenabled: true\nprovides_hooks: [pre_llm_call]\n",
+                ECHO_INIT,
+            );
+            approve(&ext, &dir, "demo", "1.0");
+            let mut mgr = approved_mgr(&ext);
+            assert!(mgr.names().contains(&"demo".to_string()));
+            assert!(mgr.plugins.iter().any(|p| p.provides(Hook::PreLlmCall)));
+            mgr.unload_plugin("demo").unwrap();
+            assert!(!mgr.names().contains(&"demo".to_string()));
+            assert!(!mgr.plugins.iter().any(|p| p.provides(Hook::PreLlmCall)));
+            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]
