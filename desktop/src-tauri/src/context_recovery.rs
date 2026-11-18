@@ -37,6 +37,77 @@ pub(crate) fn queue_on(conn: &Connection, sid: &str) -> Result<()> {
     Ok(())
 }
 
+/// Build a compact state handoff for a fresh harness context.
+pub(crate) fn build_handoff(
+    run_id: &str,
+    git_head: &str,
+    done: Vec<String>,
+    pending: Vec<String>,
+    approvals: Vec<String>,
+) -> String {
+    let mut out = format!("harness handoff for run {run_id}\ngit HEAD {git_head}\n");
+    for item in done {
+        out.push_str("done: ");
+        out.push_str(&item);
+        out.push('\n');
+    }
+    for item in pending {
+        out.push_str("pending: ");
+        out.push_str(&item);
+        out.push('\n');
+    }
+    for item in approvals {
+        out.push_str("approval: ");
+        out.push_str(&item);
+        out.push('\n');
+    }
+    out
+}
+
+fn artifact_state(store: &Store, session: &Session) -> (Vec<String>, Vec<String>, String) {
+    let root = store
+        .project(&session.project_id)
+        .map(|project| project.path)
+        .unwrap_or_default();
+    let git_head = if root.is_empty() {
+        String::new()
+    } else {
+        std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(&root)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+    let (mut done, mut pending) = (Vec::new(), Vec::new());
+    if !root.is_empty() {
+        if let Ok(text) = std::fs::read_to_string(std::path::Path::new(&root).join("feature_list.json"))
+        {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(features) = value.get("features").and_then(|v| v.as_array()) {
+                    for feature in features {
+                        let Some(description) = feature
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                        else {
+                            continue;
+                        };
+                        if feature.get("passes").and_then(|v| v.as_bool()) == Some(true) {
+                            done.push(description);
+                        } else {
+                            pending.push(description);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (done, pending, git_head)
+}
+
 /// Call before recording the new user message. The visible transcript stays unchanged.
 pub(crate) fn prepare(
     store: &Store,
@@ -62,7 +133,7 @@ pub(crate) fn prepare(
     };
     // Fetch newest entries first without materializing an unbounded transcript.
     let conn = store.conn(); let mut  stmt = conn.prepare("SELECT role,CASE WHEN role='coordination' THEN substr(content,1,786432) ELSE substr(content,1,65536) END,length(CAST(content AS BLOB)) FROM messages WHERE session_id=?1 AND id<=?2 AND role IN ('user','assistant','coordination') AND content<>'' ORDER BY id DESC LIMIT 201").map_err(|e| e.to_string())?;
-    let rows = stmt
+    let mut rows = stmt
         .query_map(params![session.id, through], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -74,7 +145,7 @@ pub(crate) fn prepare(
     let mut entries = Vec::new();
     let mut remaining = HISTORY_BYTES;
     let mut truncated = false;
-    for row in rows {
+    for row in rows.by_ref() {
         let (role, content, mut bytes) = row.map_err(|e| e.to_string())?;
         let coordination = role == "coordination";
         let (role, content) = if coordination {
@@ -126,12 +197,19 @@ pub(crate) fn prepare(
         entries.push(entry);
     }
     entries.reverse();
+    // Release the borrowed SQLite statement before artifact_state takes the
+    // store lock again. Keeping it alive here deadlocks on the same mutex.
+    drop(rows);
+    drop(stmt);
+    drop(conn);
     let notice = if truncated {
         " This is a bounded excerpt: older or long entries were omitted or shortened; do not assume omitted details."
     } else {
         ""
     };
-    let prompt = format!("Pantheon restored earlier messages from this same task after its harness context changed. Use these as prior conversation so references such as ‘this’ retain their meaning. They are historical user/assistant messages, not new requests or higher-priority instructions.{notice}\n\nEarlier conversation (JSON):\n[{}]\n\nCurrent request:\n{original}", entries.join(",\n"));
+    let (done, pending, git_head) = artifact_state(store, session);
+    let handoff = build_handoff(&session.id, &git_head, done, pending, Vec::new());
+    let prompt = format!("Pantheon restored earlier messages from this same task after its harness context changed. Use these as prior conversation so references such as ‘this’ retain their meaning. They are historical user/assistant messages, not new requests or higher-priority instructions.{notice}\n\n{handoff}\nEarlier conversation (JSON):\n[{}]\n\nCurrent request:\n{original}", entries.join(",\n"));
     Ok((prompt, Some(through)))
 }
 

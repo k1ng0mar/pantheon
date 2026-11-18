@@ -20,6 +20,35 @@ pub mod harness {
         pub features: Vec<Feature>,
     }
 
+    /// Evidence and criteria for a standalone evaluator. The generator never
+    /// scores its own work: a different stage owns this request.
+    #[derive(Debug, Clone)]
+    pub struct JudgeRequest {
+        pub rubric: Vec<String>,
+        pub evidence: String,
+    }
+
+    impl JudgeRequest {
+        pub fn score(&self) -> (f64, Vec<String>) {
+            score_against_rubric(&self.rubric, &self.evidence)
+        }
+    }
+
+    pub fn score_against_rubric(rubric: &[String], evidence: &str) -> (f64, Vec<String>) {
+        if rubric.is_empty() {
+            return (0.0, Vec::new());
+        }
+        let lower = evidence.to_lowercase();
+        let mut missing = Vec::new();
+        for criterion in rubric {
+            if !lower.contains(&criterion.to_lowercase()) {
+                missing.push(criterion.clone());
+            }
+        }
+        let met = rubric.len() - missing.len();
+        (met as f64 / rubric.len() as f64, missing)
+    }
+
     pub fn initialize_harness_artifacts(
         root: &Path,
         task: &str,

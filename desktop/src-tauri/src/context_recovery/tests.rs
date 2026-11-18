@@ -298,3 +298,18 @@ fn migration_repairs_legacy_architect_resets_once_even_after_a_new_session_was_s
     assert!(!pending(&store, &store.session(&affected.id).unwrap()).unwrap());
     assert_eq!(store.messages(&affected.id, None).unwrap().len(), 4);
 }
+
+#[test]
+fn handoff_carries_task_state_not_only_transcript() {
+    let handoff = build_handoff(
+        "r1",
+        "992b563",
+        vec!["login flow".into()],
+        vec!["oauth callback".into()],
+        vec!["approve MCP write".into()],
+    );
+    assert!(handoff.contains("done: login flow"));
+    assert!(handoff.contains("pending: oauth callback"));
+    assert!(handoff.contains("approval: approve MCP write"));
+    assert!(handoff.contains("992b563"));
+}
