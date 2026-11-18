@@ -1942,9 +1942,14 @@ async fn launch_operation_admitted(
     }
     if restore_stage.is_none() {
         let instructions = app_instructions(chats::is_chat_folder(&config.cwd));
+        let harness = providers::HarnessContext::for_run(&config.cwd, instructions);
         if providers::takes_system_instructions(&config.provider) {
             // Cached with the system prompt: paid once, then read at a tenth of the price.
-            config.instructions = instructions;
+            config.instructions = harness.static_prefix();
+            // Volatile state goes after the cache point, on fresh runs only.
+            if config.resume_id.is_none() {
+                config.prompt.push_str(&harness.dynamic_suffix());
+            }
         } else {
             // In the message: on a new conversation, then as a periodic reminder.
             let turns = store
@@ -1953,7 +1958,8 @@ async fn launch_operation_admitted(
                 .and_then(|db| db.user_turns(&session_id).ok())
                 .unwrap_or(1);
             if config.resume_id.is_none() || reminder_turn(turns) {
-                config.prompt.push_str(&instructions);
+                config.prompt.push_str(&harness.static_prefix());
+                config.prompt.push_str(&harness.dynamic_suffix());
             }
         }
     }

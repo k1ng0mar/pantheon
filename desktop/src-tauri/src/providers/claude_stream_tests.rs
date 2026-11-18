@@ -157,6 +157,28 @@ fn app_instructions_ride_the_cached_system_prompt_not_every_message() {
     assert!(!super::takes_system_instructions("codex"));
 }
 
+#[test]
+fn volatile_context_never_enters_the_static_system_prefix() {
+    let ctx = super::HarnessContext {
+        instructions: "keep files current".into(),
+        skills: vec!["design-review".into()],
+        git_head: "992b563".into(),
+        today: "2026-11-18".into(),
+        todos: vec!["finish harness".into()],
+    };
+    let prefix = ctx.static_prefix();
+    assert!(prefix.contains("keep files current"));
+    assert!(prefix.contains("design-review"));
+    assert!(!prefix.contains("992b563"));
+    assert!(!prefix.contains("2026-11-18"));
+    assert!(!prefix.contains("finish harness"));
+
+    let suffix = ctx.dynamic_suffix();
+    assert!(suffix.contains("992b563"));
+    assert!(suffix.contains("2026-11-18"));
+    assert!(suffix.contains("finish harness"));
+}
+
 /// Frames recorded from Claude Code 2.1.308 (`-p --input-format stream-json
 /// --replay-user-messages`, haiku) with a steer written to stdin as the first
 /// turn ended: Claude answers it as a second turn of the same process.

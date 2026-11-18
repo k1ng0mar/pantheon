@@ -117,6 +117,53 @@ pub fn takes_system_instructions(provider: &str) -> bool {
     )
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct HarnessContext {
+    pub instructions: String,
+    pub skills: Vec<String>,
+    pub git_head: String,
+    pub today: String,
+    pub todos: Vec<String>,
+}
+
+impl HarnessContext {
+    /// Build a context for one run. Git state and date are volatile by design.
+    pub fn for_run(cwd: &Path, instructions: String) -> Self {
+        let git_head = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(cwd)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .unwrap_or_default();
+        Self {
+            instructions,
+            git_head,
+            today: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// Stable content only. This is what goes into the cached system prompt.
+    pub fn static_prefix(&self) -> String {
+        let mut out = self.instructions.clone();
+        for name in &self.skills {
+            out.push_str("\nskill: ");
+            out.push_str(name);
+        }
+        out
+    }
+
+    /// Volatile content only. Append this to the first prompt of a fresh run.
+    pub fn dynamic_suffix(&self) -> String {
+        format!(
+            "\n\nruntime context: git HEAD {}, date {}, todos {:?}\n",
+            self.git_head, self.today, self.todos
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RunConfig {
     pub session_id: String,
