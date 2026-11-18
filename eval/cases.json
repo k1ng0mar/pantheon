@@ -611,6 +611,60 @@
         0
       ],
       "skip": "needs binary"
+    },
+    {
+      "id": "harness-single-tool-edit",
+      "title": "One turn can perform a bounded tool edit and complete cleanly",
+      "origin": "harness: single feature per session with a clean final state",
+      "skip": "needs binary",
+      "commands": [
+        [
+          "run",
+          "--id",
+          "harness-eval-single",
+          "--say",
+          "edit one file and run tests"
+        ]
+      ],
+      "expect": {
+        "harness-single-tool-edit": [
+          "harness-eval-single"
+        ]
+      },
+      "post": [
+        [
+          "runs",
+          "harness-eval-single",
+          "contains:completed"
+        ]
+      ]
+    },
+    {
+      "id": "harness-reset-handoff",
+      "title": "A resumed run records the handoff and continues from prior context",
+      "origin": "harness: structured reset carries task state across sessions",
+      "skip": "needs binary",
+      "commands": [
+        [
+          "run",
+          "--id",
+          "harness-eval-reset",
+          "--say",
+          "restore prior context and continue"
+        ]
+      ],
+      "expect": {
+        "harness-reset-handoff": [
+          "harness-eval-reset"
+        ]
+      },
+      "post": [
+        [
+          "runs",
+          "harness-eval-reset",
+          "contains:started"
+        ]
+      ]
     }
   ]
 }

@@ -49,6 +49,48 @@ pub mod harness {
         (met as f64 / rubric.len() as f64, missing)
     }
 
+    pub const MAX_JUDGE_ROUNDS: u32 = 3;
+    pub const MAX_BEFORE_DONE_CHECKS: usize = 5;
+
+    pub fn cap_before_done_checks(requested: usize) -> usize {
+        requested.min(MAX_BEFORE_DONE_CHECKS)
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ScoreLoopOutcome {
+        pub rounds: u32,
+        pub score: f64,
+        pub capped: bool,
+    }
+
+    /// Run a bounded scoring loop. `requested_rounds` cannot force more
+    /// judge passes than the harness allows, and an unsatisfied rubric ends
+    /// with `capped` set instead of looping forever.
+    pub fn run_scored_loop(
+        rubric: &[String],
+        evidence: &str,
+        requested_rounds: u32,
+    ) -> ScoreLoopOutcome {
+        let rounds = requested_rounds.min(MAX_JUDGE_ROUNDS);
+        let mut score = 0.0;
+        for round in 1..=rounds {
+            let (current, _) = score_against_rubric(rubric, evidence);
+            score = current;
+            if score >= 1.0 {
+                return ScoreLoopOutcome {
+                    rounds: round,
+                    score,
+                    capped: false,
+                };
+            }
+        }
+        ScoreLoopOutcome {
+            rounds,
+            score,
+            capped: true,
+        }
+    }
+
     pub fn initialize_harness_artifacts(
         root: &Path,
         task: &str,
