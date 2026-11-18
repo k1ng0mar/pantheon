@@ -2432,6 +2432,35 @@ fn lead_guidance_is_bounded_to_two_kilobytes() {
 }
 
 #[test]
+fn worker_scope_blocks_shell_redirection_outside_assigned_files() {
+    let files = vec!["src/lib.rs".to_string()];
+    assert!(scope_allows_shell_writes(
+        &files,
+        false,
+        "Bash",
+        &serde_json::json!({ "command": "echo x > src/lib.rs" })
+    ));
+    assert!(!scope_allows_shell_writes(
+        &files,
+        false,
+        "Bash",
+        &serde_json::json!({ "command": "echo x > /etc/secret" })
+    ));
+    assert!(!scope_allows_shell_writes(
+        &files,
+        false,
+        "Bash",
+        &serde_json::json!({ "command": "echo x | tee ../secret" })
+    ));
+    assert!(!scope_allows_shell_writes(
+        &files,
+        true,
+        "Bash",
+        &serde_json::json!({ "command": "echo x > src/lib.rs" })
+    ));
+}
+
+#[test]
 fn worker_write_scope_gates_explicit_file_tools() {
     let files = vec!["src/lib.rs".to_string(), "tests".to_string()];
     assert!(scope_allows_write(&files, false, Some(vec!["src/lib.rs".into()])));

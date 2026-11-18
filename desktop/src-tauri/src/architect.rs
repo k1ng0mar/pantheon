@@ -999,6 +999,12 @@ pub fn host(
                     Ok(result)
                 } else {
                     if let Some((files, read_only)) = &scope {
+                        if !scope_allows_shell_writes(files, *read_only, &name, &args) {
+                            return Err(format!(
+                                "This worker may only write its assigned files: {}",
+                                files.join(", ")
+                            ));
+                        }
                         let paths = crate::providers::tool_write_paths_value(&name, &args);
                         if !scope_allows_write(files, *read_only, paths) {
                             return Err(format!(
@@ -1053,6 +1059,52 @@ fn validate_files(files: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn shell_write_targets(command: &str) -> Vec<String> {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let mut targets = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let target = if *token == ">" || *token == ">>" {
+            tokens.get(index + 1).copied()
+        } else if *token == "tee" {
+            tokens
+                .get(index + 1)
+                .copied()
+                .filter(|next| !next.starts_with('-'))
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            targets.push(target.trim_matches(['\'', '"']).to_string());
+        }
+    }
+    targets
+}
+
+/// Shell commands are not parsed into explicit write targets by the tool
+/// layer. Catch the common indirect writes (redirection and `tee`) so a
+/// scoped worker cannot edit outside its declared files through a shell.
+fn scope_allows_shell_writes(
+    files: &[String],
+    read_only: bool,
+    name: &str,
+    args: &serde_json::Value,
+) -> bool {
+    if !matches!(name, "Bash" | "Command") {
+        return true;
+    }
+    let command = args
+        .get("command")
+        .or_else(|| args.get("cmd"))
+        .or_else(|| args.get("input"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let targets = shell_write_targets(command);
+    if targets.is_empty() {
+        return true;
+    }
+    !read_only && scope_allows_write(files, false, Some(targets))
 }
 
 /// A worker may only write inside its declared file scopes. An unknown write
