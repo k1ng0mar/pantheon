@@ -1042,7 +1042,8 @@ pub mod skills {
 
     use crate::{bad_json, body_json, err_json, json_ok, App};
     use pantheon_exec::skills::{
-        disabled_skill_names, discover_skills_ext, import_skill_from_url, import_skills_from_repo,
+        disabled_skill_names, discover_skills_ext, import_skill_from_clawhub,
+        import_skill_from_hermes, import_skill_from_url, import_skills_from_repo,
         set_skill_disabled,
     };
     use pantheon_gateway::http::{Request, Response};
@@ -1131,6 +1132,9 @@ pub mod skills {
 
     /// `POST /api/skills/import`:
     /// `{url, confirm: true}` or `{repo, subpath?, confirm: true}`.
+    /// `url` may be a raw SKILL.md http(s) URL, `clawhub:<slug>` (or
+    /// `clawhub:<owner>/<slug>`), or `hermes:<skills/path>`; the registry
+    /// schemes resolve through their own APIs server-side.
     /// The UI confirms before sending; the endpoint still requires
     /// `confirm: true` before touching the filesystem.
     pub fn import(app: &App, req: &Request) -> Response {
@@ -1146,8 +1150,34 @@ pub mod skills {
             return bad_json("import requires confirm: true");
         }
         if let Some(url) = body.get("url").and_then(|v| v.as_str()) {
-            if url.trim().is_empty() {
+            let url = url.trim();
+            if url.is_empty() {
                 return bad_json("url is empty");
+            }
+            // Registry schemes resolve through their own APIs server-side
+            // (ClawHub ZIP bundle, Hermes GitHub tree), not a raw URL
+            // fetch, so they bypass the http(s) SSRF guard below.
+            if let Some(rest) = url.strip_prefix("clawhub:") {
+                let (owner, slug) = match rest.split_once('/') {
+                    Some((o, s)) => (Some(o), s),
+                    None => (None, rest),
+                };
+                return match import_skill_from_clawhub(&app.data_dir, slug, owner) {
+                    Ok((dest, skill)) => json_ok(serde_json::json!({
+                        "ok": true,
+                        "imported": [{"name": skill.meta.name, "path": dest.display().to_string()}],
+                    })),
+                    Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
+                };
+            }
+            if let Some(path) = url.strip_prefix("hermes:") {
+                return match import_skill_from_hermes(&app.data_dir, path) {
+                    Ok((dest, skill)) => json_ok(serde_json::json!({
+                        "ok": true,
+                        "imported": [{"name": skill.meta.name, "path": dest.display().to_string()}],
+                    })),
+                    Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
+                };
             }
             // The dashboard fetches this URL server-side, so it gets the
             // same SSRF guard as link previews: http(s) only and a host
