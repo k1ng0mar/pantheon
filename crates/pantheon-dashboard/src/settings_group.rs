@@ -1726,13 +1726,29 @@ pub mod models {
     //! picker instead of a free-text field. The default provider/model is
     //! already editable through `PUT /api/config` (`model.provider`,
     //! `model.model`); this endpoint feeds the choices.
+    //!
+    //! Model lists are discovered live from each keyed provider's
+    //! OpenAI-compatible `GET {base}/models` endpoint (in parallel, with a
+    //! short timeout), falling back to the curated catalog rows when a
+    //! provider is unreachable or speaks a different protocol. The catalog
+    //! is a seed, not a ceiling: a stale embedded list must not hide the
+    //! models a provider actually serves.
 
     use crate::{json_ok, App};
+    use std::time::Duration;
 
     /// `GET /api/models`: `{providers: [{id, label, key_env, has_key,
-    /// key_count, models: [...]}]}`.
+    /// key_count, models: [...], source}]}`. `source` is `live` when the
+    /// list came from the provider, `catalog` when it fell back.
     pub fn list(app: &App) -> pantheon_gateway::http::Response {
-        let mut out: Vec<serde_json::Value> = Vec::new();
+        struct Row {
+            meta: pantheon_providers::catalog::ProviderMeta,
+            key_env: String,
+            key_count: usize,
+            first_key: String,
+            static_models: Vec<serde_json::Value>,
+        }
+        let mut rows: Vec<Row> = Vec::new();
         for meta in pantheon_providers::catalog::selectable_providers() {
             let key_env = if meta.key_env.trim().is_empty() {
                 format!("PANTHEON_KEY_{}", meta.id.to_ascii_uppercase())
@@ -1746,13 +1762,13 @@ pub mod models {
                 .unwrap_or_default();
             let pool_raw = pantheon_api::dotenv::read_dotenv_value(&app.data_dir, &pool_env)
                 .unwrap_or_default();
-            let key_count = raw
+            let keys: Vec<String> = raw
                 .split(',')
                 .chain(pool_raw.split(','))
-                .map(|s| s.trim())
+                .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .count();
-            let models: Vec<serde_json::Value> = pantheon_providers::catalog::catalog()
+                .collect();
+            let static_models: Vec<serde_json::Value> = pantheon_providers::catalog::catalog()
                 .providers
                 .iter()
                 .find(|p| p.id == meta.id)
@@ -1765,16 +1781,167 @@ pub mod models {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            rows.push(Row {
+                first_key: keys.first().cloned().unwrap_or_default(),
+                key_count: keys.len(),
+                meta,
+                key_env,
+                static_models,
+            });
+        }
+
+        // Live discovery runs in parallel so one slow endpoint cannot add
+        // its timeout to every other provider's. SigV4 providers and
+        // templated base URLs have no plain Bearer /models surface, so they
+        // keep their catalog rows.
+        let mut live: Vec<Option<Vec<serde_json::Value>>> = vec![None; rows.len()];
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                if row.key_count == 0 || row.meta.sigv4 {
+                    continue;
+                }
+                let base = pantheon_providers::catalog::base_url_for(&row.meta.id);
+                if base.contains('{')
+                    || !(base.starts_with("http://") || base.starts_with("https://"))
+                {
+                    continue;
+                }
+                let header = row.meta.key_header.clone();
+                let key = row.first_key.clone();
+                handles.push((i, scope.spawn(move || live_models(&base, &header, &key))));
+            }
+            for (i, handle) in handles {
+                live[i] = handle.join().unwrap_or(None);
+            }
+        });
+
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for (i, row) in rows.into_iter().enumerate() {
+            let (models, source) = match live[i].take() {
+                Some(m) if !m.is_empty() => (m, "live"),
+                _ => (row.static_models, "catalog"),
+            };
             out.push(serde_json::json!({
-                "id": meta.id,
-                "label": meta.label,
-                "key_env": key_env,
-                "has_key": key_count > 0,
-                "key_count": key_count,
+                "id": row.meta.id,
+                "label": row.meta.label,
+                "key_env": row.key_env,
+                "has_key": row.key_count > 0,
+                "key_count": row.key_count,
                 "models": models,
+                "source": source,
             }));
         }
         json_ok(serde_json::json!({"providers": out}))
+    }
+
+    /// Fetch a provider's live model list from its OpenAI-compatible
+    /// `/models` endpoint. `None` on any failure (unreachable, non-2xx,
+    /// unexpected shape) so the caller falls back to the catalog. Accepts
+    /// the common shapes: `{data:[{id}]}`, `{models:[{id}]}`, a top-level
+    /// array of objects or strings.
+    fn live_models(base_url: &str, key_header: &str, key: &str) -> Option<Vec<serde_json::Value>> {
+        let url = format!("{}/models", base_url.trim_end_matches('/'));
+        let (hname, hvalue) = pantheon_providers::http::auth_header_pair(key_header, key);
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(6)))
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .new_agent();
+        let mut resp = agent
+            .get(&url)
+            .header("User-Agent", "pantheon-model-picker")
+            .header("Accept", "application/json")
+            .header(&hname, &hvalue)
+            .call()
+            .ok()?;
+        if resp.status().as_u16() >= 400 {
+            return None;
+        }
+        let body = resp.body_mut().read_to_string().ok()?;
+        parse_model_ids(&body)
+    }
+
+    /// Pull model ids out of a `/models` response body. Pure, so the shape
+    /// handling is unit-testable without a network.
+    fn parse_model_ids(body: &str) -> Option<Vec<serde_json::Value>> {
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        let items = v
+            .get("data")
+            .and_then(|d| d.as_array())
+            .or_else(|| v.get("models").and_then(|d| d.as_array()))
+            .or_else(|| v.as_array())?;
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for item in items {
+            let Some(id) = item
+                .get("id")
+                .and_then(|i| i.as_str())
+                .or_else(|| item.as_str())
+            else {
+                continue;
+            };
+            if id.trim().is_empty() {
+                continue;
+            }
+            let context = item
+                .get("context_length")
+                .and_then(|c| c.as_u64())
+                .or_else(|| item.get("context_window").and_then(|c| c.as_u64()));
+            out.push(serde_json::json!({
+                "id": id,
+                "reasoning": false,
+                "vision": false,
+                "video": false,
+                "context_limit": context,
+            }));
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_model_ids;
+
+        #[test]
+        fn parses_openai_data_shape() {
+            let m = parse_model_ids(r#"{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}"#).unwrap();
+            assert_eq!(m.len(), 2);
+            assert_eq!(m[0]["id"], "gpt-4o");
+        }
+
+        #[test]
+        fn parses_openrouter_context_length() {
+            let m = parse_model_ids(r#"{"data":[{"id":"x/y","context_length":128000}]}"#).unwrap();
+            assert_eq!(m[0]["context_limit"], 128000);
+        }
+
+        #[test]
+        fn parses_models_array_and_string_array() {
+            assert!(parse_model_ids(r#"{"models":[{"id":"a"}]}"#).is_some());
+            assert!(parse_model_ids(r#"["a","b"]"#).is_some());
+        }
+
+        #[test]
+        fn skips_items_without_an_id() {
+            let m = parse_model_ids(r#"{"data":[{"id":"a"},{"noid":true}]}"#).unwrap();
+            assert_eq!(m.len(), 1);
+        }
+
+        #[test]
+        fn rejects_empty_and_garbage() {
+            assert!(parse_model_ids("not json").is_none());
+            assert!(parse_model_ids(r#"{"data":[]}"#).is_none());
+            assert!(parse_model_ids(r#"{"object":"list"}"#).is_none());
+        }
     }
 }
 
