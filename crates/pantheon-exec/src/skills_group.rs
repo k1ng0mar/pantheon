@@ -1558,32 +1558,58 @@ pub mod skills {
         data_dir: &Path,
         repo_path: &str,
     ) -> Result<(PathBuf, Skill), PantheonError> {
+        import_skill_from_github(data_dir, "NousResearch/hermes-agent", repo_path, "hermes")
+    }
+
+    /// Import a skill from Anthropic's public skills marketplace
+    /// (`anthropics/skills` on GitHub). Same recursive bundle fetch as the
+    /// Hermes importer, pointed at a different repo.
+    pub fn import_skill_from_claude(
+        data_dir: &Path,
+        repo_path: &str,
+    ) -> Result<(PathBuf, Skill), PantheonError> {
+        import_skill_from_github(data_dir, "anthropics/skills", repo_path, "claude")
+    }
+
+    /// Import one skill directory from a public GitHub repo via the
+    /// contents API, fetching the whole bundle (SKILL.md + references/ +
+    /// scripts/ + assets/). `origin` tags provenance on the loaded skill.
+    fn import_skill_from_github(
+        data_dir: &Path,
+        repo: &str,
+        repo_path: &str,
+        origin: &str,
+    ) -> Result<(PathBuf, Skill), PantheonError> {
         // Validate before it is interpolated into API URLs or seeds paths.
         let path = check_repo_path(repo_path)?;
-        let api = format!("https://api.github.com/repos/NousResearch/hermes-agent/contents/{path}");
+        let api = format!("https://api.github.com/repos/{repo}/contents/{path}");
         let body = fetch_skill_md(&api)?;
         let entries: Vec<GithubContentEntry> = serde_json::from_str(&body)
             .map_err(|e| serr("SKILL_HERMES_DECODE", format!("github {path}: {e}")))?;
         let mut bundle: Vec<(PathBuf, Vec<u8>)> = Vec::new();
         let mut total: u64 = 0;
-        fetch_hermes_tree(&path, &entries, &mut bundle, &mut total, 0)?;
+        fetch_github_tree(&path, repo, &entries, &mut bundle, &mut total, 0)?;
         let skill_md = bundle
             .iter()
             .find(|(p, _)| p.file_name().and_then(|n| n.to_str()) == Some("SKILL.md"))
             .map(|(_, b)| b)
-            .ok_or_else(|| serr("SKILL_HUB_EMPTY", format!("hermes {path}: no SKILL.md")))?;
+            .ok_or_else(|| serr("SKILL_HUB_EMPTY", format!("{origin} {path}: no SKILL.md")))?;
         let raw = String::from_utf8(skill_md.clone())
-            .map_err(|e| serr("SKILL_HERMES_DECODE", format!("hermes {path}: {e}")))?;
-        let name = parse_skill(&raw, &PathBuf::from(format!("hermes://{path}")))?
+            .map_err(|e| serr("SKILL_HERMES_DECODE", format!("{origin} {path}: {e}")))?;
+        let name = parse_skill(&raw, &PathBuf::from(format!("{origin}://{path}")))?
             .meta
             .name;
         let dest_dir = contained_skill_dir(&data_dir.join("skills"), &name)?;
         write_bundle(&bundle, &dest_dir)?;
         // Gate: scan the imported skill with SkillSpector
         let _ = crate::skills_group::skills_scan::gate_imported_skill(data_dir, &name);
-        let mut s = load_skill(&dest_dir.join("SKILL.md"))
-            .ok_or_else(|| serr("SKILL_HUB_EMPTY", format!("hermes {path}: re-parse failed")))?;
-        s.meta.origin = "hermes".to_string();
+        let mut s = load_skill(&dest_dir.join("SKILL.md")).ok_or_else(|| {
+            serr(
+                "SKILL_HUB_EMPTY",
+                format!("{origin} {path}: re-parse failed"),
+            )
+        })?;
+        s.meta.origin = origin.to_string();
         Ok((s.path.clone(), s))
     }
 
@@ -1596,11 +1622,12 @@ pub mod skills {
         name: String,
     }
 
-    /// Recursively fetch one directory of the Hermes skill from raw
+    /// Recursively fetch one directory of a GitHub skill from raw
     /// GitHub URLs. Depth-limited as a guard against pathological trees, and
     /// total bytes are capped at MAX_BUNDLE_BYTES.
-    fn fetch_hermes_tree(
+    fn fetch_github_tree(
         prefix: &str,
+        repo: &str,
         entries: &[GithubContentEntry],
         bundle: &mut Vec<(PathBuf, Vec<u8>)>,
         total: &mut u64,
@@ -1616,15 +1643,13 @@ pub mod skills {
             let rel = PathBuf::from(&e.name);
             if e.kind == "dir" {
                 let sub_prefix = format!("{prefix}/{}", e.name);
-                let sub_api = format!(
-                    "https://api.github.com/repos/NousResearch/hermes-agent/contents/{sub_prefix}"
-                );
+                let sub_api = format!("https://api.github.com/repos/{repo}/contents/{sub_prefix}");
                 let body = fetch_skill_md(&sub_api)?;
                 let sub_entries: Vec<GithubContentEntry> =
                     serde_json::from_str(&body).map_err(|err| {
                         serr("SKILL_HERMES_DECODE", format!("github {sub_prefix}: {err}"))
                     })?;
-                fetch_hermes_tree(&sub_prefix, &sub_entries, bundle, total, depth + 1)?;
+                fetch_github_tree(&sub_prefix, repo, &sub_entries, bundle, total, depth + 1)?;
             } else if e.kind == "file" {
                 if let Some(url) = &e.download_url {
                     let bytes = fetch_bytes(url)?;
