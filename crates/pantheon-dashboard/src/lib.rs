@@ -616,6 +616,7 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("GET", "skills", "", "", "") => skills::list(app, req),
         ("POST", "skills", name, "toggle", "") => skills::toggle(app, name),
         ("POST", "skills", "import", "", "") => skills::import(app, req),
+        ("POST", "skills", "learn", "", "") => skills::learn(app, req),
         ("DELETE", "skills", name, "", "") => skills::delete(app, name),
         // MCP
         ("GET", "mcp", "servers", "", "") => mcp::list(app),

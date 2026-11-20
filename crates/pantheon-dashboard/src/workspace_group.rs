@@ -1040,11 +1040,12 @@ pub mod skills {
     //! skills (under `<data_dir>/skills`); foreign scopes (hermes, claude,
     //! ...) can be disabled but never deleted by the dashboard.
 
-    use crate::{bad_json, body_json, err_json, json_ok, App};
+    use crate::{bad_json, body_json, err_json, json_ok, uploads, App};
     use pantheon_exec::skills::{
-        disabled_skill_names, discover_skills_ext, import_skill_from_clawhub,
-        import_skill_from_hermes, import_skill_from_url, import_skills_from_repo,
-        set_skill_disabled,
+        disabled_skill_names, discover_skills_ext, import_skill, import_skill_dirs,
+        import_skill_from_claude, import_skill_from_clawhub, import_skill_from_hermes,
+        import_skill_from_url, import_skills_from_repo, parse_skill, set_skill_disabled,
+        unzip_skill, valid_slug, Skill, SkillMeta,
     };
     use pantheon_gateway::http::{Request, Response};
 
@@ -1179,6 +1180,15 @@ pub mod skills {
                     Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
                 };
             }
+            if let Some(path) = url.strip_prefix("claude:") {
+                return match import_skill_from_claude(&app.data_dir, path) {
+                    Ok((dest, skill)) => json_ok(serde_json::json!({
+                        "ok": true,
+                        "imported": [{"name": skill.meta.name, "path": dest.display().to_string()}],
+                    })),
+                    Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
+                };
+            }
             // The dashboard fetches this URL server-side, so it gets the
             // same SSRF guard as link previews: http(s) only and a host
             // that resolves to public addresses (audit SEC-12).
@@ -1211,7 +1221,227 @@ pub mod skills {
                 Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
             };
         }
-        bad_json("supply {url} or {repo}")
+        if let Some(upload_id) = body.get("upload").and_then(|v| v.as_str()) {
+            let info = match uploads::resolve(app, upload_id.trim()) {
+                Some(i) => i,
+                None => return err_json(404, "SKILL_IMPORT_UPLOAD", "upload not found"),
+            };
+            let lower = info.path.to_string_lossy().to_ascii_lowercase();
+            let bytes = match std::fs::read(&info.path) {
+                Ok(b) => b,
+                Err(e) => {
+                    return err_json(500, "SKILL_IMPORT_IO", &format!("read upload: {e}"));
+                }
+            };
+            if lower.ends_with(".zip") {
+                let bundle = match unzip_skill(&bytes) {
+                    Ok(b) => b,
+                    Err(e) => return err_json(400, "SKILL_IMPORT_ZIP", &e),
+                };
+                let staging = app.data_dir.join(format!(
+                    ".skill-upload-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                ));
+                if let Err(e) = write_upload_bundle(&staging, &bundle) {
+                    let _ = std::fs::remove_dir_all(&staging);
+                    return err_json(500, "SKILL_IMPORT_IO", &e);
+                }
+                let imported = import_skill_dirs(&app.data_dir, &staging);
+                let _ = std::fs::remove_dir_all(&staging);
+                return match imported {
+                    Ok(list) if !list.is_empty() => json_ok(serde_json::json!({
+                        "ok": true,
+                        "imported": list.iter().map(|(name, path)| serde_json::json!({"name": name, "path": path.display().to_string()})).collect::<Vec<_>>(),
+                    })),
+                    Ok(_) => err_json(400, "SKILL_NO_SKILLMD", "zip contains no SKILL.md"),
+                    Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
+                };
+            }
+            if !(lower.ends_with(".md") || lower.ends_with(".markdown")) {
+                return bad_json("upload must be a .md or .zip skill file");
+            }
+            let raw = match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(_) => return bad_json("skill file must be UTF-8 text"),
+            };
+            // A full SKILL.md imports as-is; a bare markdown note gets
+            // frontmatter wrapped around it so it still becomes a skill.
+            let skill = match parse_skill(&raw, &info.path) {
+                Ok(s) => s,
+                Err(_) => {
+                    let stem = info
+                        .path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("imported-skill");
+                    let name = slugify(stem);
+                    let wrapped = format!(
+                        "---\nname: {name}\ndescription: Imported skill note.\n---\n\n{raw}\n"
+                    );
+                    match parse_skill(&wrapped, &info.path) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return err_json(400, "SKILL_PARSE", &e.to_string());
+                        }
+                    }
+                }
+            };
+            return match import_skill(&app.data_dir, &skill) {
+                Ok(dest) => json_ok(serde_json::json!({
+                    "ok": true,
+                    "imported": [{"name": skill.meta.name, "path": dest.display().to_string()}],
+                })),
+                Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
+            };
+        }
+        bad_json("url, repo, or upload is required")
+    }
+
+    /// Write an unzipped skill bundle into a staging dir, preserving the
+    /// relative paths `unzip_skill` already validated.
+    fn write_upload_bundle(
+        staging: &std::path::Path,
+        bundle: &[(std::path::PathBuf, Vec<u8>)],
+    ) -> Result<(), String> {
+        for (rel, bytes) in bundle {
+            let dest = staging.join(rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("create {}: {e}", parent.display()))?;
+            }
+            std::fs::write(&dest, bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
+        }
+        Ok(())
+    }
+
+    /// `POST /api/skills/learn`: `{text, name?}` distills a lesson into a
+    /// reusable skill under `<data_dir>/skills`, instead of a memory note.
+    /// Mirrors the intent of Hermes `/learn`: what you learn becomes a
+    /// skill the agent can load later, not a row in a memory table.
+    pub fn learn(app: &App, req: &Request) -> Response {
+        let body = match body_json(req) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let text = body
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if text.is_empty() {
+            return bad_json("text is required");
+        }
+        let name = match body.get("name").and_then(|v| v.as_str()).map(str::trim) {
+            Some(n) if !n.is_empty() => slugify(n),
+            _ => slugify(text.lines().next().unwrap_or("learned-lesson")),
+        };
+        if !valid_slug(&name) {
+            return bad_json("could not derive a valid skill name; pass name explicitly");
+        }
+        let description: String = text
+            .lines()
+            .next()
+            .unwrap_or("Learned lesson")
+            .chars()
+            .take(120)
+            .collect::<String>()
+            .replace([':', '"', '\n'], " ");
+        let raw =
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\n{text}\n");
+        // Stage the SKILL.md, then run it through the same gated import as
+        // every other source (SkillSpector scan included).
+        let staging = app.data_dir.join(format!(
+            ".skill-learn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        if let Err(e) = std::fs::create_dir_all(&staging) {
+            return err_json(500, "SKILL_LEARN_IO", &format!("create staging: {e}"));
+        }
+        let tmp_md = staging.join("SKILL.md");
+        if let Err(e) = std::fs::write(&tmp_md, &raw) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return err_json(500, "SKILL_LEARN_IO", &format!("write skill: {e}"));
+        }
+        let skill = Skill {
+            meta: SkillMeta {
+                name: name.clone(),
+                description,
+                origin: "learn".to_string(),
+                exec: Vec::new(),
+                dependencies: Vec::new(),
+            },
+            path: tmp_md.clone(),
+            dir: staging.clone(),
+        };
+        let result = import_skill(&app.data_dir, &skill);
+        let _ = std::fs::remove_dir_all(&staging);
+        match result {
+            Ok(dest) => json_ok(serde_json::json!({
+                "ok": true,
+                "name": name,
+                "path": dest.display().to_string(),
+            })),
+            Err(e) => err_json(500, "SKILL_LEARN", &e.to_string()),
+        }
+    }
+
+    /// Lowercase, hyphen-separated, `[a-z0-9-]` only, capped at 64 chars so
+    /// the result satisfies `valid_slug`. Falls back to `learned-lesson`.
+    fn slugify(s: &str) -> String {
+        let mut out = String::new();
+        let mut last_dash = true;
+        for c in s.chars() {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_alphanumeric() {
+                out.push(c);
+                last_dash = false;
+            } else if !last_dash {
+                out.push('-');
+                last_dash = true;
+            }
+            if out.len() >= 64 {
+                break;
+            }
+        }
+        while out.ends_with('-') {
+            out.pop();
+        }
+        if out.is_empty() {
+            "learned-lesson".to_string()
+        } else {
+            out
+        }
+    }
+
+    #[cfg(test)]
+    mod learn_tests {
+        use super::slugify;
+
+        #[test]
+        fn slugifies_lesson_text() {
+            assert_eq!(
+                slugify("Always verify before claiming done!"),
+                "always-verify-before-claiming-done"
+            );
+            assert_eq!(slugify("  Hello, World  "), "hello-world");
+            assert_eq!(slugify("!!!"), "learned-lesson");
+            assert_eq!(slugify(""), "learned-lesson");
+        }
+
+        #[test]
+        fn slug_stays_valid_and_bounded() {
+            let s = slugify(&"a".repeat(200));
+            assert!(s.len() <= 64);
+            assert!(pantheon_exec::skills::valid_slug(&s));
+        }
     }
 }
 
