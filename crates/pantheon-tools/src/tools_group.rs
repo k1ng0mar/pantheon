@@ -4534,10 +4534,16 @@ pub mod skill_tools {
         reg.register(
             pantheon_api::message::ToolSchema {
                 name: "skill_read".into(),
-                description: "Read one skill's full markdown body by name.".into(),
+                description: "Read one skill's full markdown body by name. Pass \
+                    file_path to read a supporting file inside the skill directory \
+                    (references/, scripts/, assets/) by its relative path."
+                    .into(),
                 parameters: serde_json::json!({
                     "type": "object",
-                    "properties": {"name": {"type": "string"}},
+                    "properties": {
+                        "name": {"type": "string"},
+                        "file_path": {"type": "string", "description": "Optional path relative to the skill dir, e.g. references/api.md"}
+                    },
                     "required": ["name"]
                 }),
             },
@@ -4572,6 +4578,61 @@ pub mod skill_tools {
                         "call skills_list first",
                     )
                 })?;
+                // A supporting file inside the skill dir, confined so a
+                // `../` or absolute path cannot escape it.
+                if let Some(rel) = v
+                    .get("file_path")
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    if rel.starts_with('/')
+                        || rel
+                            .split(['/', '\\'])
+                            .any(|seg| seg == ".." || seg.is_empty())
+                    {
+                        return Err(crate::tools::tool_err(
+                            "SKILL_BAD_PATH",
+                            Layer::Execution,
+                            false,
+                            format!("file_path {rel:?} must be relative and stay inside the skill dir"),
+                            "pass a path like references/api.md",
+                        ));
+                    }
+                    let dir = if skill.dir.as_os_str().is_empty() {
+                        skill.path.parent().unwrap_or(std::path::Path::new("."))
+                    } else {
+                        skill.dir.as_path()
+                    };
+                    let path = dir.join(rel);
+                    let meta = std::fs::metadata(&path).map_err(|e| {
+                        crate::tools::tool_err(
+                            "SKILL_FILE_IO",
+                            Layer::Execution,
+                            false,
+                            format!("{}: {e}", path.display()),
+                            "list the skill directory or check the path",
+                        )
+                    })?;
+                    if meta.len() > 512 * 1024 {
+                        return Err(crate::tools::tool_err(
+                            "SKILL_FILE_TOO_LARGE",
+                            Layer::Execution,
+                            false,
+                            format!("{} is {} bytes; capped at 512 KiB", path.display(), meta.len()),
+                            "read a smaller section or ask for a summary",
+                        ));
+                    }
+                    return std::fs::read_to_string(&path).map_err(|e| {
+                        crate::tools::tool_err(
+                            "SKILL_FILE_IO",
+                            Layer::Execution,
+                            false,
+                            format!("{}: {e}", path.display()),
+                            "check the path is a UTF-8 text file",
+                        )
+                    });
+                }
                 skill_body(skill)
             },
         );
@@ -4872,6 +4933,44 @@ pub mod skill_tools {
             // Delete removes the whole skill directory.
             call(&reg, r#"{"action":"delete","name":"verify-first"}"#).expect("delete");
             assert!(!skill_md.exists());
+        }
+
+        #[test]
+        fn skill_read_loads_a_supporting_file_and_confines_paths() {
+            use super::register_skill_tools;
+            use pantheon_exec::skills::{Skill, SkillMeta};
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let skill_dir = dir.path().join("notes");
+            std::fs::create_dir_all(skill_dir.join("references")).expect("dirs");
+            std::fs::write(skill_dir.join("SKILL.md"), "---\nname: notes\ndescription: d\n---\n\nbody\n")
+                .expect("skill file");
+            std::fs::write(skill_dir.join("references/api.md"), "api notes").expect("ref file");
+            let skill = Skill {
+                meta: SkillMeta {
+                    name: "notes".into(),
+                    description: "d".into(),
+                    origin: "user".into(),
+                    exec: Vec::new(),
+                    dependencies: Vec::new(),
+                },
+                path: skill_dir.join("SKILL.md"),
+                dir: skill_dir.clone(),
+            };
+            let mut reg = ToolRegistry::new();
+            register_skill_tools(&mut reg, vec![skill]);
+            let tool = reg.get("skill_read").expect("skill_read registered");
+
+            let body = (tool.run)(r#"{"name":"notes"}"#).expect("body");
+            assert!(body.contains("body"), "{body}");
+
+            let ref_file = (tool.run)(r#"{"name":"notes","file_path":"references/api.md"}"#)
+                .expect("reference file");
+            assert_eq!(ref_file, "api notes");
+
+            let escape = (tool.run)(r#"{"name":"notes","file_path":"../../etc/passwd"}"#)
+                .expect_err("traversal rejected");
+            assert_eq!(escape.code, "SKILL_BAD_PATH");
         }
 
         #[test]
