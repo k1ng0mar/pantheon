@@ -4924,6 +4924,14 @@ Extracted:
                 &extra_roots,
             );
             pantheon_tools::skill_tools::register_skill_tools(&mut reg, skill_list.clone());
+            // `skill_manage`: author, patch, and extend skills from inside
+            // the turn (the `/learn` path). Registered even when no skills
+            // exist yet so the agent can write the first one. Gated on
+            // FilesystemWrite, so Plan mode refuses it.
+            pantheon_tools::skill_tools::register_skill_manage_tool(
+                &mut reg,
+                self.supervisor.data_dir().to_path_buf(),
+            );
             // `skill_exec`: run declared executables. Registered whenever
             // skills exist (not just exec-declaring ones) because the tool
             // description also carries the skill-directory mapping that

@@ -4576,6 +4576,319 @@ pub mod skill_tools {
             },
         );
     }
+
+    /// Register `skill_manage`: author, patch, and extend skills the agent
+    /// writes for itself. This is the tool behind `/learn`.
+    ///
+    /// Unlike `skills_list`/`skill_read`, which read a snapshot taken at turn
+    /// start, this writes straight to `<data_dir>/skills`. Every write is
+    /// parsed with `parse_skill` and run through the same SkillSpector gate
+    /// as an imported skill, so an authored skill cannot carry a malformed
+    /// header or a flagged payload. Gated on FilesystemWrite, so Plan mode
+    /// refuses it.
+    pub fn register_skill_manage_tool(
+        reg: &mut crate::tools::ToolRegistry,
+        data_dir: std::path::PathBuf,
+    ) {
+        use pantheon_exec::skills::{import_skill, parse_skill, valid_slug};
+
+        let root = data_dir;
+        reg.register(
+            pantheon_api::message::ToolSchema {
+                name: "skill_manage".into(),
+                description: "Author or edit a reusable skill. action=\"create\" with \
+                    name, description, content; action=\"patch\" with name, old_string, \
+                    new_string; action=\"write_file\" with name, path, content to add a \
+                    supporting file; action=\"delete\" with name. Prefer extending an \
+                    existing skill (skills_list, then skill_read, then patch) over \
+                    creating a near-duplicate. Every write is security-scanned."
+                    .into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["create", "patch", "write_file", "delete"] },
+                        "name": { "type": "string", "description": "Skill slug: letters, digits, - or _ (max 64)" },
+                        "description": { "type": "string", "description": "One-line summary (create)" },
+                        "content": { "type": "string", "description": "Markdown body without frontmatter (create); file text (write_file)" },
+                        "old_string": { "type": "string", "description": "Exact text to replace once (patch)" },
+                        "new_string": { "type": "string", "description": "Replacement text (patch)" },
+                        "path": { "type": "string", "description": "File under the skill dir, e.g. references/api.md (write_file)" }
+                    },
+                    "required": ["action", "name"]
+                }),
+            },
+            pantheon_api::capability::Capability::FilesystemWrite,
+            move |args| {
+                let v = crate::tools::parse_args(args)?;
+                let bad = |code: &str, msg: String| {
+                    crate::tools::tool_err(
+                        code,
+                        Layer::Execution,
+                        false,
+                        msg,
+                        "check the skill_manage arguments",
+                    )
+                };
+                let action = v
+                    .get("action")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let name = v
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if !valid_slug(&name) {
+                    return Err(bad(
+                        "SKILL_BAD_NAME",
+                        format!("invalid skill name {name:?}: use [a-zA-Z0-9_-]{{1,64}}"),
+                    ));
+                }
+                let skill_dir = root.join("skills").join(&name);
+                let skill_md = skill_dir.join("SKILL.md");
+                let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+                match action.as_str() {
+                    "create" => {
+                        if skill_md.exists() {
+                            return Err(bad(
+                                "SKILL_EXISTS",
+                                format!(
+                                    "skill '{name}' already exists; use action=\"patch\" or write_file to extend it"
+                                ),
+                            ));
+                        }
+                        let description = field("description")
+                            .unwrap_or_default()
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .replace([':', '"', '#', '\n'], " ");
+                        let description = if description.trim().is_empty() {
+                            name.clone()
+                        } else {
+                            description.trim().to_string()
+                        };
+                        let body = field("content").unwrap_or_default();
+                        let raw = format!(
+                            "---\nname: {name}\ndescription: {description}\n---\n\n{}\n",
+                            body.trim_start()
+                        );
+                        let stage = root.join(format!(
+                            ".skill-manage-{}-{}",
+                            std::process::id(),
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_nanos())
+                                .unwrap_or(0)
+                        ));
+                        std::fs::create_dir_all(&stage)
+                            .map_err(|e| bad("SKILL_WRITE_IO", format!("create staging dir: {e}")))?;
+                        let staged = stage.join("SKILL.md");
+                        std::fs::write(&staged, &raw)
+                            .map_err(|e| bad("SKILL_WRITE_IO", format!("write SKILL.md: {e}")))?;
+                        let result = parse_skill(&raw, &staged).and_then(|mut skill| {
+                            skill.meta.origin = "learn".to_string();
+                            import_skill(&root, &skill)
+                        });
+                        let _ = std::fs::remove_dir_all(&stage);
+                        let dest = result.map_err(|e| bad("SKILL_CREATE", e.to_string()))?;
+                        Ok(format!("Created skill '{name}' at {}.", dest.display()))
+                    }
+                    "patch" => {
+                        if !skill_md.exists() {
+                            return Err(bad("SKILL_UNKNOWN", format!("no skill named '{name}'")));
+                        }
+                        let old = field("old_string")
+                            .ok_or_else(|| bad("TOOL_BAD_ARGS", "patch needs 'old_string'".into()))?;
+                        if old.is_empty() {
+                            return Err(bad("TOOL_BAD_ARGS", "patch 'old_string' is empty".into()));
+                        }
+                        let new = field("new_string")
+                            .ok_or_else(|| bad("TOOL_BAD_ARGS", "patch needs 'new_string'".into()))?;
+                        let current = std::fs::read_to_string(&skill_md)
+                            .map_err(|e| bad("SKILL_WRITE_IO", format!("read SKILL.md: {e}")))?;
+                        let count = current.matches(&old).count();
+                        if count == 0 {
+                            return Err(bad(
+                                "SKILL_PATCH_MISS",
+                                "old_string does not appear in the skill".into(),
+                            ));
+                        }
+                        if count > 1 {
+                            return Err(bad(
+                                "SKILL_PATCH_AMBIGUOUS",
+                                format!("old_string appears {count} times; add context to make it unique"),
+                            ));
+                        }
+                        let updated = current.replacen(&old, &new, 1);
+                        parse_skill(&updated, &skill_md)
+                            .map_err(|e| bad("SKILL_PATCH_INVALID", e.to_string()))?;
+                        let tmp = skill_md.with_file_name(".SKILL.md.tmp");
+                        std::fs::write(&tmp, &updated)
+                            .map_err(|e| bad("SKILL_WRITE_IO", format!("write temp: {e}")))?;
+                        std::fs::rename(&tmp, &skill_md)
+                            .map_err(|e| bad("SKILL_WRITE_IO", format!("commit: {e}")))?;
+                        let _ = pantheon_exec::skills_scan::gate_imported_skill(&root, &name);
+                        Ok(format!("Patched skill '{name}'."))
+                    }
+                    "write_file" => {
+                        if !skill_md.exists() {
+                            return Err(bad(
+                                "SKILL_UNKNOWN",
+                                format!("no skill named '{name}'; create it first"),
+                            ));
+                        }
+                        let rel = field("path")
+                            .ok_or_else(|| bad("TOOL_BAD_ARGS", "write_file needs 'path'".into()))?;
+                        let rel = rel.trim().trim_start_matches("./").to_string();
+                        if rel.is_empty()
+                            || rel.starts_with('/')
+                            || rel
+                                .split(['/', '\\'])
+                                .any(|seg| seg == ".." || seg.is_empty())
+                        {
+                            return Err(bad(
+                                "SKILL_BAD_PATH",
+                                format!("path {rel:?} must be relative and stay inside the skill dir"),
+                            ));
+                        }
+                        let dest = skill_dir.join(&rel);
+                        if let Some(parent) = dest.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                bad("SKILL_WRITE_IO", format!("create {}: {e}", parent.display()))
+                            })?;
+                        }
+                        let content = field("content").unwrap_or_default();
+                        std::fs::write(&dest, content)
+                            .map_err(|e| bad("SKILL_WRITE_IO", format!("write {}: {e}", dest.display())))?;
+                        Ok(format!("Wrote {}.", dest.display()))
+                    }
+                    "delete" => {
+                        if !skill_dir.exists() {
+                            return Err(bad("SKILL_UNKNOWN", format!("no skill named '{name}'")));
+                        }
+                        std::fs::remove_dir_all(&skill_dir)
+                            .map_err(|e| bad("SKILL_DELETE_IO", format!("delete: {e}")))?;
+                        Ok(format!("Deleted skill '{name}'."))
+                    }
+                    other => Err(bad(
+                        "TOOL_BAD_ARGS",
+                        format!("unknown action {other:?}; use create, patch, write_file, or delete"),
+                    )),
+                }
+            },
+        );
+    }
+
+    #[cfg(test)]
+    mod skill_manage_tests {
+        use super::register_skill_manage_tool;
+        use crate::tools::ToolRegistry;
+
+        fn registry(dir: &std::path::Path) -> ToolRegistry {
+            let mut reg = ToolRegistry::new();
+            register_skill_manage_tool(&mut reg, dir.to_path_buf());
+            reg
+        }
+
+        fn call(reg: &ToolRegistry, args: &str) -> Result<String, pantheon_api::error::PantheonError> {
+            let tool = reg.get("skill_manage").expect("skill_manage registered");
+            (tool.run)(args)
+        }
+
+        #[test]
+        fn create_patch_write_and_delete_round_trip() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let reg = registry(dir.path());
+            let skill_md = dir.path().join("skills/verify-first/SKILL.md");
+
+            let out = call(
+                &reg,
+                r##"{"action":"create","name":"verify-first","description":"Check before claiming done","content":"# verify-first\n\n1. run the full test suite\n"}"##,
+            )
+            .expect("create");
+            assert!(out.contains("Created skill 'verify-first'"), "{out}");
+            let md = std::fs::read_to_string(&skill_md).expect("skill file");
+            assert!(md.starts_with("---\nname: verify-first\n"), "{md}");
+            assert!(md.contains("run the full test suite"), "{md}");
+
+            // Creating again fails closed instead of clobbering.
+            let dup = call(
+                &reg,
+                r#"{"action":"create","name":"verify-first","description":"x","content":"y"}"#,
+            )
+            .expect_err("duplicate create rejected");
+            assert_eq!(dup.code, "SKILL_EXISTS");
+
+            // Patch replaces one unique span.
+            call(
+                &reg,
+                r#"{"action":"patch","name":"verify-first","old_string":"run the full test suite","new_string":"run analyze, tests, and clippy"}"#,
+            )
+            .expect("patch");
+            let md = std::fs::read_to_string(&skill_md).expect("skill file");
+            assert!(md.contains("run analyze, tests, and clippy"), "{md}");
+
+            // Ambiguous and missing spans are errors, not guesses.
+            let amb = call(
+                &reg,
+                r#"{"action":"patch","name":"verify-first","old_string":"e","new_string":"E"}"#,
+            )
+            .expect_err("ambiguous patch rejected");
+            assert_eq!(amb.code, "SKILL_PATCH_AMBIGUOUS");
+            let miss = call(
+                &reg,
+                r#"{"action":"patch","name":"verify-first","old_string":"not present anywhere","new_string":"x"}"#,
+            )
+            .expect_err("missing patch rejected");
+            assert_eq!(miss.code, "SKILL_PATCH_MISS");
+
+            // Supporting files land under the skill dir.
+            call(
+                &reg,
+                r#"{"action":"write_file","name":"verify-first","path":"references/api.md","content":"api notes"}"#,
+            )
+            .expect("write_file");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("skills/verify-first/references/api.md"))
+                    .expect("ref file"),
+                "api notes"
+            );
+
+            // Traversal and bad names fail closed.
+            let trav = call(
+                &reg,
+                r#"{"action":"write_file","name":"verify-first","path":"../escape.md","content":"x"}"#,
+            )
+            .expect_err("traversal rejected");
+            assert_eq!(trav.code, "SKILL_BAD_PATH");
+            let bad = call(&reg, r#"{"action":"create","name":"../evil","content":"x"}"#)
+                .expect_err("bad name rejected");
+            assert_eq!(bad.code, "SKILL_BAD_NAME");
+
+            // Delete removes the whole skill directory.
+            call(&reg, r#"{"action":"delete","name":"verify-first"}"#).expect("delete");
+            assert!(!skill_md.exists());
+        }
+
+        #[test]
+        fn unknown_action_and_missing_skill_are_reported() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let reg = registry(dir.path());
+            let unknown = call(&reg, r#"{"action":"frobnicate","name":"x"}"#)
+                .expect_err("unknown action");
+            assert_eq!(unknown.code, "TOOL_BAD_ARGS");
+            let missing = call(
+                &reg,
+                r#"{"action":"patch","name":"absent","old_string":"a","new_string":"b"}"#,
+            )
+            .expect_err("missing skill");
+            assert_eq!(missing.code, "SKILL_UNKNOWN");
+        }
+    }
 }
 pub mod todo_tools {
     //! The agent-facing `todo` tool: replace the whole session todo list in

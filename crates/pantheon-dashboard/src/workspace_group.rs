@@ -1189,6 +1189,44 @@ pub mod skills {
                     Err(e) => err_json(502, "SKILL_IMPORT", &e.to_string()),
                 };
             }
+            // `npx skills add` sources resolve to their GitHub repo: the
+            // CLI's repos are just SKILL.md trees. We never shell out to
+            // npx (no arbitrary package execution on the server); the spec
+            // is parsed and the repo imported through the same gated path.
+            if let Some((repo, skill)) = parse_npx_spec(url) {
+                let mut attempts: Vec<Option<String>> = Vec::new();
+                if let Some(s) = skill.as_deref() {
+                    // Vercel-style repos keep skills under skills/<name>;
+                    // others put them at the repo root.
+                    attempts.push(Some(format!("skills/{s}")));
+                    attempts.push(Some(s.to_string()));
+                }
+                attempts.push(None);
+                let mut last_err = String::new();
+                for sub in attempts {
+                    match import_skills_from_repo(&app.data_dir, &repo, sub.as_deref()) {
+                        Ok(list) if !list.is_empty() => {
+                            return json_ok(serde_json::json!({
+                                "ok": true,
+                                "imported": list.iter().map(|(n, p)| serde_json::json!({
+                                    "name": n, "path": p.display().to_string(),
+                                })).collect::<Vec<_>>(),
+                            }));
+                        }
+                        Ok(_) => {}
+                        Err(e) => last_err = e.to_string(),
+                    }
+                }
+                return err_json(
+                    502,
+                    "SKILL_IMPORT",
+                    if last_err.is_empty() {
+                        "no skills found at that npx source"
+                    } else {
+                        &last_err
+                    },
+                );
+            }
             // The dashboard fetches this URL server-side, so it gets the
             // same SSRF guard as link previews: http(s) only and a host
             // that resolves to public addresses (audit SEC-12).
@@ -1418,6 +1456,114 @@ pub mod skills {
             "learned-lesson".to_string()
         } else {
             out
+        }
+    }
+
+    /// Parse an `npx skills add` source into `(repo_url, skill?)`.
+    ///
+    /// Accepts the shapes people actually paste:
+    /// `npx:owner/repo`, `npx:owner/repo@skill`, `npx:owner/repo#skill`,
+    /// `npx skills add owner/repo [--skill name]`, `npx add owner/repo`,
+    /// and a full GitHub URL after the scheme. Never runs npx; the caller
+    /// hands `repo_url` to the GitHub importer.
+    fn parse_npx_spec(input: &str) -> Option<(String, Option<String>)> {
+        let mut s = input.trim();
+        let mut had_scheme = false;
+        if let Some(rest) = s.strip_prefix("npx:") {
+            s = rest.trim();
+            had_scheme = true;
+        } else if let Some(rest) = s.strip_prefix("npx ") {
+            s = rest.trim();
+            had_scheme = true;
+        }
+        if !had_scheme {
+            return None;
+        }
+        // A pasted `npx skills add ...` keeps its `npx` word after the
+        // scheme; drop it before the verb strip.
+        if let Some(rest) = s.strip_prefix("npx ") {
+            s = rest.trim();
+        }
+        let s = s
+            .strip_prefix("skills add ")
+            .or_else(|| s.strip_prefix("skills install "))
+            .or_else(|| s.strip_prefix("add "))
+            .or_else(|| s.strip_prefix("install "))
+            .unwrap_or(s)
+            .trim();
+        if s.is_empty() {
+            return None;
+        }
+        let mut tokens: Vec<String> = s.split_whitespace().map(str::to_string).collect();
+        let mut skill: Option<String> = None;
+        let mut i = 0;
+        while i < tokens.len() {
+            if tokens[i] == "--skill" || tokens[i] == "-s" {
+                if i + 1 < tokens.len() {
+                    skill = Some(tokens[i + 1].trim_matches(['"', '\'']).to_string());
+                    tokens.drain(i..=i + 1);
+                    continue;
+                }
+            } else if let Some(v) = tokens[i].strip_prefix("--skill=") {
+                skill = Some(v.trim_matches(['"', '\'']).to_string());
+                tokens.remove(i);
+                continue;
+            }
+            i += 1;
+        }
+        let mut target = tokens.first()?.trim_matches(['"', '\'']).to_string();
+        if let Some((t, sk)) = target.clone().split_once('@') {
+            if !sk.is_empty() {
+                target = t.to_string();
+                skill = skill.or_else(|| Some(sk.to_string()));
+            }
+        } else if let Some((t, sk)) = target.clone().split_once('#') {
+            if !sk.is_empty() {
+                target = t.to_string();
+                skill = skill.or_else(|| Some(sk.to_string()));
+            }
+        }
+        let target = target.trim_end_matches('/').trim_end_matches(".git");
+        let repo = if target.starts_with("http://") || target.starts_with("https://") {
+            target.to_string()
+        } else if target.contains('/') {
+            format!("https://github.com/{target}")
+        } else {
+            return None;
+        };
+        Some((repo, skill))
+    }
+
+    #[cfg(test)]
+    mod npx_spec_tests {
+        use super::parse_npx_spec;
+
+        #[test]
+        fn parses_the_cli_shapes() {
+            assert_eq!(
+                parse_npx_spec("npx:vercel-labs/agent-skills"),
+                Some(("https://github.com/vercel-labs/agent-skills".into(), None))
+            );
+            assert_eq!(
+                parse_npx_spec("npx skills add vercel-labs/agent-skills --skill pdf"),
+                Some((
+                    "https://github.com/vercel-labs/agent-skills".into(),
+                    Some("pdf".into())
+                ))
+            );
+            assert_eq!(
+                parse_npx_spec("npx:vercel-labs/agent-skills@pdf"),
+                Some((
+                    "https://github.com/vercel-labs/agent-skills".into(),
+                    Some("pdf".into())
+                ))
+            );
+            assert_eq!(
+                parse_npx_spec("npx skills add https://github.com/o/r.git"),
+                Some(("https://github.com/o/r".into(), None))
+            );
+            assert_eq!(parse_npx_spec("https://example.com/SKILL.md"), None);
+            assert_eq!(parse_npx_spec("clawhub:owner/slug"), None);
         }
     }
 
