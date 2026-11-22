@@ -1194,6 +1194,9 @@ pub mod skills {
             // npx (no arbitrary package execution on the server); the spec
             // is parsed and the repo imported through the same gated path.
             if let Some((repo, skill)) = parse_npx_spec(url) {
+                if let Err(e) = guard_clone_url(&repo) {
+                    return err_json(400, "SKILL_IMPORT_URL", &e);
+                }
                 let mut attempts: Vec<Option<String>> = Vec::new();
                 if let Some(s) = skill.as_deref() {
                     // Vercel-style repos keep skills under skills/<name>;
@@ -1244,6 +1247,11 @@ pub mod skills {
         if let Some(repo) = body.get("repo").and_then(|v| v.as_str()) {
             if repo.trim().is_empty() {
                 return bad_json("repo is empty");
+            }
+            // Same SSRF guard as every other server-side fetch: a repo URL
+            // that resolves to a private address must not be cloned.
+            if let Err(e) = guard_clone_url(repo) {
+                return err_json(400, "SKILL_IMPORT_URL", &e);
             }
             let subpath = body
                 .get("subpath")
@@ -1459,6 +1467,19 @@ pub mod skills {
         }
     }
 
+    /// Guard a repo URL before `git clone`: https only, no credentials,
+    /// host must resolve to public addresses. Used by both the npx spec
+    /// and the raw `{repo}` import, so neither can reach an internal host
+    /// through the clone transport (audit SEC-12).
+    fn guard_clone_url(raw: &str) -> Result<(), String> {
+        let parsed = crate::link_preview::guard_url(raw)
+            .map_err(|e| format!("{}: {}", e.code, e.msg))?;
+        if parsed.scheme() != "https" {
+            return Err("repository URL must use https".to_string());
+        }
+        Ok(())
+    }
+
     /// Parse an `npx skills add` source into `(repo_url, skill?)`.
     ///
     /// Accepts the shapes people actually paste:
@@ -1536,7 +1557,21 @@ pub mod skills {
 
     #[cfg(test)]
     mod npx_spec_tests {
-        use super::parse_npx_spec;
+        use super::{guard_clone_url, parse_npx_spec};
+
+        #[test]
+        fn clone_guard_refuses_private_and_non_https_targets() {
+            // Literal loopback and link-local IPs are refused before DNS.
+            let loopback = guard_clone_url("https://127.0.0.1/owner/repo");
+            assert!(loopback.is_err(), "loopback clone must be refused");
+            assert!(loopback.unwrap_err().contains("LINK_SSRF"));
+            let link_local = guard_clone_url("https://169.254.169.254/owner/repo");
+            assert!(link_local.is_err(), "metadata address must be refused");
+            let plain = guard_clone_url("http://github.com/o/r");
+            assert!(plain.is_err(), "plain http clone must be refused");
+            let credentials = guard_clone_url("https://user:pass@github.com/o/r");
+            assert!(credentials.is_err(), "credentialed URL must be refused");
+        }
 
         #[test]
         fn parses_the_cli_shapes() {

@@ -4785,6 +4785,20 @@ pub mod skill_tools {
                             ));
                         }
                         let updated = current.replacen(&old, &new, 1);
+                        // Bundled skills carry a content stamp so seeding can
+                        // refresh an untouched copy. Keep it and the next
+                        // session would overwrite this edit. Strip it so the
+                        // patched copy is treated as the user's own.
+                        let updated = updated
+                            .lines()
+                            .filter(|line| {
+                                !line
+                                    .trim_start()
+                                    .starts_with("<!-- pantheon:bundled:")
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            + "\n";
                         parse_skill(&updated, &skill_md)
                             .map_err(|e| bad("SKILL_PATCH_INVALID", e.to_string()))?;
                         let tmp = skill_md.with_file_name(".SKILL.md.tmp");
@@ -4933,6 +4947,24 @@ pub mod skill_tools {
             // Delete removes the whole skill directory.
             call(&reg, r#"{"action":"delete","name":"verify-first"}"#).expect("delete");
             assert!(!skill_md.exists());
+        }
+
+        #[test]
+        fn patch_strips_a_bundled_seed_stamp() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let skill_dir = dir.path().join("skills/bundled-one");
+            std::fs::create_dir_all(&skill_dir).expect("dir");
+            let raw = "---\nname: bundled-one\ndescription: d\n---\n\nold text\n<!-- pantheon:bundled:0123456789abcdef -->\n";
+            std::fs::write(skill_dir.join("SKILL.md"), raw).expect("skill");
+            let reg = registry(dir.path());
+            call(
+                &reg,
+                r#"{"action":"patch","name":"bundled-one","old_string":"old text","new_string":"new text"}"#,
+            )
+            .expect("patch");
+            let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).expect("read skill");
+            assert!(md.contains("new text"), "{md}");
+            assert!(!md.contains("pantheon:bundled"), "stamp must be gone: {md}");
         }
 
         #[test]
