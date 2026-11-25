@@ -9,6 +9,6 @@
     "preview": "astro preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {
-    "astro": "^7.3.3"
+    "astro": "^7.4.13"
   }
 }
