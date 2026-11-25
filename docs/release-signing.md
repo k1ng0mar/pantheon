@@ -9,14 +9,19 @@ from the same origin as the binary, so it can never prove who
 published the binary. No archive installs without a valid signature
 from the pinned key, and there is no bypass flag.
 
-## Current status: key NOT provisioned
+## Current status: provisioned
 
-No release keypair exists yet, so `PINNED_PUBLIC_KEY` is `None` and
-verification fails closed with a clear message: `pantheon update`
-refuses to install, and the operator installs the release by hand
-until provisioning lands. That is the intended state, not a bug to
-work around with a placeholder key - a placeholder would look like
-authentication while verifying against a key nobody controls.
+A single release keypair exists. The public half is pinned in
+`PINNED_PUBLIC_KEY`; the private half was generated with `minisign -G`,
+uploaded to the repo secret `MINISIGN_SECRET_KEY`, and destroyed on the
+generating machine. No copy of the secret key lives in this repo, on
+the build host, or in the pinned source.
+
+Releases built before provisioning are unsigned and are still refused by
+`pantheon update`. Those must be installed by hand. Every release built
+after provisioning carries a `.minisig` and verifies against the pinned
+key. Signing is guarded in CI: if the secret is ever missing, the release
+ships unsigned with a loud warning rather than failing the build.
 
 ## Provisioning (one-time, operator action)
 

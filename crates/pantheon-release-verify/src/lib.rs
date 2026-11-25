@@ -8,10 +8,7 @@
 //! who published the binary. A signature from the pinned key can.
 //!
 //! Fail-closed, everywhere:
-//! - no pinned key yet ([`PINNED_PUBLIC_KEY`] is `None` until the
-//!   release keypair is provisioned - see `docs/release-signing.md`)
-//!   → verification fails with a clear message; nothing installs.
-//! - missing, unreadable, or malformed `.minisig` → failure.
+//! - a missing, unreadable, or malformed `.minisig` → failure.
 //! - signature mismatch, wrong key id, or legacy (non-prehashed)
 //!   signature → failure.
 //!
@@ -25,19 +22,18 @@ use minisign_verify::{PublicKey, Signature};
 
 /// Base64 minisign public key pinned for release verification.
 ///
-/// `None` until provisioning: no release keypair exists yet, so the
-/// slot starts empty and verification fails closed with a message
-/// telling the operator to install releases by hand until the key is
-/// pinned (see `docs/release-signing.md`). A placeholder key would be
-/// worse than none - it would look like authentication while
-/// verifying against a key nobody controls.
-pub const PINNED_PUBLIC_KEY: Option<&str> = None;
+/// Generated once on an operator machine with `minisign -G`; the secret
+/// half lives only in the `MINISIGN_SECRET_KEY` GitHub repo secret and
+/// is written to a runner temp file at signing time (see
+/// `docs/release-signing.md`). This value is public and safe to ship.
+pub const PINNED_PUBLIC_KEY: Option<&str> =
+    Some("RWQfdih4Dd0BpT+16PEvcBm9h0F1LOmTY/mHksosHvt/sl0JUbIlXlpO");
 
 /// Verify `bytes` against the pinned release key and a `.minisig` text.
-/// Fails closed when the key is absent.
+/// Fails closed when the key is absent or malformed.
 pub fn verify_signature(bytes: &[u8], signature_text: &str) -> Result<(), String> {
     let key = PINNED_PUBLIC_KEY.ok_or_else(|| {
-        "signature verification unavailable: no release signing key is pinned yet \
+        "signature verification unavailable: no release signing key is pinned \
          (see docs/release-signing.md); install this release by hand instead of \
          running an unverified update"
             .to_string()
@@ -98,13 +94,25 @@ mod tests {
         assert!(verify_with_key(DOC_KEY, b"test", "").is_err());
     }
 
+    /// Signature made at provisioning time with the real release key,
+    /// kept in scratch as the fixture for this test. It proves the
+    /// pinned key and the workflow's `minisign -S` format agree.
+    const RELEASE_SIG: &str = "untrusted comment: signature from minisign secret key\nRUQfdih4Dd0Bpcd6T/WvTNanxXSsxtEpLVfKN+rI9U2uPrJgYpPofVBlHe6KIxwp7uZU7b/uvnQT86mMAVpacNGRcJw3jwLfyAs=\ntrusted comment: timestamp:1795638358\tfile:fixture.txt\thashed\nSLkJcU6mAwiROzLGTwsJ4fWcPfaGoz0XGwr9Q9YZiT5WdbbhyMJFwJzFX+yABRx129DUGg1uA0hnNtyC2y7yDg==";
+
     #[test]
-    fn absent_pinned_key_fails_closed() {
-        assert!(PINNED_PUBLIC_KEY.is_none());
-        let err = verify_signature(b"test", DOC_SIG).unwrap_err();
-        assert!(
-            err.contains("no release signing key is pinned"),
-            "unexpected message: {err}"
-        );
+    fn pinned_key_is_set_and_parses() {
+        let key = PINNED_PUBLIC_KEY.expect("release key must be pinned");
+        PublicKey::from_base64(key).expect("pinned key must parse");
+    }
+
+    #[test]
+    fn pinned_key_verifies_a_real_signature() {
+        verify_signature(b"pantheon release signing fixture\n", RELEASE_SIG)
+            .expect("real release signature must verify against the pinned key");
+    }
+
+    #[test]
+    fn pinned_key_rejects_tampered_bytes() {
+        assert!(verify_signature(b"pantheon release signing fixture!", RELEASE_SIG).is_err());
     }
 }
