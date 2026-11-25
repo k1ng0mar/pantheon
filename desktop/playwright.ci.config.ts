@@ -3,7 +3,7 @@ import base from './playwright.config';
 
 // CI runs the reliable subset of the desktop Playwright suite.
 //
-// `playwright.config.ts` is the full local suite: 74 spec files, one per
+// `playwright.config.ts` is the full local suite: 69 spec files, one per
 // feature area. This config imports it and subtracts the specs that cannot be
 // trusted on a CI runner. Everything not listed here runs.
 //
@@ -31,14 +31,13 @@ export default defineConfig({
   // toBeVisible/toHaveAttribute failures in specs that pass locally. 15s still
   // catches a real regression, it stops treating scheduler latency as one.
   expect: { timeout: 15_000 },
+  // Deleted with the panels they covered. Kept out of CI so an old name in
+  // the local suite cannot silently re-enable a stale spec.
   testIgnore: [
     // stale provider and settings expectations
-    '**/agent-updates.spec.ts',
-    '**/agent-usage.spec.ts',
     '**/provider-settings.spec.ts',
     '**/settings.spec.ts',
     '**/remote.spec.ts',
-    '**/opencode-models.spec.ts',
     '**/team-profiles.spec.ts',
     '**/simulator.spec.ts',
     // stale UI text, count, and attribute assertions
@@ -47,7 +46,6 @@ export default defineConfig({
     '**/bots.spec.ts',
     '**/colors.spec.ts',
     '**/compact-menus.spec.ts',
-    '**/conversation-import.spec.ts',
     '**/design-canvas.spec.ts',
     '**/generative-ui.spec.ts',
     '**/message-actions.spec.ts',
@@ -61,7 +59,6 @@ export default defineConfig({
     '**/browser.spec.ts',
     '**/cloud-agents.spec.ts',
     '**/external-links.spec.ts',
-    '**/grok.spec.ts',
     '**/layout-preferences.spec.ts',
     '**/sketch.spec.ts',
     '**/streaming.spec.ts',

@@ -36,7 +36,7 @@ async function startRun(page: Page): Promise<void> {
 
 test('queues messages during a run, edits and reorders them, and steers mid-turn', async ({ page }) => {
   await startRun(page);
-  await expect(prompt(page)).toHaveAttribute('placeholder', /Queue a follow-up · ⌘↩ steers now/);
+  await expect(prompt(page)).toHaveAttribute('placeholder', /Queue a follow-up · (⌘↩|Ctrl\+↩) steers now/);
   await prompt(page).fill('First follow-up');
   await prompt(page).press('Enter');
   await prompt(page).fill('Second follow-up');

@@ -1,12 +1,8 @@
 mod agent_tools;
-mod agent_updates;
-mod agent_usage;
-mod agent_usage_providers;
 mod appearance;
 mod architect;
 mod bots;
 mod browser;
-mod capabilities;
 mod chats;
 mod checks;
 mod child_env;
@@ -17,7 +13,6 @@ mod command_operations;
 mod connections;
 mod context_recovery;
 mod conversation_fork;
-mod conversation_import;
 mod design;
 mod error_report;
 mod file_preview;
@@ -27,6 +22,7 @@ mod github_pull;
 mod goal_state;
 #[cfg(test)]
 mod goal_workflow_tests;
+mod home;
 mod integrations;
 mod jev;
 mod jev_decisions;
@@ -58,14 +54,11 @@ mod terminal_preferences;
 mod token_saver;
 mod tray;
 mod turn_changes;
-mod usage_keychain;
-mod usage_ledger;
 mod vm;
 mod vsix_themes;
 mod workspace;
 
 pub use cloud_agents::handle_cloud_bridge;
-pub use usage_keychain::handle_usage_keychain_helper;
 
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -141,7 +134,11 @@ impl RunningAgent {
             .ok_or("This approval belongs to an earlier run.")?
             .to_string();
         let store = store.lock().map_err(|error| error.to_string())?;
-        let next_status = if approvals.len() == 1 { "running" } else { "waiting" };
+        let next_status = if approvals.len() == 1 {
+            "running"
+        } else {
+            "waiting"
+        };
         store.status(session_id, next_status)?;
         if self
             .send(RunInput::Approval {
@@ -253,7 +250,9 @@ fn pending_request_kind<'a>(
     if !approvals.contains(request_id) {
         return None;
     }
-    pending_requests.get(request_id).map(|event| event.kind.as_str())
+    pending_requests
+        .get(request_id)
+        .map(|event| event.kind.as_str())
 }
 
 #[cfg(test)]
@@ -301,7 +300,10 @@ mod pending_request_tests {
             tool: None,
         };
         update_pending_request(&mut approvals, Some(&mut pending), request_id, &request);
-        assert_eq!(pending_request_kind(&approvals, &pending, request_id), Some("approval"));
+        assert_eq!(
+            pending_request_kind(&approvals, &pending, request_id),
+            Some("approval")
+        );
 
         let question = AgentEvent {
             kind: "input_request".into(),
@@ -371,7 +373,7 @@ mod task_agent_tests {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         store.begin_task_turn(&task.id, "Build a game").unwrap();
         let assistant = Mutex::new(String::new());
@@ -409,7 +411,7 @@ mod task_agent_tests {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "claude", "sonnet", "ask")
+            .create_session(&project.id, "pantheon", "sonnet", "ask")
             .unwrap();
         let assistant = Mutex::new("Checking the project.".to_string());
         let mut tool = event(&task.id, "tool", "Read");
@@ -447,7 +449,7 @@ mod task_agent_tests {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         let assistant = Mutex::new("Preserve this response.".to_string());
         store.conn().execute_batch("CREATE TRIGGER reject_response BEFORE INSERT ON messages WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
@@ -470,7 +472,7 @@ mod task_agent_tests {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         let assistant = Mutex::new("I’ll inspect the files.".to_string());
         let mut tool = event(&task.id, "tool", "Read");
@@ -536,7 +538,7 @@ mod task_agent_tests {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "claude", "sonnet", "ask")
+            .create_session(&project.id, "pantheon", "sonnet", "ask")
             .unwrap();
         store.begin_task_turn(&task.id, "Build a game").unwrap();
         let (input, _receiver) = unbounded_channel();
@@ -601,7 +603,7 @@ const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and Pantheon then cl
 const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in Pantheon: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
 
 /// Replies may carry generative UI blocks that Pantheon draws in the thread.
-const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pantheon_preview_file.";
+const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pantheon_preview_file.";
 
 /// Harnesses without a system prompt hear the app instructions again every few turns.
 const INSTRUCTION_REMINDER_EVERY: i64 = 8;
@@ -953,14 +955,9 @@ async fn update_session(
         .as_deref()
         .filter(|_| model.is_none() && mode.is_none() && archived.is_none())
     {
-        let task = state
-            .store
-            .lock()
-            .map_err(|e| e.to_string())?
-            .session(&session_id)?;
-        if task.provider == "codex" {
-            return task_controls::rename_task(&state, &session_id, title).await;
-        }
+        // A rename is purely local for Pantheon: nothing outside this app
+        // names the conversation.
+        return task_controls::rename_task(&state, &session_id, title).await;
     }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
@@ -1131,31 +1128,6 @@ fn save_agent_activity(
                 .transpose()
                 .map_err(|_| "Invalid goal metadata.".to_string())?;
             db.record_goal(&activity.session_id, goal.as_ref())
-        }
-        "task_settings" => {
-            let task = db.session(&activity.session_id)?;
-            let settings = activity.data.as_ref().ok_or("Missing task settings.")?;
-            let object = settings.as_object().ok_or("Invalid task settings.")?;
-            if task.provider != "codex"
-                || object.keys().any(|key| {
-                    !matches!(
-                        key.as_str(),
-                        "collaborationMode" | "serviceTier" | "personality"
-                    )
-                })
-            {
-                return Err("Task settings do not belong to this Codex task.".into());
-            }
-            let data = serde_json::to_string(settings).map_err(|error| error.to_string())?;
-            if data.len() > 32 * 1024 {
-                return Err("Task settings are too large.".into());
-            }
-            db.conn().execute(
-                    "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
-                    rusqlite::params![activity.session_id, data],
-                )
-                .map_err(|error| error.to_string())?;
-            Ok(())
         }
         "goal_input" => {
             flush_assistant(db, &activity.session_id, assistant)?;
@@ -1353,7 +1325,7 @@ async fn prepare_command(
         let Some((name, _)) = slash_commands::split_command(&original) else {
             return Ok(None);
         };
-        if task.provider == "codex" && name == "/compact" && task.resume_id.is_none() {
+        if task.provider == "pantheon" && name == "/compact" && task.resume_id.is_none() {
             return Err("Start a conversation before compacting its context.".into());
         }
         (
@@ -1465,10 +1437,19 @@ async fn start_task(
 struct RunAdmission<'a> {
     expected_project: Option<&'a str>,
     command: Option<PreparedCommand>,
-    goal: Option<goal_state::GoalRequest>,
     team: Option<architect::Admission>,
     /// Re-attach to a cloud task's remote run (`cloud_agents::resume`): no new turn.
     cloud_attach: bool,
+}
+
+/// The objective the model should keep in front of it, or `None` when the
+/// task has no active goal. Sent to Pantheon once per run, before the turn.
+fn goal_objective_for(store: &Store, session_id: &str) -> Result<Option<String>> {
+    let task = store.session(session_id)?;
+    Ok(task
+        .goal_state
+        .filter(|goal| goal.status == "active")
+        .map(|goal| goal.objective))
 }
 
 struct PreparedRun {
@@ -1516,12 +1497,10 @@ fn prepare_task_run_in_project(
     admission: RunAdmission<'_>,
 ) -> Result<PreparedRun> {
     let mut agents = state.agents.lock().map_err(|e| e.to_string())?;
-    agent_updates::ensure_not_installing()?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("Pantheon is shutting down.".into());
     }
-    if agents.contains_key(&session_id) || terminal::harness_running(&state.terminals, &session_id)?
-    {
+    if agents.contains_key(&session_id) {
         return Err("This task is already running in an agent or harness console.".into());
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -1529,11 +1508,6 @@ fn prepare_task_run_in_project(
     let session = reconcile_inactive_task(&store, &agents, store.session(&session_id)?);
     if admission.cloud_attach {
         return prepare_cloud_attach(&store, &mut agents, session, tx, stopped);
-    }
-    if admission.goal.is_some() && session.provider != "codex" {
-        return Err(
-            "Goals require the Codex harness. The task provider changed before it started.".into(),
-        );
     }
     if admission
         .expected_project
@@ -1582,46 +1556,18 @@ fn prepare_task_run_in_project(
                 command.resolution.maintenance,
             )
         }
-        None if admission.goal.is_none()
-            && admission.team.is_none()
-            && slash_commands::split_command(&text).is_some() =>
-        {
+        None if admission.team.is_none() && slash_commands::split_command(&text).is_some() => {
             return Err("The task command changed. Try again to load its commands.".into());
         }
         None => (text.clone(), None, false),
     };
     let needs_context = context_recovery::pending(&store, &session)?;
-    let goal_control = matches!(
-        admission.goal,
-        Some(
-            goal_state::GoalRequest::Get
-                | goal_state::GoalRequest::Pause
-                | goal_state::GoalRequest::Clear
-        )
-    );
-    if needs_context
-        && ((!goal_control && admission.goal.is_some())
-            || slash_commands::split_command(&prompt).is_some())
-    {
+    if needs_context && slash_commands::split_command(&prompt).is_some() {
         return Err(context_recovery::RECOVERY_REQUIRED.into());
     }
-    let (prompt, context_handoff) = if goal_control {
-        if needs_context {
-            context_recovery::queue(&store, &session_id)?;
-        }
-        (prompt, None)
-    } else {
-        context_recovery::prepare(&store, &session, &prompt)?
-    };
+    let (prompt, context_handoff) = context_recovery::prepare(&store, &session, &prompt)?;
     let turn_started = std::time::Instant::now();
-    let turn_message_id = if admission.goal.is_some() {
-        if matches!(admission.goal, Some(goal_state::GoalRequest::Set { .. })) {
-            store.begin_task_turn(&session_id, &text)?
-        } else {
-            store.begin_goal_operation(&session_id)?;
-            0
-        }
-    } else {
+    let turn_message_id = {
         let kind = architect::internal_turns::pending_kind(
             &store,
             &session_id,
@@ -1630,15 +1576,6 @@ fn prepare_task_run_in_project(
         )?;
         store.begin_task_turn_with_kind(&session_id, &text, kind)?
     };
-    let maintenance = maintenance
-        || matches!(
-            admission.goal,
-            Some(
-                goal_state::GoalRequest::Get
-                    | goal_state::GoalRequest::Pause
-                    | goal_state::GoalRequest::Clear
-            )
-        );
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref())?;
     let config = RunConfig {
         session_id: session_id.clone(),
@@ -1652,8 +1589,7 @@ fn prepare_task_run_in_project(
         instructions: String::new(),
         images,
         skill,
-        goal: admission.goal,
-        codex_settings: session.codex_settings,
+        goal_objective: goal_objective_for(&store, &session_id)?,
     };
     architect::mark_started(&store, &session_id, admission.team.as_ref())?;
     let agent = RunningAgent::new(tx, stopped.clone());
@@ -1695,7 +1631,8 @@ fn prepare_cloud_attach(
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "DELETE FROM messages WHERE session_id=?1 AND id>?2",
             rusqlite::params![session_id, cloud.turn_message],
         )
@@ -1713,8 +1650,7 @@ fn prepare_cloud_attach(
         instructions: String::new(),
         images: Vec::new(),
         skill: None,
-        goal: None,
-        codex_settings: session.codex_settings,
+        goal_objective: goal_objective_for(store, &session_id)?,
     };
     let agent = RunningAgent::new(tx, stopped);
     let prepared = PreparedRun {
@@ -1746,7 +1682,6 @@ pub(crate) async fn attach_cloud_run(app: tauri::AppHandle, session_id: String) 
         None,
         OperationAdmission {
             expected_project: None,
-            goal: None,
             team: None,
             cloud_attach: true,
         },
@@ -1772,16 +1707,7 @@ async fn launch_task_in_project(
     image_ids: Option<Vec<String>>,
     expected_project: Option<String>,
 ) -> Result<()> {
-    launch_operation(
-        app,
-        state,
-        session_id,
-        text,
-        image_ids,
-        expected_project,
-        None,
-    )
-    .await
+    launch_operation(app, state, session_id, text, image_ids, expected_project).await
 }
 
 async fn launch_operation(
@@ -1791,7 +1717,6 @@ async fn launch_operation(
     text: Option<String>,
     image_ids: Option<Vec<String>>,
     expected_project: Option<String>,
-    goal: Option<task_controls::GoalLaunch>,
 ) -> Result<()> {
     launch_operation_admitted(
         app,
@@ -1801,7 +1726,6 @@ async fn launch_operation(
         image_ids,
         OperationAdmission {
             expected_project,
-            goal,
             team: None,
             cloud_attach: false,
         },
@@ -1825,7 +1749,6 @@ pub(crate) fn launch_team_task<'a>(
         image_ids,
         OperationAdmission {
             expected_project: None,
-            goal: None,
             team: Some(admission),
             cloud_attach: false,
         },
@@ -1834,7 +1757,6 @@ pub(crate) fn launch_team_task<'a>(
 
 struct OperationAdmission {
     expected_project: Option<String>,
-    goal: Option<task_controls::GoalLaunch>,
     team: Option<architect::Admission>,
     cloud_attach: bool,
 }
@@ -1849,20 +1771,17 @@ async fn launch_operation_admitted(
 ) -> Result<()> {
     let OperationAdmission {
         expected_project,
-        goal,
         team: team_admission,
         cloud_attach,
     } = admission;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("Pantheon is shutting down.".into());
     }
-    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach {
+    let command = if team_admission.is_none() && !cloud_attach {
         prepare_command(&state, &session_id, text.as_deref()).await?
     } else {
         None
     };
-    let goal_request = goal.as_ref().map(|g| g.request.clone());
-    let goal_reply = Arc::new(Mutex::new(goal.map(|g| g.reply)));
     let image_ids = image_ids.unwrap_or_default();
     if image_ids.len() > 4 {
         return Err("Attach up to four screenshots per message.".into());
@@ -1914,7 +1833,6 @@ async fn launch_operation_admitted(
         RunAdmission {
             expected_project: expected_project.as_deref(),
             command,
-            goal: goal_request,
             team: team_admission,
             cloud_attach,
         },
@@ -1970,24 +1888,12 @@ async fn launch_operation_admitted(
             .app_cache_dir()
             .unwrap_or_else(|_| std::env::temp_dir().join("pantheon"))
             .join("turn-captures");
-        // Goal inspection/pause/clear are control operations, not model turns.
-        let tracker = if matches!(
-            config.goal.as_ref(),
-            Some(
-                goal_state::GoalRequest::Get
-                    | goal_state::GoalRequest::Pause
-                    | goal_state::GoalRequest::Clear
-            )
-        ) {
-            None
-        } else {
-            tauri::async_runtime::spawn_blocking(move || {
-                turn_changes::Tracker::start(changes_root, changes_cache)
-            })
-            .await
-            .ok()
-            .map(|tracker| Arc::new(Mutex::new(tracker)))
-        };
+        let tracker = tauri::async_runtime::spawn_blocking(move || {
+            turn_changes::Tracker::start(changes_root, changes_cache)
+        })
+        .await
+        .ok()
+        .map(|tracker| Arc::new(Mutex::new(tracker)));
         let tracker_sink = tracker.clone();
         let persistence_error = Arc::new(Mutex::new(None::<String>));
         let errors_sink = persistence_error.clone();
@@ -1996,7 +1902,6 @@ async fn launch_operation_admitted(
         let app_sink = app.clone();
         let pending_requests_sink = pending_requests.clone();
         let subagents_sink = subagents.clone();
-        let goal_reply_sink = goal_reply.clone();
         let goal_agents_sink = agents.clone();
         let native_turn_sink = Mutex::new(String::new());
         let team_sink = team.clone();
@@ -2099,28 +2004,6 @@ async fn launch_operation_admitted(
                     }
                 }
             }
-            if e.kind == "goal_ready" {
-                let result = errors_sink
-                    .lock()
-                    .map_err(|_| "Goal persistence is unavailable.".to_string())
-                    .and_then(|error| {
-                        if let Some(error) = error.as_ref() {
-                            Err(error.clone())
-                        } else {
-                            e.data
-                                .clone()
-                                .filter(|v| !v.is_null())
-                                .map(serde_json::from_value)
-                                .transpose()
-                                .map_err(|_| "Invalid goal metadata.".to_string())
-                        }
-                    });
-                if let Ok(mut slot) = goal_reply_sink.lock() {
-                    if let Some(reply) = slot.take() {
-                        let _ = reply.send(result);
-                    }
-                }
-            }
             if matches!(
                 e.kind.as_str(),
                 "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
@@ -2148,8 +2031,12 @@ async fn launch_operation_admitted(
         let host = if let Some(admission) = team.as_ref() {
             architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
         } else {
-            (config.provider == "codex")
-                .then(|| agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+            // Pantheon exchanges its host tools over ACP, so every run gets them.
+            Some(agent_tools::host(
+                app.clone(),
+                session_id.clone(),
+                stopped.clone(),
+            ))
         };
         let team_tools_missing = team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
@@ -2181,13 +2068,10 @@ async fn launch_operation_admitted(
         let managed_worker = team
             .as_ref()
             .is_some_and(|admission| admission.parent != session_id);
-        let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
-            let tools = host
-                .as_ref()
-                .map(|host| (host.tools.clone(), host.approval_tools.clone()))
-                .unwrap_or_default();
-            (config.clone(), tools)
-        });
+        // Each Pantheon turn is one `serve acp` conversation; there is no spare
+        // process to pre-warm, so the next turn starts it on demand.
+        let _warm_next = false;
+        let _ = managed_worker;
         let result = if stopped.load(Ordering::SeqCst) {
             Ok(())
         } else if team_tools_missing {
@@ -2204,14 +2088,6 @@ async fn launch_operation_admitted(
                 registry.remove(&session_id);
             }
             return;
-        }
-        if let Ok(mut slot) = goal_reply.lock() {
-            if let Some(reply) = slot.take() {
-                let _ =
-                    reply.send(Err(result.as_ref().err().cloned().unwrap_or_else(|| {
-                        "Codex did not acknowledge the goal operation.".into()
-                    })));
-            }
         }
         let turn_duration_ms = turn_started.elapsed().as_millis().min(i64::MAX as u128) as i64;
         // The terminal change marker must follow the final assistant response,
@@ -2402,7 +2278,6 @@ async fn launch_operation_admitted(
         // Otherwise its delayed `done` can finish a newly started UI stream.
         drop(children);
         // Read before the team scheduler can start this task's next turn.
-        let launch = providers::warm_epoch(&session_id);
         if let Some(registry) = registry.as_ref() {
             architect::completed(
                 &app,
@@ -2414,34 +2289,6 @@ async fn launch_operation_admitted(
             );
         }
         drop(registry);
-        // Start the next turn's agent now, so a follow-up skips the CLI's own startup.
-        if let (true, Some((mut next, (tools, approvals)))) =
-            (successful && !was_stopped, warm_next)
-        {
-            // A turn that ended without any reply (seen after background commands) may have
-            // left the session in a state a spare would inherit: start the next one fresh.
-            let replied = store.lock().ok().and_then(|db| db.conn().query_row(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')))",
-                [&session_id],
-                |row| row.get::<_, bool>(0),
-            ).ok()).unwrap_or(false);
-            let task = store
-                .lock()
-                .ok()
-                .filter(|_| replied)
-                .and_then(|db| db.session(&session_id).ok());
-            if let Some(task) = task {
-                next.resume_id = task.resume_id;
-                next.model = task.model;
-                next.mode = task.mode;
-                next.reasoning_effort = task.reasoning_effort;
-                next.prompt.clear();
-                next.images.clear();
-                tauri::async_runtime::spawn(async move {
-                    let _ = providers::prewarm_agent(next, tools, approvals, launch).await;
-                });
-            }
-        }
     });
     Ok(())
 }
@@ -2517,12 +2364,8 @@ async fn list_providers(
     }
     serde_json::to_value(local_providers(force).await).map_err(|e| e.to_string())
 }
-/// This computer's harnesses; `force` drops the cached ACP catalogs first.
-pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo> {
-    if force {
-        providers::acp_catalog::invalidate("antigravity");
-        providers::acp_catalog::invalidate("grok");
-    }
+/// This computer's one harness and the model ids its CLI reports.
+pub(crate) async fn local_providers(_force: bool) -> Vec<providers::ProviderInfo> {
     tauri::async_runtime::spawn_blocking(providers::discover)
         .await
         .unwrap_or_default()
@@ -2542,11 +2385,8 @@ async fn list_provider_models(
 }
 pub(crate) async fn local_provider_models(
     provider: &str,
-    force: bool,
+    _force: bool,
 ) -> Result<Vec<providers::ModelInfo>> {
-    if force {
-        providers::acp_catalog::invalidate(provider);
-    }
     providers::list_models(provider).await
 }
 
@@ -3622,7 +3462,6 @@ async fn start_run_script_terminal(
             .agents
             .lock()
             .map_err(|_| "Agent state is unavailable.")?;
-        agent_updates::ensure_not_installing()?;
         if request_id.is_some_and(|id| !agent_tools::agent_ui_request_active(app.state(), id)) {
             return Err("Run request was cancelled before the script could start.".into());
         }
@@ -3650,7 +3489,6 @@ async fn start_terminal(
             .agents
             .lock()
             .map_err(|_| "Agent state is unavailable.")?;
-        agent_updates::ensure_not_installing()?;
         terminal::start(app.clone(), terms, &root, cols, rows)
     })
     .await
@@ -3796,8 +3634,7 @@ pub fn run() {
             }
             let database_path = dir.join("pantheon.sqlite3");
             // Retain the bundle identifier so upgrades reuse existing data.
-            let store =
-                Store::open(&database_path).map_err(std::io::Error::other)?;
+            let store = Store::open(&database_path).map_err(std::io::Error::other)?;
             if let Err(error) = store.discard_empty_drafts() {
                 eprintln!("Could not clear unsent new tasks: {error}");
             }
@@ -3839,7 +3676,11 @@ pub fn run() {
                         Ok(count) if count > 0 => {
                             let _ = handle.emit("sessions-changed", ());
                         }
-                        Err(error) => error_report::record("archive", format!("Completed task archive failed: {error}"), "lib.rs: archive loop"),
+                        Err(error) => error_report::record(
+                            "archive",
+                            format!("Completed task archive failed: {error}"),
+                            "lib.rs: archive loop",
+                        ),
                         _ => {}
                     }
                 }
@@ -3873,7 +3714,6 @@ pub fn run() {
                 let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                     tray::tray_snapshot,
                     tray::tray_open,
-                    tray::tray_refresh_usage,
                     tray::tray_show_app,
                     tray::tray_hide,
                     tray::tray_quit,
@@ -3891,8 +3731,6 @@ pub fn run() {
                 support::open_support,
                 support::support_details,
                 local_sign_app,
-                agent_updates::check_agent_updates,
-                agent_updates::update_agent,
                 moodboards::list_moodboards,
                 moodboards::create_moodboard,
                 moodboards::read_moodboard,
@@ -3933,18 +3771,12 @@ pub fn run() {
                 cloud_agents::tasks::cloud_agent_targets,
                 cloud_agents::tasks::cloud_agent_start,
                 cloud_agents::tasks::cloud_agent_action,
-                cloud_agents::tasks::cloud_agent_set_claude_token,
                 remote::mirror::remote_repo_check,
-                provider_settings::provider_configuration,
                 connections::connections_list,
                 connections::connection_save,
                 connections::connection_delete,
                 connections::connection_assign,
-                agent_usage::agent_usage,
                 tray::tray_seen,
-                usage_ledger::usage_ledger,
-                capabilities::capabilities_inventory,
-                capabilities::cache_alignment,
                 prompt_activity,
                 set_resume_at_reset,
                 clear_usage_limit,
@@ -3988,22 +3820,6 @@ pub fn run() {
                 bots::channels::bot_web_new_link,
                 bots::guard::bot_rule_add,
                 bots::guard::bot_rule_delete,
-                conversation_import::list_importable_conversations,
-                conversation_import::import_conversations,
-                provider_settings::provider_set_claude_connection_mode,
-                providers::claude_auth::provider_claude_status,
-                provider_settings::list_opencode_models,
-                provider_settings::save_opencode_models,
-                provider_settings::provider_set_executable,
-                provider_settings::provider_save_glm_key,
-                provider_settings::provider_remove_glm_key,
-                provider_settings::provider_save_mimo_key,
-                provider_settings::provider_remove_mimo_key,
-                provider_settings::provider_save_deepseek_key,
-                provider_settings::provider_remove_deepseek_key,
-                provider_settings::provider_save_commandcode_key,
-                provider_settings::provider_remove_commandcode_key,
-                provider_settings::provider_set_mimo_endpoint,
                 architect::profiles::architect_profiles,
                 architect::profiles::architect_set_lead_guidance,
                 architect::profiles::architect_save_profile,
@@ -4015,16 +3831,14 @@ pub fn run() {
                 architect::architect_worker_messages,
                 architect::coordination::architect_team_messages,
                 task_controls::task_goal,
-                task_controls::codex_command,
-                task_controls::codex_jobs,
-                task_controls::set_task_preference,
-                task_controls::fork_codex_task,
+                task_controls::command_panel,
+                task_controls::command_jobs,
+                task_controls::fork_task,
                 task_controls::fork_session_at_message,
                 task_controls::get_message_content,
-                task_controls::archive_codex_task,
+                task_controls::archive_task,
                 task_controls::export_task,
                 task_controls::save_task_export,
-                task_controls::start_harness_terminal,
                 list_projects,
                 add_project,
                 remove_project,
@@ -4055,6 +3869,8 @@ pub fn run() {
                 recipes_delete,
                 recipes_dry_run,
                 providers::acp::provider_check_connection,
+                provider_settings::provider_executable,
+                provider_settings::provider_save_executable,
                 resolve_slash_command,
                 stop_session,
                 respond_approval,

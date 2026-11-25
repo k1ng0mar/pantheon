@@ -121,7 +121,7 @@ fn patches_are_immutable_scoped_persisted_and_survive_restart() {
         let store = Store::open(&database).unwrap();
         let project = store.add_project(&f.root).unwrap();
         let task = store
-            .create_session(&project.id, "claude", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         sid = task.id;
         let user = store.start_turn_message(&sid, "Change a").unwrap();
@@ -131,7 +131,7 @@ fn patches_are_immutable_scoped_persisted_and_survive_restart() {
         assert_eq!(messages.last().unwrap().role, "changes");
         assert!(messages.last().unwrap().turn_changes.is_some());
         let other = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         assert!(detail(&store, &other.id, &id, "a.txt").is_err());
         assert!(summary(&store, &other.id, &id).is_err());
@@ -300,7 +300,7 @@ fn autonomous_idle_edits_are_baseline_and_terminal_markers_follow_assistant_rows
     let store = Store::open(&f.base.join("state.sqlite")).unwrap();
     let project = store.add_project(&f.root).unwrap();
     let task = store
-        .create_session(&project.id, "codex", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     let assistant = Mutex::new(String::new());
     let mut tracker = Tracker::start(f.root.clone(), f.cache.clone());
@@ -340,13 +340,14 @@ fn retained_summary_survives_patch_eviction_and_duplicate_ids_roll_back() {
     let store = Store::open(&f.base.join("state.sqlite")).unwrap();
     let project = store.add_project(&f.root).unwrap();
     let task = store
-        .create_session(&project.id, "kimi", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     let first = capture(&f, || f.write("a.txt", "after\n"));
     let first_id = first.summary.id.clone();
     persist(&store, &task.id, first).unwrap();
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "UPDATE turn_changes SET diff_bytes=?1 WHERE id=?2",
             params![RETAINED_BYTES, first_id],
         )

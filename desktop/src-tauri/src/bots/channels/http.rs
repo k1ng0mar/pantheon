@@ -28,11 +28,15 @@ pub(crate) struct Request {
 
 impl Request {
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
-        self.headers.get(&name.to_ascii_lowercase()).map(String::as_str)
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
     }
 
     pub(crate) fn bearer(&self) -> Option<&str> {
-        self.header("authorization").and_then(|value| value.strip_prefix("Bearer ")).map(str::trim)
+        self.header("authorization")
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::trim)
     }
 
     /// True when the browser addressed this computer, not a rebound domain name.
@@ -51,17 +55,35 @@ pub(crate) struct Response {
 
 impl Response {
     pub(crate) fn json(status: u16, value: &serde_json::Value) -> Self {
-        Self { status, content_type: "application/json", body: value.to_string().into_bytes() }
+        Self {
+            status,
+            content_type: "application/json",
+            body: value.to_string().into_bytes(),
+        }
     }
     pub(crate) fn text(status: u16, text: &str) -> Self {
-        Self { status, content_type: "text/plain; charset=utf-8", body: text.as_bytes().to_vec() }
+        Self {
+            status,
+            content_type: "text/plain; charset=utf-8",
+            body: text.as_bytes().to_vec(),
+        }
     }
     /// The Enriched Markdown parser (md4c as WebAssembly), shared with the desktop app.
     pub(crate) fn markdown_engine() -> Self {
-        Self { status: 200, content_type: "text/javascript; charset=utf-8", body: include_str!("../../../../src/vendor/enriched-markdown/md4c.js").as_bytes().to_vec() }
+        Self {
+            status: 200,
+            content_type: "text/javascript; charset=utf-8",
+            body: include_str!("../../../../src/vendor/enriched-markdown/md4c.js")
+                .as_bytes()
+                .to_vec(),
+        }
     }
     pub(crate) fn html(body: String) -> Self {
-        Self { status: 200, content_type: "text/html; charset=utf-8", body: body.into_bytes() }
+        Self {
+            status: 200,
+            content_type: "text/html; charset=utf-8",
+            body: body.into_bytes(),
+        }
     }
 }
 
@@ -87,7 +109,10 @@ fn decode(component: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => match std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+            b'%' if i + 2 < bytes.len() => match std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
                 Some(byte) => {
                     out.push(byte);
                     i += 2;
@@ -111,13 +136,24 @@ pub(crate) fn parse_head(head: &str) -> Option<Request> {
         return None;
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let query = query.split('&').filter(|pair| !pair.is_empty()).map(|pair| pair.split_once('=').unwrap_or((pair, ""))).map(|(k, v)| (decode(k), decode(v))).collect();
+    let query = query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
+        .map(|(k, v)| (decode(k), decode(v)))
+        .collect();
     let mut headers = HashMap::new();
     for line in lines.filter(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':')?;
         headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
     }
-    Some(Request { method, path: path.to_owned(), query, headers, body: Vec::new() })
+    Some(Request {
+        method,
+        path: path.to_owned(),
+        query,
+        headers,
+        body: Vec::new(),
+    })
 }
 
 async fn read_request(stream: &mut tokio::net::TcpStream) -> Result<Request, u16> {
@@ -136,8 +172,12 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Result<Request, u16
             return Err(413);
         }
     };
-    let mut request = parse_head(std::str::from_utf8(&buffer[..head_end]).map_err(|_| 400u16)?).ok_or(400u16)?;
-    let length: usize = request.header("content-length").map_or(Ok(0), str::parse).map_err(|_| 400u16)?;
+    let mut request =
+        parse_head(std::str::from_utf8(&buffer[..head_end]).map_err(|_| 400u16)?).ok_or(400u16)?;
+    let length: usize = request
+        .header("content-length")
+        .map_or(Ok(0), str::parse)
+        .map_err(|_| 400u16)?;
     if length > MAX_BODY {
         return Err(413);
     }
@@ -181,7 +221,9 @@ async fn route(app: &tauri::AppHandle, request: Request) -> Response {
 
 async fn serve(app: tauri::AppHandle, listener: tokio::net::TcpListener) {
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else { continue };
+        let Ok((mut stream, _)) = listener.accept().await else {
+            continue;
+        };
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             // Long polls wait up to 25 seconds, so allow a little longer overall.
@@ -205,7 +247,8 @@ pub(crate) fn ensure_server(app: tauri::AppHandle) -> u16 {
     if port != 0 {
         return port;
     }
-    let listener = std::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT)).or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)));
+    let listener = std::net::TcpListener::bind(("127.0.0.1", PREFERRED_PORT))
+        .or_else(|_| std::net::TcpListener::bind(("127.0.0.1", 0)));
     let Ok(listener) = listener else { return 0 };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     if listener.set_nonblocking(true).is_err() {
@@ -226,5 +269,9 @@ pub(crate) fn port() -> u16 {
 
 /// Compares secrets without leaking where they differ.
 pub(crate) fn same(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }

@@ -73,7 +73,7 @@ export function toolKind(name: string): TraceKind {
   return 'tool';
 }
 
-/** Codex records plain text: `/bin/zsh -lc "cmd"\nWorking directory: …`. */
+/** Shell tool output records plain text: `/bin/zsh -lc "cmd"`\nWorking directory: …`. */
 export function shellCommand(input: string, fields: Fields): string {
   const command = field(fields, 'command', 'cmd') || (input.trim().startsWith('{') ? '' : input.trim().split('\n', 1)[0] ?? '');
   const wrapped = /^(?:\S*\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(command.trim());
@@ -232,8 +232,8 @@ function list(items: { title: string; meta?: string; hint?: string }[], total = 
 }
 
 function exitCode(output: string): { code?: number; body: string } {
-  const codex = /^Exit code: (-?\d+)\n?/.exec(output);
-  if (codex) return { code: Number(codex[1]), body: output.slice(codex[0].length).replace(/^Wall time:.*\n?/, '').replace(/^Output:\n?/, '') };
+  const exit = /^Exit code: (-?\d+)\n?/.exec(output);
+  if (exit) return { code: Number(exit[1]), body: output.slice(exit[0].length).replace(/^Wall time:.*\n?/, '').replace(/^Output:\n?/, '') };
   const json = parseFields(output);
   if (typeof json.exitCode === 'number') return { code: json.exitCode, body: [text(json.stdout), text(json.stderr)].filter(Boolean).join('\n') };
   return { body: output };

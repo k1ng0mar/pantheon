@@ -44,7 +44,12 @@ pub fn install(app: &AppHandle, dir: &Path) {
         if let Some(app) = APP.get() {
             let _ = app.emit(
                 "app-error",
-                AppError { kind: "panic", message, location, guidance: PANIC_GUIDANCE },
+                AppError {
+                    kind: "panic",
+                    message,
+                    location,
+                    guidance: PANIC_GUIDANCE,
+                },
             );
         }
         previous(info);
@@ -54,12 +59,20 @@ pub fn install(app: &AppHandle, dir: &Path) {
 /// Durable log line for a background failure that never reaches a command
 /// response. Log-only, so a recurring failure can never spam the UI.
 pub fn record(kind: &'static str, message: impl Into<String>, location: impl Into<String>) {
-    append(&format!("{kind}: {} at {}", message.into(), location.into()));
+    append(&format!(
+        "{kind}: {} at {}",
+        message.into(),
+        location.into()
+    ));
 }
 
 fn append(line: &str) {
     let Some(path) = LOG.get() else { return };
-    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
         return;
     };
     let _ = writeln!(file, "{} {line}", storage::now());

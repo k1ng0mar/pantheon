@@ -19,24 +19,60 @@ fn run(program: &str, args: &[&str], what: &str, timeout: Duration) -> Result<St
     let mut command = Command::new(program);
     command.args(args);
     let out = run_process(command, what, 1 << 16, timeout)?;
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout.bytes), String::from_utf8_lossy(&out.stderr.bytes));
-    if out.status.success() { Ok(text) } else { Err(format!("{what} failed: {}", text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error"))) }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout.bytes),
+        String::from_utf8_lossy(&out.stderr.bytes)
+    );
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "{what} failed: {}",
+            text.lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("unknown error")
+        ))
+    }
 }
 
 /// The signing team in `codesign -dv` output, if the bundle is signed.
 pub fn team_of(codesign_output: &str) -> Option<&str> {
-    codesign_output.lines().find_map(|line| line.strip_prefix("TeamIdentifier=")).map(str::trim)
+    codesign_output
+        .lines()
+        .find_map(|line| line.strip_prefix("TeamIdentifier="))
+        .map(str::trim)
 }
 
 fn verify(app: &Path) -> Result<(), String> {
     let path = app.to_string_lossy();
-    run("/usr/bin/codesign", &["--verify", "--deep", "--strict", &path], "Signature check", Duration::from_secs(60))?;
-    let details = run("/usr/bin/codesign", &["-dv", &path], "Signature check", Duration::from_secs(30))?;
+    run(
+        "/usr/bin/codesign",
+        &["--verify", "--deep", "--strict", &path],
+        "Signature check",
+        Duration::from_secs(60),
+    )?;
+    let details = run(
+        "/usr/bin/codesign",
+        &["-dv", &path],
+        "Signature check",
+        Duration::from_secs(30),
+    )?;
     if team_of(&details) != Some(TEAM) {
-        return Err("The downloaded Tart is not signed by Cirrus Labs. Nothing was installed.".into());
+        return Err(
+            "The downloaded Tart is not signed by Cirrus Labs. Nothing was installed.".into(),
+        );
     }
-    run("/usr/sbin/spctl", &["--assess", "--type", "execute", &path], "Notarization check", Duration::from_secs(60))
-        .map_err(|_| "The downloaded Tart is not notarized by Apple. Nothing was installed.".to_string())?;
+    run(
+        "/usr/sbin/spctl",
+        &["--assess", "--type", "execute", &path],
+        "Notarization check",
+        Duration::from_secs(60),
+    )
+    .map_err(|_| {
+        "The downloaded Tart is not notarized by Apple. Nothing was installed.".to_string()
+    })?;
     Ok(())
 }
 
@@ -44,23 +80,55 @@ fn install() -> Result<PathBuf, String> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err("Local VMs need a Mac with Apple silicon. Use a cloud sandbox instead.".into());
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("Your home folder is unknown.")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("Your home folder is unknown.")?;
     let work = std::env::temp_dir().join(format!("pantheon-tart-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let result = (|| {
         let archive = work.join("tart.tar.gz");
-        run("/usr/bin/curl", &["-fsSL", "--proto", "=https", "--max-filesize", "200000000", "-o", &archive.to_string_lossy(), RELEASE], "Download", Duration::from_secs(600))?;
-        run("/usr/bin/tar", &["-xzf", &archive.to_string_lossy(), "-C", &work.to_string_lossy()], "Unpacking", Duration::from_secs(120))?;
+        run(
+            "/usr/bin/curl",
+            &[
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--max-filesize",
+                "200000000",
+                "-o",
+                &archive.to_string_lossy(),
+                RELEASE,
+            ],
+            "Download",
+            Duration::from_secs(600),
+        )?;
+        run(
+            "/usr/bin/tar",
+            &[
+                "-xzf",
+                &archive.to_string_lossy(),
+                "-C",
+                &work.to_string_lossy(),
+            ],
+            "Unpacking",
+            Duration::from_secs(120),
+        )?;
         let app = work.join("tart.app");
         verify(&app)?;
         let applications = home.join("Applications");
         std::fs::create_dir_all(&applications).map_err(|e| e.to_string())?;
         let target = applications.join("tart.app");
         if target.exists() {
-            std::fs::remove_dir_all(&target).map_err(|e| format!("Could not replace the old Tart: {e}"))?;
+            std::fs::remove_dir_all(&target)
+                .map_err(|e| format!("Could not replace the old Tart: {e}"))?;
         }
         // `ditto` keeps the bundle's signature and extended attributes intact.
-        run("/usr/bin/ditto", &[&app.to_string_lossy(), &target.to_string_lossy()], "Install", Duration::from_secs(120))?;
+        run(
+            "/usr/bin/ditto",
+            &[&app.to_string_lossy(), &target.to_string_lossy()],
+            "Install",
+            Duration::from_secs(120),
+        )?;
         Ok(target.join("Contents/MacOS/tart"))
     })();
     let _ = std::fs::remove_dir_all(&work);

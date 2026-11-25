@@ -26,8 +26,26 @@ pub(crate) enum Decision {
 
 /// Actions a rule can never auto-approve.
 const ALWAYS_ASK: &[&str] = &[
-    "sudo ", "rm -rf", "rm -fr", "git push --force", "git push -f", "| sh", "|sh", "| bash", "|bash", "mkfs", "dd if=", "chmod -r 777", ":(){", "shutdown", "reboot",
-    "credit card", "card number", "password", "transfer money", "wire transfer",
+    "sudo ",
+    "rm -rf",
+    "rm -fr",
+    "git push --force",
+    "git push -f",
+    "| sh",
+    "|sh",
+    "| bash",
+    "|bash",
+    "mkfs",
+    "dd if=",
+    "chmod -r 777",
+    ":(){",
+    "shutdown",
+    "reboot",
+    "credit card",
+    "card number",
+    "password",
+    "transfer money",
+    "wire transfer",
 ];
 
 /// Case-insensitive. Without `*` a pattern matches anywhere in the text; with `*` the
@@ -72,20 +90,34 @@ pub(crate) fn rules(store: &Store, bot_id: &str) -> Result<Vec<Rule>> {
     let conn = store.conn();
     let mut statement = conn.prepare("SELECT id,pattern,decision,created_at FROM bot_rules WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
     let rows = statement
-        .query_map([bot_id], |r| Ok(Rule { id: r.get(0)?, pattern: r.get(1)?, decision: r.get(2)?, created_at: r.get(3)? }))
+        .query_map([bot_id], |r| {
+            Ok(Rule {
+                id: r.get(0)?,
+                pattern: r.get(1)?,
+                decision: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })
         .map_err(|e| e.to_string())?;
-    rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
+    rows.collect::<rusqlite::Result<_>>()
+        .map_err(|e| e.to_string())
 }
 
 pub(crate) fn decide(store: &Store, bot_id: &str, text: &str) -> Result<Decision> {
     let rules = rules(store, bot_id)?;
-    if rules.iter().any(|rule| rule.decision == "deny" && matches(&rule.pattern, text)) {
+    if rules
+        .iter()
+        .any(|rule| rule.decision == "deny" && matches(&rule.pattern, text))
+    {
         return Ok(Decision::Deny);
     }
     if dangerous(text) {
         return Ok(Decision::Ask);
     }
-    if rules.iter().any(|rule| rule.decision == "allow" && matches(&rule.pattern, text)) {
+    if rules
+        .iter()
+        .any(|rule| rule.decision == "allow" && matches(&rule.pattern, text))
+    {
         return Ok(Decision::Allow);
     }
     Ok(Decision::Ask)
@@ -96,7 +128,14 @@ pub(crate) fn pattern_for(text: &str) -> String {
     let line = text.lines().next().unwrap_or_default().trim();
     let words: Vec<&str> = line.split_whitespace().take(3).collect();
     let base = words.join(" ");
-    if line.split_whitespace().count() > 3 { format!("{base}*") } else { base }.chars().take(120).collect()
+    if line.split_whitespace().count() > 3 {
+        format!("{base}*")
+    } else {
+        base
+    }
+    .chars()
+    .take(120)
+    .collect()
 }
 
 pub(crate) fn add_rule(store: &Store, bot_id: &str, pattern: &str, decision: &str) -> Result<Rule> {
@@ -110,26 +149,69 @@ pub(crate) fn add_rule(store: &Store, bot_id: &str, pattern: &str, decision: &st
     super::get(store, bot_id)?;
     let id = crate::storage::id();
     let now = crate::storage::now();
-    store.conn().execute("INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at) VALUES(?1,?2,?3,?4,?5)", params![id, bot_id, pattern, decision, now]).map_err(|e| e.to_string())?;
-    super::log(store, bot_id, "rule", &format!("Rule: {decision} \"{pattern}\""), serde_json::json!({}))?;
-    Ok(Rule { id, pattern, decision: decision.into(), created_at: now })
+    store
+        .conn()
+        .execute(
+            "INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at) VALUES(?1,?2,?3,?4,?5)",
+            params![id, bot_id, pattern, decision, now],
+        )
+        .map_err(|e| e.to_string())?;
+    super::log(
+        store,
+        bot_id,
+        "rule",
+        &format!("Rule: {decision} \"{pattern}\""),
+        serde_json::json!({}),
+    )?;
+    Ok(Rule {
+        id,
+        pattern,
+        decision: decision.into(),
+        created_at: now,
+    })
 }
 
 pub(crate) fn delete_rule(store: &Store, bot_id: &str, id: &str) -> Result<()> {
-    store.conn().execute("DELETE FROM bot_rules WHERE id=?1 AND bot_id=?2", params![id, bot_id]).map_err(|e| e.to_string())?;
+    store
+        .conn()
+        .execute(
+            "DELETE FROM bot_rules WHERE id=?1 AND bot_id=?2",
+            params![id, bot_id],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn bot_rule_add(app: tauri::AppHandle, state: State<'_, AppState>, bot_id: String, pattern: String, decision: String) -> Result<Rule> {
-    let rule = add_rule(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id, &pattern, &decision)?;
+pub async fn bot_rule_add(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bot_id: String,
+    pattern: String,
+    decision: String,
+) -> Result<Rule> {
+    let rule = add_rule(
+        &*state.store.lock().map_err(|e| e.to_string())?,
+        &bot_id,
+        &pattern,
+        &decision,
+    )?;
     let _ = app.emit("bots-changed", ());
     Ok(rule)
 }
 
 #[tauri::command]
-pub async fn bot_rule_delete(app: tauri::AppHandle, state: State<'_, AppState>, bot_id: String, rule_id: String) -> Result<()> {
-    delete_rule(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id, &rule_id)?;
+pub async fn bot_rule_delete(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bot_id: String,
+    rule_id: String,
+) -> Result<()> {
+    delete_rule(
+        &*state.store.lock().map_err(|e| e.to_string())?,
+        &bot_id,
+        &rule_id,
+    )?;
     let _ = app.emit("bots-changed", ());
     Ok(())
 }

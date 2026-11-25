@@ -1,6 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 
 type View = 'conversation' | 'board';
+const mod = process.platform === 'darwin' ? '⌘' : 'Ctrl';
+const newTask = (page: Page) => page.getByRole('button', { name: `New task ${mod} N`, exact: true });
+
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
 const live = (page: Page) => page.locator('#stream-region .live-text');
 const transcript = (page: Page) => page.getByRole('log', { name: 'Conversation', exact: true });
@@ -85,7 +88,7 @@ async function startTurn(page: Page, view: View, expandActivity = true): Promise
     await page.locator('#dialog').getByRole('button', { name: 'Add to pending', exact: true }).click();
     await page.getByRole('region', { name: 'Task details', exact: true }).getByRole('button', { name: 'Start task', exact: true }).click();
   } else {
-    await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+    await newTask(page).click();
     await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
     await expect(prompt(page)).toBeEnabled();
     await prompt(page).fill('Controlled streaming response');

@@ -19,7 +19,7 @@ const EXIT_GRACE: Duration = Duration::from_secs(30);
 const NO_AGENTS: [&str; 2] = ["agentcore", "railway"];
 
 pub(crate) fn harness_refusal(harness: &str) -> String {
-    format!("{harness} can't run on a cloud machine. Choose Claude Code, GLM, MiMo, Codex or OpenCode, or run this task on this computer.")
+    format!("{harness} can't run on a cloud machine. Run this task on this computer instead.")
 }
 
 fn with_store<T>(app: &tauri::AppHandle, f: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
@@ -29,7 +29,10 @@ fn with_store<T>(app: &tauri::AppHandle, f: impl FnOnce(&Store) -> Result<T>) ->
 }
 
 fn label(provider: &str) -> &str {
-    AGENT_PROVIDERS.iter().find(|(id, _)| *id == provider).map_or(provider, |(_, label)| label)
+    AGENT_PROVIDERS
+        .iter()
+        .find(|(id, _)| *id == provider)
+        .map_or(provider, |(_, label)| label)
 }
 
 /// What the bridge needs for one run.
@@ -55,7 +58,9 @@ fn wait_running(sandbox: &dyn Sandbox, native: &str) -> Result<()> {
         match sandbox.state(native)?.as_str() {
             "running" => return Ok(()),
             "error" => return Err("The cloud machine failed to start.".into()),
-            _ if started.elapsed() > MACHINE_WAIT => return Err("The cloud machine did not start in time.".into()),
+            _ if started.elapsed() > MACHINE_WAIT => {
+                return Err("The cloud machine did not start in time.".into())
+            }
             _ => std::thread::sleep(Duration::from_secs(3)),
         }
     }
@@ -63,7 +68,12 @@ fn wait_running(sandbox: &dyn Sandbox, native: &str) -> Result<()> {
 
 /// The task's machine, running: started if stopped, recreated if gone (or stopped and not
 /// persistent). True when it is new, so it needs the checkout and saved state again.
-fn ensure_machine(app: &tauri::AppHandle, sid: &str, sandbox: &dyn Sandbox, state: &State) -> Result<(String, bool)> {
+fn ensure_machine(
+    app: &tauri::AppHandle,
+    sid: &str,
+    sandbox: &dyn Sandbox,
+    state: &State,
+) -> Result<(String, bool)> {
     if let Some(native) = state.native() {
         match sandbox.state(native).as_deref() {
             Ok("running") => return Ok((native.to_owned(), false)),
@@ -81,9 +91,16 @@ fn ensure_machine(app: &tauri::AppHandle, sid: &str, sandbox: &dyn Sandbox, stat
             Err(_) => {}
         }
     }
-    stage(app, sid, "creating", Some(&format!("Creating a {} machine…", label(&state.provider))));
+    stage(
+        app,
+        sid,
+        "creating",
+        Some(&format!("Creating a {} machine…", label(&state.provider))),
+    );
     let machine = sandbox.create(&format!("pc-{}", sid.chars().take(8).collect::<String>()))?;
-    let native = crate::cloud::split(&machine.id).map(|(_, native)| native.to_owned()).ok_or("The cloud provider returned a machine ID Pantheon cannot use.")?;
+    let native = crate::cloud::split(&machine.id)
+        .map(|(_, native)| native.to_owned())
+        .ok_or("The cloud provider returned a machine ID Pantheon cannot use.")?;
     update(app, sid, |state| {
         state.machine = Some(format!("{}:{native}", state.provider));
         state.remote_dir = None;
@@ -94,32 +111,61 @@ fn ensure_machine(app: &tauri::AppHandle, sid: &str, sandbox: &dyn Sandbox, stat
 }
 
 fn state_store(app: &tauri::AppHandle, sid: &str) -> Result<PathBuf> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("cloud-agents").join(sid);
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("cloud-agents")
+        .join(sid);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
 /// Makes the machine ready for a run: running, runtime installed, checkout current.
 fn prepare_machine(app: &tauri::AppHandle, sid: &str) -> Result<Ready> {
-    let (state, task) = with_store(app, |store| Ok((super::load(store, sid)?.ok_or("This task does not run on a cloud machine.")?, store.session(sid)?)))?;
+    let (state, task) = with_store(app, |store| {
+        Ok((
+            super::load(store, sid)?.ok_or("This task does not run on a cloud machine.")?,
+            store.session(sid)?,
+        ))
+    })?;
     if !setup::HARNESSES.contains(&task.provider.as_str()) {
         return Err(harness_refusal(&task.provider));
     }
-    let local = PathBuf::from(task.worktree_path.clone().ok_or("This cloud task has lost its local checkout.")?);
+    let local = PathBuf::from(
+        task.worktree_path
+            .clone()
+            .ok_or("This cloud task has lost its local checkout.")?,
+    );
     let sandbox = sandbox::connected(&state.provider)?;
     let (native, fresh) = ensure_machine(app, sid, &*sandbox, &state)?;
     let remote_dir = match (&state.remote_dir, fresh) {
         (Some(dir), false) => dir.clone(),
         _ => format!("{}/pantheon/{sid}", bridge::home(&*sandbox, &native)?),
     };
-    stage(app, sid, "installing", Some(&format!("Installing {}…", task.provider)));
-    let program = setup::ensure_runtime(&*sandbox, &native, &task.provider, &|detail| stage(app, sid, "installing", Some(detail)))?;
+    stage(
+        app,
+        sid,
+        "installing",
+        Some(&format!("Installing {}…", task.provider)),
+    );
+    let program = setup::ensure_runtime(&*sandbox, &native, &task.provider, &|detail| {
+        stage(app, sid, "installing", Some(detail))
+    })?;
     let state = with_store(app, |store| super::load(store, sid))?.unwrap_or(state);
     if fresh || state.base.is_none() || state.remote_dir.is_none() {
         stage(app, sid, "uploading", Some("Uploading the checkout…"));
-        let branch = task.worktree_branch.clone().unwrap_or_else(|| format!("pantheon/cloud-{}", sid.chars().take(8).collect::<String>()));
+        let branch = task.worktree_branch.clone().unwrap_or_else(|| {
+            format!("pantheon/cloud-{}", sid.chars().take(8).collect::<String>())
+        });
         let base = sync::upload_checkout(&*sandbox, &native, &local, &remote_dir, &branch)?;
-        sync::restore_harness_state(&*sandbox, &native, &task.provider, &remote_dir, &state_store(app, sid)?)?;
+        sync::restore_harness_state(
+            &*sandbox,
+            &native,
+            &task.provider,
+            &remote_dir,
+            &state_store(app, sid)?,
+        )?;
         update(app, sid, |state| {
             state.base = Some(base);
             state.remote_dir = Some(remote_dir.clone());
@@ -128,28 +174,61 @@ fn prepare_machine(app: &tauri::AppHandle, sid: &str) -> Result<Ready> {
         stage(app, sid, "uploading", Some("Sending local commits…"));
         sync::push_local(&*sandbox, &native, &remote_dir, &local)?;
     }
-    Ok(Ready { sandbox, native, remote_dir, program })
+    Ok(Ready {
+        sandbox,
+        native,
+        remote_dir,
+        program,
+    })
 }
 
 /// Before every run (blocking): the machine, credentials and checkout, then a new run ID.
 /// An attach only needs to know where the run is.
-pub(crate) fn before_run(app: &tauri::AppHandle, sid: &str, harness: &str, attach: bool) -> Result<Prepared> {
+pub(crate) fn before_run(
+    app: &tauri::AppHandle,
+    sid: &str,
+    _harness: &str,
+    attach: bool,
+) -> Result<Prepared> {
     if attach {
-        let state = with_store(app, |store| super::load(store, sid))?.ok_or("This task does not run on a cloud machine.")?;
-        let (Some(native), Some(run_id), Some(remote_dir)) = (state.native(), state.run_id.clone(), state.remote_dir.clone()) else {
+        let state = with_store(app, |store| super::load(store, sid))?
+            .ok_or("This task does not run on a cloud machine.")?;
+        let (Some(native), Some(run_id), Some(remote_dir)) = (
+            state.native(),
+            state.run_id.clone(),
+            state.remote_dir.clone(),
+        ) else {
             return Err("This cloud run can't be reached any more.".into());
         };
-        stage(app, sid, "reconnecting", Some("Catching up with the cloud run…"));
-        return Ok(Prepared { provider: state.provider.clone(), native: native.to_owned(), remote_dir, program: String::new(), env: Vec::new(), run_id });
+        stage(
+            app,
+            sid,
+            "reconnecting",
+            Some("Catching up with the cloud run…"),
+        );
+        return Ok(Prepared {
+            provider: state.provider.clone(),
+            native: native.to_owned(),
+            remote_dir,
+            program: String::new(),
+            env: Vec::new(),
+            run_id,
+        });
     }
     let result = (|| -> Result<Prepared> {
-        if with_store(app, |store| super::load(store, sid))?.is_some_and(|state| state.run_id.is_some()) {
-            return Err("This task is still finishing its last cloud run. Try again in a moment.".into());
+        if with_store(app, |store| super::load(store, sid))?
+            .is_some_and(|state| state.run_id.is_some())
+        {
+            return Err(
+                "This task is still finishing its last cloud run. Try again in a moment.".into(),
+            );
         }
         let ready = prepare_machine(app, sid)?;
         stage(app, sid, "credentials", Some("Signing in…"));
-        let env = credentials::push(&*ready.sandbox, &ready.native, harness)?;
-        ready.sandbox.keep_alive(&ready.native, ready.sandbox.info().max_unattended_minutes)?;
+        let env = credentials::push(&*ready.sandbox, &ready.native)?;
+        ready
+            .sandbox
+            .keep_alive(&ready.native, ready.sandbox.info().max_unattended_minutes)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let turn = with_store(app, |store| {
             store.conn().query_row("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')", [sid], |r| r.get(0)).map_err(|e| e.to_string())
@@ -162,7 +241,14 @@ pub(crate) fn before_run(app: &tauri::AppHandle, sid: &str, harness: &str, attac
             state.inbox_lines = 0;
             state.turn_message = turn;
         })?;
-        Ok(Prepared { provider: state.provider, native: ready.native, remote_dir: ready.remote_dir, program: ready.program, env, run_id })
+        Ok(Prepared {
+            provider: state.provider,
+            native: ready.native,
+            remote_dir: ready.remote_dir,
+            program: ready.program,
+            env,
+            run_id,
+        })
     })();
     if let Err(error) = &result {
         stage(app, sid, "error", Some(error));
@@ -175,9 +261,12 @@ pub(crate) fn before_run(app: &tauri::AppHandle, sid: &str, harness: &str, attac
 /// done or failed with a note, `run_id` stays, so a quit or an unreachable machine leaves
 /// the run re-attachable and it is finalized later.
 pub(crate) fn after_run(app: &tauri::AppHandle, sid: &str) -> Result<()> {
-    let Some(state) = with_store(app, |store| super::load(store, sid))? else { return Ok(()) };
+    let Some(state) = with_store(app, |store| super::load(store, sid))? else {
+        return Ok(());
+    };
     // No run started (preparation failed and said why): nothing to bring back.
-    let (Some(run_id), Some(native)) = (state.run_id.clone(), state.native().map(str::to_owned)) else {
+    let (Some(run_id), Some(native)) = (state.run_id.clone(), state.native().map(str::to_owned))
+    else {
         return Ok(());
     };
     let sandbox = sandbox::connected(&state.provider)?;
@@ -187,17 +276,31 @@ pub(crate) fn after_run(app: &tauri::AppHandle, sid: &str) -> Result<()> {
 
 /// Brings the machine's changes back now (also the Sync action).
 fn pull(app: &tauri::AppHandle, sid: &str) -> Result<()> {
-    let (state, task) = with_store(app, |store| Ok((super::load(store, sid)?, store.session(sid)?)))?;
+    let (state, task) = with_store(app, |store| {
+        Ok((super::load(store, sid)?, store.session(sid)?))
+    })?;
     let Some(state) = state else { return Ok(()) };
-    let (Some(native), Some(remote_dir)) = (state.native().map(str::to_owned), state.remote_dir.clone()) else {
+    let (Some(native), Some(remote_dir)) =
+        (state.native().map(str::to_owned), state.remote_dir.clone())
+    else {
         return Ok(());
     };
     stage(app, sid, "syncing", Some("Bringing changes back…"));
     let result = (|| {
         let sandbox = sandbox::connected(&state.provider)?;
-        let local = PathBuf::from(task.worktree_path.clone().ok_or("This cloud task has lost its local checkout.")?);
+        let local = PathBuf::from(
+            task.worktree_path
+                .clone()
+                .ok_or("This cloud task has lost its local checkout.")?,
+        );
         let pulled = sync::pull_changes(&*sandbox, &native, &remote_dir, &local, sid, &task.title)?;
-        if let Err(error) = sync::save_harness_state(&*sandbox, &native, &task.provider, &remote_dir, &state_store(app, sid)?) {
+        if let Err(error) = sync::save_harness_state(
+            &*sandbox,
+            &native,
+            &task.provider,
+            &remote_dir,
+            &state_store(app, sid)?,
+        ) {
             eprintln!("Cloud agents: could not save the harness state: {error}");
         }
         let _ = sandbox.keep_alive(&native, IDLE_MINUTES);
@@ -205,7 +308,10 @@ fn pull(app: &tauri::AppHandle, sid: &str) -> Result<()> {
     })();
     let (next, detail) = match &result {
         Ok(pulled) => ("ready", pulled.note.clone()),
-        Err(error) => ("error", Some(format!("Could not bring the changes back: {error}"))),
+        Err(error) => (
+            "error",
+            Some(format!("Could not bring the changes back: {error}")),
+        ),
     };
     update(app, sid, |state| {
         state.run_id = None;
@@ -220,10 +326,17 @@ fn pull(app: &tauri::AppHandle, sid: &str) -> Result<()> {
 
 /// Stop: kills the remote run's process group (best effort, in the background).
 pub(crate) fn stop_run(app: &tauri::AppHandle, sid: &str) {
-    let Ok(Some(state)) = with_store(app, |store| super::load(store, sid)) else { return };
-    let (Some(native), Some(run_id)) = (state.native().map(str::to_owned), state.run_id.clone()) else { return };
+    let Ok(Some(state)) = with_store(app, |store| super::load(store, sid)) else {
+        return;
+    };
+    let (Some(native), Some(run_id)) = (state.native().map(str::to_owned), state.run_id.clone())
+    else {
+        return;
+    };
     std::thread::spawn(move || {
-        if let Err(error) = sandbox::connected(&state.provider).and_then(|sandbox| bridge::kill(&*sandbox, &native, &run_id)) {
+        if let Err(error) = sandbox::connected(&state.provider)
+            .and_then(|sandbox| bridge::kill(&*sandbox, &native, &run_id))
+        {
             eprintln!("Cloud agents: could not stop a cloud run: {error}");
         }
     });
@@ -232,9 +345,13 @@ pub(crate) fn stop_run(app: &tauri::AppHandle, sid: &str) {
 /// A deleted task's machine goes too (best effort, in the background).
 pub(crate) fn forget_machine(state: Option<State>) {
     let Some(state) = state else { return };
-    let Some(native) = state.native().map(str::to_owned) else { return };
+    let Some(native) = state.native().map(str::to_owned) else {
+        return;
+    };
     std::thread::spawn(move || {
-        if let Err(error) = sandbox::connected(&state.provider).and_then(|sandbox| sandbox.power(&native, "delete")) {
+        if let Err(error) =
+            sandbox::connected(&state.provider).and_then(|sandbox| sandbox.power(&native, "delete"))
+        {
             eprintln!("Cloud agents: could not delete a task's machine: {error}");
         }
     });
@@ -246,7 +363,12 @@ fn git(root: &Path, index: Option<&Path>, args: &[&str]) -> Result<String> {
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
-    let output = workspace::checked(workspace::run_process(command, "git", 64 * 1024, Duration::from_secs(120))?)?;
+    let output = workspace::checked(workspace::run_process(
+        command,
+        "git",
+        64 * 1024,
+        Duration::from_secs(120),
+    )?)?;
     Ok(String::from_utf8_lossy(&output.bytes).trim().to_owned())
 }
 
@@ -261,7 +383,19 @@ fn snapshot(root: &Path) -> Result<Option<String>> {
         if tree == git(root, None, &["rev-parse", "HEAD^{tree}"])? {
             return Ok(None);
         }
-        git(root, None, &["commit-tree", &tree, "-p", "HEAD", "-m", "Uncommitted changes for a cloud task"]).map(Some)
+        git(
+            root,
+            None,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                "HEAD",
+                "-m",
+                "Uncommitted changes for a cloud task",
+            ],
+        )
+        .map(Some)
     })();
     let _ = std::fs::remove_file(&index);
     result
@@ -270,17 +404,42 @@ fn snapshot(root: &Path) -> Result<Option<String>> {
 /// The mirror worktree on `pantheon/cloud-<short>`, from the current branch plus its
 /// uncommitted changes as a first commit.
 fn mirror_worktree(root: &Path, short: &str) -> Result<workspace::Worktree> {
-    let base = snapshot(root).map_err(|error| format!("Could not copy the uncommitted changes: {error}"))?;
-    workspace::create_worktree_with(root, &format!("pantheon/cloud-{short}"), base.as_deref(), false)
+    let base = snapshot(root)
+        .map_err(|error| format!("Could not copy the uncommitted changes: {error}"))?;
+    workspace::create_worktree_with(
+        root,
+        &format!("pantheon/cloud-{short}"),
+        base.as_deref(),
+        false,
+    )
 }
 
 /// The empty New task draft, converted, or a new row; published with its settings.
 #[allow(clippy::too_many_arguments)]
-fn task_row(store: &Store, draft: Option<&str>, project_id: &str, harness: &str, model: &str, mode: Option<&str>, effort: Option<&str>) -> Result<(String, bool)> {
-    let reuse = draft.filter(|id| store.is_empty_draft(id).unwrap_or(false) && store.session(id).is_ok_and(|task| task.project_id == project_id && task.worktree_path.is_none()));
+fn task_row(
+    store: &Store,
+    draft: Option<&str>,
+    project_id: &str,
+    harness: &str,
+    model: &str,
+    mode: Option<&str>,
+    effort: Option<&str>,
+) -> Result<(String, bool)> {
+    let reuse = draft.filter(|id| {
+        store.is_empty_draft(id).unwrap_or(false)
+            && store
+                .session(id)
+                .is_ok_and(|task| task.project_id == project_id && task.worktree_path.is_none())
+    });
     let (id, created) = match reuse {
         Some(id) => (id.to_owned(), false),
-        None => (crate::architect::profiles::create_user_task(store, project_id, harness, model, mode, None)?.id, true),
+        None => (
+            crate::architect::profiles::create_user_task(
+                store, project_id, harness, model, mode, None,
+            )?
+            .id,
+            true,
+        ),
     };
     if !created {
         store.configure(&id, harness, model, None)?;
@@ -301,18 +460,11 @@ pub(crate) async fn cloud_agent_targets() -> Result<Vec<Value>> {
 
 /// Every provider that can run agents, whether or not it is connected.
 fn targets(ready: impl Fn(&str) -> bool) -> Vec<Value> {
-    AGENT_PROVIDERS.iter().filter(|(id, _)| !NO_AGENTS.contains(id)).map(|(id, label)| json!({"provider": id, "label": label, "ready": ready(id)})).collect()
-}
-
-/// Settings → Cloud: a long-lived Claude token (`claude setup-token`) for cloud agents,
-/// used instead of copying this computer's Claude Code login.
-#[tauri::command]
-pub(crate) async fn cloud_agent_set_claude_token(token: String) -> Result<()> {
-    let token = token.trim().to_owned();
-    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_whitespace) {
-        return Err("Paste the token from claude setup-token.".into());
-    }
-    crate::blocking(move || crate::cloud::set_secret("claude_setup_token", &token)).await
+    AGENT_PROVIDERS
+        .iter()
+        .filter(|(id, _)| !NO_AGENTS.contains(id))
+        .map(|(id, label)| json!({"provider": id, "label": label, "ready": ready(id)}))
+        .collect()
 }
 
 #[tauri::command]
@@ -328,7 +480,9 @@ pub(crate) async fn cloud_agent_start(
     mode: Option<String>,
     effort: Option<String>,
 ) -> Result<Session> {
-    if NO_AGENTS.contains(&provider.as_str()) || !AGENT_PROVIDERS.iter().any(|(id, _)| *id == provider) {
+    if NO_AGENTS.contains(&provider.as_str())
+        || !AGENT_PROVIDERS.iter().any(|(id, _)| *id == provider)
+    {
         return Err("This provider can't run cloud agents.".into());
     }
     if !setup::HARNESSES.contains(&harness.as_str()) {
@@ -341,11 +495,22 @@ pub(crate) async fn cloud_agent_start(
     let worker = app.clone();
     let session = crate::blocking(move || {
         if !sandbox::ready(&provider) {
-            return Err(format!("Connect {} in Settings → Cloud first.", label(&provider)));
+            return Err(format!(
+                "Connect {} in Settings → Cloud first.",
+                label(&provider)
+            ));
         }
         let (root, id, created) = with_store(&worker, |store| {
             let root = store.workspace_root(&project_id, None)?;
-            let (id, created) = task_row(store, session_id.as_deref(), &project_id, &harness, &model, mode.as_deref(), effort.as_deref())?;
+            let (id, created) = task_row(
+                store,
+                session_id.as_deref(),
+                &project_id,
+                &harness,
+                &model,
+                mode.as_deref(),
+                effort.as_deref(),
+            )?;
             Ok((root, id, created))
         })?;
         let worktree = mirror_worktree(&root, &id.chars().take(8).collect::<String>());
@@ -354,15 +519,29 @@ pub(crate) async fn cloud_agent_start(
                 Ok(worktree) => worktree,
                 Err(error) => {
                     if created {
-                        let _ = store.conn().execute("DELETE FROM sessions WHERE id=?1", [&id]);
+                        let _ = store
+                            .conn()
+                            .execute("DELETE FROM sessions WHERE id=?1", [&id]);
                     }
                     return Err(error);
                 }
             };
             store.attach_worktree(&id, &worktree.path, &worktree.branch)?;
-            let state = State { provider: provider.clone(), stage: "creating".into(), detail: Some(format!("Creating a {} machine…", label(&provider))), pending_prompt: Some(prompt), ..State::default() };
+            let state = State {
+                provider: provider.clone(),
+                stage: "creating".into(),
+                detail: Some(format!("Creating a {} machine…", label(&provider))),
+                pending_prompt: Some(prompt),
+                ..State::default()
+            };
             super::save(store, &id, Some(&state))?;
-            store.conn().execute("UPDATE sessions SET draft=0,updated_at=?2 WHERE id=?1", rusqlite::params![id, crate::storage::now()]).map_err(|e| e.to_string())?;
+            store
+                .conn()
+                .execute(
+                    "UPDATE sessions SET draft=0,updated_at=?2 WHERE id=?1",
+                    rusqlite::params![id, crate::storage::now()],
+                )
+                .map_err(|e| e.to_string())?;
             store.session(&id)
         })
     })
@@ -383,10 +562,22 @@ fn prepare_and_send(app: tauri::AppHandle, sid: String) {
             return;
         }
         stage(&app, &sid, "ready", None);
-        let prompt = with_store(&app, |store| super::load(store, &sid)).ok().flatten().and_then(|state| state.pending_prompt);
+        let prompt = with_store(&app, |store| super::load(store, &sid))
+            .ok()
+            .flatten()
+            .and_then(|state| state.pending_prompt);
         let Some(prompt) = prompt else { return };
         let _ = update(&app, &sid, |state| state.pending_prompt = None);
-        if let Err(error) = crate::launch_task_in_project(app.clone(), app.state::<AppState>(), sid.clone(), Some(prompt.clone()), None, None).await {
+        if let Err(error) = crate::launch_task_in_project(
+            app.clone(),
+            app.state::<AppState>(),
+            sid.clone(),
+            Some(prompt.clone()),
+            None,
+            None,
+        )
+        .await
+        {
             let _ = update(&app, &sid, |state| {
                 state.pending_prompt = Some(prompt);
                 state.stage = "error".into();
@@ -397,9 +588,19 @@ fn prepare_and_send(app: tauri::AppHandle, sid: String) {
 }
 
 #[tauri::command]
-pub(crate) async fn cloud_agent_action(app: tauri::AppHandle, session_id: String, action: String) -> Result<Value> {
-    let state = with_store(&app, |store| super::load(store, &session_id))?.ok_or("This task does not run on a cloud machine.")?;
-    let running = app.state::<AppState>().agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id);
+pub(crate) async fn cloud_agent_action(
+    app: tauri::AppHandle,
+    session_id: String,
+    action: String,
+) -> Result<Value> {
+    let state = with_store(&app, |store| super::load(store, &session_id))?
+        .ok_or("This task does not run on a cloud machine.")?;
+    let running = app
+        .state::<AppState>()
+        .agents
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&session_id);
     if action == "open" {
         return Ok(json!({"machine": state.machine}));
     }
@@ -413,7 +614,10 @@ pub(crate) async fn cloud_agent_action(app: tauri::AppHandle, session_id: String
             crate::blocking(move || pull(&worker, &session_id)).await?;
         }
         "stop" | "delete" => {
-            let native = state.native().ok_or("This task has no cloud machine yet.")?.to_owned();
+            let native = state
+                .native()
+                .ok_or("This task has no cloud machine yet.")?
+                .to_owned();
             let worker = app.clone();
             let provider = state.provider.clone();
             let power = action.clone();
@@ -440,10 +644,15 @@ mod tests {
     use super::*;
 
     fn repo() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("pantheon-cloud-repo-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("pantheon-cloud-repo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "T"]] {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "T"],
+        ] {
             git(&root, None, args).unwrap();
         }
         std::fs::write(root.join("a.txt"), "one\n").unwrap();
@@ -460,13 +669,28 @@ mod tests {
         std::fs::write(root.join("new.txt"), "new\n").unwrap();
         let worktree = mirror_worktree(&root, "abcd1234").unwrap();
         assert_eq!(worktree.branch, "pantheon/cloud-abcd1234");
-        assert_eq!(std::fs::read_to_string(worktree.path.join("a.txt")).unwrap(), "two\n");
-        assert_eq!(std::fs::read_to_string(worktree.path.join("new.txt")).unwrap(), "new\n");
-        assert_eq!(git(&worktree.path, None, &["status", "--porcelain"]).unwrap(), "");
+        assert_eq!(
+            std::fs::read_to_string(worktree.path.join("a.txt")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(worktree.path.join("new.txt")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            git(&worktree.path, None, &["status", "--porcelain"]).unwrap(),
+            ""
+        );
         // The user's checkout is exactly as it was: nothing staged, the new file untracked.
-        assert_eq!(git(&root, None, &["status", "--porcelain"]).unwrap(), "M a.txt\n?? new.txt");
+        assert_eq!(
+            git(&root, None, &["status", "--porcelain"]).unwrap(),
+            "M a.txt\n?? new.txt"
+        );
         let _ = std::fs::remove_dir_all(&worktree.path);
-        let _ = std::fs::remove_dir_all(root.parent().unwrap().join(format!("{}-worktrees", root.file_name().unwrap().to_string_lossy())));
+        let _ = std::fs::remove_dir_all(root.parent().unwrap().join(format!(
+            "{}-worktrees",
+            root.file_name().unwrap().to_string_lossy()
+        )));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -483,13 +707,35 @@ mod tests {
     fn a_new_task_draft_becomes_the_cloud_task() {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let draft = store.create_session(&project.id, "claude", "default", "ask").unwrap();
-        store.conn().execute("UPDATE sessions SET draft=1 WHERE id=?1", [&draft.id]).unwrap();
-        let (id, created) = task_row(&store, Some(&draft.id), &project.id, "codex", "gpt", Some("full"), None).unwrap();
+        let draft = store
+            .create_session(&project.id, "pantheon", "default", "ask")
+            .unwrap();
+        store
+            .conn()
+            .execute("UPDATE sessions SET draft=1 WHERE id=?1", [&draft.id])
+            .unwrap();
+        let (id, created) = task_row(
+            &store,
+            Some(&draft.id),
+            &project.id,
+            "pantheon",
+            "gpt",
+            Some("full"),
+            None,
+        )
+        .unwrap();
         assert_eq!((id.as_str(), created), (draft.id.as_str(), false));
         let task = store.session(&id).unwrap();
-        assert_eq!((task.provider.as_str(), task.model.as_str(), task.mode.as_str()), ("codex", "gpt", "full"));
-        let (other, created) = task_row(&store, None, &project.id, "claude", "default", None, None).unwrap();
+        assert_eq!(
+            (
+                task.provider.as_str(),
+                task.model.as_str(),
+                task.mode.as_str()
+            ),
+            ("pantheon", "gpt", "full")
+        );
+        let (other, created) =
+            task_row(&store, None, &project.id, "pantheon", "default", None, None).unwrap();
         assert!(created && other != id);
     }
 }

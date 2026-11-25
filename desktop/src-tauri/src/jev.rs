@@ -262,15 +262,13 @@ pub(crate) fn decision_credentials() -> Result<(bool, String)> {
         state.saved.typesafe_key.clone(),
     ))
 }
-pub fn is_busy() -> bool {
-    crate::jev_decisions::is_busy()
-        || runtime().is_ok_and(|state| state.installing || !state.active.is_empty())
-}
 pub(crate) fn active_for_tasks(ids: &[String]) -> Result<bool> {
     let Some(runtime) = RUNTIME.get() else {
         return Ok(false);
     };
-    let state = runtime.lock().map_err(|_| "Jev settings are unavailable.")?;
+    let state = runtime
+        .lock()
+        .map_err(|_| "Jev settings are unavailable.")?;
     Ok(has_active_tasks(&state, ids))
 }
 fn has_active_tasks(state: &Runtime, ids: &[String]) -> bool {
@@ -1800,8 +1798,13 @@ mod tests {
         assert_eq!(state.active.len(), 2);
         assert!(has_active_tasks(&state, &["one".into()]));
         assert!(!has_active_tasks(&state, &["unrelated".into()]));
-        state.active[&first.id].stopped.store(true, Ordering::SeqCst);
-        assert!(has_active_tasks(&state, &["one".into()]), "Cancellation is not completed cleanup");
+        state.active[&first.id]
+            .stopped
+            .store(true, Ordering::SeqCst);
+        assert!(
+            has_active_tasks(&state, &["one".into()]),
+            "Cancellation is not completed cleanup"
+        );
         state.active.remove(&first.id);
         assert!(!has_active_tasks(&state, &["one".into()]));
         std::fs::remove_dir_all(dir).unwrap();
@@ -1810,8 +1813,13 @@ mod tests {
     #[test]
     fn task_deletion_between_browser_validation_and_admission_prevents_reservation() {
         let (state, project) = crate::concurrent_task_tests::test_state();
-        let sid = state.store.lock().unwrap()
-            .create_session(&project, "codex", "default", "ask").unwrap().id;
+        let sid = state
+            .store
+            .lock()
+            .unwrap()
+            .create_session(&project, "pantheon", "default", "ask")
+            .unwrap()
+            .id;
         // The browser request passed its initial task validation.
         assert!(state.store.lock().unwrap().session(&sid).is_ok());
         crate::task_deletion::delete_state(&state, &sid).unwrap();
@@ -1819,7 +1827,8 @@ mod tests {
         assert!(with_task_admission(&state, &sid, |_| {
             reserved = true;
             Ok(())
-        }).is_err());
+        })
+        .is_err());
         assert!(!reserved);
     }
 

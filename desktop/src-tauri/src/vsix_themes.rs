@@ -102,7 +102,9 @@ fn valid_color(value: &str) -> bool {
     matches!(hex.len(), 3 | 4 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 fn valid_key(key: &str) -> bool {
-    !key.is_empty() && key.len() <= 80 && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
+    !key.is_empty()
+        && key.len() <= 80
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
 }
 fn slug(text: &str) -> String {
     let mut slug = String::new();
@@ -118,7 +120,11 @@ fn slug(text: &str) -> String {
 
 /// A package path relative to `base`, refusing anything that climbs out.
 fn join(base: &str, relative: &str) -> Option<String> {
-    let mut parts: Vec<String> = base.split('/').filter(|p| !p.is_empty()).map(str::to_string).collect();
+    let mut parts: Vec<String> = base
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
     for component in Path::new(relative.trim_start_matches("./")).components() {
         match component {
             Component::Normal(part) => parts.push(part.to_str()?.to_string()),
@@ -140,19 +146,30 @@ struct Package<R: Read + std::io::Seek> {
 }
 impl<R: Read + std::io::Seek> Package<R> {
     fn text(&mut self, name: &str) -> Result<String, String> {
-        let mut file = self.archive.by_name(name).map_err(|_| format!("The package is missing {name}."))?;
+        let mut file = self
+            .archive
+            .by_name(name)
+            .map_err(|_| format!("The package is missing {name}."))?;
         if file.size() > MAX_JSON {
             return Err(format!("{name} is too large."));
         }
         let mut text = String::new();
-        file.by_ref().take(MAX_JSON).read_to_string(&mut text).map_err(|_| format!("{name} is not text."))?;
+        file.by_ref()
+            .take(MAX_JSON)
+            .read_to_string(&mut text)
+            .map_err(|_| format!("{name} is not text."))?;
         Ok(text.trim_start_matches('\u{feff}').to_string())
     }
     fn json(&mut self, name: &str) -> Result<Value, String> {
-        serde_json::from_str(&strip_jsonc(&self.text(name)?)).map_err(|_| format!("{name} is not valid JSON."))
+        serde_json::from_str(&strip_jsonc(&self.text(name)?))
+            .map_err(|_| format!("{name} is not valid JSON."))
     }
     /// A theme's colors, following `include` chains; the including file wins.
-    fn colors(&mut self, path: &str, depth: usize) -> Result<(BTreeMap<String, String>, Option<String>), String> {
+    fn colors(
+        &mut self,
+        path: &str,
+        depth: usize,
+    ) -> Result<(BTreeMap<String, String>, Option<String>), String> {
         if depth > MAX_INCLUDES {
             return Err("The theme includes too many files.".into());
         }
@@ -161,7 +178,8 @@ impl<R: Read + std::io::Seek> Package<R> {
         let mut kind = value["type"].as_str().map(str::to_string);
         if let Some(include) = value["include"].as_str() {
             let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
-            let included = join(dir, include).ok_or("A theme include points outside the package.")?;
+            let included =
+                join(dir, include).ok_or("A theme include points outside the package.")?;
             let (base, base_kind) = self.colors(&included, depth + 1)?;
             colors = base;
             kind = kind.or(base_kind);
@@ -179,7 +197,8 @@ impl<R: Read + std::io::Seek> Package<R> {
 
 /// Every color theme a `.vsix` contributes.
 pub fn read_vsix(bytes: &[u8]) -> Result<Vec<Theme>, String> {
-    let archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "That file is not a VS Code extension (.vsix).".to_string())?;
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|_| "That file is not a VS Code extension (.vsix).".to_string())?;
     if archive.len() > 20_000 {
         return Err("The package has too many files.".into());
     }
@@ -188,25 +207,47 @@ pub fn read_vsix(bytes: &[u8]) -> Result<Vec<Theme>, String> {
     let nls = package.json("extension/package.nls.json").ok();
     let localized = |text: &str| -> String {
         let key = text.strip_prefix('%').and_then(|t| t.strip_suffix('%'));
-        key.and_then(|key| nls.as_ref()?.get(key)?.as_str().map(str::to_string)).unwrap_or_else(|| text.to_string())
+        key.and_then(|key| nls.as_ref()?.get(key)?.as_str().map(str::to_string))
+            .unwrap_or_else(|| text.to_string())
     };
     let publisher = manifest["publisher"].as_str().unwrap_or("unknown");
     let name = manifest["name"].as_str().unwrap_or("theme");
     let extension = localized(manifest["displayName"].as_str().unwrap_or(name));
     let mut themes = Vec::new();
-    for entry in manifest["contributes"]["themes"].as_array().into_iter().flatten().take(64) {
-        let Some(path) = entry["path"].as_str().and_then(|p| join("extension", p)) else { continue };
-        let label = localized(entry["label"].as_str().or(entry["id"].as_str()).unwrap_or(name));
+    for entry in manifest["contributes"]["themes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(64)
+    {
+        let Some(path) = entry["path"].as_str().and_then(|p| join("extension", p)) else {
+            continue;
+        };
+        let label = localized(
+            entry["label"]
+                .as_str()
+                .or(entry["id"].as_str())
+                .unwrap_or(name),
+        );
         let (colors, kind) = package.colors(&path, 0)?;
         if colors.is_empty() {
             continue;
         }
-        let ui = entry["uiTheme"].as_str().map(str::to_string).or(kind).unwrap_or_default();
+        let ui = entry["uiTheme"]
+            .as_str()
+            .map(str::to_string)
+            .or(kind)
+            .unwrap_or_default();
         themes.push(Theme {
             id: format!("{}.{}.{}", slug(publisher), slug(name), slug(&label)),
             name: label,
             extension: extension.clone(),
-            kind: if matches!(ui.as_str(), "vs" | "hc-light" | "light") { "light" } else { "dark" }.into(),
+            kind: if matches!(ui.as_str(), "vs" | "hc-light" | "light") {
+                "light"
+            } else {
+                "dark"
+            }
+            .into(),
             colors,
         });
     }
@@ -217,12 +258,21 @@ pub fn read_vsix(bytes: &[u8]) -> Result<Vec<Theme>, String> {
 }
 
 fn store(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("themes");
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("themes");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 200 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') && !id.starts_with('.')
+    !id.is_empty()
+        && id.len() <= 200
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && !id.starts_with('.')
 }
 fn save(app: &AppHandle, themes: &[Theme]) -> Result<(), String> {
     let dir = store(app)?;
@@ -252,10 +302,18 @@ pub async fn themes_list(app: AppHandle) -> crate::Result<Vec<Theme>> {
 pub async fn theme_import(app: AppHandle, path: String) -> crate::Result<Vec<Theme>> {
     crate::blocking(move || {
         let path = PathBuf::from(path);
-        if path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("vsix") {
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            != Some("vsix")
+        {
             return Err("Choose a .vsix file.".into());
         }
-        let size = std::fs::metadata(&path).map_err(|_| "That file is unavailable.".to_string())?.len();
+        let size = std::fs::metadata(&path)
+            .map_err(|_| "That file is unavailable.".to_string())?
+            .len();
         if size > MAX_PACKAGE {
             return Err("That package is larger than 64 MB.".into());
         }
@@ -271,10 +329,12 @@ pub async fn theme_remove(app: AppHandle, id: String) -> crate::Result<()> {
     if !valid_id(&id) {
         return Err("Unknown theme.".into());
     }
-    crate::blocking(move || match std::fs::remove_file(store(&app)?.join(format!("{id}.json"))) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
-        _ => Ok(()),
-    })
+    crate::blocking(
+        move || match std::fs::remove_file(store(&app)?.join(format!("{id}.json"))) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+            _ => Ok(()),
+        },
+    )
     .await
 }
 
@@ -288,7 +348,8 @@ mod tests {
         {
             let mut zip = zip::ZipWriter::new(&mut out);
             for (name, body) in files {
-                zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+                zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
                 zip.write_all(body.as_bytes()).unwrap();
             }
             zip.finish().unwrap();
@@ -319,10 +380,31 @@ mod tests {
         let themes = read_vsix(&package).unwrap();
         assert_eq!(themes.len(), 2);
         let dark = &themes[0];
-        assert_eq!((dark.id.as_str(), dark.name.as_str(), dark.extension.as_str(), dark.kind.as_str()), ("dracula-theme.theme-dracula.dracula", "Dracula", "Dracula Official", "dark"));
+        assert_eq!(
+            (
+                dark.id.as_str(),
+                dark.name.as_str(),
+                dark.extension.as_str(),
+                dark.kind.as_str()
+            ),
+            (
+                "dracula-theme.theme-dracula.dracula",
+                "Dracula",
+                "Dracula Official",
+                "dark"
+            )
+        );
         assert_eq!(dark.colors.get("editor.background").unwrap(), "#282a36");
-        assert_eq!(dark.colors.get("editor.foreground").unwrap(), "#f8f8f2", "included base");
-        assert_eq!(dark.colors.get("focusBorder").unwrap(), "#bd93f9", "the including file wins");
+        assert_eq!(
+            dark.colors.get("editor.foreground").unwrap(),
+            "#f8f8f2",
+            "included base"
+        );
+        assert_eq!(
+            dark.colors.get("focusBorder").unwrap(),
+            "#bd93f9",
+            "the including file wins"
+        );
         assert!(!dark.colors.contains_key("bad") && !dark.colors.contains_key("evil key"));
         assert_eq!(themes[1].kind, "light");
     }
@@ -330,9 +412,17 @@ mod tests {
     #[test]
     fn non_theme_packages_and_bad_ids_are_refused() {
         assert!(read_vsix(b"not a zip").is_err());
-        assert!(read_vsix(&vsix(&[("extension/package.json", r#"{"name":"x","contributes":{}}"#)])).unwrap_err().contains("no color themes"));
+        assert!(read_vsix(&vsix(&[(
+            "extension/package.json",
+            r#"{"name":"x","contributes":{}}"#
+        )]))
+        .unwrap_err()
+        .contains("no color themes"));
         assert!(!valid_id("../x") && valid_id("dracula-theme.theme-dracula.dracula"));
-        assert_eq!(join("extension/themes", "../x.json").as_deref(), Some("extension/x.json"));
+        assert_eq!(
+            join("extension/themes", "../x.json").as_deref(),
+            Some("extension/x.json")
+        );
         assert_eq!(join("extension", "../../x.json"), None);
     }
 
@@ -342,12 +432,19 @@ mod tests {
     fn live_packages_parse() {
         let dir = std::env::var("PANTHEON_VSIX_DIR").expect("set PANTHEON_VSIX_DIR");
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
-            let themes = read_vsix(&std::fs::read(entry.path()).unwrap()).unwrap_or_else(|e| panic!("{:?}: {e}", entry.path()));
+            let themes = read_vsix(&std::fs::read(entry.path()).unwrap())
+                .unwrap_or_else(|e| panic!("{:?}: {e}", entry.path()));
             for theme in themes {
-                println!("{} | {} | {} | {} colors | bg {:?} button {:?}", theme.id, theme.name, theme.kind, theme.colors.len(), theme.colors.get("editor.background"), theme.colors.get("button.background"));
+                println!(
+                    "{} | {} | {} | {} colors | bg {:?} button {:?}",
+                    theme.id,
+                    theme.name,
+                    theme.kind,
+                    theme.colors.len(),
+                    theme.colors.get("editor.background"),
+                    theme.colors.get("button.background")
+                );
             }
         }
     }
-
-
 }

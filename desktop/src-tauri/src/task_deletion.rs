@@ -1,5 +1,5 @@
 //! Local conversation deletion, serialized with task and harness admission.
-use crate::{architect, jev, jev_decisions, storage::Store, terminal, AppState, Result};
+use crate::{architect, jev, jev_decisions, storage::Store, AppState, Result};
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -12,8 +12,10 @@ pub struct DeletedSessions {
 }
 
 fn candidates_with_conn(conn: &rusqlite::Connection, sid: &str) -> Result<Vec<String>> {
-    conn.query_row("SELECT id FROM sessions WHERE id=?1", [sid], |r| r.get::<_, String>(0))
-        .map_err(|_| "Task is no longer available.".to_string())?;
+    conn.query_row("SELECT id FROM sessions WHERE id=?1", [sid], |r| {
+        r.get::<_, String>(0)
+    })
+    .map_err(|_| "Task is no longer available.".to_string())?;
     let parent: Option<String> = conn
         .query_row(
             "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
@@ -48,7 +50,9 @@ fn candidates_with_conn(conn: &rusqlite::Connection, sid: &str) -> Result<Vec<St
     }
     for id in &ids {
         let status: String = conn
-            .query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| r.get(0))
+            .query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
             .map_err(|_| "Task is no longer available.".to_string())?;
         if matches!(status.as_str(), "running" | "waiting") {
             return Err(
@@ -56,10 +60,18 @@ fn candidates_with_conn(conn: &rusqlite::Connection, sid: &str) -> Result<Vec<St
             );
         }
         let goal: Option<String> = conn
-            .query_row("SELECT goal_state FROM sessions WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0))
+            .query_row("SELECT goal_state FROM sessions WHERE id=?1", [id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
             .map_err(|e| e.to_string())?;
-        if goal.as_deref().and_then(|g| serde_json::from_str::<serde_json::Value>(g).ok())
-            .and_then(|g| g.get("status").and_then(|s| s.as_str()).map(|s| s == "active"))
+        if goal
+            .as_deref()
+            .and_then(|g| serde_json::from_str::<serde_json::Value>(g).ok())
+            .and_then(|g| {
+                g.get("status")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s == "active")
+            })
             .unwrap_or(false)
         {
             return Err("Pause this task's active goal before deleting it.".into());
@@ -75,7 +87,8 @@ fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
 
 fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
     let binding = store.conn();
-    let transaction = rusqlite::Transaction::new_unchecked(&binding, rusqlite::TransactionBehavior::Immediate)
+    let transaction =
+        rusqlite::Transaction::new_unchecked(&binding, rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
     // Revalidate inside the transaction, including any changes made while the
     // runtime registries were inspected. Only this exact ownership set is removed.
@@ -109,9 +122,6 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
                 "Stop this task and wait for its agents to finish before deleting it.".into(),
             );
         }
-        if terminal::harness_running(&state.terminals, id)? {
-            return Err("Close this task's harness console before deleting it.".into());
-        }
     }
     if jev::active_for_tasks(&ids)? || jev_decisions::active_for_tasks(&ids)? {
         return Err(
@@ -136,9 +146,12 @@ pub async fn delete_session(
         return Err("Only the main window can delete tasks.".into());
     }
     // A deleted task never sends a follow-up; free its waiting agent.
-    crate::providers::discard_warm_agent(&session_id);
     crate::blocking(move || {
-        let cloud = app.state::<AppState>().store.lock().ok().and_then(|store| crate::cloud_agents::load(&store, &session_id).ok().flatten());
+        let cloud = app.state::<AppState>().store.lock().ok().and_then(|store| {
+            crate::cloud_agents::load(&store, &session_id)
+                .ok()
+                .flatten()
+        });
         let deleted = delete_state(&app.state::<AppState>(), &session_id)?;
         // Its cloud machine goes with it, best effort.
         crate::cloud_agents::tasks::forget_machine(cloud);
@@ -162,7 +175,7 @@ mod tests {
 
     fn task(store: &Store, project: &str) -> String {
         store
-            .create_session(project, "codex", "default", "ask")
+            .create_session(project, "pantheon", "default", "ask")
             .unwrap()
             .id
     }
@@ -188,7 +201,8 @@ mod tests {
                 store.conn().execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'sub','{}',0)", [sid]).unwrap();
                 store.conn().execute("INSERT INTO jev_assessments(id,session_id,created_at,report) VALUES(?1,?1,0,'{}')", [sid]).unwrap();
                 store
-                    .conn().execute(
+                    .conn()
+                    .execute(
                         "INSERT INTO context_recovery(session_id,through_message_id) VALUES(?1,?2)",
                         params![sid, message],
                     )
@@ -219,7 +233,8 @@ mod tests {
             "turn_change_files",
         ] {
             let count: i64 = store
-                .conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap();
             assert_eq!(count, 1, "{table}");
         }
@@ -229,7 +244,8 @@ mod tests {
             "architect_messages",
         ] {
             let count: i64 = store
-                .conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
                 .unwrap();
             assert_eq!(count, 0, "{table}");
         }
@@ -274,7 +290,8 @@ mod tests {
                 .store
                 .lock()
                 .unwrap()
-                .conn().execute(
+                .conn()
+                .execute(
                     "UPDATE sessions SET goal_state=?2 WHERE id=?1",
                     params![target, goal.to_string()],
                 )
@@ -284,7 +301,8 @@ mod tests {
                 .store
                 .lock()
                 .unwrap()
-                .conn().execute("UPDATE sessions SET goal_state=NULL WHERE id=?1", [&target])
+                .conn()
+                .execute("UPDATE sessions SET goal_state=NULL WHERE id=?1", [&target])
                 .unwrap();
             let (tx, _rx) = crate::unbounded_channel();
             // A stop flag does not mean process cleanup or its callbacks finished.
@@ -311,7 +329,8 @@ mod tests {
             store.message(&child, "assistant", "Worker result").unwrap();
             store.conn().execute_batch("CREATE TRIGGER reject_parent_delete BEFORE DELETE ON sessions WHEN OLD.title='Keep parent' BEGIN SELECT RAISE(ABORT,'Injected deletion failure'); END;").unwrap();
             store
-                .conn().execute(
+                .conn()
+                .execute(
                     "UPDATE sessions SET title='Keep parent' WHERE id=?1",
                     [&parent],
                 )

@@ -22,6 +22,20 @@ The installer verifies the published `.sha256` file. That is an integrity check,
 
 Want to build it yourself? Clone the repo and run `cargo build --release`. It needs Rust, nothing else.
 
+## Sandboxing by platform
+
+The shell and skill tools request an isolation level, and the request fails closed when it cannot be met. What "cannot be met" means depends on the platform, so it is worth knowing before you let an agent run commands:
+
+| Platform | `High` (default) | What the fallback gives you |
+|---|---|---|
+| Linux x86_64 / aarch64 | bubblewrap user namespace, all capabilities dropped, no network unless the call asks, credential files and the data dir masked | `PANTHEON_SANDBOX_FALLBACK=allow` runs directly on the host: scrubbed environment, rlimits, no filesystem or network isolation |
+| macOS | no boundary backend: `High` fails closed (`SANDBOX_UNAVAILABLE`) | the same direct spawn: scrubbed environment, rlimits, no isolates |
+| Windows | no boundary backend: `High` fails closed | the same direct spawn: scrubbed environment, rlimits, no isolates |
+
+`pantheon doctor` reports which case you are in (`security.exec_sandbox`), on Linux including whether the kernel refuses unprivileged user namespaces (Ubuntu's AppArmor does by default). On macOS and Windows, the isolation claim in the README does not apply: treat shell access as unsandboxed and keep approvals on.
+
+Linux also needs `bwrap` installed; without it every `High` call is refused rather than silently downgraded.
+
 ## Set up
 
 ```sh
@@ -33,7 +47,7 @@ It asks a few questions: which AI provider, which model, where your API key live
 If you are scripting the install (CI, a fresh machine), you can answer the questions with flags instead:
 
 ```sh
-pantheon setup --yes --provider openai --model gpt-4o-mini \
+pantheon setup --provider openai --model gpt-4o-mini \
  --api-key-env OPENAI_API_KEY --policy coder
 ```
 

@@ -237,7 +237,8 @@ pub async fn browser_open(
     bounds: BrowserBounds,
 ) -> Result<BrowserStatus> {
     guard(&caller)?;
-    let url = app.state::<crate::file_preview::FilePreviews>()
+    let url = app
+        .state::<crate::file_preview::FilePreviews>()
         .navigation_url(&normalize_url(&url)?)?;
     let window = caller.window();
     let bounds = bounded(bounds, &window)?;

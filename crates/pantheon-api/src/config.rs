@@ -2720,9 +2720,8 @@ impl Config {
     ///
     /// `load(...).ok()` at a dozen call sites threw away a `CONFIG_PARSE`
     /// error that names the file, line, and column. A single typo then
-    /// looked like a working install that could not reach a provider: the
-    /// session fell back to `local`/`llama3.2` and failed against
-    /// localhost with no mention of the file that was actually broken.
+    /// looked like an install that could not reach a provider, with no
+    /// mention of the file that was actually broken.
     ///
     /// A missing config is not an error, so this returns `None` for that
     /// case and prints for a config that exists but does not parse.

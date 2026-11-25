@@ -34,6 +34,13 @@ pub mod swarm {
         pub task: String,
         pub roles: Vec<String>,
         pub delivery: Option<String>,
+        /// Give each agent its own git worktree so concurrent-ish edits do
+        /// not collide in one checkout. Requires a git repository.
+        pub worktree: bool,
+        /// Keep the per-agent worktrees and their branches after the swarm.
+        /// Default is to remove them, since a swarm's scratch branches are
+        /// usually not worth keeping.
+        pub keep_worktrees: bool,
     }
 
     /// One agent's finished turn: the transcript text, or the failure. An
@@ -177,6 +184,8 @@ pub mod swarm {
         let mut task_parts: Vec<String> = Vec::new();
         let mut role_value: Option<String> = None;
         let mut delivery: Option<String> = None;
+        let mut worktree = false;
+        let mut keep_worktrees = false;
         let mut i = 0;
         while i < rest.len() {
             match rest[i].as_str() {
@@ -194,6 +203,8 @@ pub mod swarm {
                         }
                     }
                 }
+                "--worktree" => worktree = true,
+                "--keep-worktrees" => keep_worktrees = true,
                 // `--roles` takes exactly one comma-separated value, so flags
                 // may come before or after the task:
                 // `swarm 5 --roles a,b "task"` and `swarm 5 "task" --roles a,b`
@@ -226,6 +237,12 @@ pub mod swarm {
         if task.is_empty() {
             return Err("error: need a task for the swarm".to_string());
         }
+        if keep_worktrees && !worktree {
+            return Err(
+                "error: --keep-worktrees only applies with --worktree (nothing would be created)"
+                    .to_string(),
+            );
+        }
 
         let roles = if role_value.is_none() {
             (1..=n).map(|k| format!("agent-{k}")).collect()
@@ -251,6 +268,8 @@ pub mod swarm {
             task,
             roles,
             delivery,
+            worktree,
+            keep_worktrees,
         })
     }
 
@@ -357,6 +376,98 @@ pub mod swarm {
         Ok(outcomes)
     }
 
+    /// Create one private worktree per swarm agent, run the swarm with each
+    /// turn bound to its own tree, then remove the trees unless asked to keep
+    /// them. A cleanup failure is reported on stderr but does not turn a
+    /// completed swarm into a failed one - the agent results are the answer.
+    pub fn run_code_swarm(
+        data_dir: &Path,
+        spec: &SpawnSpec,
+        profiles: &[EffectiveProfile],
+    ) -> Result<Vec<AgentOutcome>, String> {
+        if !spec.worktree {
+            return run_swarm_spawn(data_dir, spec, profiles, &|p, run_id, task| {
+                swarm_turn(data_dir, p, run_id, task, None)
+            });
+        }
+
+        let cwd = std::env::current_dir().map_err(|e| format!("read cwd: {e}"))?;
+        let manager = pantheon_exec::worktree::WorktreeManager::new(&cwd, data_dir)
+            .map_err(|e| e.to_string())?;
+        let swarm_tag = format!("swarm-{}", &pantheon_runtime::new_run_id()[..12]);
+        let mut paths: Vec<std::path::PathBuf> = Vec::with_capacity(spec.n);
+        for (i, role) in spec.roles.iter().enumerate() {
+            let name = sanitize_worktree_name(&format!(
+                "{}-{}-{}",
+                swarm_tag,
+                role,
+                i + 1
+            ));
+            let wt = manager.create(&name, None, None).map_err(|e| {
+                // Roll back trees already made: a half-created swarm leaves
+                // branches and directories nobody asked for.
+                cleanup_worktrees(&manager, &paths);
+                format!("create worktree for {role}: {e}")
+            })?;
+            paths.push(wt.path);
+        }
+
+        let result = run_swarm_spawn(data_dir, spec, profiles, &|p, run_id, task| {
+            let idx = p_index(profiles, p).unwrap_or(0).min(paths.len().saturating_sub(1));
+            let root = paths.get(idx).map(|p| p.as_path());
+            swarm_turn(data_dir, p, run_id, task, root)
+        });
+
+        if spec.keep_worktrees {
+            eprintln!(
+                "kept {} swarm worktree(s) under {}",
+                paths.len(),
+                manager.root().display()
+            );
+        } else {
+            cleanup_worktrees(&manager, &paths);
+        }
+        result
+    }
+
+    /// `run_swarm_spawn` zips agents to profiles by index; recover that index
+    /// by identity so each turn gets the worktree made for its role.
+    fn p_index(profiles: &[EffectiveProfile], target: &EffectiveProfile) -> Option<usize> {
+        profiles.iter().position(|p| std::ptr::eq(p, target))
+    }
+
+    fn cleanup_worktrees(manager: &pantheon_exec::worktree::WorktreeManager, paths: &[std::path::PathBuf]) {
+        for path in paths {
+            let shown = path.to_string_lossy().into_owned();
+            if let Err(e) = manager.remove(&shown, true) {
+                eprintln!("could not remove worktree {shown}: {e}");
+            }
+        }
+    }
+
+    /// Worktree names are used as branch suffixes and directory names, so
+    /// role text from a CLI argument must be reduced before it reaches git.
+    fn sanitize_worktree_name(raw: &str) -> String {
+        let mut out: String = raw
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        while out.contains("--") {
+            out = out.replace("--", "-");
+        }
+        out = out.trim_matches('-').to_string();
+        if out.is_empty() {
+            out.push_str("agent");
+        }
+        out.chars().take(64).collect::<String>().trim_matches('-').to_string()
+    }
+
     /// Render the aggregate report: each agent's result under a
     /// `=== <label> (<role>) ===` header. A failing agent's error prints
     /// here verbatim - it is never hidden.
@@ -396,11 +507,17 @@ pub mod swarm {
     /// profile's policy preset, the agent attached for identity, `Build` mode
     /// (a CLI spawn has no parent session to inherit from), then `chat_turn`.
     /// Mirrors `run_delivered_task`'s session construction.
+    ///
+    /// `workspace` is the agent's private checkout when `--worktree` was
+    /// requested, otherwise the process cwd. Setting it before the turn
+    /// rebinds every confined file tool to that tree: the model cannot reach
+    /// a sibling agent's work through `read_file`, `grep`, or `edit_file`.
     fn swarm_turn(
         data_dir: &Path,
         profile: &EffectiveProfile,
         run_id: &str,
         task: &str,
+        workspace: Option<&Path>,
     ) -> Result<String, String> {
         let file_cfg = crate::config::Config::load_or_report(data_dir);
         let model_policy = crate::config::build_model_policy(file_cfg.as_ref(), None, None);
@@ -434,6 +551,11 @@ pub mod swarm {
         session
             .with_agent(agent)
             .map_err(|e| format!("attach agent: {e}"))?;
+        if let Some(root) = workspace {
+            session
+                .set_workspace_root(root)
+                .map_err(|e| format!("bind agent workspace to {}: {e}", root.display()))?;
+        }
         session.set_mode(pantheon_api::mode::AgentMode::Build);
         let outcome = session
             .chat_turn(run_id, "", task)
@@ -442,12 +564,26 @@ pub mod swarm {
     }
 
     pub fn cmd_swarm(args: &[String], data_dir: &Path) {
-        if args.len() < 3 {
+        if args.get(2).map(String::as_str) == Some("--help")
+            || args.get(2).map(String::as_str) == Some("-h")
+        {
             eprintln!(
-                "usage: pantheon swarm <N> \"<task>\" [--roles a,b] [--delivery telegram|discord]"
+                "usage: pantheon swarm <N> \"<task>\" [--roles a,b] [--delivery telegram|discord] [--worktree] [--keep-worktrees]"
             );
             eprintln!("       pantheon swarm status [<swarm_id>]");
             eprintln!("       pantheon swarm list");
+            eprintln!("  --worktree:       give each agent a private git worktree, bound as its workspace");
+            eprintln!("  --keep-worktrees: keep those worktrees after the swarm (default: remove them)");
+            std::process::exit(0);
+        }
+        if args.len() < 3 {
+            eprintln!(
+                "usage: pantheon swarm <N> \"<task>\" [--roles a,b] [--delivery telegram|discord] [--worktree] [--keep-worktrees]"
+            );
+            eprintln!("       pantheon swarm status [<swarm_id>]");
+            eprintln!("       pantheon swarm list");
+            eprintln!("  --worktree:      give each agent a private git worktree, bound as its workspace");
+            eprintln!("  --keep-worktrees: keep those worktrees after the swarm (default: remove them)");
             std::process::exit(2);
         }
 
@@ -477,16 +613,13 @@ pub mod swarm {
                         std::process::exit(2);
                     }
                 };
-                let outcomes =
-                    match run_swarm_spawn(data_dir, &spec, &profiles, &|profile, run_id, task| {
-                        swarm_turn(data_dir, profile, run_id, task)
-                    }) {
-                        Ok(o) => o,
-                        Err(e) => {
-                            eprintln!("{e}");
-                            std::process::exit(1);
-                        }
-                    };
+                let outcomes = match run_code_swarm(data_dir, &spec, &profiles) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                };
                 let report = render_swarm_report(&outcomes);
                 print!("{report}");
                 if delivery != "session" {
@@ -632,6 +765,62 @@ pub mod swarm {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn worktree_flags_parse() {
+            let args = vec![
+                "pantheon".to_string(),
+                "swarm".to_string(),
+                "2".to_string(),
+                "fix the tests".to_string(),
+                "--worktree".to_string(),
+                "--keep-worktrees".to_string(),
+                "--roles".to_string(),
+                "coder,reviewer".to_string(),
+            ];
+            let s = parse_swarm_spawn(&args).expect("parses");
+            assert!(s.worktree && s.keep_worktrees);
+            assert_eq!(s.roles, vec!["coder", "reviewer"]);
+            assert_eq!(s.task, "fix the tests");
+        }
+
+        #[test]
+        fn worktree_is_opt_in() {
+            let args = vec![
+                "pantheon".to_string(),
+                "swarm".to_string(),
+                "1".to_string(),
+                "do a thing".to_string(),
+            ];
+            let s = parse_swarm_spawn(&args).expect("parses");
+            assert!(!s.worktree, "a plain swarm still shares one checkout");
+            assert!(!s.keep_worktrees);
+        }
+
+        #[test]
+        fn keep_worktrees_requires_worktree() {
+            let args = vec![
+                "pantheon".to_string(),
+                "swarm".to_string(),
+                "1".to_string(),
+                "do a thing".to_string(),
+                "--keep-worktrees".to_string(),
+            ];
+            assert!(
+                parse_swarm_spawn(&args).is_err(),
+                "silently ignoring --keep-worktrees would mislead the caller"
+            );
+        }
+
+        #[test]
+        fn worktree_names_are_safe_branch_suffixes() {
+            assert_eq!(sanitize_worktree_name("swarm-abc-reviewer-1"), "swarm-abc-reviewer-1");
+            let nasty = sanitize_worktree_name("../bad name/;rm -rf");
+            assert!(!nasty.contains('/') && !nasty.contains('\\'));
+            assert!(!nasty.contains(';'));
+            assert!(!nasty.is_empty());
+            assert!(nasty.len() <= 64);
+        }
 
         #[test]
         fn created_ms_survives_the_shared_manifest_bridge() {

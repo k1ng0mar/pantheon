@@ -1,9 +1,9 @@
 /* Browser preview of the skills library (src-tauri/src/skills.rs): an in-memory library, a
- * pretend Claude Code and Codex install, and the same refusals the native side gives. */
+ * in-memory Pantheon library, and the same refusals the native side gives. */
 import type { CatalogImport, CatalogSkill, CatalogSource, SkillActivation, SkillCatalogs, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
 
-const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse']);
-const FILES = ['claude', 'codex'];
+const PROMPT = new Set<string>([]);
+const FILES = ['pantheon'];
 const PROJECT_ROOT = '/Users/you/Projects/orbit';
 
 function scan(file: string, text: string): SkillFinding[] {
@@ -134,7 +134,7 @@ export function createPreviewSkills() {
   function cell(entry: Entry, harness: string, scope: SkillScope): SkillCell {
     const activation = entry.item.activations.find(a => a.harness === harness && a.scope === scope);
     const base = scope === 'user' ? '~' : PROJECT_ROOT;
-    const surface = PROMPT.has(harness) ? 'prompt' : entry.item.kind === 'skill' ? `${base}/.${harness}/skills/${entry.item.id}` : harness === 'pantheon' ? `${base}/${scope === 'user' ? '.claude/' : ''}CLAUDE.md` : `${base}/${scope === 'user' ? '.codex/' : ''}AGENTS.md`;
+    const surface = PROMPT.has(harness) ? 'prompt' : entry.item.kind === 'skill' ? `${base}/.pantheon/skills/${entry.item.id}` : `${base}/AGENTS.md`;
     if (!activation) return { id: entry.item.id, scope, status: 'off', surface };
     if (activation.surface === 'prompt') return { id: entry.item.id, scope, status: 'prompt', surface };
     const onDisk = disk.get(key(entry.item.id, harness, scope));
@@ -203,7 +203,7 @@ export function createPreviewSkills() {
       const harnesses = [...FILES, ...[...PROMPT].filter(h => used.has(h))].map(harness => ({
         harness, installed: FILES.includes(harness), prompt: PROMPT.has(harness),
         cells: scopes.flatMap(scope => all.map(entry => cell(entry, harness, scope))),
-        unmanaged: harness === 'pantheon' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.claude/skills/pdf-tools', detail: 'Not in the library.' }] : [],
+        unmanaged: harness === 'pantheon' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.pantheon/skills/pdf-tools', detail: 'Not in the library.' }] : [],
       }));
       return { project: projectId ? PROJECT_ROOT : null, harnesses };
     },

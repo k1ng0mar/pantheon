@@ -273,12 +273,16 @@ fn code_intel_toggle_on_registers_lsp_and_gitundo_tools() {
     s.set_tool_enablement(ToolEnablement::default());
     let (reg, counts) = s.build_tool_registry();
     let n = names(&reg);
-    // The CodeIntel group covers three tool families: LSP (3), git-undo
+    // The CodeIntel group covers LSP diagnostics + navigation (7), git-undo
     // (4), managed worktrees (4), and the native code graph (5).
     for tool in [
         "lsp.open",
         "lsp.diagnostics",
         "lsp.shutdown",
+        "lsp.definition",
+        "lsp.references",
+        "lsp.hover",
+        "lsp.symbols",
         "gitundo.snapshot",
         "gitundo.list",
         "gitundo.restore",
@@ -298,7 +302,7 @@ fn code_intel_toggle_on_registers_lsp_and_gitundo_tools() {
             "'{tool}' not registered with the CodeIntel group on"
         );
     }
-    assert_eq!(counts.code_intel, 16, "expected 16 code-intel tools");
+    assert_eq!(counts.code_intel, 20, "expected 20 code-intel tools");
     assert!(
         counts.code_intel <= counts.total(),
         "code_intel must feed total()"

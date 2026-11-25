@@ -34,7 +34,10 @@ impl Server {
         sink: Sink,
         mode: &str,
     ) -> Result<Option<Self>, String> {
-        let required = host.tools.iter().any(|tool| !optional_transport_tool(tool["name"].as_str().unwrap_or_default()));
+        let required = host
+            .tools
+            .iter()
+            .any(|tool| !optional_transport_tool(tool["name"].as_str().unwrap_or_default()));
         match Self::start_with_approvals(host, session_id, sink, mode).await {
             Ok(server) => Ok(Some(server)),
             Err(_) if !required => Ok(None),
@@ -43,18 +46,14 @@ impl Server {
     }
 
     pub(super) fn required(&self) -> bool {
-        self.current().host.tools.iter().any(|tool| !optional_transport_tool(tool["name"].as_str().unwrap_or_default()))
+        self.current()
+            .host
+            .tools
+            .iter()
+            .any(|tool| !optional_transport_tool(tool["name"].as_str().unwrap_or_default()))
     }
     fn current(&self) -> Arc<Context> {
         current(&self.context)
-    }
-    /// Serve a new turn at the same address and token, which the agent already knows.
-    pub(super) fn rebind(&self, host: ToolHost, session_id: String, sink: Sink, mode: &str) -> Result<(), String> {
-        host_tools::HostTools::new(host.clone())?;
-        let previous = self.current();
-        let next = Arc::new(Context::new(previous.authority.clone(), previous.authorization.clone(), host, session_id, sink, mode));
-        *self.context.write().map_err(|_| "Agent tools are unavailable".to_string())? = next;
-        Ok(())
     }
     #[cfg(test)]
     pub(super) async fn start(
@@ -91,7 +90,14 @@ impl Server {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let context = Arc::new(std::sync::RwLock::new(Arc::new(Context::new(authority.clone(), format!("Bearer {token}"), host, session_id, sink, mode))));
+        let context = Arc::new(std::sync::RwLock::new(Arc::new(Context::new(
+            authority.clone(),
+            format!("Bearer {token}"),
+            host,
+            session_id,
+            sink,
+            mode,
+        ))));
         let server_context = context.clone();
         let task = tokio::spawn(async move {
             let mut clients = tokio::task::JoinSet::new();
@@ -122,17 +128,9 @@ impl Server {
             context: server_context,
         })
     }
-    pub(super) fn claude_config(&self) -> Value {
-        json!({"mcpServers":{SERVER_NAME:{"type":"http","url":format!("http://{}/mcp",self.authority),"headers":{"Authorization":format!("Bearer {}",self.token)}}}})
-    }
-    pub(super) fn pi_config(&self) -> Value {
-        json!({"url":format!("http://{}/mcp",self.authority),"authorization":format!("Bearer {}",self.token)})
-    }
-    pub(super) fn kimi_config(&self) -> Value {
+    /// The ACP `mcpServers` entry: a streamable HTTP server with a bearer token.
+    pub(super) fn acp_config(&self) -> Value {
         json!({"type":"http","name":SERVER_NAME,"url":format!("http://{}/mcp",self.authority),"headers":[{"name":"Authorization","value":format!("Bearer {}",self.token)}]})
-    }
-    pub(super) fn codex_config(&self) -> Value {
-        json!({SERVER_NAME:{"url":format!("http://{}/mcp",self.authority),"http_headers":{"Authorization":format!("Bearer {}",self.token)},"enabled":true,"required":self.required(),"startup_timeout_sec":if self.required() {15} else {3},"tool_timeout_sec":360}})
     }
     pub(super) fn redact(&self, text: &str) -> String {
         text.replace(&self.token, "[redacted]")
@@ -177,7 +175,14 @@ struct Context {
 }
 
 impl Context {
-    fn new(authority: String, authorization: String, host: ToolHost, session_id: String, sink: Sink, mode: &str) -> Self {
+    fn new(
+        authority: String,
+        authorization: String,
+        host: ToolHost,
+        session_id: String,
+        sink: Sink,
+        mode: &str,
+    ) -> Self {
         Self {
             authority,
             authorization,
@@ -417,8 +422,14 @@ impl Context {
                     return HttpResponse::error(id, -32602, "Tool arguments must be an object");
                 }
                 // Models often read several workers at once: wait briefly for a slot.
-                let Ok(Ok(_permit)) = tokio::time::timeout(Duration::from_secs(30), self.calls.acquire()).await else {
-                    return HttpResponse::error(id, -32000, "Too many active architect tools; retry this call alone.");
+                let Ok(Ok(_permit)) =
+                    tokio::time::timeout(Duration::from_secs(30), self.calls.acquire()).await
+                else {
+                    return HttpResponse::error(
+                        id,
+                        -32000,
+                        "Too many active architect tools; retry this call alone.",
+                    );
                 };
                 let key = id.to_string();
                 let cancel = Arc::new(tokio::sync::Notify::new());
@@ -527,7 +538,9 @@ impl Context {
     fn activity(&self, id: &str, name: &str, status: &str, input: &str, output: &str) {
         // Sidebar metadata is not part of the conversation transcript. Native
         // mirrors are already filtered by the per-run MCP tool catalog.
-        if optional_metadata_tool(name) { return; }
+        if optional_metadata_tool(name) {
+            return;
+        }
         (self.sink)(AgentEvent {
             session_id: self.session_id.clone(),
             kind: "tool".into(),
@@ -587,38 +600,32 @@ mod tests {
         json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"pantheon_delegate","arguments":args}})
     }
     #[tokio::test]
-    async fn a_warm_server_keeps_its_address_and_serves_the_turn_it_is_rebound_to() {
-        let spec = json!({"type":"function","name":crate::session_titles::TOOL,"description":"Sidebar metadata","inputSchema":{"type":"object"}});
-        let placeholder = ToolHost {
-            tools: vec![spec.clone()],
-            approval_tools: HashSet::new(),
-            handler: Arc::new(|_, _| Box::pin(async { Err("not started".to_string()) })),
-        };
-        let server = Server::start_for_run(placeholder, "task".into(), Arc::new(|_| {}), "ask").await.unwrap().unwrap();
-        let address = server.claude_config();
-        let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":crate::session_titles::TOOL,"arguments":{"title":"Topic"}}});
-        let (_, before) = request(&server, call.clone(), "").await;
-        assert_eq!(before["result"]["isError"], true);
-        let live = ToolHost {
-            tools: vec![spec],
-            approval_tools: HashSet::new(),
-            handler: Arc::new(|_, _| Box::pin(async { Ok(json!({"staged":true})) })),
-        };
-        server.rebind(live, "task".into(), Arc::new(|_| {}), "ask").unwrap();
-        assert_eq!(server.claude_config(), address, "the agent already holds this address and token");
-        let (_, after) = request(&server, call, "").await;
-        assert_eq!(after["result"]["isError"], false);
-    }
-    #[tokio::test]
     async fn title_metadata_is_optional_and_does_not_emit_transcript_activity() {
         let (send, mut events) = tokio::sync::mpsc::unbounded_channel();
         let title_host = ToolHost {
-            tools: vec![json!({"type":"function","name":crate::session_titles::TOOL,"description":"Sidebar metadata","inputSchema":{"type":"object"}})],
+            tools: vec![
+                json!({"type":"function","name":crate::session_titles::TOOL,"description":"Sidebar metadata","inputSchema":{"type":"object"}}),
+            ],
             approval_tools: HashSet::new(),
             handler: Arc::new(|_, _| Box::pin(async { Ok(json!({"staged":true})) })),
         };
-        let server = Server::start_for_run(title_host, "task".into(), Arc::new(move |e| { let _ = send.send(e); }), "plan").await.unwrap().unwrap();
-        assert_eq!(server.codex_config()[SERVER_NAME]["required"], false);
+        let server = Server::start_for_run(
+            title_host,
+            "task".into(),
+            Arc::new(move |e| {
+                let _ = send.send(e);
+            }),
+            "plan",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let advertised = server.acp_config();
+        assert_eq!(advertised["name"], SERVER_NAME);
+        assert!(
+            advertised["url"].as_str().unwrap().starts_with("http://"),
+            "the agent gets a reachable endpoint"
+        );
         let (_, response) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":crate::session_titles::TOOL,"arguments":{"title":"Current topic"}}}), "").await;
         assert_eq!(response["result"]["isError"], false);
         assert!(events.try_recv().is_err());
@@ -629,49 +636,91 @@ mod tests {
 
         let db = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = db.add_project(&std::env::temp_dir()).unwrap();
-        let sid = db.create_session(&project.id, "claude", "sonnet", "ask").unwrap().id;
+        let sid = db
+            .create_session(&project.id, "pantheon", "sonnet", "ask")
+            .unwrap()
+            .id;
         db.resume(&sid, "saved-claude-session").unwrap();
-        let saved_reference = json!({"type":"tool_reference","tool_name":"mcp__pantheon_architect__pantheon_title"});
+        let saved_reference =
+            json!({"type":"tool_reference","tool_name":"mcp__pantheon_architect__pantheon_title"});
         let mut original_spec = None;
 
         for turn_kind in ["user", "review", "retry", "manual"] {
             if turn_kind == "manual" {
-                db.update(&sid, Some("My parser investigation".into()), None, None, None).unwrap();
+                db.update(
+                    &sid,
+                    Some("My parser investigation".into()),
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             }
             let coordination = matches!(turn_kind, "review" | "retry")
                 .then_some(crate::architect::internal_turns::CoordinationKind::WorkerReview);
-            let turn = db.begin_task_turn_with_kind(&sid, "Inspect the parser architecture", coordination).unwrap();
+            let turn = db
+                .begin_task_turn_with_kind(&sid, "Inspect the parser architecture", coordination)
+                .unwrap();
             let run = session_titles::TitleRun::prepare(&db, &sid, turn).unwrap();
             assert_eq!(run.is_some(), turn_kind == "user");
             let previous_title = db.session(&sid).unwrap().title;
             let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let catalog = session_titles::with_host(run.as_ref(), Some(host()), stopped.clone());
             let (send, mut events) = tokio::sync::mpsc::unbounded_channel();
-            let server = Server::start_for_run(catalog, sid.clone(), Arc::new(move |event| { let _ = send.send(event); }), "ask")
-                .await.unwrap().unwrap();
+            let server = Server::start_for_run(
+                catalog,
+                sid.clone(),
+                Arc::new(move |event| {
+                    let _ = send.send(event);
+                }),
+                "ask",
+            )
+            .await
+            .unwrap()
+            .unwrap();
             let (_, initialized) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}), "").await;
             assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
-            let (status, list) = request(&server, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}), "").await;
+            let (status, list) = request(
+                &server,
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+                "",
+            )
+            .await;
             assert_eq!(status, 200);
-            let config = server.claude_config();
-            let server_name = config["mcpServers"].as_object().unwrap().keys().next().unwrap();
-            let title_spec = list["result"]["tools"].as_array().unwrap().iter().find(|tool| {
-                format!("mcp__{server_name}__{}", tool["name"].as_str().unwrap()) == saved_reference["tool_name"].as_str().unwrap()
-            }).expect("saved title reference must resolve in every resumed catalog");
+            let server_name = SERVER_NAME;
+            let title_spec = list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| {
+                    format!("mcp__{server_name}__{}", tool["name"].as_str().unwrap())
+                        == saved_reference["tool_name"].as_str().unwrap()
+                })
+                .expect("saved title reference must resolve in every resumed catalog");
             if let Some(spec) = &original_spec {
                 assert_eq!(title_spec, spec);
             } else {
                 original_spec = Some(title_spec.clone());
             }
-            let suggested_title = if run.is_some() { "Parser architecture" } else { "Internal review update" };
+            let suggested_title = if run.is_some() {
+                "Parser architecture"
+            } else {
+                "Internal review update"
+            };
             let (_, response) = request(&server, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":title_spec["name"],"arguments":{"title":suggested_title}}}), "").await;
             assert_eq!(response["result"]["isError"], false);
-            let result: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            let result: Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
             assert_eq!(result["staged"], run.is_some());
-            assert!(events.try_recv().is_err(), "metadata must not emit activity or approval");
+            assert!(
+                events.try_recv().is_err(),
+                "metadata must not emit activity or approval"
+            );
             assert!(server.current().approvals.lock().unwrap().is_empty());
             assert_eq!(db.session(&sid).unwrap().title, previous_title);
-            db.message(&sid, "assistant", "Parser inspection finished.").unwrap();
+            db.message(&sid, "assistant", "Parser inspection finished.")
+                .unwrap();
             db.finish_task_turn(&sid, true, false).unwrap();
             if let Some(run) = run {
                 assert!(run.finish(&db, true).unwrap());
@@ -679,11 +728,21 @@ mod tests {
             } else {
                 assert_eq!(db.session(&sid).unwrap().title, previous_title);
             }
-            let (_, delegated) = request(&server, call(json!(4), json!({"prompt":"Check parser tests"})), "").await;
+            let (_, delegated) = request(
+                &server,
+                call(json!(4), json!({"prompt":"Check parser tests"})),
+                "",
+            )
+            .await;
             assert_eq!(delegated["result"]["isError"], false);
-            let result: Value = serde_json::from_str(delegated["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            let result: Value =
+                serde_json::from_str(delegated["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
             assert_eq!(result["prompt"], "Check parser tests");
-            assert_eq!(db.session(&sid).unwrap().resume_id.as_deref(), Some("saved-claude-session"));
+            assert_eq!(
+                db.session(&sid).unwrap().resume_id.as_deref(),
+                Some("saved-claude-session")
+            );
             stopped.store(true, Ordering::SeqCst);
             drop(server);
         }
@@ -695,7 +754,9 @@ mod tests {
                 let count = Arc::new(AtomicUsize::new(0));
                 let called = count.clone();
                 let protected = ToolHost {
-                    tools: vec![json!({"type":"function","name":name,"description":"Preview","inputSchema":{"type":"object"}})],
+                    tools: vec![
+                        json!({"type":"function","name":name,"description":"Preview","inputSchema":{"type":"object"}}),
+                    ],
                     approval_tools: [name.into()].into(),
                     handler: Arc::new(move |_, _| {
                         called.fetch_add(1, Ordering::SeqCst);
@@ -703,14 +764,36 @@ mod tests {
                     }),
                 };
                 let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-                let server = Server::start_for_run(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), mode).await.unwrap().unwrap();
-                assert!(!server.required(), "preview availability must not block ordinary turns");
-                let request = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}), "");
+                let server = Server::start_for_run(
+                    protected,
+                    "task".into(),
+                    Arc::new(move |event| {
+                        let _ = sender.send(event);
+                    }),
+                    mode,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(
+                    !server.required(),
+                    "preview availability must not block ordinary turns"
+                );
+                let request = request(
+                    &server,
+                    json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}),
+                    "",
+                );
                 let answer = async {
                     if matches!(mode, "ask" | "auto") {
                         let pending = loop {
-                            let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
-                            if event.kind == "approval" { break event.request_id.unwrap(); }
+                            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                                .await
+                                .unwrap()
+                                .unwrap();
+                            if event.kind == "approval" {
+                                break event.request_id.unwrap();
+                            }
                         };
                         assert_eq!(count.load(Ordering::SeqCst), 0);
                         // Declining even the static-file preview must prevent UI access.
@@ -727,7 +810,10 @@ mod tests {
                     assert_ne!(event.kind, "approval");
                     activity |= event.kind == "tool";
                 }
-                assert!(activity, "preview actions must remain visible in the transcript");
+                assert!(
+                    activity,
+                    "preview actions must remain visible in the transcript"
+                );
             }
         }
     }
@@ -813,7 +899,9 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let called = count.clone();
         let protected = ToolHost {
-            tools: vec![json!({"type":"function","name":name,"description":"Deploy","inputSchema":{"type":"object"}})],
+            tools: vec![
+                json!({"type":"function","name":name,"description":"Deploy","inputSchema":{"type":"object"}}),
+            ],
             approval_tools: [name.into()].into(),
             handler: Arc::new(move |_, _| {
                 called.fetch_add(1, Ordering::SeqCst);
@@ -821,12 +909,30 @@ mod tests {
             }),
         };
         let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "full").await.unwrap();
-        let request = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}), "");
+        let server = Server::start_with_approvals(
+            protected,
+            "task".into(),
+            Arc::new(move |event| {
+                let _ = sender.send(event);
+            }),
+            "full",
+        )
+        .await
+        .unwrap();
+        let request = request(
+            &server,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":{}}}),
+            "",
+        );
         let answer = async {
             let pending = loop {
-                let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
-                if event.kind == "approval" { break event.request_id.unwrap(); }
+                let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if event.kind == "approval" {
+                    break event.request_id.unwrap();
+                }
             };
             assert_eq!(count.load(Ordering::SeqCst), 0);
             assert!(server.approve(&pending, false));
@@ -905,8 +1011,10 @@ mod tests {
             events[0].tool.as_ref().unwrap().id,
             events[1].tool.as_ref().unwrap().id
         );
-        assert!(server.claude_config()["mcpServers"][SERVER_NAME].is_object());
-        assert_eq!(server.kimi_config()["type"], "http");
+        let advertised = server.acp_config();
+        assert_eq!(advertised["type"], "http");
+        assert_eq!(advertised["name"], SERVER_NAME);
+        assert!(advertised["url"].as_str().unwrap().starts_with("http://"));
     }
     #[tokio::test]
     async fn rejects_auth_origin_host_smuggling_and_oversized_frames() {
@@ -1055,129 +1163,4 @@ mod tests {
 }
 
 #[cfg(test)]
-mod protocol_tests {
-    use super::*;
-    #[test]
-    fn kimi_requires_http_capability_and_injects_on_new_load_and_resume() {
-        for (saved, resume, method) in [
-            (false, false, "session/new"),
-            (true, false, "session/load"),
-            (true, true, "session/resume"),
-        ] {
-            let mut config = super::super::tests::config("kimi");
-            config.resume_id = saved.then(|| "saved".into());
-            let mut protocol = Protocol::new(config);
-            protocol.mcp_server = Some(
-                json!({"type":"http","name":SERVER_NAME,"url":"http://127.0.0.1:1/mcp","headers":[]}),
-            );
-            let mut capabilities = json!({"mcpCapabilities":{"http":true}});
-            if resume {
-                capabilities["sessionCapabilities"] = json!({"resume":{}});
-            }
-            let step = protocol
-                .receive(
-                    json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":capabilities}}),
-                )
-                .unwrap();
-            assert_eq!(step.write[0]["method"], method);
-            assert_eq!(
-                step.write[0]["params"]["mcpServers"][0]["name"],
-                SERVER_NAME
-            );
-            assert_eq!(step.write[0]["params"]["cwd"], "/tmp");
-        }
-        let mut protocol = Protocol::new(super::super::tests::config("kimi"));
-        protocol.mcp_server = Some(json!({}));
-        assert!(protocol
-            .receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}))
-            .is_err());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn claude_and_kimi_fixture_processes_invoke_the_authenticated_native_bridge() {
-        let _lock = concurrent_process_tests::process_test_lock().lock().await;
-        const FIXTURE: &str = r#"
-import sys,json,urllib.request,os
-provider=sys.argv[1]
-def receive():
-    return json.loads(sys.stdin.readline())
-def emit(value):
-    print(json.dumps(value),flush=True)
-receive()
-if provider == 'claude':
-    assert '--strict-mcp-config' not in sys.argv
-    server=json.loads(os.environ.get('PANTHEON_MCP_CONFIG', '{}'))['mcpServers']['pantheon_architect']
-    headers=server['headers']
-    emit({'type':'control_response','response':{'request_id':'pantheon-init','subtype':'success','response':{}}})
-    receive()
-else:
-    emit({'id':1,'result':{'protocolVersion':1,'agentCapabilities':{'mcpCapabilities':{'http':True}}}})
-    session=receive()
-    server=session['params']['mcpServers'][0]
-    assert server['type']=='http'
-    headers={entry['name']:entry['value'] for entry in server['headers']}
-    emit({'id':2,'result':{'sessionId':'fixture','modes':{'availableModes':[{'id':'default'}]}}})
-    assert receive()['method']=='session/set_mode'
-    emit({'id':4,'result':{}})
-    assert receive()['method']=='session/prompt'
-headers['Content-Type']='application/json'
-headers['Accept']='application/json, text/event-stream'
-for request in [
-    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18'}},
-    {'jsonrpc':'2.0','id':2,'method':'tools/list'},
-    {'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'pantheon_delegate','arguments':{'prompt':provider}}}
-]:
-    req=urllib.request.Request(server['url'],data=json.dumps(request).encode(),headers=headers)
-    with urllib.request.urlopen(req,timeout=5) as response:
-        result=json.load(response)
-assert json.loads(result['result']['content'][0]['text'])['prompt']==provider
-if provider=='claude':
-    emit({'type':'assistant','message':{'id':'message','content':[{'type':'tool_use','id':'native','name':'mcp__pantheon_architect__pantheon_delegate','input':{}},{'type':'text','text':'Worker dispatched'}]}})
-    emit({'type':'user','message':{'content':[{'type':'tool_result','tool_use_id':'native','content':'dispatched'}]}})
-    emit({'type':'result','subtype':'success','result':'Worker dispatched'})
-else:
-    emit({'method':'session/update','params':{'sessionId':'fixture','update':{'sessionUpdate':'tool_call','toolCallId':'native','title':'pantheon_delegate','status':'in_progress'}}})
-    emit({'method':'session/update','params':{'sessionId':'fixture','update':{'sessionUpdate':'tool_call_update','toolCallId':'native','status':'completed'}}})
-    emit({'method':'session/update','params':{'sessionId':'fixture','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'Worker dispatched'}}}})
-    emit({'id':3,'result':{'stopReason':'end_turn'}})
-"#;
-        for provider in ["claude", "kimi"] {
-            let config = super::super::tests::config(provider);
-            let host = ToolHost {
-                tools: vec![
-                    json!({"type":"function","name":"pantheon_delegate","description":"delegate","inputSchema":{"type":"object"}}),
-                ],
-                approval_tools: HashSet::new(),
-                handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
-            };
-            let observed = Arc::new(Mutex::new(Vec::new()));
-            let saved = observed.clone();
-            let sink: Sink = Arc::new(move |event| saved.lock().unwrap().push(event));
-            let (_sender, input) = tokio::sync::mpsc::unbounded_channel();
-            let mut command = Command::new("/usr/bin/python3");
-            command.args(["-c", FIXTURE, provider]);
-            tokio::time::timeout(
-                Duration::from_secs(15),
-                run_process_with_tools(config, sink, input, command, vec![], Some(host)),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            let events = observed.lock().unwrap();
-            assert_eq!(
-                events
-                    .iter()
-                    .filter(|event| event.kind == "text")
-                    .map(|event| event.text.as_str())
-                    .collect::<String>(),
-                "Worker dispatched"
-            );
-            assert_eq!(
-                events.iter().filter(|event| event.kind == "tool").count(),
-                2,
-                "native and MCP tool events must not duplicate"
-            );
-        }
-    }
-}
+mod protocol_tests {}

@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::time::Duration;
 use tauri::{ipc::Response, AppHandle, Emitter};
 
-use super::{aws::Aws, aws_screen, cloudflare::Cloudflare, daytona::Daytona, http::block, split, Machine};
+use super::{
+    aws::Aws, aws_screen, cloudflare::Cloudflare, daytona::Daytona, http::block, split, Machine,
+};
 use crate::Result;
 
 #[derive(Serialize)]
@@ -22,15 +24,71 @@ pub struct Connection {
 pub fn connections() -> Vec<Connection> {
     let settings = super::settings();
     vec![
-        Connection { provider: "daytona", connected: super::secret("daytona_key").is_some(), sandboxes: None, detail: settings.daytona_organization.or(settings.daytona_api_url) },
-        Connection { provider: "cloudflare", connected: super::secret("cloudflare_token").is_some() && settings.cloudflare_account.is_some(), sandboxes: Some(super::secret("cloudflare_worker_token").is_some() && settings.cloudflare_worker_url.is_some()), detail: settings.cloudflare_account.clone() },
-        Connection { provider: "aws", connected: settings.aws_region.is_some(), sandboxes: None, detail: settings.aws_region.map(|region| format!("{} · {region}", settings.aws_profile.unwrap_or_else(|| "default profile".into()))) },
-        Connection { provider: "vercel", connected: super::secret("vercel_token").is_some(), sandboxes: None, detail: settings.vercel_team },
-        Connection { provider: "railway", connected: super::secret("railway_token").is_some(), sandboxes: None, detail: settings.railway_workspace },
-        Connection { provider: "gcloud", connected: settings.gcloud_project.is_some(), sandboxes: None, detail: settings.gcloud_project.map(|project| match settings.gcloud_region { Some(region) => format!("{project} · {region}"), None => project }) },
+        Connection {
+            provider: "daytona",
+            connected: super::secret("daytona_key").is_some(),
+            sandboxes: None,
+            detail: settings.daytona_organization.or(settings.daytona_api_url),
+        },
+        Connection {
+            provider: "cloudflare",
+            connected: super::secret("cloudflare_token").is_some()
+                && settings.cloudflare_account.is_some(),
+            sandboxes: Some(
+                super::secret("cloudflare_worker_token").is_some()
+                    && settings.cloudflare_worker_url.is_some(),
+            ),
+            detail: settings.cloudflare_account.clone(),
+        },
+        Connection {
+            provider: "aws",
+            connected: settings.aws_region.is_some(),
+            sandboxes: None,
+            detail: settings.aws_region.map(|region| {
+                format!(
+                    "{} · {region}",
+                    settings
+                        .aws_profile
+                        .unwrap_or_else(|| "default profile".into())
+                )
+            }),
+        },
+        Connection {
+            provider: "vercel",
+            connected: super::secret("vercel_token").is_some(),
+            sandboxes: None,
+            detail: settings.vercel_team,
+        },
+        Connection {
+            provider: "railway",
+            connected: super::secret("railway_token").is_some(),
+            sandboxes: None,
+            detail: settings.railway_workspace,
+        },
+        Connection {
+            provider: "gcloud",
+            connected: settings.gcloud_project.is_some(),
+            sandboxes: None,
+            detail: settings
+                .gcloud_project
+                .map(|project| match settings.gcloud_region {
+                    Some(region) => format!("{project} · {region}"),
+                    None => project,
+                }),
+        },
     ]
     .into_iter()
-    .chain(super::sandbox::KEYED.iter().map(|&provider| Connection { provider, connected: super::sandbox::ready(provider), sandboxes: None, detail: settings.providers.get(provider).and_then(|options| options.get("detail").cloned()) }))
+    .chain(super::sandbox::KEYED.iter().map(|&provider| {
+        Connection {
+            provider,
+            connected: super::sandbox::ready(provider),
+            sandboxes: None,
+            detail: settings
+                .providers
+                .get(provider)
+                .and_then(|options| options.get("detail").cloned()),
+        }
+    }))
     .collect()
 }
 
@@ -41,7 +99,12 @@ pub async fn cloud_connections() -> Result<Vec<Connection>> {
 
 /// Check the credentials with a real request before saving them.
 #[tauri::command]
-pub async fn cloud_connect(app: AppHandle, provider: String, key: String, options: Value) -> Result<Vec<Connection>> {
+pub async fn cloud_connect(
+    app: AppHandle,
+    provider: String,
+    key: String,
+    options: Value,
+) -> Result<Vec<Connection>> {
     crate::blocking(move || {
         let text = |name: &str| options[name].as_str().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
         match provider.as_str() {
@@ -137,13 +200,30 @@ pub async fn cloud_connect(app: AppHandle, provider: String, key: String, option
 /// Set or clear one saved option of a provider (`settings.providers[provider][name]`).
 fn set_option(settings: &mut super::Settings, provider: &str, name: &str, value: Option<String>) {
     let options = settings.providers.entry(provider.into()).or_default();
-    match value { Some(value) => { options.insert(name.into(), value); } None => { options.remove(name); } }
-    if options.is_empty() { settings.providers.remove(provider); }
+    match value {
+        Some(value) => {
+            options.insert(name.into(), value);
+        }
+        None => {
+            options.remove(name);
+        }
+    }
+    if options.is_empty() {
+        settings.providers.remove(provider);
+    }
 }
 
 /// Vercel project (`prj_…`) and team (`team_…`) IDs. The team slug stays in `vercel_team`.
-fn vercel_ids(project: Option<String>, team_id: Option<String>) -> Result<(Option<String>, Option<String>)> {
-    let id = |value: &str, prefix: &str| value.len() <= 64 && value.strip_prefix(prefix).is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()));
+fn vercel_ids(
+    project: Option<String>,
+    team_id: Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    let id = |value: &str, prefix: &str| {
+        value.len() <= 64
+            && value.strip_prefix(prefix).is_some_and(|rest| {
+                !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+    };
     if project.as_deref().is_some_and(|p| !id(p, "prj_")) {
         return Err("A Vercel project ID looks like prj_… (Project → Settings → General).".into());
     }
@@ -155,8 +235,13 @@ fn vercel_ids(project: Option<String>, team_id: Option<String>) -> Result<(Optio
 
 async fn verify_vercel(token: &str, team: Option<&str>) -> Result<()> {
     let client = super::http::client(Duration::from_secs(30))?;
-    let url = match team { Some(team) => format!("https://api.vercel.com/v2/teams/{team}"), None => "https://api.vercel.com/v2/user".into() };
-    super::http::send("Vercel", client.get(url).bearer_auth(token)).await.map(|_| ())
+    let url = match team {
+        Some(team) => format!("https://api.vercel.com/v2/teams/{team}"),
+        None => "https://api.vercel.com/v2/user".into(),
+    };
+    super::http::send("Vercel", client.get(url).bearer_auth(token))
+        .await
+        .map(|_| ())
 }
 
 const RAILWAY_API: &str = "https://backboard.railway.com/graphql/v2";
@@ -165,10 +250,13 @@ const RAILWAY_API: &str = "https://backboard.railway.com/graphql/v2";
 async fn verify_railway(api: &str, token: &str, workspace: Option<&str>) -> Result<()> {
     let client = super::http::client(Duration::from_secs(30))?;
     let body = match workspace {
-        Some(id) => serde_json::json!({"query": "query($id: String!) { workspace(workspaceId: $id) { id } }", "variables": {"id": id}}),
+        Some(id) => {
+            serde_json::json!({"query": "query($id: String!) { workspace(workspaceId: $id) { id } }", "variables": {"id": id}})
+        }
         None => serde_json::json!({"query": "{ me { id } }"}),
     };
-    let reply = super::http::send("Railway", client.post(api).bearer_auth(token).json(&body)).await?;
+    let reply =
+        super::http::send("Railway", client.post(api).bearer_auth(token).json(&body)).await?;
     if reply["data"]["me"]["id"].is_string() || reply["data"]["workspace"]["id"].is_string() {
         return Ok(());
     }
@@ -185,8 +273,15 @@ async fn verify_railway(api: &str, token: &str, workspace: Option<&str>) -> Resu
 pub async fn cloud_setup_sandboxes(app: AppHandle) -> Result<Vec<Connection>> {
     crate::blocking(move || {
         let token = super::secret("cloudflare_token").ok_or("Connect Cloudflare first.")?;
-        let account = super::settings().cloudflare_account.ok_or("Connect Cloudflare first.")?;
-        let progress = |label: &str| { let _ = app.emit("cloud-setup", serde_json::json!({"provider": "cloudflare", "label": label})); };
+        let account = super::settings()
+            .cloudflare_account
+            .ok_or("Connect Cloudflare first.")?;
+        let progress = |label: &str| {
+            let _ = app.emit(
+                "cloud-setup",
+                serde_json::json!({"provider": "cloudflare", "label": label}),
+            );
+        };
         let (url, secret) = super::cloudflare::deploy(&token, &account, &progress)?;
         progress("Checking the Worker…");
         let worker = Cloudflare::new(url.clone(), secret.clone());
@@ -194,10 +289,14 @@ pub async fn cloud_setup_sandboxes(app: AppHandle) -> Result<Vec<Connection>> {
         let mut ready = Err(String::new());
         for _ in 0..10 {
             ready = block(worker.health());
-            if ready.is_ok() { break; }
+            if ready.is_ok() {
+                break;
+            }
             std::thread::sleep(Duration::from_secs(3));
         }
-        ready.map_err(|e| format!("The Worker deployed but did not answer yet ({e}). Try again in a minute."))?;
+        ready.map_err(|e| {
+            format!("The Worker deployed but did not answer yet ({e}). Try again in a minute.")
+        })?;
         super::set_secret("cloudflare_worker_token", &secret)?;
         let mut settings = super::settings();
         settings.cloudflare_worker_url = Some(url);
@@ -275,7 +374,10 @@ pub struct Machines {
 
 /// Every connected provider's machines; one failing provider does not hide the others.
 pub fn machines() -> Machines {
-    let mut result = Machines { machines: Vec::new(), errors: Vec::new() };
+    let mut result = Machines {
+        machines: Vec::new(),
+        errors: Vec::new(),
+    };
     if let Ok(daytona) = Daytona::connected() {
         match block(daytona.list()) {
             Ok(list) => result.machines.extend(list),
@@ -299,9 +401,26 @@ pub fn machines() -> Machines {
         }
     }
     // Google Cloud is also a deploy-only connection; list its VMs only once a cloud-agent zone is chosen.
-    let gcloud_agents = super::settings().providers.get("gcloud").is_some_and(|o| o.contains_key("zone"));
-    for provider in ["gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"] {
-        if provider == "gcloud" && !gcloud_agents { continue; }
+    let gcloud_agents = super::settings()
+        .providers
+        .get("gcloud")
+        .is_some_and(|o| o.contains_key("zone"));
+    for provider in [
+        "gcloud",
+        "e2b",
+        "modal",
+        "vercel",
+        "codesandbox",
+        "runloop",
+        "blaxel",
+        "tensorlake",
+        "freestyle",
+        "boat",
+        "instabox",
+    ] {
+        if provider == "gcloud" && !gcloud_agents {
+            continue;
+        }
         if let Ok(sandbox) = super::sandbox::connected(provider) {
             match sandbox.list() {
                 Ok(list) => result.machines.extend(list),
@@ -341,9 +460,14 @@ pub fn create(provider: &str, name: &str) -> Result<Machine> {
 }
 /// An AWS desktop's OS, from its tags.
 fn aws_os(aws: &Aws, instance: &str) -> Result<String> {
-    let found = aws.call(&["ec2", "describe-instances", "--instance-ids", instance], Duration::from_secs(60))?;
+    let found = aws.call(
+        &["ec2", "describe-instances", "--instance-ids", instance],
+        Duration::from_secs(60),
+    )?;
     let item = &found["Reservations"][0]["Instances"][0];
-    if item.is_null() { return Err("AWS has no such instance.".into()); }
+    if item.is_null() {
+        return Err("AWS has no such instance.".into());
+    }
     Ok(Aws::machine(item).os)
 }
 pub fn power(id: &str, action: &str) -> Result<()> {
@@ -359,13 +483,21 @@ pub fn power(id: &str, action: &str) -> Result<()> {
             Ok(())
         }
         Some(("aws", native)) => {
-            if action != "start" { aws_screen::close(Some(native)); }
+            if action != "start" {
+                aws_screen::close(Some(native));
+            }
             Aws::connected()?.power(native, action)?;
-            if action == "delete" { super::remove_secret(&aws_screen::password_key(native)); }
+            if action == "delete" {
+                super::remove_secret(&aws_screen::password_key(native));
+            }
             Ok(())
         }
-        Some(("agentcore", native)) if matches!(action, "stop" | "delete") => Aws::connected()?.interpreter_stop(native),
-        Some(("agentcore", _)) => Err("AgentCore sessions cannot be restarted; create a new one.".into()),
+        Some(("agentcore", native)) if matches!(action, "stop" | "delete") => {
+            Aws::connected()?.interpreter_stop(native)
+        }
+        Some(("agentcore", _)) => {
+            Err("AgentCore sessions cannot be restarted; create a new one.".into())
+        }
         Some((provider, native)) => super::sandbox::connected(provider)?.power(native, action),
         _ => Err("Unknown cloud machine.".into()),
     }
@@ -373,24 +505,44 @@ pub fn power(id: &str, action: &str) -> Result<()> {
 pub fn exec(id: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
     match split(id) {
         Some(("daytona", native)) => block(Daytona::connected()?.exec(native, command, timeout)),
-        Some(("cloudflare", native)) => block(Cloudflare::connected()?.exec(native, command, timeout)),
-        Some(("aws", native)) => { let aws = Aws::connected()?; let windows = aws_os(&aws, native)? == "windows"; aws.exec(native, windows, command, timeout) }
-        Some(("agentcore", native)) => { let aws = Aws::connected()?; let credentials = aws.credentials()?; block(aws.interpreter_exec(native, command, &credentials, None)) }
-        Some((provider, native)) => super::sandbox::connected(provider)?.exec(native, command, timeout),
+        Some(("cloudflare", native)) => {
+            block(Cloudflare::connected()?.exec(native, command, timeout))
+        }
+        Some(("aws", native)) => {
+            let aws = Aws::connected()?;
+            let windows = aws_os(&aws, native)? == "windows";
+            aws.exec(native, windows, command, timeout)
+        }
+        Some(("agentcore", native)) => {
+            let aws = Aws::connected()?;
+            let credentials = aws.credentials()?;
+            block(aws.interpreter_exec(native, command, &credentials, None))
+        }
+        Some((provider, native)) => {
+            super::sandbox::connected(provider)?.exec(native, command, timeout)
+        }
         _ => Err("Unknown cloud machine.".into()),
     }
 }
 pub fn screenshot(id: &str) -> Result<crate::vm::screen::Shot> {
     match split(id) {
         Some(("daytona", native)) => block(Daytona::connected()?.screenshot(native)),
-        Some(("aws", native)) => { let aws = Aws::connected()?; let os = aws_os(&aws, native)?; aws_screen::screenshot(&aws, native, &os) }
+        Some(("aws", native)) => {
+            let aws = Aws::connected()?;
+            let os = aws_os(&aws, native)?;
+            aws_screen::screenshot(&aws, native, &os)
+        }
         _ => Err("This machine has no screen.".into()),
     }
 }
 pub fn act(id: &str, action: &crate::vm::screen::Action) -> Result<String> {
     match split(id) {
         Some(("daytona", native)) => block(Daytona::connected()?.act(native, action)),
-        Some(("aws", native)) => { let aws = Aws::connected()?; let os = aws_os(&aws, native)?; aws_screen::act(&aws, native, &os, action) }
+        Some(("aws", native)) => {
+            let aws = Aws::connected()?;
+            let os = aws_os(&aws, native)?;
+            aws_screen::act(&aws, native, &os, action)
+        }
         _ => Err("This machine has no screen.".into()),
     }
 }
@@ -430,8 +582,12 @@ mod tests {
 
     #[test]
     fn validates_vercel_ids_and_never_stores_the_slug_as_an_id() {
-        let ok = |p: Option<&str>, t: Option<&str>| vercel_ids(p.map(Into::into), t.map(Into::into));
-        assert_eq!(ok(Some("prj_Ab12"), Some("team_x9")).unwrap(), (Some("prj_Ab12".into()), Some("team_x9".into())));
+        let ok =
+            |p: Option<&str>, t: Option<&str>| vercel_ids(p.map(Into::into), t.map(Into::into));
+        assert_eq!(
+            ok(Some("prj_Ab12"), Some("team_x9")).unwrap(),
+            (Some("prj_Ab12".into()), Some("team_x9".into()))
+        );
         assert_eq!(ok(None, None).unwrap(), (None, None));
         assert!(ok(Some("project"), None).is_err() && ok(Some("prj_"), None).is_err());
         assert!(ok(None, Some("acme")).is_err());
@@ -449,18 +605,43 @@ mod tests {
     #[tokio::test]
     async fn verifies_railway_account_and_workspace_tokens() {
         let (base, seen) = mock::serve(|request, _| match request.authorization.as_deref() {
-            Some("Bearer account") if request.body.contains("me {") => (200, r#"{"data":{"me":{"id":"u1"}}}"#),
-            Some("Bearer workspace") if request.body.contains(r#""id":"ws-1""#) => (200, r#"{"data":{"workspace":{"id":"ws-1"}}}"#),
-            Some("Bearer workspace") => (200, r#"{"data":{"workspace":null},"errors":[{"message":"Workspace not found"}]}"#),
-            _ => (200, r#"{"data":null,"errors":[{"message":"Not Authorized"}]}"#),
+            Some("Bearer account") if request.body.contains("me {") => {
+                (200, r#"{"data":{"me":{"id":"u1"}}}"#)
+            }
+            Some("Bearer workspace") if request.body.contains(r#""id":"ws-1""#) => {
+                (200, r#"{"data":{"workspace":{"id":"ws-1"}}}"#)
+            }
+            Some("Bearer workspace") => (
+                200,
+                r#"{"data":{"workspace":null},"errors":[{"message":"Workspace not found"}]}"#,
+            ),
+            _ => (
+                200,
+                r#"{"data":null,"errors":[{"message":"Not Authorized"}]}"#,
+            ),
         });
         let api = format!("{base}/graphql/v2");
         verify_railway(&api, "account", None).await.unwrap();
-        verify_railway(&api, "workspace", Some("ws-1")).await.unwrap();
-        assert!(verify_railway(&api, "workspace", None).await.unwrap_err().contains("workspace token with its workspace ID"));
-        assert_eq!(verify_railway(&api, "workspace", Some("ws-2")).await.unwrap_err(), "Railway: Workspace not found");
-        assert!(verify_railway(&api, "bad", Some("ws-1")).await.unwrap_err().contains("refused the token"));
+        verify_railway(&api, "workspace", Some("ws-1"))
+            .await
+            .unwrap();
+        assert!(verify_railway(&api, "workspace", None)
+            .await
+            .unwrap_err()
+            .contains("workspace token with its workspace ID"));
+        assert_eq!(
+            verify_railway(&api, "workspace", Some("ws-2"))
+                .await
+                .unwrap_err(),
+            "Railway: Workspace not found"
+        );
+        assert!(verify_railway(&api, "bad", Some("ws-1"))
+            .await
+            .unwrap_err()
+            .contains("refused the token"));
         let seen = seen.lock().unwrap();
-        assert!(seen.iter().all(|r| r.method == "POST" && r.path == "/graphql/v2"));
+        assert!(seen
+            .iter()
+            .all(|r| r.method == "POST" && r.path == "/graphql/v2"));
     }
 }

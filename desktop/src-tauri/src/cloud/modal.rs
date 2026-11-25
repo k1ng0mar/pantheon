@@ -10,13 +10,7 @@
 //! sandbox) at the deadline `keep_alive` writes.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use std::{
-    collections::BTreeMap,
-    io::BufRead,
-    path::PathBuf,
-    process::Command,
-    time::Duration,
-};
+use std::{collections::BTreeMap, io::BufRead, path::PathBuf, process::Command, time::Duration};
 
 use super::sandbox::{checked, Info, Sandbox};
 use super::Machine;
@@ -43,9 +37,14 @@ fn python() -> Result<PathBuf> {
     let from_cli = crate::token_saver::find_tool("modal")
         .and_then(|cli| std::fs::File::open(cli).ok())
         .and_then(|file| std::io::BufReader::new(file).lines().next()?.ok())
-        .and_then(|line| line.strip_prefix("#!").map(|path| PathBuf::from(path.trim())))
+        .and_then(|line| {
+            line.strip_prefix("#!")
+                .map(|path| PathBuf::from(path.trim()))
+        })
         .filter(|path| path.is_file());
-    from_cli.or_else(|| crate::token_saver::find_tool("python3")).ok_or_else(|| INSTALL.to_string())
+    from_cli
+        .or_else(|| crate::token_saver::find_tool("python3"))
+        .ok_or_else(|| INSTALL.to_string())
 }
 
 fn machine(id: &str, name: &str) -> Machine {
@@ -62,28 +61,70 @@ fn machine(id: &str, name: &str) -> Machine {
 
 impl Modal {
     fn connected() -> Result<Self> {
-        let secret = super::secret("modal_key").ok_or("Connect Modal in Settings → Cloud first.")?;
-        let options = super::settings().providers.get("modal").cloned().unwrap_or_default();
-        let token_id = options.get("tokenId").cloned().ok_or("Connect Modal in Settings → Cloud first.")?;
-        Ok(Modal { python: python()?, token_id, secret, environment: options.get("environment").cloned() })
+        let secret =
+            super::secret("modal_key").ok_or("Connect Modal in Settings → Cloud first.")?;
+        let options = super::settings()
+            .providers
+            .get("modal")
+            .cloned()
+            .unwrap_or_default();
+        let token_id = options
+            .get("tokenId")
+            .cloned()
+            .ok_or("Connect Modal in Settings → Cloud first.")?;
+        Ok(Modal {
+            python: python()?,
+            token_id,
+            secret,
+            environment: options.get("environment").cloned(),
+        })
     }
 
     fn call(&self, request: Value, timeout: Duration) -> Result<Value> {
         let mut command = Command::new(&self.python);
-        command.args(["-c", HELPER]).env("MODAL_TOKEN_ID", &self.token_id).env("MODAL_TOKEN_SECRET", &self.secret).env_remove("MODAL_PROFILE").env_remove("MODAL_ENVIRONMENT");
+        command
+            .args(["-c", HELPER])
+            .env("MODAL_TOKEN_ID", &self.token_id)
+            .env("MODAL_TOKEN_SECRET", &self.secret)
+            .env_remove("MODAL_PROFILE")
+            .env_remove("MODAL_ENVIRONMENT");
         if let Some(environment) = &self.environment {
             command.env("MODAL_ENVIRONMENT", environment);
         }
-        let out = run_process_with_input(command, "Modal", 16 << 20, timeout, Some(request.to_string().as_bytes()))?;
+        let out = run_process_with_input(
+            command,
+            "Modal",
+            16 << 20,
+            timeout,
+            Some(request.to_string().as_bytes()),
+        )?;
         let stdout = String::from_utf8_lossy(&out.stdout.bytes);
-        let Some(reply) = stdout.lines().rev().find_map(|line| serde_json::from_str::<Value>(line).ok()) else {
+        let Some(reply) = stdout
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        else {
             let stderr = String::from_utf8_lossy(&out.stderr.bytes);
-            return Err(format!("Modal: {}", stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("the helper did not answer.").trim()));
+            return Err(format!(
+                "Modal: {}",
+                stderr
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("the helper did not answer.")
+                    .trim()
+            ));
         };
         match reply["error"].as_str() {
             Some("missing-modal") => Err(INSTALL.into()),
-            Some(error) if error.starts_with("AuthError") => Err("Modal refused the token. Check the token ID and secret in Settings → Cloud.".into()),
-            Some(error) => Err(format!("Modal: {}", error.chars().take(400).collect::<String>())),
+            Some(error) if error.starts_with("AuthError") => Err(
+                "Modal refused the token. Check the token ID and secret in Settings → Cloud."
+                    .into(),
+            ),
+            Some(error) => Err(format!(
+                "Modal: {}",
+                error.chars().take(400).collect::<String>()
+            )),
             None => Ok(reply),
         }
     }
@@ -95,31 +136,63 @@ impl Modal {
         Ok((reply["running"] == true, reply["remaining"].as_i64()))
     }
 
-    fn run(&self, native: &str, command: &str, stdin: Option<&[u8]>, timeout: Duration) -> Result<(Option<i32>, String)> {
+    fn run(
+        &self,
+        native: &str,
+        command: &str,
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<(Option<i32>, String)> {
         let mut request = json!({"op": "exec", "id": native, "command": command, "timeout": timeout.as_secs().max(1)});
         if let Some(bytes) = stdin {
             request["stdin"] = STANDARD.encode(bytes).into();
         }
         let reply = self.call(request, timeout + Duration::from_secs(90))?;
-        Ok((reply["code"].as_i64().map(|code| code as i32), reply["output"].as_str().unwrap_or_default().to_string()))
+        Ok((
+            reply["code"].as_i64().map(|code| code as i32),
+            reply["output"].as_str().unwrap_or_default().to_string(),
+        ))
     }
 }
 
 impl Sandbox for Modal {
     fn info(&self) -> Info {
-        Info { persistent: false, max_unattended_minutes: MAX_MINUTES }
+        Info {
+            persistent: false,
+            max_unattended_minutes: MAX_MINUTES,
+        }
     }
     fn list(&self) -> Result<Vec<Machine>> {
         let reply = self.call(json!({"op": "list"}), QUICK)?;
-        Ok(reply["sandboxes"].as_array().into_iter().flatten().map(|s| machine(s["id"].as_str().unwrap_or_default(), s["name"].as_str().unwrap_or_default())).collect())
+        Ok(reply["sandboxes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| {
+                machine(
+                    s["id"].as_str().unwrap_or_default(),
+                    s["name"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect())
     }
     fn create(&self, name: &str) -> Result<Machine> {
-        let reply = self.call(json!({"op": "create", "name": name}), Duration::from_secs(600))?;
-        Ok(machine(reply["id"].as_str().ok_or("Modal did not report the new sandbox.")?, name))
+        let reply = self.call(
+            json!({"op": "create", "name": name}),
+            Duration::from_secs(600),
+        )?;
+        Ok(machine(
+            reply["id"]
+                .as_str()
+                .ok_or("Modal did not report the new sandbox.")?,
+            name,
+        ))
     }
     fn power(&self, native: &str, action: &str) -> Result<()> {
         match action {
-            "stop" | "delete" => self.call(json!({"op": "terminate", "id": native}), QUICK).map(|_| ()),
+            "stop" | "delete" => self
+                .call(json!({"op": "terminate", "id": native}), QUICK)
+                .map(|_| ()),
             _ => Err("Modal sandboxes can't be restarted. Create a new one.".into()),
         }
     }
@@ -130,35 +203,67 @@ impl Sandbox for Modal {
             (true, Some(seconds)) if seconds < RECREATE_BELOW * 60 => "error",
             (true, _) => "running",
             _ => "stopped",
-        }.into())
+        }
+        .into())
     }
-    fn exec(&self, native: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
+    fn exec(
+        &self,
+        native: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<(Option<i32>, String)> {
         self.run(native, command, None, timeout)
     }
     fn keep_alive(&self, native: &str, minutes: u32) -> Result<()> {
         let seconds = minutes.min(MAX_MINUTES) as i64 * 60;
         if let (_, Some(remaining)) = self.status(native)? {
             if seconds > remaining {
-                return Err(format!("This Modal sandbox expires in {} minutes; delete it to start a fresh one.", remaining.max(0) / 60));
+                return Err(format!(
+                    "This Modal sandbox expires in {} minutes; delete it to start a fresh one.",
+                    remaining.max(0) / 60
+                ));
             }
         }
-        checked(self.exec(native, &format!("echo $(( $(date +%s) + {seconds} )) > /tmp/.pantheon-deadline"), Duration::from_secs(60))?)
+        checked(self.exec(
+            native,
+            &format!("echo $(( $(date +%s) + {seconds} )) > /tmp/.pantheon-deadline"),
+            Duration::from_secs(60),
+        )?)
     }
     /// One helper call with the bytes on stdin, instead of the 48 KiB `exec` chunks.
     fn upload(&self, native: &str, path: &str, bytes: &[u8], private: bool) -> Result<()> {
         let quoted = super::shell_quote(path);
-        let command = format!("mkdir -p \"$(dirname {quoted})\" && umask {} && cat > {quoted}", if private { "077" } else { "022" });
+        let command = format!(
+            "mkdir -p \"$(dirname {quoted})\" && umask {} && cat > {quoted}",
+            if private { "077" } else { "022" }
+        );
         checked(self.run(native, &command, Some(bytes), Duration::from_secs(300))?)
     }
 }
 
 pub fn connect(key: &str, options: &Value) -> Result<()> {
-    let token_id = options["tokenId"].as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or("Enter the Modal token ID (ak-…) with its secret.")?;
-    let environment = options["environment"].as_str().map(str::trim).filter(|e| !e.is_empty()).map(str::to_string);
-    let modal = Modal { python: python()?, token_id: token_id.into(), secret: key.trim().into(), environment: environment.clone() };
+    let token_id = options["tokenId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .ok_or("Enter the Modal token ID (ak-…) with its secret.")?;
+    let environment = options["environment"]
+        .as_str()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    let modal = Modal {
+        python: python()?,
+        token_id: token_id.into(),
+        secret: key.trim().into(),
+        environment: environment.clone(),
+    };
     modal.call(json!({"op": "check"}), QUICK)?;
     super::set_secret("modal_key", key.trim())?;
-    let mut options = BTreeMap::from([("tokenId".to_string(), token_id.to_string()), ("detail".to_string(), format!("Token {token_id}"))]);
+    let mut options = BTreeMap::from([
+        ("tokenId".to_string(), token_id.to_string()),
+        ("detail".to_string(), format!("Token {token_id}")),
+    ]);
     if let Some(environment) = environment {
         options.insert("detail".into(), format!("Token {token_id} · {environment}"));
         options.insert("environment".into(), environment);
@@ -251,17 +356,38 @@ class Sandbox:
         std::fs::create_dir_all(dir.0.join("modal")).unwrap();
         std::fs::write(dir.0.join("modal/__init__.py"), package).unwrap();
         let wrapper = dir.0.join("python");
-        std::fs::write(&wrapper, format!("#!/bin/sh\nPYTHONPATH='{}' exec '{}' \"$@\"\n", dir.0.display(), python3.display())).unwrap();
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nPYTHONPATH='{}' exec '{}' \"$@\"\n",
+                dir.0.display(),
+                python3.display()
+            ),
+        )
+        .unwrap();
         #[cfg(unix)]
-        std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        Some((Modal { python: wrapper, token_id: "ak-1".into(), secret: "as-2".into(), environment: Some("dev".into()) }, dir))
+        std::fs::set_permissions(
+            &wrapper,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        Some((
+            Modal {
+                python: wrapper,
+                token_id: "ak-1".into(),
+                secret: "as-2".into(),
+                environment: Some("dev".into()),
+            },
+            dir,
+        ))
     }
 
     mod tempfile_dir {
         pub struct Dir(pub std::path::PathBuf);
         impl Dir {
             pub fn new() -> Self {
-                let path = std::env::temp_dir().join(format!("pantheon-modal-{}", uuid::Uuid::new_v4()));
+                let path =
+                    std::env::temp_dir().join(format!("pantheon-modal-{}", uuid::Uuid::new_v4()));
                 std::fs::create_dir_all(&path).unwrap();
                 Dir(path)
             }
@@ -275,43 +401,82 @@ class Sandbox:
 
     #[test]
     fn the_helper_speaks_json_to_the_modal_package() {
-        let Some((modal, _dir)) = fake(FAKE) else { return };
-        assert_eq!(modal.call(json!({"op": "check"}), QUICK).unwrap()["app"], "ap-1");
+        let Some((modal, _dir)) = fake(FAKE) else {
+            return;
+        };
+        assert_eq!(
+            modal.call(json!({"op": "check"}), QUICK).unwrap()["app"],
+            "ap-1"
+        );
         assert_eq!(modal.list().unwrap(), vec![machine("sb-1", "box")]);
         assert_eq!(modal.create("box").unwrap().id, "modal:sb-1");
         assert_eq!(modal.state("sb-1").unwrap(), "running");
-        assert_eq!(modal.exec("sb-1", "echo hi", Duration::from_secs(5)).unwrap(), (Some(7), "ran echo hi".to_string()));
+        assert_eq!(
+            modal
+                .exec("sb-1", "echo hi", Duration::from_secs(5))
+                .unwrap(),
+            (Some(7), "ran echo hi".to_string())
+        );
         modal.power("sb-1", "delete").unwrap();
         assert!(modal.power("sb-1", "start").is_err());
         // The upload rides stdin; the fake echoes it back with exit code 7, so it counts as failed.
-        let error = modal.upload("sb-1", "/root/a b", b"data", true).unwrap_err();
-        assert!(error.contains("umask 077 && cat > '/root/a b' with data"), "{error}");
-        assert!(modal.call(json!({"op": "nope", "id": "sb-1"}), QUICK).unwrap_err().contains("unknown request"));
+        let error = modal
+            .upload("sb-1", "/root/a b", b"data", true)
+            .unwrap_err();
+        assert!(
+            error.contains("umask 077 && cat > '/root/a b' with data"),
+            "{error}"
+        );
+        assert!(modal
+            .call(json!({"op": "nope", "id": "sb-1"}), QUICK)
+            .unwrap_err()
+            .contains("unknown request"));
     }
 
     #[test]
     fn old_sandboxes_refuse_long_runs_and_report_error_near_their_end() {
-        let Some((modal, dir)) = fake(FAKE) else { return };
-        let left = |seconds: u32| std::fs::write(dir.0.join("modal/left"), seconds.to_string()).unwrap();
+        let Some((modal, dir)) = fake(FAKE) else {
+            return;
+        };
+        let left =
+            |seconds: u32| std::fs::write(dir.0.join("modal/left"), seconds.to_string()).unwrap();
         left(4 * 3600);
         assert_eq!(modal.state("sb-1").unwrap(), "running");
         let error = modal.keep_alive("sb-1", 5 * 60).unwrap_err();
-        assert!(error.contains("expires in 239 minutes") || error.contains("expires in 240 minutes"), "{error}");
+        assert!(
+            error.contains("expires in 239 minutes") || error.contains("expires in 240 minutes"),
+            "{error}"
+        );
         left(29 * 60);
         assert_eq!(modal.state("sb-1").unwrap(), "error");
     }
 
     #[test]
     fn a_missing_modal_package_says_how_to_install_it() {
-        let Some((modal, _dir)) = fake("raise ImportError('no modal')") else { return };
-        assert_eq!(modal.call(json!({"op": "check"}), QUICK).unwrap_err(), INSTALL);
+        let Some((modal, _dir)) = fake("raise ImportError('no modal')") else {
+            return;
+        };
+        assert_eq!(
+            modal.call(json!({"op": "check"}), QUICK).unwrap_err(),
+            INSTALL
+        );
     }
 
     #[test]
     #[ignore = "needs MODAL_TOKEN_ID, MODAL_TOKEN_SECRET and the modal package"]
     fn live_modal_check() {
-        let (Ok(token_id), Ok(secret)) = (std::env::var("MODAL_TOKEN_ID"), std::env::var("MODAL_TOKEN_SECRET")) else { return };
-        let modal = Modal { python: python().unwrap(), token_id, secret, environment: std::env::var("MODAL_ENVIRONMENT").ok() };
+        let (Ok(token_id), Ok(secret)) = (
+            std::env::var("MODAL_TOKEN_ID"),
+            std::env::var("MODAL_TOKEN_SECRET"),
+        ) else {
+            return;
+        };
+        let modal = Modal {
+            python: python().unwrap(),
+            token_id,
+            secret,
+            environment: std::env::var("MODAL_ENVIRONMENT").ok(),
+        };
         modal.call(json!({"op": "check"}), QUICK).unwrap();
         modal.list().unwrap();
     }

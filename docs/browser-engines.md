@@ -1,7 +1,7 @@
 # Browser Backend Lineup - Pantheon
 
 Locked 2026-09-29 by Umar. Six backends behind the replaceable
-[`BrowserBackend`](../../crates/pantheon-web/src/browser/backend.rs) trait
+[`BrowserBackend`](../crates/pantheon-web/src/browser/backend.rs) trait
 (navigate, DOM snapshots, ref-based interaction, extraction, screenshots,
 headless operation). Nothing else gets added without Umar's explicit call.
 
@@ -123,5 +123,5 @@ today), revisit it then; don't pre-build.
 - Playwright CLI: run a real browser session (binary never launched headless
   Chrome in this environment yet).
 - `pantheon-eval` (the crate this task's test plan assumed) does not exist in
-  the 19-crate workspace; live tests live in-crate as `#[ignore]`d,
+  the 22-crate workspace; live tests live in-crate as `#[ignore]`d,
   env-gated tests for now.

@@ -1926,6 +1926,74 @@ pub mod skills {
                 r#"{"skill": "probe", "name": "probe-it"}"#
             ));
         }
+
+        /// Audit F1: the skill_exec profile must not inherit `High`'s
+        /// network-on, unmasked defaults. Without this, a skill executable
+        /// egressed without the `shell.network` approval and read the data dir
+        /// and `~/.ssh`, which the shell tool masks.
+        #[test]
+        fn skill_exec_profile_is_offline_and_masked_by_default() {
+            let exec = SkillExec {
+                name: "probe-it".into(),
+                description: String::new(),
+                command: "scripts/probe.sh".into(),
+                args: String::new(),
+                runtime: SkillExecRuntime::Shell,
+                side_effects: SkillExecSideEffects::Read,
+                timeout_secs: SKILL_EXEC_DEFAULT_TIMEOUT_SECS,
+            };
+            let offline = crate::skill_exec::skill_exec_profile(&exec, false);
+            assert!(!offline.network, "network must be off unless requested");
+            assert!(
+                !offline.hidden_paths.is_empty(),
+                "the data dir and credential paths must be masked"
+            );
+            assert!(
+                offline.hidden_paths.iter().any(|p| p.ends_with(".ssh")),
+                "~/.ssh must be masked: {:?}",
+                offline.hidden_paths
+            );
+            assert!(
+                offline
+                    .hidden_paths
+                    .iter()
+                    .any(|p| p == &pantheon_api::data_dir::resolve().to_string_lossy()),
+                "the data dir must be masked: {:?}",
+                offline.hidden_paths
+            );
+            assert_eq!(
+                offline.level,
+                crate::sandbox::SandboxLevel::High,
+                "masking must not weaken the isolation level"
+            );
+
+            // An explicit network request is honoured, and still masked.
+            let online = crate::skill_exec::skill_exec_profile(&exec, true);
+            assert!(online.network);
+            assert_eq!(online.hidden_paths, offline.hidden_paths);
+        }
+
+        /// The `network` flag travels in the tool arguments, so parsing it is
+        /// the gate between "offline by default" and "the approval the
+        /// operator saw".
+        #[test]
+        fn network_is_requested_only_by_an_explicit_true() {
+            assert!(!crate::skill_exec::skill_exec_network_requested(""));
+            assert!(!crate::skill_exec::skill_exec_network_requested("{}"));
+            assert!(!crate::skill_exec::skill_exec_network_requested(
+                r#"{"skill":"a","name":"b"}"#
+            ));
+            assert!(!crate::skill_exec::skill_exec_network_requested(
+                r#"{"network": false}"#
+            ));
+            assert!(!crate::skill_exec::skill_exec_network_requested(
+                r#"{"network": "true"}"#
+            ));
+            assert!(!crate::skill_exec::skill_exec_network_requested("not json"));
+            assert!(crate::skill_exec::skill_exec_network_requested(
+                r#"{"network": true}"#
+            ));
+        }
     }
 }
 pub mod skills_scan {
@@ -2237,15 +2305,14 @@ pub mod skills_scan {
     }
 
     /// Get the data dir from the environment or default.
+    /// Resolve the data dir through the one resolver the rest of the tree
+    /// uses. This used to be a local copy (`PANTHEON_DATA_DIR` else
+    /// `$HOME/.pantheon`) that silently disagreed with
+    /// `pantheon_api::data_dir::resolve()` whenever `HOME` was unset and
+    /// `XDG_DATA_HOME` was not, so the quarantine registry could be read from
+    /// a different directory than the one the scan wrote it to (audit F4).
     fn data_dir() -> PathBuf {
-        std::env::var_os("PANTHEON_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default();
-                home.join(".pantheon")
-            })
+        pantheon_api::data_dir::resolve()
     }
 
     /// Check if a skill is quarantined (using the default data dir).
@@ -2590,12 +2657,41 @@ pub mod skill_exec {
     /// budget, applied after the run merges both streams.
     pub const SKILL_EXEC_OUTPUT_CAP: usize = 256 * 1024;
 
+    /// Whether a `skill_exec` call asked for network access (`"network": true`).
+    /// Mirrors `tools_group::builtins::shell_network_requested`: the same
+    /// capability (`other.shell.network`) gates both paths, so a skill
+    /// executable cannot quietly become the offline-mode escape hatch.
+    pub fn skill_exec_network_requested(args: &str) -> bool {
+        if args.trim().is_empty() {
+            return false;
+        }
+        serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| v.get("network").and_then(|n| n.as_bool()))
+            .unwrap_or(false)
+    }
+
     /// Sandbox profile for a skill executable: HIGH isolation like `shell`,
     /// wall clock from the declared `timeout_secs` (1..=600s, enforced at
     /// parse time).
-    pub fn skill_exec_profile(exec: &SkillExec) -> SandboxProfile {
+    ///
+    /// Network is OFF unless the call explicitly asks for it (and the
+    /// caller's policy granted `other.shell.network`), and the credential
+    /// locations the shell tool masks are masked here too. Before this the
+    /// profile inherited both `network: true` and an empty `hidden_paths`
+    /// from [`SandboxLevel::High`], which made `skill_exec` a second
+    /// execution path that skipped the shell tool's network approval and
+    /// could read `~/.ssh`/the data dir (audit F1, 2026-11-22).
+    pub fn skill_exec_profile(exec: &SkillExec, network: bool) -> SandboxProfile {
         let mut p = SandboxProfile::from(SandboxLevel::High);
+        p.network = network;
         p.wall_clock_ms = exec.timeout_secs.saturating_mul(1000);
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        p.hidden_paths =
+            crate::sandbox::sensitive_paths(&pantheon_api::data_dir::resolve(), home.as_deref())
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
         p
     }
 
@@ -2647,8 +2743,9 @@ pub mod skill_exec {
         skill: &Skill,
         exec: &SkillExec,
         args: &[String],
+        network: bool,
     ) -> Result<String, PantheonError> {
-        run_skill_exec_with(&skill_exec_profile(exec), skill, exec, args)
+        run_skill_exec_with(&skill_exec_profile(exec, network), skill, exec, args)
     }
 
     /// Inner run parameterized by profile so tests can use the InProcess
@@ -2660,7 +2757,16 @@ pub mod skill_exec {
         exec: &SkillExec,
         args: &[String],
     ) -> Result<String, PantheonError> {
-        // Quarantine check: a CAUTION verdict blocks executables until cleared
+        // Name the origin: an approval prompt for `skill_exec` is the moment
+        // the operator decides whether to trust the code, and a skill found in
+        // a checkout (`.claude/skills`, `.agents/skills`) is never scanned by
+        // SkillSpector at discovery time - only imported skills are (audit
+        // F5). Without the origin the prompt looked identical for a bundled
+        // skill and for whatever a repository happened to ship.
+        let who = format!(
+            "skill '{}' (origin {}, unscanned), executable '{}'",
+            skill.meta.name, skill.meta.origin, exec.name
+        );
         if crate::skills_group::skills_scan::is_skill_quarantined_default(&skill.meta.name) {
             return Err(serr(
                 "SKILL_QUARANTINED",
@@ -2671,7 +2777,6 @@ pub mod skill_exec {
                 ),
             ));
         }
-        let who = format!("skill '{}', executable '{}'", skill.meta.name, exec.name);
         let target = resolve_skill_exec_target(skill, exec)?;
         let dir = skill_dir(skill);
         let expanded_args: Vec<String> = args

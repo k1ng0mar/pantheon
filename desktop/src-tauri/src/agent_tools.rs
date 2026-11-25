@@ -36,25 +36,60 @@ fn preview_catalog() -> Vec<Value> {
 
 /// These tools stay registered on every harness turn so deferred references in
 /// resumed Claude conversations never outlive their definitions.
-pub fn with_preview(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String, stopped: Arc<AtomicBool>) -> ToolHost {
+pub fn with_preview(
+    base: Option<ToolHost>,
+    app: tauri::AppHandle,
+    session_id: String,
+    stopped: Arc<AtomicBool>,
+) -> ToolHost {
     let preview = preview_catalog();
-    let mut tools = base.as_ref().map_or_else(Vec::new, |host| host.tools.clone());
-    let mut approval_tools = base.as_ref().map_or_else(Default::default, |host| host.approval_tools.clone());
-    for tool in &preview { approval_tools.insert(tool["name"].as_str().unwrap().to_owned()); }
+    let mut tools = base
+        .as_ref()
+        .map_or_else(Vec::new, |host| host.tools.clone());
+    let mut approval_tools = base
+        .as_ref()
+        .map_or_else(Default::default, |host| host.approval_tools.clone());
+    for tool in &preview {
+        approval_tools.insert(tool["name"].as_str().unwrap().to_owned());
+    }
     tools.extend(preview);
-    ToolHost { tools, approval_tools, handler: Arc::new(move |name, args| {
-        let (base, app, sid, stopped) = (base.clone(), app.clone(), session_id.clone(), stopped.clone());
-        Box::pin(async move {
-            if stopped.load(Ordering::SeqCst) { return Err("Task has stopped.".into()); }
-            if !matches!(name.as_str(), "pantheon_run_project" | "pantheon_preview_file") {
-                return match base { Some(base) => (base.handler)(name, args).await, None => Err("Unknown Pantheon tool.".into()) };
-            }
-            validate_spec(&preview_catalog(), &name, &args)?;
-            // Task/project and file validation are repeated by native IPC when the
-            // foreground renderer executes this bounded UI request.
-            request_ui(app, &sid, name.trim_start_matches("pantheon_"), args, stopped).await
-        })
-    }) }
+    ToolHost {
+        tools,
+        approval_tools,
+        handler: Arc::new(move |name, args| {
+            let (base, app, sid, stopped) = (
+                base.clone(),
+                app.clone(),
+                session_id.clone(),
+                stopped.clone(),
+            );
+            Box::pin(async move {
+                if stopped.load(Ordering::SeqCst) {
+                    return Err("Task has stopped.".into());
+                }
+                if !matches!(
+                    name.as_str(),
+                    "pantheon_run_project" | "pantheon_preview_file"
+                ) {
+                    return match base {
+                        Some(base) => (base.handler)(name, args).await,
+                        None => Err("Unknown Pantheon tool.".into()),
+                    };
+                }
+                validate_spec(&preview_catalog(), &name, &args)?;
+                // Task/project and file validation are repeated by native IPC when the
+                // foreground renderer executes this bounded UI request.
+                request_ui(
+                    app,
+                    &sid,
+                    name.trim_start_matches("pantheon_"),
+                    args,
+                    stopped,
+                )
+                .await
+            })
+        }),
+    }
 }
 
 pub fn jev_catalog() -> Vec<Value> {
@@ -146,10 +181,17 @@ pub(crate) fn jev_host_catalog(
         optional_tools
             .iter()
             .filter_map(|tool| tool["name"].as_str())
-            .filter(|name| matches!(*name,
-                "pantheon_jev_test" | "pantheon_jev_cancel"
-                | "pantheon_jev_review" | "pantheon_jev_check_rules"
-                | "pantheon_jev_find_context" | "pantheon_jev_choose_worker"))
+            .filter(|name| {
+                matches!(
+                    *name,
+                    "pantheon_jev_test"
+                        | "pantheon_jev_cancel"
+                        | "pantheon_jev_review"
+                        | "pantheon_jev_check_rules"
+                        | "pantheon_jev_find_context"
+                        | "pantheon_jev_choose_worker"
+                )
+            })
             .map(String::from),
     );
     tools.extend(optional_tools);
@@ -460,7 +502,9 @@ fn bounded(text: &str, bytes: usize) -> String {
 
 fn project_page(state: &AppState) -> Result<Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let conn = store.conn(); let mut  query = conn.prepare("SELECT id,substr(name,1,200) FROM projects ORDER BY name,id LIMIT 101")
+    let conn = store.conn();
+    let mut query = conn
+        .prepare("SELECT id,substr(name,1,200) FROM projects ORDER BY name,id LIMIT 101")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([], |row| {
@@ -480,7 +524,8 @@ fn task_page(state: &AppState, project_id: &str, offset: u64, archived: bool) ->
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let offset = offset.min(1_000_000) as i64;
     // Filter the project before LIMIT: global recent-task lists cannot paginate a project.
-    let conn = store.conn(); let mut query = conn.prepare("SELECT id,substr(title,1,200),status,task_stage,worktree_path IS NOT NULL FROM sessions WHERE project_id=?1 AND archived=?2 ORDER BY updated_at DESC,id DESC LIMIT 51 OFFSET ?3").map_err(|e| e.to_string())?;
+    let conn = store.conn();
+    let mut query = conn.prepare("SELECT id,substr(title,1,200),status,task_stage,worktree_path IS NOT NULL FROM sessions WHERE project_id=?1 AND archived=?2 ORDER BY updated_at DESC,id DESC LIMIT 51 OFFSET ?3").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![project_id,archived,offset], |row| {
         let id:String = row.get(0)?;
         let mut status:String = row.get(2)?;
@@ -525,20 +570,25 @@ fn read_task_page(
         let mut query = conn.prepare(
             "SELECT id,substr(role,1,24),CASE WHEN role='coordination' THEN CASE WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_update' THEN 'Checking worker updates' WHEN json_valid(content) AND json_extract(content,'$.kind')='worker_review' THEN 'Reviewing worker results' ELSE 'Coordinating team' END ELSE substr(content,1,4096) END,CASE WHEN role='coordination' THEN 0 ELSE length(CAST(content AS BLOB)) END,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT 50",
         ).map_err(|e| e.to_string())?;
-        let rows = query.query_map(params![sid, before_id.unwrap_or(i64::MAX)], |row| {
-            let content = bounded(&row.get::<_, String>(2)?, 4096);
-            Ok(json!({
-                "id": row.get::<_, i64>(0)?,
-                "role": row.get::<_, String>(1)?,
-                "truncated": row.get::<_, i64>(3)? > content.len() as i64,
-                "content": content,
-                "createdAt": row.get::<_, i64>(4)?,
-                "turnDurationMs": row.get::<_, Option<i64>>(5)?,
-            }))
-        }).map_err(|e| e.to_string())?;
+        let rows = query
+            .query_map(params![sid, before_id.unwrap_or(i64::MAX)], |row| {
+                let content = bounded(&row.get::<_, String>(2)?, 4096);
+                Ok(json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "role": row.get::<_, String>(1)?,
+                    "truncated": row.get::<_, i64>(3)? > content.len() as i64,
+                    "content": content,
+                    "createdAt": row.get::<_, i64>(4)?,
+                    "turnDurationMs": row.get::<_, Option<i64>>(5)?,
+                }))
+            })
+            .map_err(|e| e.to_string())?;
         for row in rows {
             let message = row.map_err(|e| e.to_string())?;
-            let encoded = serde_json::to_vec(&message).map_err(|e| e.to_string())?.len() + 1;
+            let encoded = serde_json::to_vec(&message)
+                .map_err(|e| e.to_string())?
+                .len()
+                + 1;
             if bytes + encoded > bytes_limit {
                 break;
             }
@@ -549,7 +599,8 @@ fn read_task_page(
     }
     let has_older = match oldest {
         Some(oldest) => store
-            .conn().query_row(
+            .conn()
+            .query_row(
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id<?2)",
                 params![sid, oldest],
                 |row| row.get::<_, bool>(0),
@@ -737,12 +788,16 @@ async fn dispatch(
             )?
         }
         "pantheon_list_local_servers" => value(crate::local_servers::list().await?)?,
-        "pantheon_search_tasks" => json!({"tasks": state.store.lock().map_err(|e| e.to_string())?.search_tasks(&current.project_id, &string(&args, "query"), 20)?}),
+        "pantheon_search_tasks" => {
+            json!({"tasks": state.store.lock().map_err(|e| e.to_string())?.search_tasks(&current.project_id, &string(&args, "query"), 20)?})
+        }
         "pantheon_code_search" => {
             let root = state.root(&current.project_id, Some(sid))?;
             let query = string(&args, "query");
             let symbols = args["symbols"].as_bool().unwrap_or(false);
-            value(crate::blocking(move || crate::code_search::search(&root, &query, symbols)).await?)?
+            value(
+                crate::blocking(move || crate::code_search::search(&root, &query, symbols)).await?,
+            )?
         }
         "pantheon_list_queue" => {
             let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -750,7 +805,8 @@ async fn dispatch(
         }
         "pantheon_queue_message" => {
             let store = state.store.lock().map_err(|e| e.to_string())?;
-            let entry = crate::message_queue::add(&store, &target.id, &string(&args, "text"), &json!([]))?;
+            let entry =
+                crate::message_queue::add(&store, &target.id, &string(&args, "text"), &json!([]))?;
             drop(store);
             let _ = app.emit("queue-changed", json!({"sessionId": target.id}));
             value(entry)?
@@ -758,7 +814,11 @@ async fn dispatch(
         "pantheon_remove_queued" => {
             let id = string(&args, "entryId");
             let store = state.store.lock().map_err(|e| e.to_string())?;
-            let owner = crate::message_queue::list(&store, None)?.into_iter().find(|entry| entry.id == id).ok_or("This queued message was already sent or removed.")?.session_id;
+            let owner = crate::message_queue::list(&store, None)?
+                .into_iter()
+                .find(|entry| entry.id == id)
+                .ok_or("This queued message was already sent or removed.")?
+                .session_id;
             if store.session(&owner)?.project_id != current.project_id {
                 return Err("That queued message belongs to a different project.".into());
             }
@@ -769,10 +829,19 @@ async fn dispatch(
         }
         "pantheon_steer_task" | "pantheon_interrupt_task" => {
             if target.id == sid {
-                return Err("Use this on another task; the current task is already running this turn.".into());
+                return Err(
+                    "Use this on another task; the current task is already running this turn."
+                        .into(),
+                );
             }
             if name == "pantheon_steer_task" {
-                let reply = crate::message_queue::steer_task(app.clone(), state, target.id.clone(), string(&args, "text")).await?;
+                let reply = crate::message_queue::steer_task(
+                    app.clone(),
+                    state,
+                    target.id.clone(),
+                    string(&args, "text"),
+                )
+                .await?;
                 let _ = app.emit("sessions-changed", ());
                 reply
             } else {
@@ -780,7 +849,13 @@ async fn dispatch(
                 json!({"interruptRequested": true, "note": "The stop is asynchronous; read_task shows when the task is idle."})
             }
         }
-        "pantheon_pin_task" => value(state.store.lock().map_err(|e| e.to_string())?.pin_session(&target.id, args["pinned"].as_bool().unwrap_or(false))?)?,
+        "pantheon_pin_task" => value(
+            state
+                .store
+                .lock()
+                .map_err(|e| e.to_string())?
+                .pin_session(&target.id, args["pinned"].as_bool().unwrap_or(false))?,
+        )?,
         _ => {
             // File validation remains native before asking the trusted UI to show it.
             if name == "pantheon_open_file" {
@@ -1037,10 +1112,10 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         let b = store.add_project(&other).unwrap();
         let one = store
-            .create_session(&a.id, "codex", "default", "ask")
+            .create_session(&a.id, "pantheon", "default", "ask")
             .unwrap();
         let two = store
-            .create_session(&b.id, "codex", "default", "ask")
+            .create_session(&b.id, "pantheon", "default", "ask")
             .unwrap();
         let state = AppState {
             store: Arc::new(Mutex::new(store)),
@@ -1058,7 +1133,7 @@ mod tests {
         let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let session = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         (
             AppState {
@@ -1077,14 +1152,15 @@ mod tests {
         {
             let store = state.store.lock().unwrap();
             store
-                .conn().execute(
+                .conn()
+                .execute(
                     "INSERT INTO projects(id,name,path) VALUES ('other','Other','/fixture/other')",
                     [],
                 )
                 .unwrap();
             for _ in 0..50 {
                 store
-                    .create_session(&current.project_id, "codex", "default", "ask")
+                    .create_session(&current.project_id, "pantheon", "default", "ask")
                     .unwrap();
             }
             store
@@ -1095,7 +1171,7 @@ mod tests {
                 .unwrap();
             for _ in 0..505 {
                 store
-                    .create_session("other", "codex", "default", "ask")
+                    .create_session("other", "pantheon", "default", "ask")
                     .unwrap();
             }
             assert_eq!(store.sessions().unwrap().len(), 500);
@@ -1126,7 +1202,8 @@ mod tests {
         {
             let store = state.store.lock().unwrap();
             store
-                .conn().execute(
+                .conn()
+                .execute(
                     "UPDATE sessions SET task_description=?1 WHERE id=?2",
                     params!["🦀".repeat(32768), current.id],
                 )
@@ -1171,7 +1248,8 @@ mod tests {
             let store = state.store.lock().unwrap();
             for index in 0..105 {
                 store
-                    .conn().execute(
+                    .conn()
+                    .execute(
                         "INSERT INTO projects(id,name,path) VALUES (?1,?2,?3)",
                         params![
                             format!("project-{index}"),

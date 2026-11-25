@@ -95,7 +95,8 @@ pub fn create(store: &Store, project: &str, name: &str) -> Result<Moodboard> {
     store.project(project)?;
     let name = label(name, 120)?;
     let count: i64 = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT COUNT(*) FROM moodboards WHERE project_id=?1",
             [project],
             |r| r.get(0),
@@ -111,7 +112,8 @@ pub fn create(store: &Store, project: &str, name: &str) -> Result<Moodboard> {
 }
 pub fn detail(store: &Store, project: &str, id: &str) -> Result<MoodboardDetail> {
     let board = board(store, project, id)?;
-    let conn = store.conn(); let mut  query = conn.prepare("SELECT id,name,caption,width,height,created_at FROM moodboard_images WHERE board_id=?1 ORDER BY created_at,id LIMIT 64").map_err(|e|e.to_string())?;
+    let conn = store.conn();
+    let mut  query = conn.prepare("SELECT id,name,caption,width,height,created_at FROM moodboard_images WHERE board_id=?1 ORDER BY created_at,id LIMIT 64").map_err(|e|e.to_string())?;
     let images = query
         .query_map([id], |r| {
             Ok(MoodboardImage {
@@ -295,7 +297,8 @@ fn image_bytes(
         "SELECT i.agent_image,i.caption FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id WHERE i.id=?1 AND b.id=?2 AND b.project_id=?3"
     };
     store
-        .conn().query_row(sql, params![image_id, board_id, project], |r| {
+        .conn()
+        .query_row(sql, params![image_id, board_id, project], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .optional()
@@ -380,7 +383,8 @@ pub async fn rename_moodboard(
         board(&store, &project_id, &board_id)?;
         let name = label(&name, 120)?;
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE moodboards SET name=?2,updated_at=?3 WHERE id=?1",
                 params![board_id, name, storage::now()],
             )
@@ -400,7 +404,8 @@ pub async fn delete_moodboard(
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
         store
-            .conn().execute("DELETE FROM moodboards WHERE id=?1", [board_id])
+            .conn()
+            .execute("DELETE FROM moodboards WHERE id=?1", [board_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     })
@@ -468,7 +473,8 @@ pub async fn update_moodboard_image(
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
         if store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE moodboard_images SET caption=?3 WHERE id=?1 AND board_id=?2",
                 params![image_id, board_id, caption],
             )
@@ -478,7 +484,8 @@ pub async fn update_moodboard_image(
             return Err("Image is no longer available.".into());
         }
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
                 params![board_id, storage::now()],
             )
@@ -499,13 +506,15 @@ pub async fn remove_moodboard_image(
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "DELETE FROM moodboard_images WHERE id=?1 AND board_id=?2",
                 params![image_id, board_id],
             )
             .map_err(|e| e.to_string())?;
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
                 params![board_id, storage::now()],
             )
@@ -636,12 +645,14 @@ mod tests {
         assert!(image_result(&f.store, &f.project, &b.id, image).is_err());
         assert!(image_result(&f.store, &f.project, &a.id, "../../secret").is_err());
         f.store
-            .conn().execute("DELETE FROM moodboards WHERE id=?1", [a.id])
+            .conn()
+            .execute("DELETE FROM moodboards WHERE id=?1", [a.id])
             .unwrap();
         assert!(image_result(&f.store, &f.project, &b.id, image).is_err());
         assert_eq!(
             f.store
-                .conn().query_row("SELECT COUNT(*) FROM moodboard_images", [], |r| r
+                .conn()
+                .query_row("SELECT COUNT(*) FROM moodboard_images", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
             0
@@ -661,7 +672,8 @@ mod tests {
             .collect();
         insert(&mut f.store, &f.project, &b.id, images).unwrap();
         f.store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE moodboard_images SET caption=?1",
                 ["\u{1}".repeat(2000)],
             )

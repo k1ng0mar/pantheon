@@ -1,10 +1,5 @@
 //! Provider command catalogs are metadata, never arbitrary executable instructions.
 mod acp;
-pub(crate) mod claude;
-mod codex;
-mod kimi;
-mod muse;
-mod pi;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -32,9 +27,7 @@ pub struct SlashCommand {
 #[derive(Clone, Debug)]
 pub enum Invocation {
     Native,
-    Skill { name: String, path: PathBuf },
     Action(String),
-    Unsupported,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -86,13 +79,19 @@ impl CommandCache {
         catalog: Option<Catalog>,
         terminal_names: HashSet<String>,
     ) -> u64 {
-        let capacity = if self.entries.contains_key(&key) { 16 } else { 15 };
+        let capacity = if self.entries.contains_key(&key) {
+            16
+        } else {
+            15
+        };
         while self.entries.len() > capacity {
             if let Some(oldest) = self
                 .entries
                 .iter()
                 // Keep the shared gate while requests are waiting on it.
-                .filter(|(candidate, value)| **candidate != key && Arc::strong_count(&value.discovery) == 1)
+                .filter(|(candidate, value)| {
+                    **candidate != key && Arc::strong_count(&value.discovery) == 1
+                })
                 .min_by_key(|(_, value)| value.touched)
                 .map(|(key, _)| key.clone())
             {
@@ -102,7 +101,9 @@ impl CommandCache {
             }
         }
         let revision = self.next_revision();
-        let discovery = self.entries.get(&key)
+        let discovery = self
+            .entries
+            .get(&key)
             .map(|entry| Arc::clone(&entry.discovery))
             .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
         let now = Instant::now();
@@ -144,18 +145,16 @@ impl CommandCache {
     }
 
     fn snapshot(&mut self, key: &Key) -> Catalog {
-        let mut catalog = self.entries.get_mut(key).and_then(|entry| {
-            entry.touched = Instant::now();
-            entry.catalog.clone()
-        }).unwrap_or_default();
+        let mut catalog = self
+            .entries
+            .get_mut(key)
+            .and_then(|entry| {
+                entry.touched = Instant::now();
+                entry.catalog.clone()
+            })
+            .unwrap_or_default();
         normalize(&mut catalog, &key.0);
         catalog
-    }
-
-    fn invalidate(&mut self, key: Key) {
-        // Keep a revision marker: an already-running discovery must not refill
-        // this slot using the skill paths that were just invalidated.
-        self.insert(key, None, HashSet::new());
     }
 
     fn commit(&mut self, key: Key, revision: u64, discovered: Result<Catalog, String>) -> Commit {
@@ -176,21 +175,18 @@ impl CommandCache {
                 let mut value = previous.catalog.clone().unwrap_or_default();
                 // Only known protocol conditions get specific public warnings.
                 // Process output stays behind the generic message.
-                let warning = if key.0 == "kimi" && error == kimi::AUTH_REQUIRED {
-                    kimi::AUTH_REQUIRED
-                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot")
-                    && error.starts_with(crate::providers::acp::ACP_STARTUP_TIMEOUT)
-                {
+                let warning = if error.starts_with(crate::providers::acp::ACP_STARTUP_TIMEOUT) {
                     crate::providers::acp::ACP_STARTUP_TIMEOUT
                 } else if error == acp::NO_COMMANDS {
                     acp::NO_COMMANDS
                 } else {
                     REFRESH_WARNING
                 };
-                value
-                    .warnings
-                    .retain(|warning| warning != REFRESH_WARNING && warning != kimi::AUTH_REQUIRED
-                        && warning != crate::providers::acp::ACP_STARTUP_TIMEOUT && warning != acp::NO_COMMANDS);
+                value.warnings.retain(|warning| {
+                    warning != REFRESH_WARNING
+                        && warning != crate::providers::acp::ACP_STARTUP_TIMEOUT
+                        && warning != acp::NO_COMMANDS
+                });
                 value.warnings.insert(0, warning.into());
                 value
             }
@@ -217,16 +213,14 @@ impl CommandCache {
             .get(&key)
             .map(|entry| entry.terminal_names.clone())
             .unwrap_or_default();
-        if matches!(key.0.as_str(), "claude" | "glm" | "mimo") {
-            if let Some(names) = explicit_terminals {
-                terminal_names = names
-                    .iter()
-                    .take(512)
-                    .filter_map(Value::as_str)
-                    .map(|name| format!("/{}", name.strip_prefix('/').unwrap_or(name)))
-                    .filter(|name| valid_name(name))
-                    .collect();
-            }
+        if let Some(names) = explicit_terminals {
+            terminal_names = names
+                .iter()
+                .take(512)
+                .filter_map(Value::as_str)
+                .map(|name| format!("/{}", name.strip_prefix('/').unwrap_or(name)))
+                .filter(|name| valid_name(name))
+                .collect();
             if data.get("subtype").and_then(Value::as_str) == Some("init") {
                 if let Some(previous) = self
                     .entries
@@ -276,7 +270,9 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
     let key = catalog_key(provider, cwd);
     let started = Instant::now();
     let discovery = {
-        let mut cache = CACHE.lock().map_err(|_| "Command discovery is unavailable.")?;
+        let mut cache = CACHE
+            .lock()
+            .map_err(|_| "Command discovery is unavailable.")?;
         if !force {
             if let Some(value) = cache.cached(&key, None) {
                 return Ok(value);
@@ -287,7 +283,11 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
     // Coalesce requests for the same project before they occupy one of the
     // bounded process slots. Concurrent picker opens share the completed result.
     let _discovery = discovery.lock().await;
-    if let Some(value) = CACHE.lock().ok().and_then(|mut cache| cache.cached(&key, Some(started))) {
+    if let Some(value) = CACHE
+        .lock()
+        .ok()
+        .and_then(|mut cache| cache.cached(&key, Some(started)))
+    {
         return Ok(value);
     }
     let _permit = DISCOVERY
@@ -301,42 +301,25 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
 /// harness. A stale snapshot is for completion; command dispatch still validates.
 pub fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
-    CACHE.lock()
+    CACHE
+        .lock()
         .map_err(|_| "Command discovery is unavailable.".into())
         .map(|mut cache| cache.snapshot(&catalog_key(provider, cwd)))
 }
 
-pub(crate) fn invalidate_provider(provider: &str) {
-    if let Ok(mut cache) = CACHE.lock() {
-        let keys: Vec<_> = cache.entries.keys().filter(|key| key.0 == provider).cloned().collect();
-        for key in keys { cache.invalidate(key); }
-    }
-}
-
 fn validate_provider(provider: &str) -> Result<(), String> {
-    if !matches!(
-        provider,
-        "claude"
-            | "codex"
-            | "kimi"
-            | "glm"
-            | "opencode"
-            | "antigravity"
-            | "grok"
-            | "mimo"
-            | "pi"
-            | "deepseek"
-            | "commandcode" | "cline" | "kilo"
-            | "omp"
-            | "github-copilot"
-            | "muse"
-    ) {
-        return Err("Unknown harness.".into());
+    if provider != "pantheon" {
+        return Err("Pantheon is the only supported provider.".into());
     }
     Ok(())
 }
 
-async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant) -> Result<Catalog, String> {
+async fn discover_catalog(
+    provider: &str,
+    cwd: &Path,
+    key: Key,
+    started: Instant,
+) -> Result<Catalog, String> {
     for attempt in 0..2 {
         let revision = {
             let mut cache = CACHE
@@ -349,19 +332,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
             }
             cache.begin(&key)
         };
-        let discovered = match provider {
-            "claude" => claude::discover(cwd).await,
-            "glm" | "mimo" => claude::discover_for(provider, cwd).await,
-            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" => {
-                acp::discover(provider, cwd).await
-            }
-            "deepseek" => Ok(Catalog::default()),
-            "codex" => codex::discover(cwd).await,
-            "kimi" => kimi::discover(cwd).await,
-            "pi" | "omp" => pi::discover(provider, cwd).await,
-            "muse" => muse::discover(cwd).await,
-            _ => unreachable!(),
-        };
+        let discovered = acp::discover(provider, cwd).await;
         let committed = CACHE
             .lock()
             .map_err(|_| "Command discovery is unavailable.")?
@@ -380,18 +351,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
 /// Called only for command metadata frames from the parent provider session.
 pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
     let key = catalog_key(provider, cwd);
-    if provider == "codex" && data.get("method").and_then(Value::as_str) == Some("skills/changed") {
-        if let Ok(mut cache) = CACHE.lock() {
-            cache.invalidate(key);
-        }
-        return true;
-    }
-    let value = match provider {
-        "claude" | "glm" | "mimo" => claude::parse_runtime(data),
-        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" => acp::parse_runtime(provider, data),
-        "kimi" => kimi::parse_runtime(data),
-        _ => None,
-    };
+    let value = acp::parse_runtime(provider, data);
     if let Some(value) = value {
         if let Ok(mut cache) = CACHE.lock() {
             cache.observe(key, data, value);
@@ -402,28 +362,7 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
     }
 }
 
-fn normalize(catalog: &mut Catalog, provider: &str) {
-    if matches!(provider, "glm" | "mimo") {
-        for command in &mut catalog.commands {
-            if let Some(id) = command.id.strip_prefix("claude:") {
-                command.id = format!("{provider}:{id}");
-            }
-            if command.source == "claude" {
-                command.source = provider.into();
-            }
-        }
-    }
-    if provider == "kimi" {
-        for command in kimi::terminal_commands() {
-            if !catalog
-                .commands
-                .iter()
-                .any(|existing| existing.name == command.name)
-            {
-                catalog.commands.push(command);
-            }
-        }
-    }
+fn normalize(catalog: &mut Catalog, _provider: &str) {
     catalog.commands.retain(|command| valid_name(&command.name));
     catalog.commands.truncate(1000);
     for command in &mut catalog.commands {
@@ -437,11 +376,6 @@ fn normalize(catalog: &mut Catalog, provider: &str) {
     // Controls change Pantheon's persisted state, never hidden CLI state.
     // Other local actions only fill gaps in the provider's command catalog.
     for &(name, description, action, hint) in LOCAL_ACTIONS {
-        let action = if provider == "codex" && name == "/resume" {
-            "conversations"
-        } else {
-            action
-        };
         if let Some(existing) = catalog
             .commands
             .iter_mut()
@@ -516,7 +450,12 @@ const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
         None,
     ),
     ("/mcp", "Show configured integrations", "integrations", None),
-    ("/resume", "Search and switch tasks", "resume", None),
+    (
+        "/resume",
+        "Resume another conversation",
+        "conversations",
+        Some("[search]"),
+    ),
     ("/rename", "Rename this task", "rename", Some("<title>")),
     ("/copy", "Copy the latest agent response", "copy", None),
     ("/pwd", "Show this task’s working directory", "pwd", None),
@@ -566,11 +505,7 @@ fn local_control(provider: &str, name: &str) -> Option<SlashCommand> {
         .iter()
         .find(|entry| entry.0 == name)
         .map(|&(name, description, action, hint)| {
-            let action = if provider == "codex" && name == "/resume" {
-                "conversations"
-            } else {
-                action
-            };
+            let _ = provider;
             action_command(name, description, action, hint)
         })
 }
@@ -622,26 +557,6 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
     resolve_from_catalog(provider, text, &catalog)
 }
 
-/// A command may be removed after the picker cached it. Claude's fresh
-/// initialization metadata is the final check before writing its user message.
-pub fn validate_claude_start(text: &str, metadata: &Value) -> Result<(), String> {
-    let Some((name, _)) = split_command(text) else {
-        return Ok(());
-    };
-    let Some(catalog) = claude::parse_runtime(metadata) else {
-        return Ok(());
-    };
-    if !is_local_control(name)
-        && catalog
-            .commands
-            .iter()
-            .any(|command| command.name == name && matches!(command.invocation, Invocation::Native))
-    {
-        return Ok(());
-    }
-    Err(format!("Claude no longer advertises {name} as a supported command. Refresh the command list and try again."))
-}
-
 fn plain_resolution(text: &str) -> Resolution {
     Resolution {
         action: None,
@@ -687,20 +602,7 @@ fn resolve_from_catalog(
                     | "/tasks"
                     | "/help"
             );
-            // Kimi's slash dispatcher drops image parts for skills as well as
-            // built-ins; reject them before a task turn can be written.
-            result.accepts_attachments = provider != "kimi" && !result.maintenance;
-        }
-        Invocation::Skill { name, path } => {
-            result.prompt = format!(
-                "${name}{}",
-                if arguments.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {arguments}")
-                }
-            );
-            result.skill = Some((name.clone(), path.clone()));
+            result.accepts_attachments = !result.maintenance;
         }
         Invocation::Action(action) => {
             if !arguments.is_empty() && !action_accepts_arguments(action) {
@@ -710,11 +612,6 @@ fn resolve_from_catalog(
             }
             result.action = Some(action.clone());
             result.arguments = arguments.into();
-        }
-        Invocation::Unsupported => {
-            return Err(command.reason.clone().unwrap_or_else(|| {
-                "This command is available only in the harness’s terminal interface.".into()
-            }))
         }
     }
     Ok(result)
@@ -810,7 +707,7 @@ mod tests {
             }],
             warnings: vec![],
         };
-        normalize(&mut catalog, "kimi");
+        normalize(&mut catalog, "pantheon");
         assert!(matches!(
             catalog
                 .commands
@@ -831,30 +728,9 @@ mod tests {
     }
 
     #[test]
-    fn kimi_shell_fallbacks_preserve_acp_commands_and_help_aliases() {
-        let mut catalog = native_catalog(&["/help", "/clear", "/fork"]);
-        normalize(&mut catalog, "kimi");
-        for name in ["/help", "/clear", "/fork"] {
-            assert!(matches!(
-                command(&catalog, name).invocation,
-                Invocation::Native
-            ));
-        }
-        for name in ["/editor", "/reload-tui", "/undo", "/sessions", "/?"] {
-            let resolution = resolve_from_catalog("kimi", name, &catalog).unwrap();
-            assert_eq!(
-                resolution.action,
-                Some(format!("console:{}", name.trim_start_matches('/')))
-            );
-        }
-        assert_eq!(split_command("/?"), Some(("/?", "")));
-        assert!(resolve_from_catalog("kimi", "/not-an-advertised-command", &catalog).is_err());
-    }
-
-    #[test]
     fn a_live_catalog_wins_over_an_older_in_flight_discovery() {
         let mut cache = CommandCache::default();
-        let key = key("kimi");
+        let key = key("pantheon");
         let revision = cache.begin(&key);
         cache.observe(key.clone(), &json!({}), native_catalog(&["/skill:current"]));
         let value = ready(cache.commit(
@@ -877,35 +753,9 @@ mod tests {
     }
 
     #[test]
-    fn invalidation_rejects_stale_paths_until_a_new_discovery_finishes() {
-        let mut cache = CommandCache::default();
-        let key = key("codex");
-        let revision = cache.begin(&key);
-        cache.invalidate(key.clone());
-        assert!(matches!(
-            cache.commit(key.clone(), revision, Ok(native_catalog(&["/removed"]))),
-            Commit::Invalidated
-        ));
-        assert!(cache.cached(&key, None).is_none());
-        let fresh_revision = cache.begin(&key);
-        let value = ready(cache.commit(
-            key.clone(),
-            fresh_revision,
-            Ok(native_catalog(&["/current"])),
-        ));
-        assert_eq!(value.commands[0].name, "/current");
-        let revision = cache.begin(&key);
-        cache.invalidate(key.clone());
-        assert!(matches!(
-            cache.commit(key, revision, Err("private failure".into())),
-            Commit::Invalidated
-        ));
-    }
-
-    #[test]
     fn failed_refresh_preserves_last_good_commands_without_leaking_errors() {
         let mut cache = CommandCache::default();
-        let key = key("claude");
+        let key = key("pantheon");
         cache.insert(
             key.clone(),
             Some(native_catalog(&["/ship"])),
@@ -925,49 +775,11 @@ mod tests {
     }
 
     #[test]
-    fn kimi_auth_warning_is_allowlisted_and_keeps_the_last_good_catalog() {
-        let mut cache = CommandCache::default();
-        let key = key("kimi");
-        cache.insert(
-            key.clone(),
-            Some(native_catalog(&["/skill:build"])),
-            HashSet::new(),
-        );
-        for _ in 0..2 {
-            let revision = cache.begin(&key);
-            let value = ready(cache.commit(key.clone(), revision, Err(kimi::AUTH_REQUIRED.into())));
-            assert_eq!(
-                command(&value, "/skill:build").description,
-                "Run /skill:build"
-            );
-            assert_eq!(value.warnings, vec![kimi::AUTH_REQUIRED]);
-        }
-        let revision = cache.begin(&key);
-        let value = ready(cache.commit(
-            key.clone(),
-            revision,
-            Err(format!("{} SECRET", kimi::AUTH_REQUIRED)),
-        ));
-        assert_eq!(value.warnings, vec![REFRESH_WARNING]);
-        assert_eq!(
-            command(&value, "/skill:build").description,
-            "Run /skill:build"
-        );
-        let revision = cache.begin(&key);
-        let value = ready(cache.commit(key, revision, Ok(native_catalog(&["/skill:current"]))));
-        assert!(value.warnings.is_empty());
-        let other_key = ("claude".into(), PathBuf::from("project"));
-        let revision = cache.begin(&other_key);
-        let value = ready(cache.commit(other_key, revision, Err(kimi::AUTH_REQUIRED.into())));
-        assert_eq!(value.warnings, vec![REFRESH_WARNING]);
-    }
-
-    #[test]
     fn lru_cache_is_bounded_and_expired_entries_are_not_reused() {
         let mut cache = CommandCache::default();
         let now = Instant::now();
         for index in 0..16 {
-            let key = ("kimi".into(), PathBuf::from(format!("project-{index}")));
+            let key = ("pantheon".into(), PathBuf::from(format!("project-{index}")));
             cache.insert(
                 key.clone(),
                 Some(native_catalog(&["/compact"])),
@@ -975,11 +787,11 @@ mod tests {
             );
             cache.entries.get_mut(&key).unwrap().touched = now - Duration::from_secs(30 - index);
         }
-        let oldest = ("kimi".into(), PathBuf::from("project-0"));
-        let next_oldest = ("kimi".into(), PathBuf::from("project-1"));
+        let oldest = ("pantheon".into(), PathBuf::from("project-0"));
+        let next_oldest = ("pantheon".into(), PathBuf::from("project-1"));
         assert!(cache.cached(&oldest, None).is_some());
         cache.insert(
-            key("kimi"),
+            key("pantheon"),
             Some(native_catalog(&["/status"])),
             HashSet::new(),
         );
@@ -995,20 +807,20 @@ mod tests {
     }
 
     #[test]
-    fn snapshots_expose_local_controls_without_launching_a_harness() {
-        let catalog = snapshot("antigravity", Path::new("/snapshot-only-project")).unwrap();
-        assert_eq!(command(&catalog, "/model").source, "Pantheon");
-        assert_eq!(command(&catalog, "/settings").kind, "action");
-        assert!(snapshot("unknown", Path::new("/snapshot-only-project")).is_err());
-    }
-
-    #[test]
     fn startup_timeouts_preserve_cached_commands_without_echoing_process_output() {
         let mut cache = CommandCache::default();
-        let key = key("antigravity");
-        let revision = cache.insert(key.clone(), Some(native_catalog(&["/review"])), HashSet::new());
+        let key = key("pantheon");
+        let revision = cache.insert(
+            key.clone(),
+            Some(native_catalog(&["/review"])),
+            HashSet::new(),
+        );
         let timeout = crate::providers::acp::ACP_STARTUP_TIMEOUT;
-        let catalog = ready(cache.commit(key.clone(), revision, Err(format!("{timeout} SECRET process output"))));
+        let catalog = ready(cache.commit(
+            key.clone(),
+            revision,
+            Err(format!("{timeout} SECRET process output")),
+        ));
         assert_eq!(catalog.warnings, vec![timeout]);
         assert_eq!(command(&catalog, "/review").name, "/review");
         let revision = cache.begin(&key);
@@ -1020,34 +832,22 @@ mod tests {
     #[test]
     fn cache_snapshots_retain_stale_commands_while_refresh_is_required() {
         let mut cache = CommandCache::default();
-        let key = key("antigravity");
-        cache.insert(key.clone(), Some(native_catalog(&["/review"])), HashSet::new());
+        let key = key("pantheon");
+        cache.insert(
+            key.clone(),
+            Some(native_catalog(&["/review"])),
+            HashSet::new(),
+        );
         cache.entries.get_mut(&key).unwrap().updated = Instant::now() - CACHE_AGE;
         assert!(cache.cached(&key, None).is_none());
         assert_eq!(command(&cache.snapshot(&key), "/review").name, "/review");
         assert_eq!(command(&cache.snapshot(&key), "/model").kind, "action");
     }
 
-    #[tokio::test]
-    async fn discovery_for_the_same_project_shares_a_gate_across_runtime_updates() {
-        let mut cache = CommandCache::default();
-        let key = key("antigravity");
-        let first = cache.discovery(&key);
-        let guard = first.lock().await;
-        cache.insert(key.clone(), Some(native_catalog(&["/review"])), HashSet::new());
-        let second = cache.discovery(&key);
-        assert!(second.try_lock().is_err());
-        cache.invalidate(key.clone());
-        assert!(cache.discovery(&key).try_lock().is_err());
-        drop(guard);
-        assert!(second.try_lock().is_ok());
-        assert!(cache.discovery(&("opencode".into(), PathBuf::from("other-project"))).try_lock().is_ok());
-    }
-
     #[test]
     fn evicted_discovery_cannot_overwrite_a_recreated_key() {
         let mut cache = CommandCache::default();
-        let key = key("kimi");
+        let key = key("pantheon");
         let old_revision = cache.begin(&key);
         cache.entries.remove(&key);
         let new_revision = cache.begin(&key);
@@ -1061,79 +861,23 @@ mod tests {
     }
 
     #[test]
-    fn claude_names_only_init_preserves_rich_fields_and_terminal_classification() {
-        let mut cache = CommandCache::default();
-        let key = key("claude");
-        let rich = json!({"type":"control_response","response":{"subtype":"success","response":{
-            "commands":[{"name":"ship","description":"Ship a release","argumentHint":"<version>"},{"name":"interactive-only","description":"Terminal action"}],
-            "terminal_slash_commands":["interactive-only"]
-        }}});
-        cache.observe(key.clone(), &rich, claude::parse_runtime(&rich).unwrap());
-        let init = json!({"type":"system","subtype":"init","slash_commands":["ship","interactive-only","model"]});
-        cache.observe(key.clone(), &init, claude::parse_runtime(&init).unwrap());
-        let value = cache.cached(&key, None).unwrap();
-        assert_eq!(command(&value, "/ship").description, "Ship a release");
-        assert_eq!(
-            command(&value, "/ship").argument_hint.as_deref(),
-            Some("<version>")
-        );
-        assert!(matches!(
-            command(&value, "/interactive-only").invocation,
-            Invocation::Action(ref action) if action == "console:interactive-only"
-        ));
-        assert!(
-            matches!(&command(&value, "/model").invocation, Invocation::Action(action) if action == "model")
-        );
-        let changed = json!({"type":"system","subtype":"commands_changed","commands":[{"name":"interactive-only","description":"Updated terminal action"}]});
-        cache.observe(
-            key.clone(),
-            &changed,
-            claude::parse_runtime(&changed).unwrap(),
-        );
-        let value = cache.cached(&key, None).unwrap();
-        assert!(matches!(
-            command(&value, "/interactive-only").invocation,
-            Invocation::Action(ref action) if action == "console:interactive-only"
-        ));
-        assert!(
-            !value.commands.iter().any(|entry| entry.name == "/ship"),
-            "Updates are full replacements"
-        );
-        let explicit = json!({"type":"system","subtype":"commands_changed","commands":[{"name":"interactive-only"}],"terminal_slash_commands":[]});
-        cache.observe(
-            key.clone(),
-            &explicit,
-            claude::parse_runtime(&explicit).unwrap(),
-        );
-        assert!(matches!(
-            command(&cache.cached(&key, None).unwrap(), "/interactive-only").invocation,
-            Invocation::Native
-        ));
-    }
-
-    #[test]
-    fn native_kimi_commands_normalize_only_the_separator_and_reject_images() {
+    fn native_commands_normalize_only_the_separator_and_keep_attachments() {
         let value = native_catalog(&["/skill:build", "/compact"]);
         for text in [
             "/skill:build\t  keep  spacing\nand lines",
             "/skill:build\nkeep  spacing\nand lines",
         ] {
-            let result = resolve_from_catalog("kimi", text, &value).unwrap();
+            let result = resolve_from_catalog("pantheon", text, &value).unwrap();
             assert_eq!(result.prompt, "/skill:build keep  spacing\nand lines");
-            assert!(!result.accepts_attachments);
+            assert!(result.accepts_attachments);
             assert!(!result.maintenance);
         }
-        let result = resolve_from_catalog("kimi", "/compact\t\n ", &value).unwrap();
+        let result = resolve_from_catalog("pantheon", "/compact\t\n ", &value).unwrap();
         assert_eq!(result.prompt, "/compact");
         assert!(result.maintenance);
         assert!(!result.accepts_attachments);
         assert!(
-            resolve_from_catalog("kimi", "Build from this screenshot", &value)
-                .unwrap()
-                .accepts_attachments
-        );
-        assert!(
-            resolve_from_catalog("claude", "/skill:build image", &value)
+            resolve_from_catalog("pantheon", "Build from this screenshot", &value)
                 .unwrap()
                 .accepts_attachments
         );
@@ -1152,14 +896,14 @@ mod tests {
             "/help",
             "/status",
         ]);
-        normalize(&mut value, "claude");
+        normalize(&mut value, "pantheon");
         for name in ["/model", "/permissions", "/new", "/theme", "/rename"] {
             assert!(matches!(
                 command(&value, name).invocation,
                 Invocation::Action(_)
             ));
             assert_eq!(command(&value, name).source, "Pantheon");
-            assert!(resolve_from_catalog("claude", name, &value)
+            assert!(resolve_from_catalog("pantheon", name, &value)
                 .unwrap()
                 .action
                 .is_some());
@@ -1169,17 +913,17 @@ mod tests {
                 command(&value, name).invocation,
                 Invocation::Native
             ));
-            assert!(resolve_from_catalog("kimi", name, &value)
+            assert!(resolve_from_catalog("pantheon", name, &value)
                 .unwrap()
                 .action
                 .is_none());
         }
-        assert!(resolve_from_catalog("claude", "/model opus", &value)
+        assert!(resolve_from_catalog("pantheon", "/model opus", &value)
             .err()
             .unwrap()
             .contains("does not accept arguments"));
         assert_eq!(
-            resolve_from_catalog("kimi", "/rename\tMy new task", &value)
+            resolve_from_catalog("pantheon", "/rename\tMy new task", &value)
                 .unwrap()
                 .arguments,
             "My new task"
@@ -1191,18 +935,18 @@ mod tests {
         let permits = DISCOVERY.acquire_many(2).await.unwrap();
         let result = tokio::time::timeout(
             Duration::from_millis(100),
-            resolve("claude", Path::new("missing-project"), "/model"),
+            resolve("pantheon", Path::new("missing-project"), "/model"),
         )
         .await
         .expect("A local control must not wait for CLI discovery")
         .unwrap();
         assert_eq!(result.action.as_deref(), Some("model"));
-        let console = resolve("kimi", Path::new("missing-project"), "/console /login")
+        let console = resolve("pantheon", Path::new("missing-project"), "/console /login")
             .await
             .unwrap();
         assert_eq!(console.action.as_deref(), Some("console"));
         assert_eq!(console.arguments, "/login");
-        let resume = resolve("codex", Path::new("missing-project"), "/resume game")
+        let resume = resolve("pantheon", Path::new("missing-project"), "/resume game")
             .await
             .unwrap();
         assert_eq!(resume.action.as_deref(), Some("conversations"));
@@ -1215,7 +959,7 @@ mod tests {
         let mut value = native_catalog(&["/interactive-only"]);
         apply_terminal_names(&mut value, &HashSet::from(["/interactive-only".into()]));
         let result =
-            resolve_from_catalog("claude", "/interactive-only exact  args", &value).unwrap();
+            resolve_from_catalog("pantheon", "/interactive-only exact  args", &value).unwrap();
         assert_eq!(result.action.as_deref(), Some("console:interactive-only"));
         assert_eq!(result.arguments, "exact  args");
         assert!(result.skill.is_none());
@@ -1250,7 +994,8 @@ mod tests {
                 )],
                 warnings: Vec::new(),
             };
-            let result = resolve_from_catalog("codex", "/fixture preserve  this", &value).unwrap();
+            let result =
+                resolve_from_catalog("pantheon", "/fixture preserve  this", &value).unwrap();
             assert_eq!(result.action.as_deref(), Some(action));
             assert_eq!(result.arguments, "preserve  this");
         }
@@ -1266,7 +1011,7 @@ mod tests {
                 commands: vec![action_command("/fixture", "Fixture", action, None)],
                 warnings: Vec::new(),
             };
-            assert!(resolve_from_catalog("codex", "/fixture extra", &value).is_err());
+            assert!(resolve_from_catalog("pantheon", "/fixture extra", &value).is_err());
         }
     }
 }

@@ -159,15 +159,10 @@ export function showGoalDialog(dialog: HTMLDialogElement, options: GoalOptions):
 
 interface PanelBase { notes?: string[]; }
 interface NamedItem { id: string; title: string; description?: string; source?: string; }
-export type PreferenceField = { id: string; label: string; description?: string; value: boolean | string; disabled?: boolean } & (
-  { type: 'toggle' } | { type: 'select'; options: { value: string; label: string }[] } | { type: 'text' }
-);
 export type CommandPanel = PanelBase & (
-  | { kind: 'usage'; accountLabel?: string; plan?: string; windows: { id: string; label: string; usedPercent?: number | null; resetsAt?: number | null }[]; stats?: { label: string; value: string }[]; daily?: { date: string; tokens: number }[] }
+  | { kind: 'usage'; accountLabel?: string; plan?: string; windows: { id: string; label: string; usedPercent?: number | null; resetsAt?: number | null }[]; stats?: { label: string; value: string }[]; daily?: { date: string; tokens: number }[]; models?: NamedItem[] }
   | { kind: 'jobs'; jobs: { id: string; title: string; status: string; detail?: string; canStop?: boolean }[] }
-  | { kind: 'imports'; items: NamedItem[] }
-  | { kind: 'conversations'; items: (NamedItem & { updatedAt?: number })[]; mode: 'resume' | 'fork' | 'import'; cursor?: string | null }
-  | { kind: 'preferences'; fields: PreferenceField[] }
+  | { kind: 'conversations'; items: (NamedItem & { updatedAt?: number })[]; mode: 'resume' | 'fork'; cursor?: string | null }
   | { kind: 'hooks'; items: (NamedItem & { enabled: boolean })[] }
   | { kind: 'plugins'; items: (NamedItem & { status: string })[] }
   | { kind: 'result'; title: string; description: string; status?: string }
@@ -234,7 +229,8 @@ export function showCommandCenter(dialog: HTMLDialogElement, options: CommandCen
         const activity = usageHeatmap(panel.daily); view.content.append(activity);
         if (options.initialSection === 'daily') requestAnimationFrame(() => { activity.scrollIntoView({ block: 'nearest' }); activity.querySelector<HTMLElement>('.heatmap')?.focus({ preventScroll: true }); });
       }
-      if (!panel.windows.length && !panel.stats?.length) view.content.append(node('p', 'command-empty', 'No usage information is available.'));
+      for (const model of panel.models ?? []) { const item = node('div', 'command-row'); item.dataset.itemId = model.id; item.append(row(model)); view.content.append(item); }
+      if (!panel.windows.length && !panel.stats?.length && !panel.models?.length) view.content.append(node('p', 'command-empty', 'No usage information is available.'));
     } else if (panel.kind === 'jobs') {
       if (!panel.jobs.length) view.content.append(node('p', 'command-empty', 'No background jobs are running.'));
       for (const job of panel.jobs) {
@@ -243,24 +239,24 @@ export function showCommandCenter(dialog: HTMLDialogElement, options: CommandCen
         if (job.canStop) { const stop = button('Stop'); stop.setAttribute('aria-label', `Stop ${job.title}`); stop.addEventListener('click', () => { void execute('stop', { id: job.id }); }); item.append(stop); }
         view.content.append(item);
       }
-    } else if (panel.kind === 'imports' || panel.kind === 'conversations') {
+    } else if (panel.kind === 'conversations') {
       const availableIds = new Set(panel.items.map(item => item.id)); for (const id of selected) if (!availableIds.has(id)) selected.delete(id);
-      const search = node('input', 'command-search'); search.type = 'search'; search.placeholder = panel.kind === 'imports' ? 'Search available imports' : 'Search conversations'; search.setAttribute('aria-label', search.placeholder); search.value = searchText;
-      const list = node('div', 'command-choice-list'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', panel.kind === 'imports' ? 'Available imports' : 'Available conversations');
-      const empty = node('p', 'command-empty', panel.items.length ? 'No matches.' : panel.kind === 'imports' ? 'No importable items were found.' : 'No conversations were found.');
-      const label = panel.kind === 'imports' ? 'Import selected' : panel.mode === 'fork' ? 'Fork conversation' : panel.mode === 'import' ? 'Import conversation' : 'Resume conversation';
+      const search = node('input', 'command-search'); search.type = 'search'; search.placeholder = 'Search conversations'; search.setAttribute('aria-label', search.placeholder); search.value = searchText;
+      const list = node('div', 'command-choice-list'); list.setAttribute('role', 'group'); list.setAttribute('aria-label', 'Available conversations');
+      const empty = node('p', 'command-empty', panel.items.length ? 'No matches.' : 'No conversations were found.');
+      const label = panel.mode === 'fork' ? 'Fork conversation' : 'Resume conversation';
       const commit = button(label, 'primary-button'); commit.disabled = !selected.size;
       const rows = panel.items.map(item => {
         const wrapper = node('label', 'command-choice'); wrapper.dataset.itemId = item.id;
-        const input = node('input'); input.type = panel.kind === 'imports' ? 'checkbox' : 'radio'; input.name = 'command-choice'; input.value = item.id; input.checked = selected.has(item.id);
-        input.addEventListener('change', () => { if (panel.kind === 'conversations') selected.clear(); if (input.checked) selected.add(item.id); else selected.delete(item.id); commit.disabled = !selected.size; });
+        const input = node('input'); input.type = 'radio'; input.name = 'command-choice'; input.value = item.id; input.checked = selected.has(item.id);
+        input.addEventListener('change', () => { selected.clear(); if (input.checked) selected.add(item.id); else selected.delete(item.id); commit.disabled = !selected.size; });
         wrapper.append(input, row(item)); list.append(wrapper); return { wrapper, item };
       });
       const filter = () => { searchText = search.value; const query = searchText.trim().toLocaleLowerCase(); let visible = 0; for (const { wrapper, item } of rows) { wrapper.hidden = ![item.title, item.description, item.source].filter(Boolean).join(' ').toLocaleLowerCase().includes(query); if (!wrapper.hidden) visible++; } empty.hidden = visible > 0; };
       search.addEventListener('input', filter); filter();
-      commit.addEventListener('click', () => { if (!selected.size) return; void execute(panel.kind === 'imports' ? 'import' : panel.mode, panel.kind === 'imports' ? { ids: [...selected] } : { id: [...selected][0] }); });
+      commit.addEventListener('click', () => { if (!selected.size) return; void execute(panel.mode, { id: [...selected][0] }); });
       view.content.append(search, list, empty, commit);
-      if (panel.kind === 'conversations' && panel.cursor) {
+      if (panel.cursor) {
         const more = button('Load more conversations');
         more.addEventListener('click', async () => {
           if (pending) return;
@@ -276,21 +272,6 @@ export function showCommandCenter(dialog: HTMLDialogElement, options: CommandCen
         });
         view.content.append(more);
       }
-    } else if (panel.kind === 'preferences') {
-      const form = node('form', 'command-preferences'); const fields = node('fieldset', 'command-fields');
-      const readers: { id: string; initial: string | boolean; read(): string | boolean }[] = [];
-      for (const field of panel.fields) {
-        const label = node('label', `command-field${field.type === 'toggle' ? ' command-toggle-field' : ''}`); const copy = node('span'); copy.append(node('strong', '', field.label)); if (field.description) copy.append(node('small', '', field.description));
-        const input = field.type === 'select' ? node('select') : node('input'); input.setAttribute('aria-label', field.label); input.disabled = Boolean(field.disabled);
-        if (input instanceof HTMLSelectElement && field.type === 'select') { field.options.forEach(option => input.append(new Option(option.label, option.value))); input.value = String(field.value); }
-        else if (input instanceof HTMLInputElement) { input.type = field.type === 'toggle' ? 'checkbox' : 'text'; if (field.type === 'toggle') input.checked = field.value === true; else { input.value = String(field.value); input.maxLength = 1024; input.autocomplete = 'off'; } }
-        label.append(copy, input); fields.append(label);
-        if (!field.disabled) readers.push({ id: field.id, initial: field.value, read: () => input instanceof HTMLInputElement && input.type === 'checkbox' ? input.checked : input.value });
-      }
-      const save = button('Save changes', 'primary-button'); save.type = 'submit'; save.disabled = true;
-      form.addEventListener('input', () => { save.disabled = !readers.some(reader => reader.read() !== reader.initial); }); form.addEventListener('change', () => { save.disabled = !readers.some(reader => reader.read() !== reader.initial); });
-      form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); if (!form.reportValidity()) return; const values = Object.fromEntries(readers.filter(reader => reader.read() !== reader.initial).map(reader => [reader.id, reader.read()])); if (Object.keys(values).length) void execute('set_preferences', { values }); });
-      form.append(fields, save); view.content.append(form); if (!panel.fields.length) view.content.append(node('p', 'command-empty', 'No editable preferences are available.'));
     } else if (panel.kind === 'hooks' || panel.kind === 'plugins') {
       if (!panel.items.length) view.content.append(node('p', 'command-empty', panel.kind === 'hooks' ? 'No lifecycle hooks are configured.' : 'No plugins are installed.'));
       for (const item of panel.items) { const entry = node('div', 'command-row'); entry.append(row(item), node('span', 'command-status', 'enabled' in item ? item.enabled ? 'Enabled' : 'Disabled' : item.status)); view.content.append(entry); }

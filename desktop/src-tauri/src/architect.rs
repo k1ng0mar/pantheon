@@ -28,44 +28,41 @@ const TOOL_CATALOG_VERSION: u32 = 2;
 const AUTO_ROSTER_MAX: usize = 24;
 /// Team tools only change this team's own state, and every call is checked against the
 /// caller's team, generation and role, so a harness may run them without asking.
-const TEAM_TOOLS: [&str; 10] = [
-    "pantheon_dispatch_workers", "pantheon_list_workers", "pantheon_read_worker",
-    "pantheon_followup_worker", "pantheon_cancel_worker", "pantheon_finish_team",
-    "pantheon_team_directory", "pantheon_send_team_message", "pantheon_read_team_mailbox",
-    "pantheon_checkpoint_worker",
-];
-pub(crate) fn team_tool(name: &str) -> bool {
-    TEAM_TOOLS.contains(&name)
-}
 /// The highest round limit a team can have, and how many a Resume at the limit adds.
 const MAX_ROUNDS: usize = 20;
 /// Extra instructions a user may add for the lead, on top of the built-in team rules.
 const MAX_LEAD_GUIDANCE: usize = 2000;
 const EXTRA_ROUNDS: usize = 4;
+#[cfg(test)]
+const TEAM_TOOLS: [&str; 10] = [
+    "pantheon_dispatch_workers",
+    "pantheon_list_workers",
+    "pantheon_read_worker",
+    "pantheon_followup_worker",
+    "pantheon_cancel_worker",
+    "pantheon_finish_team",
+    "pantheon_team_directory",
+    "pantheon_send_team_message",
+    "pantheon_read_team_mailbox",
+    "pantheon_checkpoint_worker",
+];
+#[cfg(test)]
+pub(crate) fn team_tool(name: &str) -> bool {
+    TEAM_TOOLS.contains(&name)
+}
+
 const AGENTS_STOPPING: &str = "Wait for the current agents to stop before resuming.";
 /// Sent once when the architect stops without dispatching or finishing.
 const CONTINUE_BODY: &str = "Background commands, monitors and scheduled wakeups do not report back after your turn ends, so nothing is waiting on them. Continue now: dispatch the remaining work to workers, run any check you need in the foreground and wait for it in this turn, or call finish_team with a summary if the objective is done. Do not end this turn waiting on anything.";
-const FAILED_PREFIX: &str = "A worker failed while other workers are still running, for this objective: ";
+const FAILED_PREFIX: &str =
+    "A worker failed while other workers are still running, for this objective: ";
 const FAILED_BODY: &str = "\n\nRead the failed worker's error and result. Retry it with followup_worker, dispatch a replacement, or leave it for the final review. Other workers are still active: do not edit their files, repeat completed assignments, or poll. You may end this turn after you act; settled work will trigger review.\n\n";
-const HARNESSES: [&str; 16] = [
-    "claude",
-    "codex",
-    "kimi",
-    "opencode",
-    "glm",
-    "antigravity",
-    "grok",
-    "mimo",
-    "pi",
-    "deepseek",
-    "commandcode",
-    "cline",
-    "kilo",
-    "omp",
-    "github-copilot",
-    "muse",
-];
-
+/// Worker providers a team may dispatch to. One app, one provider: the roster
+/// differs by model and effort, not by another agent's CLI.
+/// The only worker provider this build can start. A stored team may still name
+/// another id (older installs), so admission checks this at dispatch instead of
+/// rejecting the saved configuration outright.
+const HARNESSES: [&str; 1] = ["pantheon"];
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkerProfile {
@@ -238,7 +235,11 @@ fn valid_id(value: &str) -> bool {
 }
 impl TeamConfig {
     fn validate(&self) -> Result<()> {
-        let workers = if self.auto { 0..=AUTO_ROSTER_MAX } else { 1..=6 };
+        let workers = if self.auto {
+            0..=AUTO_ROSTER_MAX
+        } else {
+            1..=6
+        };
         if !workers.contains(&self.workers.len())
             || !(1..=MAX_ROUNDS).contains(&self.max_rounds)
             || !(1..=50).contains(&self.max_assignments)
@@ -262,39 +263,157 @@ impl TeamConfig {
         }
         let mut ids = HashSet::new();
         for worker in &self.workers {
-            if !valid_id(&worker.id)
-                || !ids.insert(&worker.id)
-                || !HARNESSES.contains(&worker.provider.as_str())
-            {
-                return Err(
-                    "Worker profiles need unique IDs and an installed harness type.".into(),
-                );
+            // The provider id is checked when a worker is dispatched, not here:
+            // a team saved by an older build still opens, and the first turn that
+            // names a provider this build cannot start fails with the reason.
+            if !valid_id(&worker.id) || !ids.insert(&worker.id) {
+                return Err("Worker profiles need unique IDs.".into());
             }
             text(&worker.name, 80, "Worker name")?;
             if worker.model.len() > 200 || worker.model.contains('\0') {
                 return Err("Model ID must be under 200 bytes.".into());
             }
-            crate::providers::validate_reasoning_effort(
-                &worker.provider,
-                worker.reasoning_effort.as_deref(),
-            )?;
+            if let Some(effort) = worker.reasoning_effort.as_deref() {
+                if effort.is_empty()
+                    || effort.len() > 64
+                    || !effort.bytes().all(|b| b.is_ascii_graphic())
+                {
+                    return Err("Unsupported reasoning effort for this provider".into());
+                }
+            }
         }
         Ok(())
     }
 }
+fn completed_with_agents(
+    state: &AppState,
+    agents: &std::collections::HashMap<String, crate::RunningAgent>,
+    sid: &str,
+    admission: Option<&Admission>,
+    successful: bool,
+    stopped: bool,
+    notify: &mut impl FnMut(&TeamSnapshot),
+) {
+    if let Some(admission) = admission {
+        if let Ok(store) = state.store.lock() {
+            if let Ok(Some(mut team)) = load(&store, &admission.parent) {
+                if team.generation == admission.generation {
+                    if let Some(worker) = team.workers.iter_mut().find(|w| w.session_id == sid) {
+                        // Explicit cancellation already settled this assignment.
+                        if worker.status != "stopped" {
+                            worker.status = if worker.timed_out {
+                                "failed"
+                            } else if stopped {
+                                "stopped"
+                            } else if successful {
+                                "completed"
+                            } else {
+                                "failed"
+                            }
+                            .into();
+                        }
+                        worker.summary=store.conn().query_row("SELECT substr(content,1,?2+1) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",params![sid,team.config.summary_limit as i64],|r|r.get::<_,String>(0)).optional().ok().flatten().map(|s|bounded(&s,team.config.summary_limit)).unwrap_or_default();
+                        if !successful && !worker.abandoned {
+                            worker.error = Some(if worker.timed_out {
+                                watchdog::worker_note()
+                            } else if stopped {
+                                "Worker stopped.".into()
+                            } else {
+                                "Worker run failed. Inspect its conversation before retrying."
+                                    .into()
+                            });
+                        }
+                        worker.timed_out = false;
+                        worker.updated_at = storage::now();
+                        team.dispatch_revision += 1;
+                        worker.result_revision = team.dispatch_revision;
+                    } else if sid == team.session_id {
+                        team.pending_turn = None;
+                        // A silent turn the watchdog stopped is not the user's stop: the
+                        // workers keep running and the team carries on without it.
+                        let timed_out = team.timed_out && stopped && active(&team.status);
+                        if timed_out {
+                            team.status = "waiting".into();
+                            team.error = Some(watchdog::architect_note());
+                        } else if !successful && team.status != "completed" {
+                            team.status = if stopped { "paused" } else { "failed" }.into();
+                            team.error=Some(if stopped{"Architect stopped."}else{"Architect run failed. Inspect its conversation before resuming."}.into());
+                        } else if active(&team.status) {
+                            team.status = "waiting".into();
+                        }
+                        if !successful && !timed_out {
+                            for worker in &mut team.workers {
+                                if unsettled(&worker.status) {
+                                    if let Some(agent) = agents.get(&worker.session_id) {
+                                        let _ = agent.send(RunInput::Stop);
+                                    }
+                                    worker.status = "stopped".into();
+                                }
+                            }
+                        }
+                        let _ = store.conn().execute(
+                            "UPDATE sessions SET task_stage=?2 WHERE id=?1",
+                            params![
+                                sid,
+                                if team.status == "completed" {
+                                    "review"
+                                } else {
+                                    "in_progress"
+                                }
+                            ],
+                        );
+                    }
+                    if save(&store, &mut team).is_ok() {
+                        notify(&team);
+                    }
+                }
+                // Pause/stop invalidates admissions before the process exits. Its
+                // selected setup still belongs to this task and must survive it.
+                if !agents.contains_key(&team.session_id) {
+                    match apply_pending_setup(&store, &mut team) {
+                        Ok(true) => notify(&team),
+                        Ok(false) => {}
+                        Err(error) => eprintln!("Applying pending team setup: {error}"),
+                    }
+                }
+            }
+        };
+    }
+}
+
+pub(crate) fn completed(
+    app: &tauri::AppHandle,
+    sid: &str,
+    admission: Option<&Admission>,
+    successful: bool,
+    stopped: bool,
+    agents: &std::collections::HashMap<String, crate::RunningAgent>,
+) {
+    completed_with_agents(
+        &app.state::<AppState>(),
+        agents,
+        sid,
+        admission,
+        successful,
+        stopped,
+        &mut |team| emit(app, team),
+    );
+    wake(app.clone());
+}
+
 pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
     load_on(&store.conn(), sid)
 }
 pub(crate) fn load_on(conn: &rusqlite::Connection, sid: &str) -> Result<Option<TeamSnapshot>> {
     conn.query_row(
-            "SELECT content FROM architect_teams WHERE session_id=?1",
-            [sid],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
-        .map(|s| serde_json::from_str(&s).map_err(|e| format!("Invalid saved team: {e}")))
-        .transpose()
+        "SELECT content FROM architect_teams WHERE session_id=?1",
+        [sid],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .map(|s| serde_json::from_str(&s).map_err(|e| format!("Invalid saved team: {e}")))
+    .transpose()
 }
 fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
     save_on(&store.conn(), team)
@@ -318,12 +437,12 @@ pub(crate) fn parent_of(store: &Store, sid: &str) -> Result<Option<String>> {
 }
 pub(crate) fn parent_of_on(conn: &rusqlite::Connection, sid: &str) -> Result<Option<String>> {
     conn.query_row(
-            "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
-            [sid],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())
+        "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
+        [sid],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
 }
 pub(crate) fn check_manual(store: &Store, sid: &str) -> Result<()> {
     if parent_of(store, sid)?.is_some() {
@@ -368,7 +487,8 @@ pub(crate) fn validate_admission(
         }
         // Revoking Full access while paused must affect retries and follow-ups too.
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET mode=?2 WHERE id=?1",
                 params![sid, parent.mode],
             )
@@ -380,7 +500,7 @@ pub(crate) fn validate_admission(
         // version marker, so interrupted startup retries keep their handoff.
         let conn = store.conn();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        if parent.provider == "codex" {
+        if parent.provider == "pantheon" {
             crate::context_recovery::queue_on(&tx, sid)?;
             tx.execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
         }
@@ -418,7 +538,10 @@ pub(crate) fn prompt(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-    team.briefings.insert(sid.to_string(), briefing::next(previous.as_ref(), fingerprint, seen, full));
+    team.briefings.insert(
+        sid.to_string(),
+        briefing::next(previous.as_ref(), fingerprint, seen, full),
+    );
     save(store, &mut team)?;
     Ok(text)
 }
@@ -437,7 +560,9 @@ fn rules(store: &Store, team: &TeamSnapshot, sid: &str) -> Result<(String, Strin
         };
         // A team's own guidance wins; otherwise the app-wide one from Settings applies.
         // A corrupt library must not stop the rules from going out.
-        let default_guidance = profiles::read(store).ok().and_then(|library| library.lead_guidance);
+        let default_guidance = profiles::read(store)
+            .ok()
+            .and_then(|library| library.lead_guidance);
         let guidance = team
             .config
             .lead_guidance
@@ -584,7 +709,7 @@ pub(super) fn configure_state(
         // different catalog needs a new context, with the transcript carried
         // forward. Claude and Kimi reload MCP tools when resuming, so their
         // existing context remains valid. Saving ordinary mode is a no-op.
-        if existing.is_some() && session.provider == "codex" {
+        if existing.is_some() && session.provider == "pantheon" {
             crate::context_recovery::queue_on(&tx, session_id)?;
             tx.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
         }
@@ -629,7 +754,7 @@ pub(super) fn configure_state(
     if !agents.contains_key(session_id) {
         apply_setup_on(&tx, &mut team, &setup)?;
     }
-    if fresh && selection.provider == "codex" {
+    if fresh && selection.provider == "pantheon" {
         crate::context_recovery::queue_on(&tx, session_id)?;
         tx.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;
         if session.resume_id.is_some() {
@@ -679,7 +804,11 @@ fn apply_setup_on(
     };
     if setup.architect.provider != provider {
         crate::context_recovery::queue_on(conn, &team.session_id)?;
-        conn.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1", [&team.session_id]).map_err(|e|e.to_string())?;
+        conn.execute(
+            "UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1",
+            [&team.session_id],
+        )
+        .map_err(|e| e.to_string())?;
     }
     if setup.architect != current {
         profiles::apply_selection_on(conn, &team.session_id, &setup.architect)?;
@@ -722,7 +851,13 @@ pub(crate) async fn architect_start_in_project(
     expected_project: Option<String>,
 ) -> Result<()> {
     text_check(&text)?;
-    let (team, admission) = start_state(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref())?;
+    let (team, admission) = start_state(
+        &state,
+        &session_id,
+        &text,
+        image_ids.clone(),
+        expected_project.as_deref(),
+    )?;
     emit(&app, &team);
     if let Err(error) = crate::launch_team_task(
         app.clone(),
@@ -762,9 +897,7 @@ pub(crate) fn start_state(
             .iter()
             .any(|w| agents.contains_key(&w.session_id))
     {
-        return Err(
-            "This team is still active. Pause it before sending another request.".into(),
-        );
+        return Err("This team is still active. Pause it before sending another request.".into());
     }
     if team.workers.iter().any(|w| unsettled(&w.status)) {
         return Err("Resume or stop the pending team before starting another request.".into());
@@ -874,7 +1007,10 @@ fn control_state(state: &AppState, session_id: &str, action: &str) -> Result<Tea
                 // no setup form to raise it: grant a few, within the configurable maximum.
                 if team.round >= team.config.max_rounds {
                     if team.round >= MAX_ROUNDS {
-                        return Err("This team used all 20 architect rounds. Send a message to continue.".into());
+                        return Err(
+                            "This team used all 20 architect rounds. Send a message to continue."
+                                .into(),
+                        );
                     }
                     team.config.max_rounds = (team.round + EXTRA_ROUNDS).min(MAX_ROUNDS);
                 }
@@ -968,8 +1104,13 @@ pub fn host(
         tools,
         approval_tools: HashSet::new(),
         handler: Arc::new(move |name, args| {
-            let (app, sid, stopped, actor, scope) =
-                (app.clone(), parent.clone(), stopped.clone(), actor.clone(), scope.clone());
+            let (app, sid, stopped, actor, scope) = (
+                app.clone(),
+                parent.clone(),
+                stopped.clone(),
+                actor.clone(),
+                scope.clone(),
+            );
             Box::pin(async move {
                 if stopped.load(Ordering::SeqCst) {
                     return Err("Team agent has stopped.".into());
@@ -1155,7 +1296,12 @@ fn queue_reason(team: &TeamSnapshot, worker: &Worker) -> Option<String> {
     if worker.status != "queued" {
         return None;
     }
-    if worker.depends_on.iter().any(|id| !team.workers.iter().any(|w| w.id == *id && w.status == "completed")) {
+    if worker.depends_on.iter().any(|id| {
+        !team
+            .workers
+            .iter()
+            .any(|w| w.id == *id && w.status == "completed")
+    }) {
         return Some("Waiting for a dependency".into());
     }
     if team.config.max_parallel > 0
@@ -1163,7 +1309,9 @@ fn queue_reason(team: &TeamSnapshot, worker: &Worker) -> Option<String> {
     {
         return Some("Waiting for an available worker slot".into());
     }
-    team.workers.iter().find(|w| active(&w.status) && conflicts(worker, w))
+    team.workers
+        .iter()
+        .find(|w| active(&w.status) && conflicts(worker, w))
         .map(|w| format!("Waiting for {} to finish editing shared files", w.name))
 }
 fn summaries(team: &TeamSnapshot, offset: usize) -> Value {
@@ -1186,8 +1334,14 @@ fn summaries(team: &TeamSnapshot, offset: usize) -> Value {
 /// The worker model for one assignment. Configured teams must name a profile. Auto
 /// teams may name a roster profile, a provider and model chosen by the lead (or asked
 /// for in the user's prompt), or nothing, which reuses the lead's own selection.
-fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) -> Result<WorkerProfile> {
-    let direct = assignment.provider.is_some() || assignment.model.is_some() || assignment.reasoning_effort.is_some();
+fn staff(
+    config: &TeamConfig,
+    lead: &storage::Session,
+    assignment: &Assignment,
+) -> Result<WorkerProfile> {
+    let direct = assignment.provider.is_some()
+        || assignment.model.is_some()
+        || assignment.reasoning_effort.is_some();
     if let Some(id) = &assignment.profile_id {
         if direct {
             return Err("Use either profileId or provider and model, not both.".into());
@@ -1210,10 +1364,17 @@ fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) 
         (None, None) if assignment.reasoning_effort.is_none() => {
             (lead.provider.clone(), lead.model.clone())
         }
-        _ => return Err("Set provider and model together, or omit both to use your own model.".into()),
+        _ => {
+            return Err(
+                "Set provider and model together, or omit both to use your own model.".into(),
+            )
+        }
     };
     if !HARNESSES.contains(&provider.as_str()) {
-        return Err(format!("Unknown harness {provider:?}. Use one of: {}.", HARNESSES.join(", ")));
+        return Err(format!(
+            "Unknown harness {provider:?}. Use one of: {}.",
+            HARNESSES.join(", ")
+        ));
     }
     if model.is_empty() || model.len() > 200 || model.contains('\0') {
         return Err("Model ID must be 1–200 bytes.".into());
@@ -1240,23 +1401,50 @@ fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) 
 }
 /// Named agent teams orchestrate only their listed models. Omitting the model uses the
 /// lead's own entry when the team lists it.
-fn staff_from_roster(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) -> Result<WorkerProfile> {
+fn staff_from_roster(
+    config: &TeamConfig,
+    lead: &storage::Session,
+    assignment: &Assignment,
+) -> Result<WorkerProfile> {
     let (provider, model) = match (&assignment.provider, &assignment.model) {
         (Some(provider), Some(model)) => (provider.as_str(), model.as_str()),
-        (None, None) if assignment.reasoning_effort.is_none() => (lead.provider.as_str(), lead.model.as_str()),
-        _ => return Err("Set provider and model together, or omit both to use your own model.".into()),
+        (None, None) if assignment.reasoning_effort.is_none() => {
+            (lead.provider.as_str(), lead.model.as_str())
+        }
+        _ => {
+            return Err(
+                "Set provider and model together, or omit both to use your own model.".into(),
+            )
+        }
     };
     let entry = config
         .workers
         .iter()
         .find(|p| p.provider == provider && p.model == model)
-        .ok_or_else(|| format!("This team can only orchestrate its own models: {}. Pick one with profileId.", roster_names(config)))?;
-    let reasoning_effort = assignment.reasoning_effort.clone().or_else(|| entry.reasoning_effort.clone());
+        .ok_or_else(|| {
+            format!(
+                "This team can only orchestrate its own models: {}. Pick one with profileId.",
+                roster_names(config)
+            )
+        })?;
+    let reasoning_effort = assignment
+        .reasoning_effort
+        .clone()
+        .or_else(|| entry.reasoning_effort.clone());
     crate::providers::validate_reasoning_effort(provider, reasoning_effort.as_deref())?;
-    Ok(WorkerProfile { id: entry.id.clone(), reasoning_effort, ..entry.clone() })
+    Ok(WorkerProfile {
+        id: entry.id.clone(),
+        reasoning_effort,
+        ..entry.clone()
+    })
 }
 fn roster_names(config: &TeamConfig) -> String {
-    config.workers.iter().map(|p| format!("{} ({})", p.name, p.id)).collect::<Vec<_>>().join(", ")
+    config
+        .workers
+        .iter()
+        .map(|p| format!("{} ({})", p.name, p.id))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 fn dispatch(
     app: &tauri::AppHandle,
@@ -1289,7 +1477,9 @@ fn dispatch_state(
     stopped: &AtomicBool,
 ) -> Result<(Value, Option<TeamSnapshot>)> {
     if serde_json::to_vec(&args).map_err(|e| e.to_string())?.len() > 128 * 1024 {
-        return Err("Team tool arguments exceed 128 KiB. Split the batch into smaller calls.".into());
+        return Err(
+            "Team tool arguments exceed 128 KiB. Split the batch into smaller calls.".into(),
+        );
     }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -1320,8 +1510,8 @@ fn dispatch_state(
             let mut duplicates = Vec::new();
             for raw in batch.assignments {
                 let has_files = raw.get("files").is_some();
-                let assignment: Assignment = serde_json::from_value(raw)
-                    .map_err(|e| format!("Invalid assignments: {e}"))?;
+                let assignment: Assignment =
+                    serde_json::from_value(raw).map_err(|e| format!("Invalid assignments: {e}"))?;
                 if !valid_id(&assignment.key) {
                     return Err("Use a short alphanumeric assignment key.".into());
                 }
@@ -1339,10 +1529,14 @@ fn dispatch_state(
                     return Err("Supply an explicit files array for every new assignment.".into());
                 }
                 // A queued lower cap cannot become invalid while this turn finishes.
-                let assignment_limit = team.pending_setup.as_ref().map_or(
-                    team.config.max_assignments,
-                    |setup| team.config.max_assignments.min(setup.config.max_assignments),
-                );
+                let assignment_limit =
+                    team.pending_setup
+                        .as_ref()
+                        .map_or(team.config.max_assignments, |setup| {
+                            team.config
+                                .max_assignments
+                                .min(setup.config.max_assignments)
+                        });
                 if team.workers.len().saturating_sub(team.objective_start) >= assignment_limit {
                     return Err(
                         "Assignment limit reached. Reuse an existing worker with a follow-up."
@@ -1362,7 +1556,8 @@ fn dispatch_state(
                 }
                 let profile = staff(&team.config, &parent, &assignment)?;
                 let profile = &profile;
-                let session_id = Store::insert_new_session(&tx,
+                let session_id = Store::insert_new_session(
+                    &tx,
                     &parent.project_id,
                     &profile.provider,
                     &profile.model,
@@ -1518,12 +1713,22 @@ fn dispatch_state(
             }
             let finish: Finish = serde_json::from_value(args).map_err(|e| e.to_string())?;
             text(&finish.summary, 6000, "Summary")?;
-            if team.workers.iter().all(|w| w.status == "completed" || w.abandoned)
-                && team.workers.iter().any(|w| agents.contains_key(&w.session_id))
+            if team
+                .workers
+                .iter()
+                .all(|w| w.status == "completed" || w.abandoned)
+                && team
+                    .workers
+                    .iter()
+                    .any(|w| agents.contains_key(&w.session_id))
             {
                 return Err("A cancelled worker is still stopping. End your turn without retrying; Pantheon returns to you once it has stopped.".into());
             }
-            if team.workers.iter().any(|w| w.status != "completed" && !w.abandoned) {
+            if team
+                .workers
+                .iter()
+                .any(|w| w.status != "completed" && !w.abandoned)
+            {
                 return Err("Every worker must complete or be explicitly abandoned before finishing. Follow up or cancel failed work with a reason.".into());
             }
             team.status = "completed".into();
@@ -1806,8 +2011,16 @@ fn next_action_state(
                 serde_json::to_string(&review_summaries(&team)).map_err(|e| e.to_string())?;
             team.reviewed_revision = team.dispatch_revision;
             team.reviewed_coordination_revision = team.coordination_revision;
-            let prompt = format!("{FAILED_PREFIX}{}{FAILED_BODY}{}", bounded(&team.objective, 8192), bounded(&compact, 40 * 1024));
-            let action = internal_turn(&mut team, prompt, internal_turns::CoordinationKind::WorkerFailed);
+            let prompt = format!(
+                "{FAILED_PREFIX}{}{FAILED_BODY}{}",
+                bounded(&team.objective, 8192),
+                bounded(&compact, 40 * 1024)
+            );
+            let action = internal_turn(
+                &mut team,
+                prompt,
+                internal_turns::CoordinationKind::WorkerFailed,
+            );
             save(&store, &mut team)?;
             notify(&team);
             return Ok(Some(action));
@@ -1865,7 +2078,10 @@ fn next_action_state(
             }
             if team.round >= team.config.max_rounds {
                 team.status = "paused".into();
-                team.error=Some("Architect round limit reached. Resume to give the architect more rounds.".into());
+                team.error = Some(
+                    "Architect round limit reached. Resume to give the architect more rounds."
+                        .into(),
+                );
                 save(&store, &mut team)?;
                 notify(&team);
                 continue;
@@ -1894,7 +2110,11 @@ fn next_action_state(
                 } else {
                     "You ended your turn without dispatching workers or calling finish_team, for this objective:".into()
                 };
-                let prompt = format!("{opening} {}\n\n{}", bounded(&team.objective, 8192), CONTINUE_BODY);
+                let prompt = format!(
+                    "{opening} {}\n\n{}",
+                    bounded(&team.objective, 8192),
+                    CONTINUE_BODY
+                );
                 team.pending_turn = Some(PendingTurn {
                     prompt: prompt.clone(),
                     images: None,
@@ -2026,7 +2246,13 @@ fn review_summaries(team: &TeamSnapshot) -> Value {
     let mut remaining = 36 * 1024usize;
     let changed = |w: &Worker| w.result_revision > team.reviewed_revision;
     let mut summaries = vec![String::new(); team.workers.len()];
-    for (i, w) in team.workers.iter().enumerate().rev().filter(|(_, w)| changed(w)) {
+    for (i, w) in team
+        .workers
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, w)| changed(w))
+    {
         summaries[i] = bounded(&w.summary, team.config.summary_limit.min(remaining));
         remaining = remaining.saturating_sub(summaries[i].len() + 160);
     }
@@ -2069,25 +2295,6 @@ pub(crate) fn activity(app: &tauri::AppHandle, sid: &str, admission: Option<&Adm
         }
     };
 }
-pub(crate) fn completed(
-    app: &tauri::AppHandle,
-    sid: &str,
-    admission: Option<&Admission>,
-    successful: bool,
-    stopped: bool,
-    agents: &std::collections::HashMap<String, crate::RunningAgent>,
-) {
-    completed_with_agents(
-        &app.state::<AppState>(),
-        agents,
-        sid,
-        admission,
-        successful,
-        stopped,
-        &mut |team| emit(app, team),
-    );
-    wake(app.clone());
-}
 #[cfg(test)]
 fn completed_state(
     state: &AppState,
@@ -2104,99 +2311,5 @@ fn completed_state(
 }
 // Final persistence, removing the old run, and team settlement share the same
 // registry lock so a scheduler cannot claim a new turn between those steps.
-fn completed_with_agents(
-    state: &AppState,
-    agents: &std::collections::HashMap<String, crate::RunningAgent>,
-    sid: &str,
-    admission: Option<&Admission>,
-    successful: bool,
-    stopped: bool,
-    notify: &mut impl FnMut(&TeamSnapshot),
-) {
-    if let Some(admission) = admission {
-        if let Ok(store) = state.store.lock() {
-            if let Ok(Some(mut team)) = load(&store, &admission.parent) {
-                if team.generation == admission.generation {
-                    if let Some(worker) = team.workers.iter_mut().find(|w| w.session_id == sid) {
-                        // Explicit cancellation already settled this assignment.
-                        if worker.status != "stopped" {
-                            worker.status = if worker.timed_out {
-                                "failed"
-                            } else if stopped {
-                                "stopped"
-                            } else if successful {
-                                "completed"
-                            } else {
-                                "failed"
-                            }
-                            .into();
-                        }
-                        worker.summary=store.conn().query_row("SELECT substr(content,1,?2+1) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",params![sid,team.config.summary_limit as i64],|r|r.get::<_,String>(0)).optional().ok().flatten().map(|s|bounded(&s,team.config.summary_limit)).unwrap_or_default();
-                        if !successful && !worker.abandoned {
-                            worker.error = Some(if worker.timed_out {
-                                watchdog::worker_note()
-                            } else if stopped {
-                                "Worker stopped.".into()
-                            } else {
-                                "Worker run failed. Inspect its conversation before retrying.".into()
-                            });
-                        }
-                        worker.timed_out = false;
-                        worker.updated_at = storage::now();
-                        team.dispatch_revision += 1;
-                        worker.result_revision = team.dispatch_revision;
-                    } else if sid == team.session_id {
-                        team.pending_turn = None;
-                        // A silent turn the watchdog stopped is not the user's stop: the
-                        // workers keep running and the team carries on without it.
-                        let timed_out = team.timed_out && stopped && active(&team.status);
-                        if timed_out {
-                            team.status = "waiting".into();
-                            team.error = Some(watchdog::architect_note());
-                        } else if !successful && team.status != "completed" {
-                            team.status = if stopped { "paused" } else { "failed" }.into();
-                            team.error=Some(if stopped{"Architect stopped."}else{"Architect run failed. Inspect its conversation before resuming."}.into());
-                        } else if active(&team.status) {
-                            team.status = "waiting".into();
-                        }
-                        if !successful && !timed_out {
-                            for worker in &mut team.workers {
-                                if unsettled(&worker.status) {
-                                    if let Some(agent) = agents.get(&worker.session_id) {
-                                        let _ = agent.send(RunInput::Stop);
-                                    }
-                                    worker.status = "stopped".into();
-                                }
-                            }
-                        }
-                        let _ = store.conn().execute(
-                            "UPDATE sessions SET task_stage=?2 WHERE id=?1",
-                            params![
-                                sid,
-                                if team.status == "completed" {
-                                    "review"
-                                } else {
-                                    "in_progress"
-                                }
-                            ],
-                        );
-                    }
-                    if save(&store, &mut team).is_ok() {
-                        notify(&team);
-                    }
-                }
-                // Pause/stop invalidates admissions before the process exits. Its
-                // selected setup still belongs to this task and must survive it.
-                if !agents.contains_key(&team.session_id) {
-                    match apply_pending_setup(&store, &mut team) {
-                        Ok(true) => notify(&team),
-                        Ok(false) => {}
-                        Err(error) => eprintln!("Applying pending team setup: {error}"),
-                    }
-                }
-            }
-        };
-    }
-}
 #[cfg(test)]
 mod tests;

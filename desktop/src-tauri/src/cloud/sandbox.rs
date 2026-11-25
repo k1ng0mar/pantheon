@@ -41,25 +41,49 @@ pub trait Sandbox: Send + Sync {
     fn power(&self, native: &str, action: &str) -> Result<()>;
     /// Current state as in [`Machine::state`]: running, stopped, starting, stopping, error.
     fn state(&self, native: &str) -> Result<String> {
-        self.list()?.into_iter().find(|m| m.id.split_once(':').is_some_and(|(_, id)| id == native)).map(|m| m.state).ok_or_else(|| "That cloud machine no longer exists.".into())
+        self.list()?
+            .into_iter()
+            .find(|m| m.id.split_once(':').is_some_and(|(_, id)| id == native))
+            .map(|m| m.state)
+            .ok_or_else(|| "That cloud machine no longer exists.".into())
     }
-    fn exec(&self, native: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)>;
+    fn exec(&self, native: &str, command: &str, timeout: Duration)
+        -> Result<(Option<i32>, String)>;
     /// Keep the machine running for at least `minutes` with no client requests (extend a
     /// timeout, turn off auto-stop…), capped at `info().max_unattended_minutes`. Called at
     /// every run start and with a short value after a run ends, so idle machines stop.
     fn keep_alive(&self, native: &str, minutes: u32) -> Result<()>;
     /// Start `command` detached so it outlives the call (and any later client).
     fn spawn(&self, native: &str, command: &str) -> Result<()> {
-        let script = format!("setsid nohup sh -c {} >/dev/null 2>&1 </dev/null &", super::shell_quote(command));
+        let script = format!(
+            "setsid nohup sh -c {} >/dev/null 2>&1 </dev/null &",
+            super::shell_quote(command)
+        );
         checked(self.exec(native, &script, Duration::from_secs(60))?)
     }
     /// Write a file (parents created, mode 0600 when `private`).
     fn upload(&self, native: &str, path: &str, bytes: &[u8], private: bool) -> Result<()> {
         let quoted = super::shell_quote(path);
         let mut first = true;
-        for piece in bytes.chunks(CHUNK).chain(bytes.is_empty().then_some(&[][..])) {
-            let (redirect, setup) = if first { (">", format!("mkdir -p \"$(dirname {quoted})\" && umask {} && ", if private { "077" } else { "022" })) } else { (">>", String::new()) };
-            let command = format!("{setup}printf %s {} | base64 -d {redirect} {quoted}", STANDARD.encode(piece));
+        for piece in bytes
+            .chunks(CHUNK)
+            .chain(bytes.is_empty().then_some(&[][..]))
+        {
+            let (redirect, setup) = if first {
+                (
+                    ">",
+                    format!(
+                        "mkdir -p \"$(dirname {quoted})\" && umask {} && ",
+                        if private { "077" } else { "022" }
+                    ),
+                )
+            } else {
+                (">>", String::new())
+            };
+            let command = format!(
+                "{setup}printf %s {} | base64 -d {redirect} {quoted}",
+                STANDARD.encode(piece)
+            );
             checked(self.exec(native, &command, Duration::from_secs(120))?)?;
             first = false;
         }
@@ -72,7 +96,9 @@ pub trait Sandbox: Send + Sync {
         if code != Some(0) && output.trim().is_empty() {
             return Ok(Vec::new());
         }
-        STANDARD.decode(output.trim()).map_err(|_| "The cloud machine sent a file Pantheon could not read.".into())
+        STANDARD
+            .decode(output.trim())
+            .map_err(|_| "The cloud machine sent a file Pantheon could not read.".into())
     }
 }
 
@@ -83,7 +109,18 @@ pub(super) fn download_command(path: &str, offset: u64, max: usize) -> String {
 pub fn checked((code, output): (Option<i32>, String)) -> Result<()> {
     match code {
         Some(0) => Ok(()),
-        _ => Err(format!("The cloud command failed: {}", output.trim().chars().rev().take(400).collect::<String>().chars().rev().collect::<String>())),
+        _ => Err(format!(
+            "The cloud command failed: {}",
+            output
+                .trim()
+                .chars()
+                .rev()
+                .take(400)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        )),
     }
 }
 
@@ -160,7 +197,17 @@ pub fn disconnect(provider: &str) -> Result<()> {
     }
 }
 /// Providers whose connect/disconnect live in this registry.
-pub const KEYED: [&str; 9] = ["e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"];
+pub const KEYED: [&str; 9] = [
+    "e2b",
+    "modal",
+    "codesandbox",
+    "runloop",
+    "blaxel",
+    "tensorlake",
+    "freestyle",
+    "boat",
+    "instabox",
+];
 
 /// Whether a provider is connected well enough to run cloud agents (no network call).
 pub fn ready(provider: &str) -> bool {
@@ -176,7 +223,10 @@ pub fn ready(provider: &str) -> bool {
 
 impl Sandbox for Daytona {
     fn info(&self) -> Info {
-        Info { persistent: true, max_unattended_minutes: 24 * 60 }
+        Info {
+            persistent: true,
+            max_unattended_minutes: 24 * 60,
+        }
     }
     fn list(&self) -> Result<Vec<Machine>> {
         block(Daytona::list(self))
@@ -187,7 +237,12 @@ impl Sandbox for Daytona {
     fn power(&self, native: &str, action: &str) -> Result<()> {
         block(Daytona::power(self, native, action))
     }
-    fn exec(&self, native: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
+    fn exec(
+        &self,
+        native: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<(Option<i32>, String)> {
         block(Daytona::exec(self, native, command, timeout))
     }
     fn keep_alive(&self, native: &str, minutes: u32) -> Result<()> {
@@ -197,10 +252,16 @@ impl Sandbox for Daytona {
 
 impl Sandbox for Cloudflare {
     fn info(&self) -> Info {
-        Info { persistent: false, max_unattended_minutes: 24 * 60 }
+        Info {
+            persistent: false,
+            max_unattended_minutes: 24 * 60,
+        }
     }
     fn list(&self) -> Result<Vec<Machine>> {
-        block(Cloudflare::list(self, &super::settings().cloudflare_sandboxes))
+        block(Cloudflare::list(
+            self,
+            &super::settings().cloudflare_sandboxes,
+        ))
     }
     fn create(&self, name: &str) -> Result<Machine> {
         super::commands::create("cloudflare", name)
@@ -208,7 +269,12 @@ impl Sandbox for Cloudflare {
     fn power(&self, native: &str, action: &str) -> Result<()> {
         super::commands::power(&format!("cloudflare:{native}"), action)
     }
-    fn exec(&self, native: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
+    fn exec(
+        &self,
+        native: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<(Option<i32>, String)> {
         block(Cloudflare::exec(self, native, command, timeout))
     }
     fn keep_alive(&self, native: &str, minutes: u32) -> Result<()> {
@@ -217,20 +283,33 @@ impl Sandbox for Cloudflare {
     /// Reads stdout only: `exec` appends a `[stderr]` section that would break the base64.
     fn download(&self, native: &str, path: &str, offset: u64, max: usize) -> Result<Vec<u8>> {
         let command = download_command(path, offset, max);
-        let (code, output) = block(Cloudflare::exec_stdout(self, native, &command, Duration::from_secs(120)))?;
+        let (code, output) = block(Cloudflare::exec_stdout(
+            self,
+            native,
+            &command,
+            Duration::from_secs(120),
+        ))?;
         if code != Some(0) && output.trim().is_empty() {
             return Ok(Vec::new());
         }
-        STANDARD.decode(output.trim()).map_err(|_| "The cloud machine sent a file Pantheon could not read.".into())
+        STANDARD
+            .decode(output.trim())
+            .map_err(|_| "The cloud machine sent a file Pantheon could not read.".into())
     }
 }
 
 impl Sandbox for Aws {
     fn info(&self) -> Info {
-        Info { persistent: true, max_unattended_minutes: 24 * 60 }
+        Info {
+            persistent: true,
+            max_unattended_minutes: 24 * 60,
+        }
     }
     fn list(&self) -> Result<Vec<Machine>> {
-        Ok(Aws::list(self)?.into_iter().filter(|m| m.os == "linux").collect())
+        Ok(Aws::list(self)?
+            .into_iter()
+            .filter(|m| m.os == "linux")
+            .collect())
     }
     fn create(&self, name: &str) -> Result<Machine> {
         super::commands::create("aws-linux", name)
@@ -238,7 +317,12 @@ impl Sandbox for Aws {
     fn power(&self, native: &str, action: &str) -> Result<()> {
         super::commands::power(&format!("aws:{native}"), action)
     }
-    fn exec(&self, native: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
+    fn exec(
+        &self,
+        native: &str,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<(Option<i32>, String)> {
         Aws::exec(self, native, false, command, timeout)
     }
     /// EC2 runs until stopped; cloud agents stop it themselves after an idle run end.
@@ -257,7 +341,10 @@ mod tests {
     struct Recorder(Mutex<Vec<String>>);
     impl Sandbox for Recorder {
         fn info(&self) -> Info {
-            Info { persistent: true, max_unattended_minutes: 1 }
+            Info {
+                persistent: true,
+                max_unattended_minutes: 1,
+            }
         }
         fn list(&self) -> Result<Vec<Machine>> {
             Ok(Vec::new())
@@ -268,7 +355,12 @@ mod tests {
         fn power(&self, _native: &str, _action: &str) -> Result<()> {
             Ok(())
         }
-        fn exec(&self, _native: &str, command: &str, _timeout: Duration) -> Result<(Option<i32>, String)> {
+        fn exec(
+            &self,
+            _native: &str,
+            command: &str,
+            _timeout: Duration,
+        ) -> Result<(Option<i32>, String)> {
             self.0.lock().unwrap().push(command.to_owned());
             Ok((Some(0), String::new()))
         }
@@ -281,10 +373,16 @@ mod tests {
     fn uploads_split_into_commands_under_60_kib() {
         let recorder = Recorder::default();
         let path = format!("/home/user/{}/file", "long-folder-name/".repeat(10));
-        recorder.upload("m", &path, &vec![7u8; 3 * CHUNK + 5], true).unwrap();
+        recorder
+            .upload("m", &path, &vec![7u8; 3 * CHUNK + 5], true)
+            .unwrap();
         let commands = recorder.0.lock().unwrap();
         assert_eq!(commands.len(), 4);
-        assert!(commands.iter().all(|command| command.len() < COMMAND_MAX), "{:?}", commands.iter().map(String::len).collect::<Vec<_>>());
+        assert!(
+            commands.iter().all(|command| command.len() < COMMAND_MAX),
+            "{:?}",
+            commands.iter().map(String::len).collect::<Vec<_>>()
+        );
     }
 }
 
@@ -297,16 +395,31 @@ mod cloudflare_tests {
     fn cloudflare_uploads_and_downloads_ignore_stderr_and_fit_the_worker_cap() {
         let (base, seen) = mock::serve(|request, _| -> (u16, String) {
             if request.body.contains("tail -c") {
-                (200, r#"{"exitCode":0,"stdout":"aGVsbG8=","stderr":"warning","truncated":false}"#.into())
+                (
+                    200,
+                    r#"{"exitCode":0,"stdout":"aGVsbG8=","stderr":"warning","truncated":false}"#
+                        .into(),
+                )
             } else {
-                (200, r#"{"exitCode":0,"stdout":"","stderr":"","truncated":false}"#.into())
+                (
+                    200,
+                    r#"{"exitCode":0,"stdout":"","stderr":"","truncated":false}"#.into(),
+                )
             }
         });
         let cf = Cloudflare::new(base, "t".into());
         assert_eq!(Sandbox::download(&cf, "a", "/x", 0, 10).unwrap(), b"hello");
         Sandbox::upload(&cf, "a", "/x", &vec![7u8; 100 * 1024], true).unwrap();
         let log = seen.lock().unwrap();
-        let commands: Vec<String> = log.iter().map(|r| serde_json::from_str::<Value>(&r.body).unwrap()["command"].as_str().unwrap().to_string()).collect();
+        let commands: Vec<String> = log
+            .iter()
+            .map(|r| {
+                serde_json::from_str::<Value>(&r.body).unwrap()["command"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
         assert_eq!(commands.len(), 4);
         assert!(commands.iter().all(|c| c.len() <= 65536));
     }

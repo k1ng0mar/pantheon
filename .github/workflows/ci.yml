@@ -59,6 +59,10 @@ jobs:
       # tree between weekly runs.
       - uses: taiki-e/install-action@f84dff0ad3f25ff0e5dc531e626734a4e7d11ac7 # cargo-audit
       - run: cargo audit
+      - name: Desktop Tauri advisories
+        # Separate lock file, excluded from the root workspace. Auditing
+        # only the root lock leaves the whole desktop Rust tree unchecked.
+        run: cargo audit --manifest-path desktop/src-tauri/Cargo.toml --file desktop/src-tauri/Cargo.lock
 
   sandbox-root:
     name: sandbox tests as root
@@ -117,8 +121,9 @@ jobs:
     # merge blocker would freeze every PR on pre-existing breakage. Flip it
     # to false once this job has been green for a full week; the tracking
     # issue is in docs/developer/ci.md.
-    # EXPIRES 2026-12-31: after that date this must be false, green or not
-    # (the audit found it with no end condition).
+    # EXPIRES 2026-12-31: after that date this must be false, green or not.
+    # The `cross-platform-expiry` job below enforces the date; a comment
+    # alone was the finding (audit F10).
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -132,6 +137,24 @@ jobs:
       - name: test the platform-branching crates
         run: cargo test -p pantheon-helper -p pantheon-exec -p pantheon-api
 
+  cross-platform-expiry:
+    name: cross-platform advisory expiry
+    runs-on: ubuntu-latest
+    # The `cross-platform` job above is advisory (`continue-on-error`) until
+    # 2026-12-31. A comment is not a deadline: this job fails the workflow
+    # once the date passes, so the advisory state cannot outlive its stated
+    # window without someone deciding (audit F10).
+    steps:
+      - name: fail once the advisory window has expired
+        run: |
+          set -euo pipefail
+          today="$(date -u +%Y%m%d)"
+          if [ "$today" -ge 20261231 ]; then
+            echo "::error::the cross-platform job is still continue-on-error past its 2026-12-31 expiry; set it to false (or delete the job) and update docs/developer/ci.md"
+            exit 1
+          fi
+          echo "advisory window open until 2026-12-31 (today: $today)"
+
   eval:
     name: eval harness (real CLI)
     runs-on: ubuntu-latest
@@ -144,9 +167,9 @@ jobs:
       - name: build the CLI
         run: cargo build -p pantheon-tui --bin pantheon
       # eval/run.py is a stdlib-only regression suite over the shipped CLI.
-      # It was never wired into CI, so its 22 cases - including the run
+      # It was never wired into CI, so its 31 cases - including the run
       # lifecycle, audit, memory and send paths - ran nowhere by default,
-      # and 12 of them skipped permanently for want of a binary.
+      # and some skipped permanently for want of a binary.
       - name: run eval cases
         env:
           PANTHEON_BIN: target/debug/pantheon
@@ -157,11 +180,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # `desktop/` is excluded from the Cargo workspace, and its own
-      # `desktop/.github/workflows/ci.yml` is inert in this monorepo:
       # GitHub only reads the workflow directory at the repository root.
       # Without this job the desktop's TypeScript is never typechecked
-      # and its 137 unit tests never run.
+      # and its 130 unit tests never run.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           # Type stripping (needed: the tests import src/*.ts directly) is
@@ -211,7 +232,7 @@ jobs:
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
-      # 1277 tests over the whole desktop runtime. `cargo test --workspace`
+      # 934 tests over the whole desktop runtime. `cargo test --workspace`
       # above cannot reach them: root Cargo.toml excludes `desktop`.
       - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib
       - if: ${{ !cancelled() }}

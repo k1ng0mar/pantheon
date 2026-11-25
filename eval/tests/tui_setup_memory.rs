@@ -65,7 +65,7 @@ fn native_memory_needs_no_followups_and_leaves_working_state() {
         skill_deps_skipped: Vec::new(),
     };
     // assume_defaults = no stdin: a native pick must not prompt.
-    let cfg = run_setup(dir.path(), answers, true);
+    let cfg = run_setup(dir.path(), answers);
 
     // Native is the runtime default: no `[memory]` section is written.
     assert!(

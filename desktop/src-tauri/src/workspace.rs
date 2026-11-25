@@ -2105,21 +2105,19 @@ mod tests {
     #[test]
     fn worktree_preserves_explicit_current_and_legacy_prefixes() {
         let f = Fixture::new(true);
-        // Explicit branch and path prefixes remain supported.
-        for prefix in ["pantheon", "codex"] {
-            let branch = format!("{prefix}/existing-convention");
-            let path = create_worktree(&f.root, branch.clone()).unwrap();
-            assert_eq!(git_status(&path).unwrap().branch, branch);
-            assert_eq!(
-                path,
-                f.base
-                    .join(format!("project-worktrees/{prefix}-existing-convention"))
-            );
-            assert_eq!(
-                legacy_worktree_parent(&path, std::slice::from_ref(&f.root)),
-                Some(f.root.clone())
-            );
-        }
+        // An explicit branch and path prefix is kept as written.
+        let branch = "pantheon/existing-convention";
+        let path = create_worktree(&f.root, branch.to_owned()).unwrap();
+        assert_eq!(git_status(&path).unwrap().branch, branch);
+        assert_eq!(
+            path,
+            f.base
+                .join("project-worktrees/pantheon-existing-convention")
+        );
+        assert_eq!(
+            legacy_worktree_parent(&path, std::slice::from_ref(&f.root)),
+            Some(f.root.clone())
+        );
     }
     #[test]
     fn worktree_creates_an_isolated_task_in_the_same_project_and_survives_restart() {
@@ -2141,7 +2139,7 @@ mod tests {
             let store = store.lock().unwrap();
             let project = store.add_project(&fixture.root).unwrap();
             let source = store
-                .create_session(&project.id, "codex", "gpt-5.6-sol", "full")
+                .create_session(&project.id, "pantheon", "gpt-5.6-sol", "full")
                 .unwrap();
             let source = store
                 .set_reasoning_effort(&source.id, Some("high"))
@@ -2251,7 +2249,7 @@ mod tests {
             let store = store.lock().unwrap();
             let project = store.add_project(&fixture.root).unwrap();
             store
-                .create_session(&project.id, "claude", "sonnet", "ask")
+                .create_session(&project.id, "pantheon", "sonnet", "ask")
                 .unwrap()
         };
         let task = crate::create_worktree_task(&store, &source.id, "guarded-task".into()).unwrap();
@@ -2263,17 +2261,17 @@ mod tests {
                 .unwrap_err()
                 .contains("does not belong"));
             assert!(store
-                .configure(&task.id, "kimi", "other-model", Some(&other.id))
+                .configure(&task.id, "pantheon", "other-model", Some(&other.id))
                 .unwrap_err()
                 .contains("original project"));
             let unchanged = store.session(&task.id).unwrap();
-            assert_eq!(unchanged.provider, "claude");
+            assert_eq!(unchanged.provider, "pantheon");
             assert_eq!(unchanged.model, "sonnet");
             assert_eq!(unchanged.project_id, source.project_id);
             let changed = store
-                .configure(&task.id, "kimi", "kimi-code", Some(&source.project_id))
+                .configure(&task.id, "pantheon", "kimi-code", Some(&source.project_id))
                 .unwrap();
-            assert_eq!(changed.provider, "kimi");
+            assert_eq!(changed.provider, "pantheon");
             assert_eq!(changed.worktree_path, task.worktree_path);
             let metadata_path = Path::new(task.worktree_path.as_ref().unwrap()).join(".git");
             let metadata = fs::read(&metadata_path).unwrap();
@@ -2323,7 +2321,7 @@ mod tests {
             legacy_id = legacy.id.clone();
             store.add_project(&empty_path).unwrap();
             task = store
-                .create_session(&legacy.id, "codex", "gpt-5.6-sol", "plan")
+                .create_session(&legacy.id, "pantheon", "gpt-5.6-sol", "plan")
                 .unwrap();
             store
                 .update(
@@ -2407,7 +2405,8 @@ mod tests {
                     let yo_project = store.add_project(&yo_path).unwrap();
                     if old_version == 3 {
                         store
-                            .conn().execute(
+                            .conn()
+                            .execute(
                                 "UPDATE projects SET name=?2 WHERE id=?1",
                                 [
                                     new_project.id.as_str(),
@@ -2417,7 +2416,8 @@ mod tests {
                             .unwrap();
                     }
                     store
-                        .conn().execute(
+                        .conn()
+                        .execute(
                             "UPDATE projects SET name=?2 WHERE id=?1",
                             [
                                 yo_project.id.as_str(),
@@ -2426,10 +2426,10 @@ mod tests {
                         )
                         .unwrap();
                     new_task = store
-                        .create_session(&new_project.id, "codex", "default", "ask")
+                        .create_session(&new_project.id, "pantheon", "default", "ask")
                         .unwrap();
                     yo_task = store
-                        .create_session(&yo_project.id, "claude", "sonnet", "plan")
+                        .create_session(&yo_project.id, "pantheon", "sonnet", "plan")
                         .unwrap();
                     store
                         .message(&yo_task.id, "user", "Keep nested history")
@@ -2441,7 +2441,8 @@ mod tests {
                         // Match an installed v4 build: New is already a task,
                         // while its nested Yo checkout remains a project.
                         store
-                            .conn().execute(
+                            .conn()
+                            .execute(
                                 "UPDATE sessions SET worktree_path=?2 WHERE id=?1",
                                 [&new_task.id, new_path.to_str().unwrap()],
                             )

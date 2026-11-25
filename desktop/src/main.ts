@@ -39,7 +39,6 @@ import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
-import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { approvalMode, approvalModes } from './approval-modes';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
@@ -78,7 +77,6 @@ import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, ty
 import { teamActive, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
-import { initializeAgentUpdates } from './agent-updates';
 import { isChatProject, NO_PROJECT } from './chats';
 
 /* Visual thesis: calm surfaces, system typography, purple selection, and temple details.
@@ -227,7 +225,7 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   }, () => { architectSetupCleanup = undefined; });
 }
 /** Team mode needs no setup: the task's selected model leads, and the lead (or the user's prompt) picks worker models. */
-const TEAM_TIP = 'Team mode: your selected model becomes the lead. It plans the work, starts other agents in parallel, picks a model for each worker on its own, and reviews their results. To choose the workers yourself, just say so in your prompt, like "use Sonnet 5.5 workers" or "have Codex review it". Click to turn Team on or off.';
+const TEAM_TIP = 'Team mode: your selected model becomes the lead. It plans the work, starts other agents in parallel, picks a model for each worker on its own, and reviews their results. To choose the workers yourself, just say so in your prompt, like "use one model for the workers" or "review it yourself". Click to turn Team on or off.';
 /** Team toggles an automatic team, or with Settings → Classic team setup opens Architect & workers. */
 function teamButton(s: Session): string {
   const on = Boolean(teams.get(s.id));
@@ -279,12 +277,12 @@ $app.innerHTML = `<div class="workspace">
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
     <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>Pantheon</span></div>
     <div class="sidebar-actions"><button class="new-task-button" data-action="new-task">${icon('plus')}<span>New task</span><kbd>${shortcut('N')}</kbd></button><button class="new-chat-button" data-action="new-chat" title="New chat (no project)">${icon('chat')}<span>New chat</span></button><button class="search-trigger" data-action="search">${icon('search')}<span>Search</span><kbd>${shortcut('K')}</kbd></button></div>
-    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
+    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button>${button('add-project', 'Open project', 'plus')}</div>
     <div id="navigation" class="navigation"></div>
     <div id="sidebar-note" class="sidebar-note" hidden></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
     <div id="sidebar-bots" class="sidebar-bots"></div>
-    <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="archive-view" id="archive-toggle" title="Archived tasks" aria-label="Archived tasks">${icon('archive')}</button><button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
+    <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}<button data-action="archive-view" id="archive-toggle" title="Archived tasks" aria-label="Archived tasks">${icon('archive')}</button><button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
     <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}<button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button><div class="view-switch" role="group" aria-label="Workspace view"><button data-action="conversation-view" aria-label="Conversation view" aria-pressed="true">${icon('chat')}<span>Conversation</span></button><button data-action="board-view" aria-label="Board view" aria-pressed="false">${icon('board')}<span>Board</span></button><button data-action="github-view" aria-label="GitHub view" aria-pressed="false">${icon('github')}<span>GitHub</span></button></div><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pantheon-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}<span class="header-divider" aria-hidden="true"></span>${button('moodboards', 'Project moodboards', 'images')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}<span class="header-divider" aria-hidden="true"></span>${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div></header>
@@ -431,7 +429,6 @@ const attachments = mountPromptAttachments({
   },
   otherImages: taskId => (state.browserAttachments.get(taskId) ?? []).filter(item => item.kind === 'screenshot').length,
   // Grok Build's ACP agent advertises no image input; say so before a send fails.
-  imagesUnsupported: taskId => state.sessions.find(s => s.id === taskId)?.provider === 'pantheon' ? 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.' : null,
   notify: message => notify(message),
   report: error => report(error),
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
@@ -493,29 +490,28 @@ function openGoal(task: Session, initialObjective?: string): void {
 }
 function openCommandPanel(task: Session, kind: string, argumentsText = ''): void {
   if (kind === 'usage' && argumentsText && !['daily', 'weekly', 'cumulative'].includes(argumentsText)) throw new Error('Use /usage, /usage daily, /usage weekly, or /usage cumulative.');
-  const titles: Record<string, string> = { usage: 'Codex usage', hooks: 'Lifecycle hooks', preferences: 'Codex preferences', imports: 'Import agent setup', conversations: 'Resume a Codex task', plugins: 'Installed plugins', jobs: 'Background commands' };
+  const titles: Record<string, string> = { usage: 'Usage', hooks: 'Lifecycle hooks', conversations: 'Resume a conversation', plugins: 'Installed plugins', jobs: 'Running work' };
   const load = (cursor?: string) => kind === 'jobs'
-    ? call<CommandPanel>('codex_jobs', { sessionId: task.id })
-    : call<CommandPanel>('codex_command', { sessionId: task.id, request: { action: kind, ...(kind === 'conversations' ? { cursor: cursor ?? null, search: argumentsText || null } : {}) } });
+    ? call<CommandPanel>('command_jobs', { sessionId: task.id })
+    : call<CommandPanel>('command_panel', { sessionId: task.id, request: { action: kind, ...(kind === 'conversations' ? { cursor: cursor ?? null, search: argumentsText || null } : {}) } });
   activeCommandView = showCommandCenter(commandDialog(), { title: titles[kind] ?? kind, initialSearch: kind === 'conversations' ? argumentsText : undefined, initialSection: kind === 'usage' && argumentsText === 'daily' ? 'daily' : undefined, load, execute: async (action, payload) => {
-    if (action === 'set_preferences') {
-      for (const [id, value] of Object.entries(payload.values as Record<string, unknown>)) await call('codex_command', { sessionId: task.id, request: { action: 'setPreference', id, value } });
-      slashPicker?.refresh(); return load();
-    }
-    if (action === 'import') { const result = await call<CommandPanel>('codex_command', { sessionId: task.id, request: { action: 'importSelected', ids: payload.ids } }); slashPicker?.refresh(); return result; }
-    if (action === 'stop') { await call('codex_jobs', { sessionId: task.id, stopId: payload.id }); return load(); }
+    if (action === 'stop') { await call('command_jobs', { sessionId: task.id, stopId: payload.id }); return load(); }
     if (action === 'resume' || action === 'fork') {
-      const adopted = await call<Session>('fork_codex_task', { sessionId: task.id, remoteId: payload.id });
-      if (!state.sessions.some(s => s.id === adopted.id)) state.sessions.unshift(adopted);
-      if (state.sessionId === task.id) { closeModal(); await selectSession(adopted.id, true); } else scheduleNavigation(); return;
+      // Conversations are this app's own tasks, so resuming is a task switch.
+      closeModal();
+      await selectSession(String(payload.id), true);
+      return;
     }
   } });
 }
 async function openHarnessConsole(task: Session, command?: string): Promise<void> {
-  if (isRunning(task.id)) throw new Error('Stop this task before opening its harness console.');
+  if (isRunning(task.id)) throw new Error('Stop this task before opening its console.');
   if (task.id !== state.sessionId) return;
+  // Pantheon runs its own session; the console is a shell in the task's
+  // workspace, where `pantheon` can be started with the same project and model.
   terminalPanel.select(workspaceContext(task), project()?.name ?? task.title);
-  await terminalPanel.add({ provider: task.provider, command });
+  await terminalPanel.add(undefined, false);
+  void command;
 }
 async function instruction(task: Session, text: string): Promise<void> {
   if (task.id !== state.sessionId) return;
@@ -818,8 +814,11 @@ function closeProjectPicker(): void { cancelPendingMenu(); const close = project
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
-  // Header/browser controls survive transcript and composer updates.
-  if (!jevTestCleanup && (choiceMenuAnchor ?? pendingMenuOpen?.anchor)?.id !== 'task-menu-trigger') closeMenus();
+  // Menu anchors that transcript and composer updates leave in place keep their menu
+  // open: the header's task menu and the cloud strip (which redraws itself as the
+  // machine's stage advances).
+  const anchor = (choiceMenuAnchor ?? pendingMenuOpen?.anchor)?.id ?? '';
+  if (!jevTestCleanup && anchor !== 'task-menu-trigger' && anchor !== 'cloud-menu') closeMenus();
 }
 function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => void } {
   cancelPendingMenu();
@@ -831,7 +830,6 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
     document.removeEventListener('keydown', onEscape, true);
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('focusin', onOutside, true);
-    window.removeEventListener('blur', cancelPendingMenu);
     if (pendingMenuOpen?.release === release) pendingMenuOpen = undefined;
   }
   function onEscape(event: KeyboardEvent): void {
@@ -845,27 +843,25 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
   document.addEventListener('keydown', onEscape, true);
   document.addEventListener('pointerdown', onOutside, true);
   document.addEventListener('focusin', onOutside, true);
-  window.addEventListener('blur', cancelPendingMenu);
+  // A window blur closes menus that are already open (see openChoiceMenu); cancelling
+  // the pending open here made a click vanish whenever focus shifted before the
+  // menu's module finished loading.
   return { epoch, release };
 }
 function rememberedModel(id: ProviderId): string {
   const model = localStorage.getItem('pantheon.defaultModel.' + id) || localStorage.getItem('pantheon.model.' + id) || state.sessions.find(s => s.provider === id && s.model)?.model || 'default';
   return model.length <= 200 ? model : 'default';
 }
-let openCodeSaved = false;
-/** OpenCode models by last use when no Settings selection narrows the picker. */
+/** Models by last use, so the picker opens where you left off. */
 function recentModels(id: ProviderId): string[] | null {
-  if (id !== 'pantheon' || openCodeSaved) return null;
+  if (id !== 'pantheon') return null;
   const used = state.sessions.filter(s => s.provider === id && s.model);
   return used.sort((a, b) => (b.lastPromptAt ?? b.updatedAt) - (a.lastPromptAt ?? a.updatedAt)).map(s => s.model);
 }
 function loadModels(id: ProviderId): Promise<ProviderModel[]> {
   const cached = modelCatalogs.get(id);
   if (cached && cached.expires > Date.now()) return cached.pending;
-  // OpenCode's own listing also says whether Settings saved a selection, which keeps the picker's full list.
-  const request = id === 'pantheon'
-    ? Promise.resolve(openCodeChoices({models: [], selectedModelIds: [], error: null})).then(result => { openCodeSaved = false; return openCodeChoices({models: [], selectedModelIds: [], error: null}); })
-    : call<ProviderModel[]>('list_provider_models', { provider: id });
+  const request = call<ProviderModel[]>('list_provider_models', { provider: id });
   const pending = request.then(models => {
     if (modelCatalogs.get(id)?.pending === pending) {
       const entry = provider(id); if (entry) entry.models = models;
@@ -1155,6 +1151,9 @@ function renderTranscript(preservePosition = false): void {
       // Prepending history must not reparse responses the reader already loaded.
       el.replaceWith(previous);
       bindFileLinkContext(previous, workspaceContext());
+      // A reply whose Markdown render was still in flight when the reader left is
+      // plain text: finish that render instead of showing raw Markdown again.
+      if (previous.dataset.richSource !== message.content) void markdown(previous, message.content, transcript).catch(report);
     } else {
       savedMarkdownSources.set(el, message.content);
       bindFileLinkContext(el, workspaceContext());
@@ -1455,7 +1454,7 @@ function renderComposer(): void {
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
   const team = teams.get(s.id), modelLocked = running && !team;
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : `Queue a follow-up · ${isMac ? '⌘↩' : 'Ctrl+↩'} steers now`) : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
@@ -1615,7 +1614,7 @@ function renderSidebarVisibility(): void {
   toggle.setAttribute('aria-label', label);
   toggle.title = `${label} (${shortcut('B')})`;
   const utilityHost = board || collapsed ? $('.header-leading') : $('.sidebar-bottom');
-  for (const id of ['support-button', 'agent-usage-button']) {
+  for (const id of ['support-button']) {
     const utility = $(`#${id}`);
     if (utility.parentElement !== utilityHost) {
       const focused = document.activeElement === utility;
@@ -2000,12 +1999,12 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       if (['pause', 'resume', 'clear'].includes(argumentsText)) await updateGoal(task, { action: argumentsText as 'pause' | 'resume' | 'clear' });
       else openGoal(task, argumentsText && argumentsText !== 'edit' ? argumentsText : undefined);
       break;
-    case 'usage': case 'hooks': case 'preferences': case 'imports': case 'conversations': case 'plugins': case 'jobs': openCommandPanel(task, action, argumentsText); break;
+    case 'usage': case 'hooks': case 'conversations': case 'plugins': case 'jobs': openCommandPanel(task, action, argumentsText); break;
     case 'fork': {
-      const fork = await call<Session>('fork_codex_task', { sessionId: task.id }); state.sessions.unshift(fork); await selectSession(fork.id, true);
+      const fork = await call<Session>('fork_task', { sessionId: task.id }); state.sessions.unshift(fork); await selectSession(fork.id, true);
       if (argumentsText) await instruction(fork, argumentsText); break;
     }
-    case 'archive': await call('archive_codex_task', { sessionId: task.id }); task.archived = true; render(); break;
+    case 'archive': await call('archive_task', { sessionId: task.id }); task.archived = true; render(); break;
     case 'delete': await openHarnessConsole(task, '/delete'); break;
     case 'export': await exportTask(task, argumentsText || undefined); break;
     case 'worktree': worktrees.openDialog(newTaskView() ? 'attach' : 'new', argumentsText); break;
@@ -2018,16 +2017,6 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'cd': {
       if (!argumentsText) { showOpenProject(); break; }
       const added = await call<Project>('add_project', { path: argumentsText }); if (!state.projects.some(p => p.id === added.id)) state.projects.push(added); await createTask(added.id); break;
-    }
-    case 'plan': case 'fast': {
-      if (action === 'fast' && argumentsText && !['on', 'off'].includes(argumentsText)) throw new Error('Use /fast, /fast on, or /fast off.');
-      const settings = task.codexSettings;
-      const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : settings?.serviceTier === 'fast';
-      const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
-      const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
-      notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
-      if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
-      break;
     }
     case 'init': await instruction(task, 'Inspect this repository and create or update AGENTS.md with concise, accurate project instructions: setup, development commands, tests, architecture, and conventions. Preserve existing useful guidance.' + (argumentsText ? '\n' + argumentsText : '')); break;
     case 'recap': await instruction(task, 'Summarize this conversation concisely: objective, changes, important decisions, validation, and remaining work.' + (argumentsText ? '\n' + argumentsText : '')); break;
@@ -2222,7 +2211,7 @@ async function maybeTurnChecks(id: string): Promise<void> {
     isBot: botProjects.has(task?.projectId ?? ''),
     isRunning: () => isRunning(id),
     queued: () => queueOf(id).length,
-    mode: () => current()?.codexSettings?.collaborationMode?.mode === 'plan' ? 'plan' : current()?.mode,
+    mode: () => current()?.mode,
     onQueued: queued => { void run(dispatchQueue(queued)); },
     onError: error => console.warn('Project checks failed to run', error),
   });
@@ -2486,8 +2475,6 @@ function onAgent(event: AgentEvent): void {
     });
     return;
   }
-  if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
-  if (event.kind === 'goal_ready') return;
   if (event.kind === 'goal_input') { const current = state.streams.get(event.sessionId); if (current) { finishLiveMessage(current, event.sessionId); current.tools.push({ key: 'goal:' + transientId--, content: 'Goal updated: ' + event.text, commentary: true }); current.revision++; if (event.sessionId === state.sessionId) renderStream(); } return; }
   if (event.kind === 'goal') {
     const task = state.sessions.find(s => s.id === event.sessionId);
@@ -2922,7 +2909,6 @@ let changeReviewCleanup: (() => void) | undefined;
 let providerSettingsCleanup: (() => void) | undefined;
 let agentUsageCleanup: (() => void) | undefined;
 let conversationImportCleanup: (() => void) | undefined;
-let openCodeModelsCleanup: (() => void) | undefined;
 let moodboardsCleanup: (() => void) | undefined;
 let botsView: import('./bots').BotsView | undefined;
 function disposeSettingsViews(): void {
@@ -2932,7 +2918,6 @@ function disposeSettingsViews(): void {
   conversationImportCleanup?.(); conversationImportCleanup = undefined;
   moodboardsCleanup?.(); moodboardsCleanup = undefined;
   providerSettingsCleanup?.(); providerSettingsCleanup = undefined;
-  openCodeModelsCleanup?.(); openCodeModelsCleanup = undefined;
   changeReviewCleanup?.(); changeReviewCleanup = undefined;
   architectSetupCleanup?.(); architectSetupCleanup = undefined;
   wallpaperSettingsCleanup?.(); wallpaperSettingsCleanup = undefined;
@@ -3230,7 +3215,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
     { id: 'archive-task', label: s.archived ? 'Restore task' : 'Archive task', icon: 'archive' },
-    ...s.provider === 'pantheon' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
+    ...s.provider === 'pantheon' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Running work', icon: 'terminal' }, { id: 'usage', label: 'Usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
@@ -3414,7 +3399,6 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
           return () => { unsubscribe(); cleanup(); };
         },
         providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections }),
-        openCodeModels: async target => { target.textContent = ''; return () => {}; },
       },
       close: closeSettings,
     });
@@ -3466,13 +3450,6 @@ async function showProviderConnections(): Promise<void> {
 function invalidateModels(id: ProviderId): void {
   modelCatalogs.delete(id);
   const entry = provider(id); if (entry) entry.models = [];
-}
-async function showOpenCodeModels(): Promise<void> {
-  const dialog = modal('OpenCode models', '<div id="opencode-model-settings"></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'opencode-model-dialog');
-  const host = dialog.querySelector<HTMLElement>('#opencode-model-settings')!;
-  const {mountOpenCodeModels} = await import('./opencode-model-settings');
-  if (!dialog.open || !host.isConnected) return;
-  openCodeModelsCleanup = () => {};
 }
 async function showMoodboards(): Promise<void> {
   const p = project(); if (!p) { notify('Open a project to create a moodboard.'); return; }
@@ -3567,30 +3544,6 @@ async function openJevTests(url?: string, anchor?: HTMLElement): Promise<void> {
   const { showJevTests } = await import('./jev');
   if (!dialog.open || dialog.firstElementChild !== loading) return;
   await showJevTests(dialog, context);
-}
-async function showConversationImport(): Promise<void> {
-  const dialog = modal('Import conversations', '<div id="conversation-import-host"><p role="status">Loading…</p></div>', 'conversation-import-dialog');
-  const host = dialog.querySelector<HTMLElement>('#conversation-import-host')!;
-  try {
-    const { mountConversationImport } = await import('./conversation-import');
-    if (!dialog.open || !host.isConnected) return;
-    conversationImportCleanup = mountConversationImport(host, {
-      call,
-      installed: state.providers.filter(p => p.installed).map(p => p.id),
-      defaultModel: (_provider: any) => rememberedModel('pantheon' as any),
-      openTask: id => { closeModal(); run(selectSession(id, true)); },
-      onImported: result => run((async () => {
-        // New folders become projects; reload both lists, then open the first import.
-        state.projects = await call<Project[]>('list_projects');
-        await reloadSessions();
-        const count = result.imported.length;
-        if (count) notify(`Imported ${count} ${count === 1 ? 'conversation' : 'conversations'}`);
-        if (count && !result.failed.length) { closeModal(); await selectSession(result.imported[0].id, true); } else renderNavigation();
-      })()),
-    });
-  } catch {
-    if (dialog.open && host.isConnected) host.innerHTML = '<p role="alert">Unable to open the importer. Close this window and try again.</p>';
-  }
 }
 /** What the Bots window and a bot's page share: native calls, live turns and approvals. */
 function botsOptions(providers: Provider[]): import('./bots').BotsOptions {
@@ -3859,25 +3812,11 @@ async function openBot(botId: string): Promise<void> {
   if (!state.sessions.some(task => task.id === id)) await reloadSessions();
   await selectSession(id, true);
 }
-async function showAgentUsage(): Promise<void> {
-  const dialog = modal('Agent usage', '<div id="agent-usage-host"><p role="status">Loading usage panel…</p></div>', 'agent-usage-dialog');
-  const host = dialog.querySelector<HTMLElement>('#agent-usage-host')!;
-  try {
-    const [{ mountAgentUsage }, providers] = await Promise.all([
-      import('./agent-usage'),
-      state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers'),
-    ]);
-    if (!dialog.open || !host.isConnected) return;
-    agentUsageCleanup = mountAgentUsage(host, providers);
-  } catch {
-    if (dialog.open && host.isConnected) host.innerHTML = '<p role="alert">Unable to load usage. Close this window and try again.</p>';
-  }
-}
 function showCommands(): void {
   modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
 }
 function renderCommands(query: string): void {
-  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
+  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
   const tasks = listedSessions().filter(s => s.title.toLowerCase().includes(query.toLowerCase())).slice(0, 12);
   $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}" data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
@@ -3935,14 +3874,12 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'settings': case 'refresh-settings': await showSettings(); break;
     case 'wallpaper-settings': await showWallpaperSettings(); break;
     case 'provider-connections': await showProviderConnections(); break;
-    case 'opencode-models': await showOpenCodeModels(); break;
     case 'moodboards': await showMoodboards(); break;
     case 'detach-moodboard': state.moodboardAttachments.set(state.sessionId, (state.moodboardAttachments.get(state.sessionId) ?? []).filter(item => item.id !== element.dataset.id)); renderComposer(); break;
     case 'agent-integrations': await showAgentIntegrations(workspaceContext()); break;
     case 'jev-settings': await openJevSettings(); break;
     case 'jev-tests': await openJevTests(); break;
     case 'jev-assist': await openJevAssist(); break;
-    case 'agent-usage': await showAgentUsage(); break;
     case 'bots': await showBots(); break;
     case 'new-bot': await showBots({ startNew: true }); break;
     case 'bot-settings': if (element.dataset.bot) await showBotSettings(element.dataset.bot, element.dataset.tab as import('./bots').Section | undefined); break;
@@ -3952,8 +3889,6 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'bot-task-menu': await showBotTaskMenu(element); break;
     case 'cloud-menu': await showCloudMenu(element); break;
     case 'toggle-bots-view': setSidebarView(sidebarView === 'bots' ? 'tasks' : 'bots'); break;
-    case 'import-conversations': await showConversationImport(); break;
-    case 'agent-updates': await agentUpdates.show(); break;
     case 'goal': case 'jobs': case 'usage': if (session()) await performSlashAction(name, '', session()!); break;
     case 'harness-console': if (session()) await openHarnessConsole(session()!); break;
     case 'task-menu': await showTaskMenu(element); break;
@@ -4214,10 +4149,5 @@ const updates = startAppUpdates({ busy: () => state.sessions.some(task => isRunn
   pill.addEventListener('click', () => { void updates.restart(); });
   paint();
 }
-const agentUpdates = initializeAgentUpdates({
-  modal, closeModal, report, providers: () => state.providers,
-  providersChanged: async () => { await discoverSettingsProviders(); refreshModelLabels(); slashPicker?.refresh(true); },
-});
-window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 renderThemeToggle(); render(); renderInspector(); run(boot());
 if (!preview) initializeNativeAppearance();

@@ -32,7 +32,24 @@ use serde::{Deserialize, Serialize};
 use crate::secret_store;
 
 const SERVICE: &str = "app.pantheon.cloud";
-pub const PROVIDERS: [&str; 16] = ["daytona", "cloudflare", "aws", "agentcore", "gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "railway", "boat", "instabox"];
+pub const PROVIDERS: [&str; 16] = [
+    "daytona",
+    "cloudflare",
+    "aws",
+    "agentcore",
+    "gcloud",
+    "e2b",
+    "modal",
+    "vercel",
+    "codesandbox",
+    "runloop",
+    "blaxel",
+    "tensorlake",
+    "freestyle",
+    "railway",
+    "boat",
+    "instabox",
+];
 
 /// A cloud machine as the panel and tools see it.
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -59,7 +76,9 @@ pub fn split(id: &str) -> Option<(&str, &str)> {
 /// `-`, `_` and `.` (Google Cloud joins name and zone with one), never a `..` or leading dot.
 pub fn valid_native(native: &str) -> bool {
     (1..=200).contains(&native.len())
-        && native.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        && native
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
         && !native.starts_with('.')
         && !native.contains("..")
 }
@@ -89,10 +108,16 @@ pub struct Settings {
     pub providers: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 pub fn settings() -> Settings {
-    secret_store::get(SERVICE, "settings").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    secret_store::get(SERVICE, "settings")
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
 }
 pub fn save_settings(settings: &Settings) -> crate::Result<()> {
-    secret_store::set(SERVICE, "settings", &serde_json::to_string(settings).map_err(|e| e.to_string())?)
+    secret_store::set(
+        SERVICE,
+        "settings",
+        &serde_json::to_string(settings).map_err(|e| e.to_string())?,
+    )
 }
 pub fn secret(name: &str) -> Option<String> {
     secret_store::get(SERVICE, name)
@@ -119,8 +144,22 @@ mod tests {
         assert_eq!(split("pantheon-ubuntu"), None);
         assert_eq!(split("other:x"), None);
         assert_eq!(split("daytona:"), None);
-        assert_eq!(split("gcloud:pc-a.us-central1-a"), Some(("gcloud", "pc-a.us-central1-a")));
-        for bad in ["instabox:m_1/exec", "instabox:m_1?x=1", "instabox:m_1#x", "instabox:..", "instabox:a..b", "instabox:.x", "instabox:m 1", "instabox:m%2F1", "instabox:m:1", "instabox:m\\1"] {
+        assert_eq!(
+            split("gcloud:pc-a.us-central1-a"),
+            Some(("gcloud", "pc-a.us-central1-a"))
+        );
+        for bad in [
+            "instabox:m_1/exec",
+            "instabox:m_1?x=1",
+            "instabox:m_1#x",
+            "instabox:..",
+            "instabox:a..b",
+            "instabox:.x",
+            "instabox:m 1",
+            "instabox:m%2F1",
+            "instabox:m:1",
+            "instabox:m\\1",
+        ] {
             assert_eq!(split(bad), None, "{bad}");
         }
         assert_eq!(split(&format!("e2b:{}", "a".repeat(201))), None);
@@ -131,7 +170,11 @@ mod tests {
     }
     #[test]
     fn settings_round_trip_through_the_secure_store() {
-        let saved = Settings { daytona_api_url: Some("https://example.test/api".into()), cloudflare_sandboxes: vec!["a".into()], ..Settings::default() };
+        let saved = Settings {
+            daytona_api_url: Some("https://example.test/api".into()),
+            cloudflare_sandboxes: vec!["a".into()],
+            ..Settings::default()
+        };
         save_settings(&saved).unwrap();
         assert_eq!(settings(), saved);
     }

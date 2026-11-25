@@ -18,7 +18,9 @@ fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
     let app = contents.parent()?;
-    (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app")
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
         .then(|| app.to_path_buf())
 }
 
@@ -35,7 +37,10 @@ fn signer(details: &str) -> Signer {
     if details.lines().any(|line| line.trim() == "Signature=adhoc") {
         return Signer::AdHoc;
     }
-    match details.lines().find_map(|line| line.strip_prefix("Authority=")) {
+    match details
+        .lines()
+        .find_map(|line| line.strip_prefix("Authority="))
+    {
         Some(IDENTITY) => Signer::Ours,
         Some(_) => Signer::Other,
         None => Signer::AdHoc,
@@ -114,11 +119,21 @@ mod mac {
         stderr: String,
     }
 
-    fn exec(program: &str, args: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Output, String> {
+    fn exec(
+        program: &str,
+        args: &[&str],
+        input: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output, String> {
         let mut command = Command::new(program);
         command.args(args);
-        let output =
-            crate::workspace::run_process_with_input(command, program, 1024 * 1024, timeout, input)?;
+        let output = crate::workspace::run_process_with_input(
+            command,
+            program,
+            1024 * 1024,
+            timeout,
+            input,
+        )?;
         Ok(Output {
             ok: output.status.success(),
             stdout: output.stdout.bytes,
@@ -126,18 +141,28 @@ mod mac {
         })
     }
 
-    fn run(program: &str, args: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Vec<u8>, String> {
+    fn run(
+        program: &str,
+        args: &[&str],
+        input: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
         let output = exec(program, args, input, timeout)?;
         if output.ok {
             Ok(output.stdout)
         } else {
             let name = program.rsplit('/').next().unwrap_or(program);
-            Err(format!("{name} {} failed: {}", args.first().unwrap_or(&""), output.stderr.trim()))
+            Err(format!(
+                "{name} {} failed: {}",
+                args.first().unwrap_or(&""),
+                output.stderr.trim()
+            ))
         }
     }
 
     fn utf8(path: &Path) -> Result<&str, String> {
-        path.to_str().ok_or_else(|| format!("Unsupported path {}", path.display()))
+        path.to_str()
+            .ok_or_else(|| format!("Unsupported path {}", path.display()))
     }
 
     pub fn ensure_signed(bundle: &Path) -> Result<(), String> {
@@ -164,7 +189,12 @@ mod mac {
             None,
             SIGN,
         )?;
-        run(CODESIGN, &["--verify", "--deep", "--strict", bundle], None, SIGN)?;
+        run(
+            CODESIGN,
+            &["--verify", "--deep", "--strict", bundle],
+            None,
+            SIGN,
+        )?;
         Ok(())
     }
 
@@ -183,7 +213,12 @@ mod mac {
         if let Some(hash) = unlock_and_find(&keychain, &secret)? {
             return Ok((keychain, hash));
         }
-        let _ = exec(SECURITY, &["delete-keychain", utf8(&keychain)?], None, QUICK);
+        let _ = exec(
+            SECURITY,
+            &["delete-keychain", utf8(&keychain)?],
+            None,
+            QUICK,
+        );
         let _ = fs::remove_file(&keychain);
         create(&keychain, &secret)?;
         let hash = unlock_and_find(&keychain, &secret)?
@@ -196,15 +231,31 @@ mod mac {
             return Ok(None);
         };
         let keychain = utf8(keychain)?;
-        if !exec(SECURITY, &["unlock-keychain", "-p", password.trim(), keychain], None, QUICK)?.ok {
+        if !exec(
+            SECURITY,
+            &["unlock-keychain", "-p", password.trim(), keychain],
+            None,
+            QUICK,
+        )?
+        .ok
+        {
             return Ok(None);
         }
-        let listing = exec(SECURITY, &["find-identity", "-p", "codesigning", keychain], None, QUICK)?;
+        let listing = exec(
+            SECURITY,
+            &["find-identity", "-p", "codesigning", keychain],
+            None,
+            QUICK,
+        )?;
         Ok(identity_hash(&String::from_utf8_lossy(&listing.stdout)))
     }
 
     fn create(keychain: &Path, secret: &Path) -> Result<(), String> {
-        let password = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        let password = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
         if let Some(dir) = secret.parent() {
             fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -217,11 +268,24 @@ mod mac {
             .and_then(|mut file| file.write_all(password.as_bytes()))
             .map_err(|e| format!("Could not save the signing keychain password: {e}"))?;
         let path = utf8(keychain)?;
-        run(SECURITY, &["create-keychain", "-p", &password, path], None, QUICK)?;
+        run(
+            SECURITY,
+            &["create-keychain", "-p", &password, path],
+            None,
+            QUICK,
+        )?;
         // No idle lock: signing may happen hours after launch.
         run(SECURITY, &["set-keychain-settings", path], None, QUICK)?;
-        run(SECURITY, &["unlock-keychain", "-p", &password, path], None, QUICK)?;
-        let scratch = std::env::temp_dir().join(format!("pantheon-signing-{}", uuid::Uuid::new_v4().simple()));
+        run(
+            SECURITY,
+            &["unlock-keychain", "-p", &password, path],
+            None,
+            QUICK,
+        )?;
+        let scratch = std::env::temp_dir().join(format!(
+            "pantheon-signing-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
         let result = import(path, &password, &scratch);
         let _ = fs::remove_dir_all(&scratch);
@@ -236,10 +300,19 @@ mod mac {
         let key = run(
             OPENSSL,
             &[
-                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "36500",
-                "-keyout", "/dev/stdout",
-                "-out", utf8(&certificate)?,
-                "-config", utf8(&config)?,
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "36500",
+                "-keyout",
+                "/dev/stdout",
+                "-out",
+                utf8(&certificate)?,
+                "-config",
+                utf8(&config)?,
             ],
             None,
             QUICK,
@@ -248,24 +321,49 @@ mod mac {
         let p12 = run(
             OPENSSL,
             &[
-                "pkcs12", "-export", "-inkey", "/dev/stdin",
-                "-in", utf8(&certificate)?,
-                "-name", IDENTITY,
-                "-passout", &passout,
+                "pkcs12",
+                "-export",
+                "-inkey",
+                "/dev/stdin",
+                "-in",
+                utf8(&certificate)?,
+                "-name",
+                IDENTITY,
+                "-passout",
+                &passout,
             ],
             Some(&key),
             QUICK,
         )?;
         run(
             SECURITY,
-            &["import", "/dev/stdin", "-k", keychain, "-f", "pkcs12", "-P", password, "-T", CODESIGN],
+            &[
+                "import",
+                "/dev/stdin",
+                "-k",
+                keychain,
+                "-f",
+                "pkcs12",
+                "-P",
+                password,
+                "-T",
+                CODESIGN,
+            ],
             Some(&p12),
             QUICK,
         )?;
         // Lets codesign use the key without asking.
         run(
             SECURITY,
-            &["set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", password, keychain],
+            &[
+                "set-key-partition-list",
+                "-S",
+                "apple-tool:,apple:,codesign:",
+                "-s",
+                "-k",
+                password,
+                keychain,
+            ],
             None,
             QUICK,
         )?;
@@ -280,19 +378,33 @@ mod tests {
     #[test]
     fn finds_the_bundle_around_the_executable() {
         assert_eq!(
-            bundle_of(Path::new("/Applications/Pantheon.app/Contents/MacOS/pantheon")),
+            bundle_of(Path::new(
+                "/Applications/Pantheon.app/Contents/MacOS/pantheon"
+            )),
             Some(PathBuf::from("/Applications/Pantheon.app"))
         );
-        assert_eq!(bundle_of(Path::new("/repo/src-tauri/target/debug/pantheon")), None);
-        assert_eq!(bundle_of(Path::new("/x/Tool/Contents/MacOS/pantheon")), None);
+        assert_eq!(
+            bundle_of(Path::new("/repo/src-tauri/target/debug/pantheon")),
+            None
+        );
+        assert_eq!(
+            bundle_of(Path::new("/x/Tool/Contents/MacOS/pantheon")),
+            None
+        );
     }
 
     #[test]
     fn reads_the_signer() {
         let adhoc = "Identifier=ai.pantheon.desktop\nCodeDirectory v=20500 flags=0x10002(adhoc,runtime)\nSignature=adhoc\nTeamIdentifier=not set\n";
         assert_eq!(signer(adhoc), Signer::AdHoc);
-        assert_eq!(signer("X.app: code object is not signed at all\n"), Signer::AdHoc);
-        assert_eq!(signer("Signature size=1688\nAuthority=Pantheon Local Signing\n"), Signer::Ours);
+        assert_eq!(
+            signer("X.app: code object is not signed at all\n"),
+            Signer::AdHoc
+        );
+        assert_eq!(
+            signer("Signature size=1688\nAuthority=Pantheon Local Signing\n"),
+            Signer::Ours
+        );
         let developer = "Authority=Developer ID Application: Someone (ABCDE12345)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\n";
         assert_eq!(signer(developer), Signer::Other);
     }
@@ -300,7 +412,10 @@ mod tests {
     #[test]
     fn reads_the_identity_hash() {
         let listing = "\nPolicy: Code Signing\n  Matching identities\n  1) 4E200BF903AB2CAAABFF2CCFE671A3853FC90C0C \"Pantheon Local Signing\" (CSSMERR_TP_NOT_TRUSTED)\n     1 identities found\n";
-        assert_eq!(identity_hash(listing).as_deref(), Some("4E200BF903AB2CAAABFF2CCFE671A3853FC90C0C"));
+        assert_eq!(
+            identity_hash(listing).as_deref(),
+            Some("4E200BF903AB2CAAABFF2CCFE671A3853FC90C0C")
+        );
         assert_eq!(identity_hash("  0 identities found\n"), None);
     }
 
@@ -311,7 +426,10 @@ mod tests {
     #[ignore]
     fn signs_a_scratch_bundle() {
         use std::process::Command;
-        let root = std::env::temp_dir().join(format!("pantheon-sign-test-{}", uuid::Uuid::new_v4().simple()));
+        let root = std::env::temp_dir().join(format!(
+            "pantheon-sign-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         let bundle = root.join("Scratch.app");
         let macos = bundle.join("Contents/MacOS");
         std::fs::create_dir_all(&macos).unwrap();
@@ -323,12 +441,25 @@ mod tests {
              <key>CFBundleIdentifier</key><string>ai.pantheon.signing-test</string></dict></plist>",
         )
         .unwrap();
-        let codesign = |args: &[&str]| Command::new("/usr/bin/codesign").args(args).arg(&bundle).output().unwrap();
-        assert!(codesign(&["--force", "--deep", "--sign", "-", "-o", "runtime"]).status.success());
+        let codesign = |args: &[&str]| {
+            Command::new("/usr/bin/codesign")
+                .args(args)
+                .arg(&bundle)
+                .output()
+                .unwrap()
+        };
+        assert!(
+            codesign(&["--force", "--deep", "--sign", "-", "-o", "runtime"])
+                .status
+                .success()
+        );
         ensure_signed(&bundle).unwrap();
         let details = String::from_utf8_lossy(&codesign(&["-dvv"]).stderr).into_owned();
         assert_eq!(signer(&details), Signer::Ours, "{details}");
-        assert!(details.contains("runtime"), "hardened runtime flag kept: {details}");
+        assert!(
+            details.contains("runtime"),
+            "hardened runtime flag kept: {details}"
+        );
         ensure_signed(&bundle).unwrap(); // Already ours: nothing to do.
         std::fs::remove_dir_all(&root).unwrap();
     }

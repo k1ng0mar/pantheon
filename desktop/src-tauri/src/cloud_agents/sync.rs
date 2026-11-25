@@ -384,9 +384,7 @@ fn upload_file(
 struct TempPath(PathBuf);
 impl TempPath {
     fn new(suffix: &str) -> Self {
-        Self(
-            std::env::temp_dir().join(format!("pantheon-cloud-{}-{suffix}", uuid::Uuid::new_v4())),
-        )
+        Self(std::env::temp_dir().join(format!("pantheon-cloud-{}-{suffix}", uuid::Uuid::new_v4())))
     }
     fn as_str(&self) -> &str {
         self.0.to_str().expect("temporary paths are UTF-8")
@@ -519,23 +517,16 @@ fn is_sha(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn state_dir(harness: &str, remote_dir: &str, home: &str) -> Result<String> {
-    let relative = match harness {
-        "claude" | "glm" | "mimo" => {
-            if !remote_dir.starts_with('/') {
-                return Err("Cloud checkout paths must be absolute.".into());
-            }
-            let project = remote_dir
-                .chars()
-                .map(|ch| if ch == '/' || ch == '.' { '-' } else { ch })
-                .collect::<String>();
-            format!(".claude/projects/{project}")
-        }
-        "codex" => ".codex/sessions".into(),
-        "opencode" => ".local/share/opencode/storage".into(),
-        _ => return Err(format!("Unsupported cloud agent harness '{harness}'.")),
-    };
-    Ok(format!("{home}/{relative}"))
+/// Where a machine keeps the run record this app resumes from.
+///
+/// Pantheon holds one session log per run under its data dir; the desktop's own
+/// transcript is the conversation, so only that log directory travels. Ledger and
+/// memory stay on the machine that produced them.
+fn state_dir(harness: &str, _remote_dir: &str, home: &str) -> Result<String> {
+    if harness != "pantheon" {
+        return Err(format!("Unsupported cloud agent harness '{harness}'."));
+    }
+    Ok(format!("{home}/.pantheon/logs"))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -806,14 +797,14 @@ mod tests {
             .collect::<String>();
         let state = temp
             .0
-            .join("sandbox/home/.claude/projects")
+            .join("sandbox/home/.pantheon/logs")
             .join(project_name);
         fs::create_dir_all(&state).unwrap();
         fs::write(state.join("session.jsonl"), "session state\n").unwrap();
         let store = temp.0.join("store");
-        save_harness_state(&sandbox, "fake", "claude", &remote, &store).unwrap();
+        save_harness_state(&sandbox, "fake", "pantheon", &remote, &store).unwrap();
         fs::remove_dir_all(&state).unwrap();
-        restore_harness_state(&sandbox, "fake", "claude", &remote, &store).unwrap();
+        restore_harness_state(&sandbox, "fake", "pantheon", &remote, &store).unwrap();
         assert_eq!(
             fs::read_to_string(state.join("session.jsonl")).unwrap(),
             "session state\n"

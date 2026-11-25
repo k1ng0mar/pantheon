@@ -6,7 +6,11 @@ use super::{duo::Pose, Input, Simulators, Status};
 use crate::Result;
 
 fn udid(value: &str) -> Result<String> {
-    if super::valid_udid(value) { Ok(value.to_string()) } else { Err("Unknown simulator.".into()) }
+    if super::valid_udid(value) {
+        Ok(value.to_string())
+    } else {
+        Err("Unknown simulator.".into())
+    }
 }
 
 #[tauri::command]
@@ -76,7 +80,12 @@ pub async fn simulator_frame(app: AppHandle, udid: String, after: u64) -> Result
     let udid = self::udid(&udid)?;
     crate::blocking(move || {
         let sims = app.state::<Simulators>();
-        let frame = sims.streams.next(&udid, sims.display(&udid), after, Duration::from_millis(1500))?;
+        let frame = sims.streams.next(
+            &udid,
+            sims.display(&udid),
+            after,
+            Duration::from_millis(1500),
+        )?;
         Ok(Response::new(frame.map_or_else(Vec::new, |frame| {
             let mut bytes = Vec::with_capacity(frame.jpeg.len() + 8);
             bytes.extend_from_slice(&frame.seq.to_le_bytes());

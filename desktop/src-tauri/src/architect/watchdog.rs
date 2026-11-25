@@ -52,7 +52,10 @@ pub(super) fn stop_silent(
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let mut stopped = 0;
     for sid in silent {
-        if store.session(&sid).is_ok_and(|task| task.status == "waiting") {
+        if store
+            .session(&sid)
+            .is_ok_and(|task| task.status == "waiting")
+        {
             continue;
         }
         let parent = match load(&store, &sid)? {

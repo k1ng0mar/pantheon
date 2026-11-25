@@ -4,16 +4,16 @@ interface Readiness { installed: boolean; acpReady: boolean; sessionReady: boole
 export function mountProviderReadiness(host: HTMLElement): () => void {
   let disposed = false, pending = false;
   host.classList.add('provider-readiness');
-  host.innerHTML = '<div><span role="status">Connection not checked</span><button type="button" class="secondary-button">Check connection</button></div><p hidden></p>';
+  host.innerHTML = '<div><span role="status">Connection not checked</span><button type="button" class="secondary-button">Check connection</button></div><p class="provider-readiness-detail" hidden></p>';
   const status = host.querySelector<HTMLElement>('[role="status"]')!;
   const button = host.querySelector<HTMLButtonElement>('button')!;
-  const detail = host.querySelector<HTMLParagraphElement>('p')!;
+  const detail = host.querySelector<HTMLParagraphElement>('.provider-readiness-detail')!;
   const check = async () => {
     if (pending || disposed) return;
     pending = true; button.disabled = true; button.textContent = 'Checking…';
     status.textContent = 'Starting ACP…'; detail.hidden = true;
     try {
-      const result = await call<Readiness>('provider_check_connection', {provider:'antigravity'});
+      const result = await call<Readiness>('provider_check_connection', {provider:'pantheon'});
       if (disposed) return;
       status.textContent = result.sessionReady ? 'Connection ready' : result.state === 'authenticationRequired' ? 'Sign-in required' : !result.installed ? 'ACP executable missing' : result.acpReady ? 'Session unavailable' : 'ACP startup failed';
       detail.textContent = result.message; detail.hidden = false;

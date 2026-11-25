@@ -1,16 +1,17 @@
 //! pantheon terminal: thin dispatch over the runtime. No business logic here.
 use crate::cli_surface::{Invocation, ALL_VERBS, PUBLIC_COMMANDS, PUBLIC_VERBS};
 use pantheon_api::capability::Policy;
-use pantheon_api::events::Event;
 use pantheon_extensions::{ExtensionManager, Hook, RunnerConfig};
 use pantheon_memory::{markdown, BackendSelection, LayerKind, MemoryStore, Proposal, Provenance};
-use pantheon_runtime::{new_run_id, Supervisor};
+use pantheon_runtime::Supervisor;
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub fn data_dir() -> PathBuf {
-    pantheon_api::data_dir::resolve()
+    // Owner-only before any store opens: the ledgers hold full transcripts
+    // (audit F2). Idempotent and cheap; see `pantheon_api::data_dir`.
+    pantheon_api::data_dir::ensure_private()
 }
 /// Report a fatal error and exit. Every user-reachable failure path goes
 /// through here so the process never panics on bad state.
@@ -107,7 +108,9 @@ fn cmd_dashboard(args: &[String]) {
     if bind_all {
         eprintln!(
             "WARNING: dashboard is bound to a non-loopback address. The token is the only \
-             protection. Put a reverse proxy with real auth in front, or keep it on 127.0.0.1."
+             protection, and it crosses the network in cleartext (the session cookie included) \
+             because this is plain HTTP. Put a TLS-terminating reverse proxy with real auth in \
+             front, or keep it on 127.0.0.1."
         );
     } else {
         eprintln!("keep this URL private: the token is the dashboard's password.");
@@ -220,25 +223,31 @@ pub(crate) fn print_json<T: serde::Serialize>(label: &str, v: &T) {
 /// the reply is queued in the durable outbox for the running gateway to pick
 /// up, so the user sees it where they asked for it instead of on a terminal
 /// nobody is watching.
+/// Where the answer goes and how it is rendered: one decision, so one value.
+struct Delivery {
+    target: String,
+    format: OutputFormat,
+}
+
 fn run_delivered_task(
     task_id: &Option<String>,
     say: &Option<String>,
-    target: &str,
+    delivery: &Delivery,
     verdict_tool: bool,
     agent_profile: Option<&str>,
     resume: bool,
     mode: Option<pantheon_api::mode::AgentMode>,
 ) {
+    let Delivery { target, format: output_format } = delivery;
+    let target = target.as_str();
     let text = match say {
         Some(s) => s.clone(),
-        // A dashboard resume (`run --taskID <id> --resume --deliver
-        // session`) carries no new user message: the empty turn
-        // rebuilds the transcript from the ledger and settles the
-        // granted/denied call, exactly like `resume_after_grant`.
-        // Without --resume, --deliver still needs --say.
+        // A resume (`run --taskID <id> --resume`) carries no new user
+        // message: the empty turn rebuilds the transcript from the ledger
+        // and settles the granted/denied call.
         None if resume => String::new(),
         None => {
-            eprintln!("run --deliver {target} needs --say \"text\" (or --say - / PANTHEON_SAY_STDIN=1 for stdin)");
+            eprintln!("run needs --say \"text\" (or --say - / PANTHEON_SAY_STDIN=1 for stdin)");
             std::process::exit(2);
         }
     };
@@ -350,33 +359,80 @@ fn run_delivered_task(
     }
     match session.chat_turn(&run_id, "", &text) {
         Ok(outcome) => {
-            let answer = outcome_text(&outcome);
+            let answer = crate::sanitize::strip_control(&outcome_text(&outcome));
             if target == "session" {
-                // Model output goes to the terminal verbatim here, and
-                // this path is not ratatui-rendered, so escape sequences
-                // would reach the tty as-is.
-                println!("{}", crate::sanitize::strip_control(&answer));
+                match output_format {
+                    // Model output goes to the terminal verbatim here, and
+                    // this path is not ratatui-rendered, so escape sequences
+                    // would reach the tty as-is.
+                    OutputFormat::Text => {
+                        println!("{answer}");
+                        println!("{run_id}");
+                    }
+                    OutputFormat::Plain => println!("{answer}"),
+                    OutputFormat::Json => print_json(
+                        "run",
+                        &serde_json::json!({
+                            "run_id": run_id,
+                            "status": "answered",
+                            "answer": answer,
+                        }),
+                    ),
+                }
             } else if let Err(e) =
                 crate::gateway::enqueue_outbound(&data_dir(), target, &answer, target)
             {
                 eprintln!("queue for {target}: {e}");
                 std::process::exit(1);
+            } else if *output_format == OutputFormat::Json {
+                print_json(
+                    "run",
+                    &serde_json::json!({
+                        "run_id": run_id,
+                        "status": "queued",
+                        "target": target,
+                    }),
+                );
             } else {
                 println!("queued for {target} - run {run_id}");
             }
-            println!("{run_id}");
         }
         Err(e) if e.code == "RUN_PARKED" => {
             // A parked run is a real outcome, not a failure. The error names
             // the exact grant/deny command with the scope inlined, so it is
             // printed verbatim instead of being restated with a placeholder.
-            println!("parked - run {run_id}");
-            // The error embeds the approval scope, which contains raw
-            // tool arguments. Strip before printing.
-            println!("{}", crate::sanitize::strip_control(&e.to_string()));
+            // Everything goes to stderr: a script piping stdout is reading
+            // the answer, and a park is not one.
+            if *output_format == OutputFormat::Json {
+                print_json(
+                    "run",
+                    &serde_json::json!({
+                        "run_id": run_id,
+                        "status": "parked",
+                        // The scope contains raw tool arguments; strip before
+                        // it reaches any output.
+                        "detail": crate::sanitize::strip_control(&e.to_string()),
+                    }),
+                );
+            } else {
+                eprintln!("parked - run {run_id}");
+                eprintln!("{}", crate::sanitize::strip_control(&e.to_string()));
+            }
         }
         Err(e) => {
-            eprintln!("run {run_id}: {e}");
+            if *output_format == OutputFormat::Json {
+                print_json(
+                    "run",
+                    &serde_json::json!({
+                        "run_id": run_id,
+                        "status": "failed",
+                        "error": e.code,
+                        "detail": crate::sanitize::strip_control(&e.to_string()),
+                    }),
+                );
+            } else {
+                eprintln!("run {run_id}: {e}");
+            }
             std::process::exit(1);
         }
     }
@@ -765,29 +821,120 @@ fn resolve_say_stdin(say: Option<String>) -> Option<String> {
 /// that never resumed). Pure so the dispatch arm's exit-2 cases stay
 /// testable without spawning a process.
 #[allow(clippy::too_many_arguments)]
+/// Reject flag combinations that would silently do something other than what
+/// was asked. Both cases below used to be accepted: `--resume` with no id
+/// minted a brand-new run (so a "resume" that resumed nothing), and
+/// `--no-resume` outside the approval path was silently ignored.
 fn check_run_flag_mix(
-    deliver: &Option<String>,
-    tool: &Option<String>,
-    fail: &Option<String>,
-    with_ext: bool,
+    has_id: bool,
     resume: bool,
-    mode: &Option<pantheon_api::mode::AgentMode>,
-    agent_profile: &Option<String>,
-    verdict_tool: bool,
+    no_resume: bool,
+    grant_deny: bool,
+    synthetic: bool,
 ) -> Result<(), String> {
-    if deliver.is_some() && (tool.is_some() || fail.is_some() || with_ext) {
+    if resume && !has_id {
         return Err(
-            "run --deliver does not take --tool/--fail/--ext (synthetic ledger flags); drop them for a real turn"
+            "run: --resume needs --taskID <id> - it continues an existing run; without an id this would start a new one"
                 .to_string(),
         );
     }
-    if deliver.is_none() && (resume || mode.is_some() || agent_profile.is_some() || verdict_tool) {
+    if resume && synthetic {
         return Err(
-            "run --resume/--mode/--agent/--verdict-tool need --deliver session (or another delivery target); without it `run` only writes synthetic ledger events"
+            "run: --resume drives a real turn; --synthetic only writes ledger events - drop one"
+                .to_string(),
+        );
+    }
+    if no_resume && !grant_deny {
+        return Err(
+            "run: --no-resume only applies to --grant/--deny (settle the approval without continuing the run)"
                 .to_string(),
         );
     }
     Ok(())
+}
+
+/// Write ledger events without calling a model: the deterministic path the
+/// eval harness and recovery tests depend on. It does not execute the tool
+/// named by `--tool` and does not answer a prompt.
+fn run_synthetic(id: &Option<String>, say: &Option<String>, tool: Option<String>, fail: Option<String>) {
+    if say.is_none() && tool.is_none() && fail.is_none() {
+        eprintln!("run: --synthetic needs --say, --tool, or --fail to have something to record");
+        std::process::exit(2);
+    }
+    let sup = match Supervisor::open(data_dir()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("open runtime: {e}");
+            std::process::exit(1);
+        }
+    };
+    let run_id = id.clone().unwrap_or_else(pantheon_runtime::new_run_id);
+    let recovered = sup.start_run(&run_id).unwrap_or_else(|e| {
+        eprintln!("start: {e}");
+        std::process::exit(1);
+    });
+    if recovered {
+        println!("(recovered unfinished run {run_id})");
+    }
+    if let Some(t) = tool {
+        // Started and completed, so the run does not end with a dangling
+        // call id. An unfinished call makes the next resume treat the run
+        // as interrupted and re-drive it.
+        let prov = pantheon_api::provenance::Provenance::system("cli");
+        sup.emit(pantheon_api::events::Event::ToolStarted {
+            run_id: run_id.clone(),
+            call_id: "cli".into(),
+            tool: t.clone(),
+            args: String::new(),
+            provenance: prov.clone(),
+        })
+        .unwrap_or_else(|e| die(&format!("ledger: {e}")));
+        sup.emit(pantheon_api::events::Event::ToolCompleted {
+            run_id: run_id.clone(),
+            call_id: "cli".into(),
+            tool: t,
+            provenance: prov,
+        })
+        .unwrap_or_else(|e| die(&format!("ledger: {e}")));
+    }
+    if let Some(s) = say {
+        sup.emit(pantheon_api::events::Event::RunProgress {
+            run_id: run_id.clone(),
+            detail: s.clone(),
+        })
+        .unwrap_or_else(|e| die(&format!("ledger: {e}")));
+    }
+    if let Some(code) = fail {
+        sup.fail(&run_id, &code)
+            .unwrap_or_else(|e| die(&format!("ledger: {e}")));
+    } else {
+        sup.complete(&run_id)
+            .unwrap_or_else(|e| die(&format!("ledger: {e}")));
+    }
+    println!("{run_id}");
+}
+
+/// How `pantheon run` reports a real turn's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    /// Assistant text, then the run id (the historical default).
+    Text,
+    /// One JSON object with the run id, status, and answer.
+    Json,
+    /// Only the assistant text; nothing else goes to stdout. This is the
+    /// shape a script or a pipe wants - no run id, no status line.
+    Plain,
+}
+
+impl OutputFormat {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "text" => Some(Self::Text),
+            "json" => Some(Self::Json),
+            "plain" => Some(Self::Plain),
+            _ => None,
+        }
+    }
 }
 
 /// Parsed `pantheon run` flags. Extracted from the dispatch arm so the
@@ -797,10 +944,6 @@ fn check_run_flag_mix(
 struct RunArgs {
     id: Option<String>,
     say: Option<String>,
-    tool: Option<String>,
-    fail: Option<String>,
-    with_ext: bool,
-    platform: String,
     verdict_tool: bool,
     grant_scope: Option<String>,
     deny_scope: Option<String>,
@@ -811,6 +954,18 @@ struct RunArgs {
     /// Ledger run mode the turn runs in (`plan`|`build`).
     mode: Option<pantheon_api::mode::AgentMode>,
     no_resume: bool,
+    /// `--print`: real turn, answer only.
+    print: bool,
+    output_format: OutputFormat,
+    /// `--synthetic`: write ledger events without calling a model. The
+    /// deterministic path the eval harness and recovery tests use; never
+    /// the default, because a caller asking for an answer must get an
+    /// answer rather than an event trace.
+    synthetic: bool,
+    /// Synthetic-only: record a `ToolStarted`/`ToolCompleted` pair.
+    tool: Option<String>,
+    /// Synthetic-only: end the run with this failure code.
+    fail: Option<String>,
     /// `--help`/`-h`: print run usage and exit 0 at the call site.
     help: bool,
 }
@@ -822,10 +977,6 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
     let mut out = RunArgs {
         id: None,
         say: None,
-        tool: None,
-        fail: None,
-        with_ext: false,
-        platform: String::from("cli"),
         verdict_tool: false,
         grant_scope: None,
         deny_scope: None,
@@ -834,6 +985,11 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         resume: false,
         mode: None,
         no_resume: false,
+        print: false,
+        output_format: OutputFormat::Text,
+        synthetic: false,
+        tool: None,
+        fail: None,
         help: false,
     };
     let mut i = 2;
@@ -855,15 +1011,34 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
             "--grant" => out.grant_scope = take_value(&mut i),
             "--deny" => out.deny_scope = take_value(&mut i),
             "--say" => out.say = take_value(&mut i),
-            "--tool" => out.tool = take_value(&mut i),
-            "--fail" => out.fail = take_value(&mut i),
-            "--ext" => out.with_ext = true,
-            "--verdict-tool" => out.verdict_tool = true,
-            "--platform" => {
-                if let Some(v) = take_value(&mut i) {
-                    out.platform = v;
-                }
+            "--synthetic" => out.synthetic = true,
+            // These two only make sense against the synthetic writer, so
+            // they select it rather than demanding a second flag.
+            "--tool" => {
+                out.synthetic = true;
+                out.tool = take_value(&mut i);
             }
+            "--fail" => {
+                out.synthetic = true;
+                out.fail = take_value(&mut i);
+            }
+            "--verdict-tool" => out.verdict_tool = true,
+            "--print" | "-p" => out.print = true,
+            "--output-format" => match take_value(&mut i) {
+                Some(v) => match OutputFormat::parse(&v) {
+                    Some(f) => out.output_format = f,
+                    None => {
+                        return Err(format!(
+                            "run: unknown --output-format {v:?} (want text, json, or plain)"
+                        ));
+                    }
+                },
+                None => {
+                    return Err(
+                        "run: --output-format needs a value (text, json, or plain)".to_string()
+                    )
+                }
+            },
             "--agent" => out.agent_profile = take_value(&mut i),
             "--resume" => out.resume = true,
             "--no-resume" => out.no_resume = true,
@@ -1387,21 +1562,33 @@ timeout_ms = 5000
                 }
             };
             if parsed.help {
-                println!("usage: pantheon run [--id ID] [--say TEXT|--say -] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
-                println!("       pantheon run --taskID <id> --say TEXT --deliver session|telegram|discord [--agent PROFILE] [--mode plan|build]");
-                println!("       pantheon run --taskID <id> --resume --deliver session [--mode plan|build]");
+                println!("usage: pantheon run [--say TEXT|--say -] [--id ID] [--agent PROFILE]");
+                println!("                      [--mode plan|build] [--output-format text|json|plain]");
+                println!("       pantheon run --taskID <id> --resume [--mode plan|build]");
                 println!("       pantheon run --taskID <id> --grant <scope> | --deny <scope> [--no-resume]");
-                println!("       --say - reads the message from stdin (never via argv, so it");
-                println!("       never appears in process listings); PANTHEON_SAY_STDIN=1 does");
-                println!("       the same when --say is absent.");
+                println!();
+                println!("--say TEXT runs a real model turn and prints the answer. That is the");
+                println!("default: no flag is needed to get a real answer.");
+                println!("  --output-format text   answer, then the run id (default)");
+                println!("  --output-format plain  answer only - for a pipe or a script");
+                println!("  --output-format json   {{\"run_id\",\"status\",\"answer\"}}");
+                println!("  --print / -p           shorthand for --output-format plain");
+                println!("--taskID sets the run id (alias: --id), so a follow-up turn or a");
+                println!("  --resume continues that conversation.");
+                println!("--say - reads the message from stdin (never via argv, so it never");
+                println!("  appears in process listings); PANTHEON_SAY_STDIN=1 does the same.");
+                println!("--deliver telegram|discord queues the answer in the gateway outbox");
+                println!("  instead of printing it.");
+                println!();
+                println!("examples:");
+                println!("  pantheon run --say 'fix the failing test'");
+                println!("  pantheon run --say - < prompt.txt --output-format json | jq -r .answer");
+                println!("  pantheon run --say 'add a test' -p > patch-notes.md");
+                println!("  pantheon run --taskID abc --say 'now run it'");
                 return;
             }
             let id = parsed.id;
             let say = parsed.say;
-            let tool = parsed.tool;
-            let fail = parsed.fail;
-            let with_ext = parsed.with_ext;
-            let platform = parsed.platform;
             // Reviewer-only tool for staged teams: the dashboard's swarm
             // worker passes this to reviewer child runs (`--deliver
             // session`), registering the `verdict` tool on the turn so the
@@ -1428,6 +1615,11 @@ timeout_ms = 5000
             let resume = parsed.resume;
             let mode = parsed.mode;
             let no_resume = parsed.no_resume;
+            let output_format = if parsed.print {
+                OutputFormat::Plain
+            } else {
+                parsed.output_format
+            };
             // A-10: resolve the message before anything consumes it, so
             // `--say -` / PANTHEON_SAY_STDIN keep turn text out of argv.
             let say = resolve_say_stdin(say);
@@ -1466,129 +1658,49 @@ timeout_ms = 5000
                 return;
             }
             if let Err(e) = check_run_flag_mix(
-                &deliver,
-                &tool,
-                &fail,
-                with_ext,
+                id.is_some(),
                 resume,
-                &mode,
-                &agent_profile,
-                verdict_tool,
+                no_resume,
+                grant_scope.is_some() || deny_scope.is_some(),
+                parsed.synthetic,
             ) {
                 eprintln!("{e}");
                 std::process::exit(2);
             }
-            // A named delivery target means a real turn, not a synthetic
-            // ledger write: the whole point is that the answer arrives where
-            // the user is. Without one, `run` stays the synthetic writer the
-            // eval harness depends on.
-            if let Some(target) = deliver {
-                if !matches!(target.as_str(), "session" | "telegram" | "discord") {
-                    eprintln!(
-                        "unknown --deliver target '{target}'; use session, telegram, or discord"
-                    );
+            // The synthetic writer: ledger events, no model. Deterministic
+            // on purpose, so `eval/run.py` and the recovery tests can assert
+            // exact ledger state without a provider.
+            if parsed.synthetic {
+                if deliver.is_some() {
+                    eprintln!("run: --synthetic writes ledger events and never delivers; drop --deliver");
                     std::process::exit(2);
                 }
-                // `session` is the default target, and it is a real model
-                // turn printed to this terminal - not the synthetic ledger
-                // writer below. Gating it on `target != "session"` meant the
-                // default path produced an event trace with no model call.
-                return run_delivered_task(
-                    &id,
-                    &say,
-                    &target,
-                    verdict_tool,
-                    agent_profile.as_deref(),
-                    resume,
-                    mode,
-                );
+                return run_synthetic(&id, &say, parsed.tool, parsed.fail);
             }
-            // `run` writes ledger events directly. It does not call a model
-            // and does not execute the named tool, so it is a synthetic-run
-            // writer for ledger and recovery testing. It is not an
-            // alternative to `chat`, and saying so up front is cheaper than
-            // letting someone discover it from an empty transcript.
-            if say.is_none() && tool.is_none() && fail.is_none() && !with_ext {
-                eprintln!("usage: pantheon run [--id ID] [--say TEXT|--say -] [--tool NAME] [--fail CODE] [--ext] [--platform P]");
-                eprintln!("       pantheon run --taskID <id> --resume --deliver session [--mode plan|build]");
-                eprintln!("       --say - reads the message from stdin (never via argv, so it");
-                eprintln!("       never appears in process listings); PANTHEON_SAY_STDIN=1 does");
-                eprintln!("       the same when --say is absent.");
-                eprintln!();
-                eprintln!("run writes synthetic ledger events only: it never calls a model and");
-                eprintln!(
-                    "never executes the tool named by --tool. Use `pantheon run --taskID <id> --say TEXT --deliver session` for a real"
-                );
-                eprintln!("turn, or `pantheon run --say TEXT` to seed a run for recovery testing.");
+            // Agent profiles, plan/build mode, and the verdict tool are all
+            // properties of a real turn, so they are accepted with or without
+            // a delivery target rather than demanding one.
+            let target = deliver.unwrap_or_else(|| "session".to_string());
+            if !matches!(target.as_str(), "session" | "telegram" | "discord") {
+                eprintln!("unknown --deliver target '{target}'; use session, telegram, or discord");
                 std::process::exit(2);
             }
-            let sup = match Supervisor::open(data_dir()) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("open runtime: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let run_id = id.unwrap_or_else(new_run_id);
-            let recovered = sup.start_run(&run_id).unwrap_or_else(|e| {
-                eprintln!("start: {e}");
-                std::process::exit(1);
-            });
-            if recovered {
-                println!("(recovered unfinished run {run_id})");
+            if say.is_none() && !resume {
+                eprintln!(
+                    "run: nothing to do - pass --say TEXT (or --say - for stdin), or --taskID <id> --resume"
+                );
+                eprintln!("     `pantheon run --help` for the full surface");
+                std::process::exit(2);
             }
-            if with_ext {
-                let mgr = load_mgr();
-                mgr.preseed_seen(read_seen());
-                let fired = mgr.fire(Hook::PreLlmCall, &run_id, &platform, Default::default());
-                write_seen(&mgr.seen_snapshot());
-                if let Some(ctx) = fired {
-                    sup.emit(Event::RunProgress {
-                        run_id: run_id.clone(),
-                        detail: format!("ext pre_llm_call injected {} chars", ctx.len()),
-                    })
-                    .unwrap_or_else(|e| die(&format!("ledger: {e}")));
-                    println!("--- injected context ---\n{ctx}\n--- end ---");
-                } else {
-                    println!("(no extension context)");
-                }
-            }
-            if let Some(t) = tool {
-                // Started and completed, so the run does not end with a
-                // dangling call id. An unfinished call makes the next resume
-                // treat the run as interrupted and re-drive it.
-                let prov = pantheon_api::provenance::Provenance::system("cli");
-                sup.emit(Event::ToolStarted {
-                    run_id: run_id.clone(),
-                    call_id: "cli".into(),
-                    tool: t.clone(),
-                    args: String::new(),
-                    provenance: prov.clone(),
-                })
-                .unwrap_or_else(|e| die(&format!("ledger: {e}")));
-                sup.emit(Event::ToolCompleted {
-                    run_id: run_id.clone(),
-                    call_id: "cli".into(),
-                    tool: t,
-                    provenance: prov,
-                })
-                .unwrap_or_else(|e| die(&format!("ledger: {e}")));
-            }
-            if let Some(s) = say {
-                sup.emit(Event::RunProgress {
-                    run_id: run_id.clone(),
-                    detail: s,
-                })
-                .unwrap_or_else(|e| die(&format!("ledger: {e}")));
-            }
-            if let Some(code) = fail {
-                sup.fail(&run_id, &code)
-                    .unwrap_or_else(|e| die(&format!("ledger: {e}")));
-            } else {
-                sup.complete(&run_id)
-                    .unwrap_or_else(|e| die(&format!("ledger: {e}")));
-            }
-            println!("{run_id}");
+            run_delivered_task(
+                &id,
+                &say,
+                &Delivery { target, format: output_format },
+                verdict_tool,
+                agent_profile.as_deref(),
+                resume,
+                mode,
+            );
         }
         "schedule" => {
             crate::schedule::cmd_schedule(&args, &data_dir());
@@ -2121,13 +2233,6 @@ mod run_args_tests {
             "r",
             "--say",
             "hi",
-            "--tool",
-            "t",
-            "--fail",
-            "F",
-            "--ext",
-            "--platform",
-            "cli",
             "--verdict-tool",
             "--agent",
             "lead",
@@ -2137,7 +2242,7 @@ mod run_args_tests {
         ]);
         let p = parse_run_args(&args).expect("known flags must parse");
         assert_eq!(p.id.as_deref(), Some("r"));
-        assert!(p.with_ext && p.verdict_tool && p.no_resume);
+        assert!(p.verdict_tool && p.no_resume);
         assert_eq!(p.grant_scope.as_deref(), Some("s"));
     }
 
@@ -2147,78 +2252,78 @@ mod run_args_tests {
         assert!(parse_run_args(&args).is_err());
     }
 
+    /// `--say TEXT` alone is a real turn: it must need no other flag.
     #[test]
-    fn delivered_and_synthetic_flags_do_not_mix() {
-        let some = |s: &str| Some(s.to_string());
-        // Dashboard resume/message argv: all delivered-only flags with
-        // a delivery target is the happy path.
-        assert!(check_run_flag_mix(
-            &some("session"),
-            &None,
-            &None,
-            false,
-            true,
-            &Some(pantheon_api::mode::AgentMode::Plan),
-            &some("lead"),
-            true,
-        )
-        .is_ok());
-        // Synthetic writer alone: fine.
-        assert!(
-            check_run_flag_mix(&None, &some("t"), &None, false, false, &None, &None, false).is_ok()
-        );
-        // Each delivered-only flag without --deliver is an error.
-        for (resume, mode, agent, verdict) in [
-            (true, None, None, false),
-            (
-                false,
-                Some(pantheon_api::mode::AgentMode::Build),
-                None,
-                false,
-            ),
-            (false, None, Some("lead".to_string()), false),
-            (false, None, None, true),
+    fn say_alone_parses_as_a_real_turn() {
+        let p = parse_run_args(&argv(&["run", "--say", "fix it"])).expect("parses");
+        assert_eq!(p.say.as_deref(), Some("fix it"));
+        assert_eq!(p.deliver, None, "default delivery is session");
+        assert_eq!(p.output_format, OutputFormat::Text);
+        assert!(!p.print);
+    }
+
+    #[test]
+    fn print_flag_selects_plain_output() {
+        let p = parse_run_args(&argv(&["run", "--say", "x", "--print"])).expect("parses");
+        assert!(p.print);
+        let p = parse_run_args(&argv(&["run", "--say", "x", "-p"])).expect("parses");
+        assert!(p.print, "-p is an alias");
+    }
+
+    #[test]
+    fn output_format_parses_all_three_shapes() {
+        for (flag, want) in [
+            ("text", OutputFormat::Text),
+            ("json", OutputFormat::Json),
+            ("plain", OutputFormat::Plain),
         ] {
-            assert!(
-                check_run_flag_mix(&None, &None, &None, false, resume, &mode, &agent, verdict)
-                    .is_err(),
-                "delivered-only flag without --deliver must be rejected"
-            );
+            let p = parse_run_args(&argv(&["run", "--say", "x", "--output-format", flag]))
+                .expect("parses");
+            assert_eq!(p.output_format, want);
         }
-        // Each synthetic flag with --deliver is an error.
-        assert!(check_run_flag_mix(
-            &some("session"),
-            &some("t"),
-            &None,
-            false,
-            false,
-            &None,
-            &None,
-            false
-        )
-        .is_err());
-        assert!(check_run_flag_mix(
-            &some("session"),
-            &None,
-            &some("F"),
-            false,
-            false,
-            &None,
-            &None,
-            false
-        )
-        .is_err());
-        assert!(check_run_flag_mix(
-            &some("session"),
-            &None,
-            &None,
-            true,
-            false,
-            &None,
-            &None,
-            false
-        )
-        .is_err());
+        assert!(
+            parse_run_args(&argv(&["run", "--say", "x", "--output-format", "yaml"])).is_err(),
+            "unknown format must be a loud error"
+        );
+        assert!(
+            parse_run_args(&argv(&["run", "--say", "x", "--output-format"])).is_err(),
+            "missing value must be a loud error"
+        );
+    }
+
+    /// The removed synthetic flags now select the synthetic writer instead of
+    /// being silently ignored: `--tool`/`--fail` still record ledger-only
+    /// events, so the eval harness keeps working, but they never pretend to
+    /// be a real turn.
+    #[test]
+    fn synthetic_flags_select_the_synthetic_writer() {
+        let p = parse_run_args(&argv(&["run", "--tool", "read_file"])).expect("parses");
+        assert!(p.synthetic);
+        assert_eq!(p.tool.as_deref(), Some("read_file"));
+
+        let p = parse_run_args(&argv(&["run", "--fail", "EVAL_CAP_DENIED"])).expect("parses");
+        assert!(p.synthetic);
+        assert_eq!(p.fail.as_deref(), Some("EVAL_CAP_DENIED"));
+
+        let p = parse_run_args(&argv(&["run", "--say", "x"])).expect("parses");
+        assert!(!p.synthetic, "--say alone is a real turn");
+    }
+
+    #[test]
+    fn resume_without_an_id_is_rejected() {
+        assert!(check_run_flag_mix(false, true, false, false, false).is_err());
+        assert!(check_run_flag_mix(true, true, false, false, false).is_ok());
+    }
+
+    #[test]
+    fn resume_and_synthetic_do_not_mix() {
+        assert!(check_run_flag_mix(true, true, false, false, true).is_err());
+    }
+
+    #[test]
+    fn no_resume_is_approval_only() {
+        assert!(check_run_flag_mix(false, false, true, false, false).is_err());
+        assert!(check_run_flag_mix(true, false, true, true, false).is_ok());
     }
 }
 

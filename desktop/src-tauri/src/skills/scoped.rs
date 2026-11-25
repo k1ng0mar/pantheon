@@ -25,7 +25,10 @@ pub fn resolve(bot: &[String], project: &[String]) -> Vec<Resolved> {
             match out.iter_mut().find(|r| r.id == *id) {
                 Some(existing) if existing.provenance != from => existing.provenance = "both",
                 Some(_) => {}
-                None => out.push(Resolved { id: id.clone(), provenance: from }),
+                None => out.push(Resolved {
+                    id: id.clone(),
+                    provenance: from,
+                }),
             }
         }
     }
@@ -36,8 +39,17 @@ impl Library {
     /// Skill ids active for `harness` at project scope in `root`.
     pub fn project_active(&self, harness: &str, root: &Path) -> Vec<String> {
         let project = Some(root.to_string_lossy().into_owned());
-        let Ok(items) = self.list() else { return Vec::new() };
-        items.into_iter().filter(|i| i.meta.kind == Kind::Skill && super::active_in(&i.meta, harness, Scope::Project, &project).is_some()).map(|i| i.meta.id).collect()
+        let Ok(items) = self.list() else {
+            return Vec::new();
+        };
+        items
+            .into_iter()
+            .filter(|i| {
+                i.meta.kind == Kind::Skill
+                    && super::active_in(&i.meta, harness, Scope::Project, &project).is_some()
+            })
+            .map(|i| i.meta.id)
+            .collect()
     }
 
     /// Makes exactly `ids` active for `harness` in a bot's own workspace `root`; other harnesses
@@ -47,22 +59,36 @@ impl Library {
             return Vec::new();
         }
         let project = Some(root.to_string_lossy().into_owned());
-        let Ok(items) = self.list() else { return vec!["The skills library could not be read.".into()] };
+        let Ok(items) = self.list() else {
+            return vec!["The skills library could not be read.".into()];
+        };
         let mut errors = Vec::new();
         for item in &items {
             let active = super::active_in(&item.meta, harness, Scope::Project, &project);
             let wanted = item.meta.kind == Kind::Skill && ids.contains(&item.meta.id);
             let result = match (wanted, active) {
-                (true, Some(a)) if Self::status(&item.meta, Some(a)) == "active" || a.surface == "prompt" && a.sha256 == item.meta.sha256 => Ok(()),
-                (true, _) => self.activate(&item.meta.id, harness, Scope::Project, Some(root), false).map(|_| ()),
-                (false, Some(_)) => self.deactivate(&item.meta.id, harness, Scope::Project, Some(root)).map(|_| ()),
+                (true, Some(a))
+                    if Self::status(&item.meta, Some(a)) == "active"
+                        || a.surface == "prompt" && a.sha256 == item.meta.sha256 =>
+                {
+                    Ok(())
+                }
+                (true, _) => self
+                    .activate(&item.meta.id, harness, Scope::Project, Some(root), false)
+                    .map(|_| ()),
+                (false, Some(_)) => self
+                    .deactivate(&item.meta.id, harness, Scope::Project, Some(root))
+                    .map(|_| ()),
                 (false, None) => Ok(()),
             };
             if let Err(error) = result {
                 errors.push(error);
             }
         }
-        for id in ids.iter().filter(|id| !items.iter().any(|i| i.meta.id == **id)) {
+        for id in ids
+            .iter()
+            .filter(|id| !items.iter().any(|i| i.meta.id == **id))
+        {
             errors.push(format!("{id} is no longer in the skills library."));
         }
         errors
@@ -81,15 +107,26 @@ impl Library {
                     continue;
                 }
             };
-            if !item.findings.is_empty() && item.meta.acknowledged.as_deref() != Some(item.meta.sha256.as_str()) {
-                skipped.push(format!("Review the safety findings for {} in Settings → Skills & rules first.", item.meta.name));
+            if !item.findings.is_empty()
+                && item.meta.acknowledged.as_deref() != Some(item.meta.sha256.as_str())
+            {
+                skipped.push(format!(
+                    "Review the safety findings for {} in Settings → Skills & rules first.",
+                    item.meta.name
+                ));
                 continue;
             }
             let folder = self.dir.join(id);
             let main = std::fs::read_to_string(folder.join("SKILL.md")).unwrap_or_default();
             let (_, _, body) = frontmatter(&main);
             let body: String = body.chars().take(SKILL_CHARS).collect();
-            let section = format!("\n### {}\n{}\nFolder (supporting files): {}\n\n{}\n", item.meta.name, item.meta.description, folder.display(), body.trim());
+            let section = format!(
+                "\n### {}\n{}\nFolder (supporting files): {}\n\n{}\n",
+                item.meta.name,
+                item.meta.description,
+                folder.display(),
+                body.trim()
+            );
             if text.chars().count() + section.chars().count() > TOTAL_CHARS {
                 skipped.push(format!("{} did not fit in the prompt.", item.meta.name));
                 continue;
@@ -112,9 +149,18 @@ mod tests {
     #[test]
     fn union_deduplicates_by_id_and_keeps_provenance() {
         let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let resolved = resolve(&ids(&["review", "deploy", "review"]), &ids(&["lint", "deploy"]));
-        let pairs: Vec<_> = resolved.iter().map(|r| (r.id.as_str(), r.provenance)).collect();
-        assert_eq!(pairs, [("review", "bot"), ("deploy", "both"), ("lint", "project")]);
+        let resolved = resolve(
+            &ids(&["review", "deploy", "review"]),
+            &ids(&["lint", "deploy"]),
+        );
+        let pairs: Vec<_> = resolved
+            .iter()
+            .map(|r| (r.id.as_str(), r.provenance))
+            .collect();
+        assert_eq!(
+            pairs,
+            [("review", "bot"), ("deploy", "both"), ("lint", "project")]
+        );
         assert!(resolve(&[], &[]).is_empty());
     }
 }

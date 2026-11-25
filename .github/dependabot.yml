@@ -12,6 +12,17 @@ updates:
       rust-deps:
         patterns: ["*"]
     open-pull-requests-limit: 10
+  # Desktop Tauri has its own Cargo.lock, excluded from the root workspace.
+  # Without this entry its Rust dependencies never get update PRs (audit F6).
+  - package-ecosystem: cargo
+    directory: /desktop/src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      desktop-rust-deps:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
   # Actions: keep dtolnay/rust-toolchain, actions/checkout, and
   # Swatinem/rust-cache current.
   - package-ecosystem: github-actions
@@ -21,3 +32,41 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # npm: the desktop app, the website, the mobile shell and the relay worker
+  # each carry their own package-lock.json and were the only dependency
+  # surface with no update path at all (audit F9) - a vulnerable transitive
+  # package in the Tauri build or the Cloudflare Worker would never surface
+  # as a PR. Grouped per directory so a routine week stays reviewable.
+  - package-ecosystem: npm
+    directory: /desktop
+    schedule:
+      interval: weekly
+    groups:
+      desktop-npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /desktop/website
+    schedule:
+      interval: weekly
+    groups:
+      website-npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /desktop/mobile
+    schedule:
+      interval: weekly
+    groups:
+      mobile-npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /desktop/relay
+    schedule:
+      interval: weekly
+    groups:
+      relay-npm:
+        patterns: ["*"]
+    open-pull-requests-limit: 5

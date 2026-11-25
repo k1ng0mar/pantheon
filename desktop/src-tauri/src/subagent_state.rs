@@ -196,7 +196,7 @@ mod tests {
     fn task(store: &Store) -> String {
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap()
             .id
     }
@@ -456,11 +456,13 @@ mod tests {
         assert_eq!(merged.len(), 64);
         assert!(merged.iter().take(2).all(|a| a.status == "running"));
         store
-            .conn().execute("DELETE FROM sessions WHERE id=?1", [&sid])
+            .conn()
+            .execute("DELETE FROM sessions WHERE id=?1", [&sid])
             .unwrap();
         assert_eq!(
             store
-                .conn().query_row("SELECT COUNT(*) FROM subagents", [], |row| row
+                .conn()
+                .query_row("SELECT COUNT(*) FROM subagents", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
             0
@@ -478,7 +480,9 @@ mod tests {
         assert!(state.record(&store, "run", &mut event).is_err());
         assert_eq!(state.merge_history(Vec::new())[0].response, "Reading");
         let db = store.lock().unwrap();
-        db.conn().execute_batch("DROP TRIGGER reject_child;").unwrap();
+        db.conn()
+            .execute_batch("DROP TRIGGER reject_child;")
+            .unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();
         assert_eq!(db.subagents(&sid).unwrap()[0].response, "Reading");
     }

@@ -27,7 +27,7 @@ pub mod doctor {
     /// Print the doctor usage to stderr.
     pub fn doctor_help() {
         eprintln!(
-            "usage: pantheon doctor [--ping] [--verbose] [--json] [--check <subsystem>] [<plugin_dir>]"
+            "usage: pantheon doctor [--ping] [--verbose] [--json] [--check <subsystem>] [--workspace <dir>] [<plugin_dir>]"
         );
         eprintln!("  no args:      system diagnostics (concise: failures and warnings only)");
         eprintln!("  --verbose:    show every check, with evidence and timings");
@@ -35,6 +35,7 @@ pub mod doctor {
         eprintln!("  --check <s>:  run one subsystem only");
         eprintln!("                runtime | providers | memory | tools | security | config");
         eprintln!("  --ping:       also probe the configured model provider's endpoint");
+        eprintln!("  --workspace:  also inspect this checkout (git, instructions, language servers, index)");
         eprintln!("  <plugin_dir>: verify one plugin directory (extension doctor)");
         eprintln!(
             "exit codes: 0 healthy, 1 degraded/unhealthy, 2 bad arguments, 3 diagnostics incomplete"
@@ -55,8 +56,15 @@ pub mod doctor {
         let mut check: Option<Subsystem> = None;
         let mut plugin_dir: Option<&str> = None;
         let mut check_arg_pending = false;
+        let mut workspace_arg_pending = false;
+        let mut workspace: Option<std::path::PathBuf> = None;
 
         for a in args.iter().skip(2) {
+            if workspace_arg_pending {
+                workspace = Some(std::path::PathBuf::from(a));
+                workspace_arg_pending = false;
+                continue;
+            }
             if check_arg_pending {
                 match Subsystem::parse(a) {
                     Some(s) => check = Some(s),
@@ -78,6 +86,7 @@ pub mod doctor {
                 // Back-compat alias: human-readable concise output is the default.
                 "--human" => {}
                 "--check" => check_arg_pending = true,
+                "--workspace" => workspace_arg_pending = true,
                 s if s.starts_with('-') => {
                     fail_usage(&format!("unexpected flag {s:?}"));
                 }
@@ -98,6 +107,12 @@ pub mod doctor {
         }
         if check_arg_pending {
             fail_usage("--check needs a subsystem argument");
+        }
+        if workspace_arg_pending {
+            fail_usage("--workspace needs a directory argument");
+        }
+        if workspace.is_some() && plugin_dir.is_some() {
+            fail_usage("--workspace does not apply to the plugin-directory form");
         }
         if plugin_dir.is_some() && check.is_some() {
             fail_usage("--check does not apply to the plugin-directory form; run it without --check, or without a plugin directory");
@@ -123,6 +138,9 @@ pub mod doctor {
             _ => data_dir.join("extensions"),
         };
         let mut ctx = DoctorCtx::new(data_dir.to_path_buf(), ext_dir);
+        if let Some(ws) = workspace {
+            ctx = ctx.with_workspace(ws);
+        }
         ctx.ping_provider = ping;
         // Progress goes to stderr so `--json` stdout stays machine-readable.
         ctx.progress = Some(Box::new(|s| eprintln!("doctor: {s}")));

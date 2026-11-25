@@ -8,18 +8,37 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn valid_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
-    let ok = |part: Option<&str>| part.is_some_and(|p| !p.is_empty() && !p.starts_with(['.', '-']) && p.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)));
+    let ok = |part: Option<&str>| {
+        part.is_some_and(|p| {
+            !p.is_empty()
+                && !p.starts_with(['.', '-'])
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
+    };
     ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
 }
 pub(super) fn valid_path(path: &str) -> bool {
-    path.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_. ".contains(&b)))
+    path.split('/').all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_. ".contains(&b))
+    })
 }
 pub(super) fn valid_ref(git_ref: &str) -> bool {
-    !git_ref.is_empty() && !git_ref.starts_with('-') && !git_ref.contains("..") && git_ref.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
+    !git_ref.is_empty()
+        && !git_ref.starts_with('-')
+        && !git_ref.contains("..")
+        && git_ref
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
 }
 
 pub(super) fn api(endpoint: &str) -> Result<serde_json::Value, String> {
-    let home = crate::agent_usage_providers::home().unwrap_or_else(std::env::temp_dir);
+    let home = crate::home::home().unwrap_or_else(std::env::temp_dir);
     let capture = crate::github::run_gh(&home, &["api", endpoint], TIMEOUT)?;
     crate::github::json(&capture)
 }
@@ -38,7 +57,10 @@ pub fn fetch(repo: &str, path: &str, git_ref: Option<&str>) -> Result<(Files, St
     if git_ref.is_some_and(|r| !valid_ref(r)) {
         return Err("That branch, tag or commit is not valid.".into());
     }
-    let commit = api(&format!("repos/{repo}/commits/{}", git_ref.unwrap_or("HEAD")))?["sha"]
+    let commit = api(&format!(
+        "repos/{repo}/commits/{}",
+        git_ref.unwrap_or("HEAD")
+    ))?["sha"]
         .as_str()
         .ok_or("GitHub did not return a commit for that ref.")?
         .to_string();
@@ -65,17 +87,27 @@ pub fn fetch(repo: &str, path: &str, git_ref: Option<&str>) -> Result<(Files, St
                     }
                     let content = match entry["content"].as_str() {
                         Some(content) => content.to_string(),
-                        None => api(&format!("repos/{repo}/contents/{entry_path}?ref={commit}"))?["content"].as_str().unwrap_or_default().to_string(),
+                        None => api(&format!("repos/{repo}/contents/{entry_path}?ref={commit}"))?
+                            ["content"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
                     };
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(content.replace(['\n', '\r'], ""))
-                        .map_err(|_| format!("GitHub returned unreadable content for {entry_path}."))?;
+                        .map_err(|_| {
+                            format!("GitHub returned unreadable content for {entry_path}.")
+                        })?;
                     total += bytes.len();
                     if total > MAX_BYTES {
                         return Err("That path is larger than 1 MB.".into());
                     }
                     // A single-file import keeps its own name; a folder keeps its layout.
-                    let relative = if entry_path == path { name.to_string() } else { entry_path[path.len()..].trim_start_matches('/').to_string() };
+                    let relative = if entry_path == path {
+                        name.to_string()
+                    } else {
+                        entry_path[path.len()..].trim_start_matches('/').to_string()
+                    };
                     files.push((relative, bytes));
                 }
                 _ => {}

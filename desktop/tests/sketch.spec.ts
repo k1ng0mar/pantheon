@@ -69,9 +69,9 @@ test('draws shapes and components, edits text, and keeps history in step', async
   await expect(dialog(page)).toBeVisible();
   await expect(canvas(page)).toHaveAccessibleName('Mockup canvas, 4 shapes, text selected');
   // Undo and redo walk the same steps; Delete removes the selection.
-  await page.getByRole('button', { name: 'Undo (⌘Z)' }).click();
+  await page.getByRole('button', { name: process.platform === 'darwin' ? 'Undo (⌘Z)' : 'Undo (Ctrl+Z)' }).click();
   await expect(canvas(page)).toHaveAccessibleName(/3 shapes/);
-  await page.getByRole('button', { name: 'Redo (⇧⌘Z)' }).click();
+  await page.getByRole('button', { name: process.platform === 'darwin' ? 'Redo (⇧⌘Z)' : 'Redo (Ctrl+⇧Z)' }).click();
   await expect(canvas(page)).toHaveAccessibleName('Mockup canvas, 4 shapes');
   // Clicking the caption selects it again; Backspace removes it.
   await page.mouse.click(box.x + box.width * 0.6 + 12, box.y + box.height * 0.8 + 6);

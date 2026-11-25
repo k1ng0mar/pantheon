@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+
 import { tmpdir } from 'node:os';
 import { mkdirSync } from 'node:fs';
 // Screenshot evidence lands in a writable temp dir; /private is macOS-only.
@@ -6,21 +7,22 @@ const shot = (name: string): string => { const dir = tmpdir() + '/pantheon-overl
 // Clock-driven specs pile up virtual time fast; slow hosts need headroom.
 test.setTimeout(60_000);
 
-test('launcher preserves saved harness authors and renders handoffs beside the current live provider', async ({page}) => {
+test('launcher preserves saved model authors and renders handoffs beside the current live provider', async ({page}) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.setViewportSize({width:650,height:610});
   await instrumentLauncher(page, `if (command === 'overlay_thread') return {
-    provider:'kimi', status:'running', hasOlder:false, liveText:'Current Kimi response', messages:[
+    provider:'pantheon', status:'running', hasOlder:false, liveText:'Current Pantheon response', messages:[
       {id:1,sessionId:args.sessionId,role:'user',content:'Earlier question',createdAt:1},
-      {id:2,sessionId:args.sessionId,role:'assistant',content:'Original Claude answer',authorProvider:'claude',createdAt:2},
-      {id:3,sessionId:args.sessionId,role:'handoff',content:JSON.stringify({fromProvider:'claude',toProvider:'kimi',summary:'Saved conversation <script>unsafe()</script> stays readable.'}),createdAt:3},
+      {id:2,sessionId:args.sessionId,role:'assistant',content:'Answer from an older build',authorProvider:'legacy-agent',createdAt:2},
+      {id:3,sessionId:args.sessionId,role:'handoff',content:JSON.stringify({fromProvider:'pantheon',toProvider:'pantheon',summary:'Saved conversation <script>unsafe()</script> stays readable.'}),createdAt:3},
     ]};`);
   await page.goto('/?view=launcher');
   await page.locator('.launcher-task[data-task="preview-active"]').click();
   const responses = page.locator('.launcher-thread-response:visible');
   await expect(responses).toHaveCount(2);
-  await expect(responses.nth(0).locator('header')).toHaveText('Claude Code');
-  await expect(responses.nth(1).locator('header')).toHaveText('Kimi Code');
+  // An author this build no longer ships is labelled generically.
+  await expect(responses.nth(0).locator('header')).toHaveText('Earlier agent');
+  await expect(responses.nth(1).locator('header')).toHaveText('Pantheon');
   const marker = page.locator('.launcher-thread-handoff');
   await expect(marker.locator('summary')).toHaveText('Conversation carried forward');
   await marker.locator('summary').click();
@@ -93,25 +95,25 @@ test('launcher shows saved team models beside its architect and preserves the co
   await instrumentLauncher(page, `if (command === 'overlay_snapshot') {
     const count = window.__teamWorkerCount ?? 2;
     return {tasks, projects:[{id:'preview-project',name:'Pantheon',path:'/Projects/Pantheon'}],
-      context:{...effectiveContext(),...(!previewPreferences.modelSelection && count > 0 ? {provider:'claude',model:'opus',reasoningEffort:'medium'} : {})},
+      context:{...effectiveContext(),...(!previewPreferences.modelSelection && count > 0 ? {provider:'pantheon',model:'deep',reasoningEffort:'medium'} : {})},
       activeCount:4, teamWorkerCount:count};
   }`);
   await page.goto('/?view=launcher');
   const trigger = page.getByRole('button',{name:'Choose harness and model'});
   const suffix = trigger.locator('.launcher-team-models');
-  await expect(trigger.locator('.launcher-model-name')).toContainText('Opus');
+  await expect(trigger.locator('.launcher-model-name')).toContainText('deep');
   await expect(suffix).toHaveText('+2 models');
   expect(await suffix.evaluate(el => ({shrink:getComputedStyle(el).flexShrink,clipped:el.scrollWidth > el.clientWidth}))).toEqual({shrink:'0',clipped:false});
   const triggerRect = (await trigger.boundingBox())!, suffixRect = (await suffix.boundingBox())!;
   expect(suffixRect.x + suffixRect.width).toBeLessThanOrEqual(triggerRect.x + triggerRect.width);
   await trigger.click();
-  const selected = page.getByRole('button',{name:'Claude Code · Claude Opus 5',exact:true});
+  const selected = page.getByRole('button',{name:'Pantheon · Pantheon Deep',exact:true});
   await expect(selected).toHaveAttribute('aria-current','true');
-  await page.getByRole('button',{name:'Codex · GPT-5.6-Sol',exact:true}).click();
-  await expect(trigger.locator('.launcher-model-name')).toHaveText('GPT-5.6-Sol');
+  await page.getByRole('button',{name:'Pantheon · Pantheon Fast',exact:true}).click();
+  await expect(trigger.locator('.launcher-model-name')).toHaveText('Pantheon Fast');
   await expect(suffix).toHaveText('+2 models');
   await page.clock.runFor(1600);
-  await expect(trigger).toHaveAttribute('title','Codex · GPT-5.6-Sol +2 models');
+  await expect(trigger).toHaveAttribute('title', /Pantheon Fast \+2 models/);
   await page.screenshot({path: shot('pantheon-overlay-team-models.png')});
   await page.evaluate(() => { (window as any).__teamWorkerCount = 1; });
   await page.clock.runFor(1600);
@@ -119,7 +121,7 @@ test('launcher shows saved team models beside its architect and preserves the co
   await page.evaluate(() => { (window as any).__teamWorkerCount = 0; });
   await page.clock.runFor(1600);
   await expect(suffix).toHaveCount(0);
-  await expect(trigger.locator('.launcher-model-name')).toHaveText('GPT-5.6-Sol');
+  await expect(trigger.locator('.launcher-model-name')).toHaveText('Pantheon Fast');
 });
 
 /** Intercept the preview transport to exercise delays and failures without paid agent calls. */
@@ -230,7 +232,7 @@ test('launcher dismisses file suggestions before opening a thread and Escape fir
   await expect(menu).toHaveCount(0);
 });
 
-test('launcher discovers full model names on demand and launches the chosen harness', async ({page}) => {
+test('launcher discovers full model names on demand and launches the chosen model', async ({page}) => {
   const loaded: string[] = [];
   page.on('request', request => loaded.push(request.url()));
   await instrumentLauncher(page);
@@ -238,40 +240,39 @@ test('launcher discovers full model names on demand and launches the chosen harn
   await expect(page.locator('.launcher-task')).toHaveCount(4);
   expect(await page.evaluate(() => (window as any).__overlayCalls.filter((call:any) => call.command === 'list_provider_models'))).toHaveLength(0);
   await page.getByRole('button',{name:'Choose harness and model'}).click();
-  const claude = page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true});
-  await expect(claude).toBeVisible();
-  await expect(claude.locator('.provider-logo')).toHaveCount(1);
-  await expect(page.getByRole('button',{name:'Antigravity · Default',exact:true})).toBeDisabled();
-  await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('Claude Sonnet 5');
-  await claude.click();
+  const standard = page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true});
+  await expect(standard).toBeVisible();
+  await expect(standard.locator('.provider-logo')).toHaveCount(1);
+  await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('Pantheon Standard');
+  await standard.click();
   await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
-  await expect(page.locator('.launcher-agent')).toContainText('Claude Sonnet 5');
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
   await expect(page.locator('.launcher-agent .provider-logo')).toHaveCount(1);
-  await page.getByRole('textbox',{name:'New task'}).fill('Use the selected Claude model');
+  await page.getByRole('textbox',{name:'New task'}).fill('Use the selected Pantheon model');
   await page.getByRole('button',{name:'Start task',exact:true}).click();
-  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'claude',model:'sonnet',mode:'full'});
-  await expect(page.locator('.launcher-task').filter({hasText:'Use the selected Claude model'})).toBeVisible();
-  expect(loaded.some(url => /\/src\/(main|preview)\.ts(?:\?|$)/.test(url))).toBe(false);
+  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'pantheon',model:'standard',mode:'full'});
+  await expect(page.locator('.launcher-task').filter({hasText:'Use the selected Pantheon model'})).toBeVisible();
+  expect(loaded.some(url => /\/src\/main\.ts(?:\?|$)/.test(url))).toBe(false);
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden','true');
 });
 
-test('launcher keeps its chosen harness and model through main-window context sync and reload', async ({page}) => {
+test('launcher keeps its chosen model and model through main-window context sync and reload', async ({page}) => {
   await instrumentLauncher(page);
   await page.goto('/?view=launcher');
   await page.getByRole('button',{name:'Choose harness and model'}).click();
-  await page.getByRole('button',{name:'Claude Code · Claude Opus 5',exact:true}).click();
-  await expect(page.locator('.launcher-agent')).toContainText('Claude Opus 5');
+  await page.getByRole('button',{name:'Pantheon · Pantheon Deep',exact:true}).click();
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Deep');
   await page.evaluate(async () => {
     const {overlayCall} = await import('/src/overlay-client.ts');
-    await overlayCall('overlay_sync_context',{context:{projectId:'preview-project',provider:'codex',model:'gpt-6-astra',mode:'ask',reasoningEffort:'high'}});
+    await overlayCall('overlay_sync_context',{context:{projectId:'preview-project',provider:'pantheon',model:'fast',mode:'ask',reasoningEffort:'high'}});
   });
   await page.reload();
   await page.getByRole('button',{name:'Choose harness and model'}).click();
-  await expect(page.getByRole('button',{name:'Claude Code · Claude Opus 5',exact:true})).toHaveAttribute('aria-current','true');
+  await expect(page.getByRole('button',{name:'Pantheon · Pantheon Deep',exact:true})).toHaveAttribute('aria-current','true');
   await page.keyboard.press('Escape');
   await page.getByRole('textbox',{name:'New task'}).fill('Continue with the saved model');
   await page.getByRole('button',{name:'Start task',exact:true}).click();
-  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'claude',model:'opus',reasoningEffort:null,mode:'ask'});
+  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'pantheon',model:'deep',reasoningEffort:null,mode:'ask'});
 });
 
 test('launcher blocks starting a task while a model change is saving', async ({page}) => {
@@ -279,17 +280,17 @@ test('launcher blocks starting a task while a model change is saving', async ({p
   await page.goto('/?view=launcher');
   await page.getByRole('textbox',{name:'New task'}).fill('Launch with the new harness');
   await page.getByRole('button',{name:'Choose harness and model'}).click();
-  await page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true}).click();
+  await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseModelSave)).toBe('function');
   await expect(page.getByRole('button',{name:'Start task',exact:true})).toBeDisabled();
   await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveAttribute('aria-busy','true');
   await page.locator('.launcher-compose').dispatchEvent('submit');
   expect(await page.evaluate(() => (window as any).__overlayCalls.some((call:any) => call.command === 'overlay_launch'))).toBe(false);
   await page.evaluate(() => (window as any).__releaseModelSave());
-  await expect(page.locator('.launcher-agent')).toContainText('Claude Sonnet 5');
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
   await expect(page.getByRole('button',{name:'Start task',exact:true})).toBeEnabled();
   await page.getByRole('button',{name:'Start task',exact:true}).click();
-  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'claude',model:'sonnet',mode:'full'});
+  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'pantheon',model:'standard',mode:'full'});
 });
 
 test('launcher retains its old model after a failed selection and allows retry', async ({page}) => {
@@ -298,29 +299,29 @@ test('launcher retains its old model after a failed selection and allows retry',
   const trigger = page.getByRole('button',{name:'Choose harness and model'});
   const original = await trigger.textContent();
   await trigger.click();
-  await page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true}).click();
+  await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
   await expect(page.getByRole('alert')).toHaveText('Could not save the selected model.');
   await expect(trigger).toHaveText(original!);
-  await expect(page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true})).toBeEnabled();
+  await expect(page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true})).toBeEnabled();
   await page.evaluate(() => { (window as any).__allowModelSave = true; });
-  await page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true}).click();
-  await expect(trigger).toContainText('Claude Sonnet 5');
+  await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
+  await expect(trigger).toContainText('Pantheon Standard');
   await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
 });
 
 test('launcher ignores late model discovery after a newer selection', async ({page}) => {
-  await instrumentLauncher(page, `if (command === 'list_provider_models' && args.provider === 'claude') await new Promise(resolve => {window.__releaseCatalog=resolve;});`);
+  await instrumentLauncher(page, `if (command === 'list_provider_models' && args.provider === 'pantheon') await new Promise(resolve => {window.__releaseCatalog=resolve;});`);
   await page.goto('/?view=launcher');
   await page.getByRole('button',{name:'Choose harness and model'}).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseCatalog)).toBe('function');
-  await page.getByRole('button',{name:'Codex · GPT-5.6-Sol',exact:true}).click();
-  await expect(page.locator('.launcher-agent')).toContainText('GPT-5.6-Sol');
+  await page.getByRole('button',{name:'Pantheon · Pantheon Fast',exact:true}).click();
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Fast');
   await page.evaluate(() => (window as any).__releaseCatalog());
   await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
-  await expect(page.locator('.launcher-agent')).toContainText('GPT-5.6-Sol');
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Fast');
   await page.getByRole('textbox',{name:'New task'}).fill('Use the latest selection');
   await page.getByRole('button',{name:'Start task',exact:true}).click();
-  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'codex',model:'gpt-5.6-sol'});
+  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'pantheon',model:'fast'});
 });
 
 test('launcher keeps a saved model when an older status snapshot arrives late', async ({page}) => {
@@ -341,14 +342,14 @@ test('launcher keeps a saved model when an older status snapshot arrives late', 
   await page.clock.runFor(1600);
   await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseSnapshot)).toBe('function');
   await page.getByRole('button',{name:'Choose harness and model'}).click();
-  await page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true}).click();
-  await expect(page.locator('.launcher-agent')).toContainText('Claude Sonnet 5');
+  await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
   await page.evaluate(() => (window as any).__releaseSnapshot());
   await page.clock.runFor(100);
-  await expect(page.locator('.launcher-agent')).toContainText('Claude Sonnet 5');
+  await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
   await page.getByRole('textbox',{name:'New task'}).fill('Preserve my model selection');
   await page.getByRole('button',{name:'Start task',exact:true}).click();
-  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'claude',model:'sonnet',mode:'full'});
+  await expect.poll(async () => JSON.parse(await page.locator('html').getAttribute('data-last-launch') || '{}')).toMatchObject({provider:'pantheon',model:'standard',mode:'full'});
 });
 
 test('launcher model picker fits the minimum window and Escape only closes the picker', async ({page}) => {
@@ -357,17 +358,17 @@ test('launcher model picker fits the minimum window and Escape only closes the p
   const trigger = page.getByRole('button',{name:'Choose harness and model'});
   await trigger.click();
   const picker = page.getByRole('dialog',{name:'Harness and model'});
-  await expect(page.getByRole('button',{name:'Claude Code · Claude Sonnet 5',exact:true})).toBeAttached();
+  await expect(page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true})).toBeAttached();
   const rect = await picker.boundingBox();
   expect(rect).not.toBeNull();
   expect(rect!.x).toBeGreaterThanOrEqual(0);
   expect(rect!.y).toBeGreaterThanOrEqual(0);
   expect(rect!.x + rect!.width).toBeLessThanOrEqual(490);
   expect(rect!.y + rect!.height).toBeLessThanOrEqual(410);
-  await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('GLM Coding Plan');
-  const glm = page.locator('.model-menu-option[data-provider="glm"][data-model="glm-5.3"]');
-  await expect(glm).toBeInViewport();
-  await expect(glm.locator('.provider-logo')).toHaveCount(1);
+  await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('Pantheon Deep');
+  const deep = page.locator('.model-menu-option[data-provider="pantheon"][data-model="deep"]');
+  await expect(deep).toBeInViewport();
+  await expect(deep.locator('.provider-logo')).toHaveCount(1);
   await expect(picker).toHaveAttribute('data-popover-state','open');
   await expect(picker).toHaveCSS('opacity','1');
   await page.screenshot({path: shot('model-picker.png')});
@@ -389,7 +390,7 @@ test('launcher stays lightweight and starts concurrent tasks without opening the
   await expect(page.getByRole('button', {name:/Review the API changes/})).toHaveCount(0);
   await expect(page.getByRole('button', {name:/Build search indexing/})).toBeVisible();
   await expect(page.getByRole('button', {name:/Audit accessibility/})).toBeVisible();
-  expect(loaded.some(url => /\/src\/(main|preview)\.ts(?:\?|$)/.test(url))).toBe(false);
+  expect(loaded.some(url => /\/src\/main\.ts(?:\?|$)/.test(url))).toBe(false);
   await page.getByRole('textbox', {name:'New task'}).fill('Add keyboard navigation');
   await page.getByRole('textbox', {name:'New task'}).press('Enter');
   await expect(page.getByRole('button', {name:/Add keyboard navigation/})).toBeVisible();
@@ -447,7 +448,7 @@ for (const child of [
   await expect(page.locator('html')).not.toHaveAttribute('data-opened-payload');
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden','true');
   expect(page.url()).toContain('view=launcher');
-  expect(loaded.some(url => /\/src\/(main|preview)\.ts(?:\?|$)/.test(url))).toBe(false);
+  expect(loaded.some(url => /\/src\/main\.ts(?:\?|$)/.test(url))).toBe(false);
   await page.getByRole('button',{name:'Open in app',exact:true}).click();
   await expect.poll(() => page.locator('html').getAttribute('data-opened-payload')).toBe(JSON.stringify(child.payload));
 });

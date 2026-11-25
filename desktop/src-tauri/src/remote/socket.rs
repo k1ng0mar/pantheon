@@ -1,6 +1,9 @@
 //! The one WebSocket to the relay: reconnects with backoff, pings, tracks presence,
 //! and seals and opens every frame between this computer and the others.
-use super::{auth, config, crypto, emit_presence, emit_status, host, mirror, remote, sign_out_local, Device, Inner};
+use super::{
+    auth, config, crypto, emit_presence, emit_status, host, mirror, remote, sign_out_local, Device,
+    Inner,
+};
 use crate::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -37,11 +40,25 @@ enum Outcome {
 /// (wait now, base for the next failure), or None to sign out.
 fn backoff(delay: Duration, outcome: &Outcome) -> Option<(Duration, Duration)> {
     let base = match outcome {
-        Outcome::Unauthorized | Outcome::Closed { code: Some(REVOKED), .. } => return None,
+        Outcome::Unauthorized
+        | Outcome::Closed {
+            code: Some(REVOKED),
+            ..
+        } => return None,
         Outcome::Closed { up, .. } if *up >= STABLE => Duration::from_secs(1),
         _ => delay,
     };
-    let wait = if matches!(outcome, Outcome::Closed { code: Some(REPLACED), .. }) { base.max(MAX_BACKOFF) } else { base };
+    let wait = if matches!(
+        outcome,
+        Outcome::Closed {
+            code: Some(REPLACED),
+            ..
+        }
+    ) {
+        base.max(MAX_BACKOFF)
+    } else {
+        base
+    };
     Some((wait, (base * 2).min(MAX_BACKOFF)))
 }
 
@@ -67,7 +84,9 @@ fn current(app: &tauri::AppHandle, generation: u64) -> bool {
 async fn run(app: tauri::AppHandle, generation: u64) {
     let mut delay = Duration::from_secs(1);
     while current(&app, generation) {
-        let Some(token) = remote(&app).lock().token.clone() else { return };
+        let Some(token) = remote(&app).lock().token.clone() else {
+            return;
+        };
         let outcome = session(&app, generation, &token).await;
         let changed = {
             let state = remote(&app);
@@ -96,18 +115,37 @@ async fn run(app: tauri::AppHandle, generation: u64) {
 }
 
 async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcome {
-    let Some(build) = config::build() else { return Outcome::Failed };
+    let Some(build) = config::build() else {
+        return Outcome::Failed;
+    };
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
     let hosting = remote(app).lock().settings.host_enabled;
-    let url = format!("wss://{}/v1/connect?host={}", build.relay.trim_start_matches("https://"), u8::from(hosting));
-    let Ok(mut request) = url.into_client_request() else { return Outcome::Failed };
-    let Ok(authorization) = format!("Bearer {token}").parse() else { return Outcome::Unauthorized };
+    let url = format!(
+        "wss://{}/v1/connect?host={}",
+        build.relay.trim_start_matches("https://"),
+        u8::from(hosting)
+    );
+    let Ok(mut request) = url.into_client_request() else {
+        return Outcome::Failed;
+    };
+    let Ok(authorization) = format!("Bearer {token}").parse() else {
+        return Outcome::Unauthorized;
+    };
     request.headers_mut().insert("Authorization", authorization);
-    let stream = match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(request)).await {
+    let stream = match tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    {
         Ok(Ok((stream, _))) => stream,
-        Ok(Err(tungstenite::Error::Http(response))) if matches!(response.status().as_u16(), 401 | 403) => return Outcome::Unauthorized,
+        Ok(Err(tungstenite::Error::Http(response)))
+            if matches!(response.status().as_u16(), 401 | 403) =>
+        {
+            return Outcome::Unauthorized
+        }
         _ => return Outcome::Failed,
     };
     let opened = Instant::now();
@@ -124,9 +162,19 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
         inner.settings.host_enabled
     };
     emit_status(app);
-    let closed = |code| Outcome::Closed { up: opened.elapsed(), code };
+    let closed = |code| Outcome::Closed {
+        up: opened.elapsed(),
+        code,
+    };
     // Hosting was toggled while connecting, before the outbox could carry it.
-    if host_enabled != hosting && write.send(Message::text(json!({"kind": "host", "enabled": host_enabled}).to_string())).await.is_err() {
+    if host_enabled != hosting
+        && write
+            .send(Message::text(
+                json!({"kind": "host", "enabled": host_enabled}).to_string(),
+            ))
+            .await
+            .is_err()
+    {
         return closed(None);
     }
     // One ordered request queue per peer; dropping the map at the end stops their workers.
@@ -183,8 +231,12 @@ async fn refresh_token(app: tauri::AppHandle, old: String) {
         Err(error) if error == auth::SIGNED_OUT => return sign_out_local(&app, Some(&old)),
         Err(_) => return,
     };
-    let Some(fresh) = reply["token"].as_str().filter(|token| token.len() <= 4096) else { return };
-    let (Some(was), Some(now)) = (config::parse_token(&old), config::parse_token(fresh)) else { return };
+    let Some(fresh) = reply["token"].as_str().filter(|token| token.len() <= 4096) else {
+        return;
+    };
+    let (Some(was), Some(now)) = (config::parse_token(&old), config::parse_token(fresh)) else {
+        return;
+    };
     if now.acct != was.acct || now.dev != was.dev || now.exp <= was.exp {
         return;
     }
@@ -207,22 +259,43 @@ pub(crate) type Request = (Value, crypto::Key, bool);
 
 /// One relay frame: presence, delivery failures and errors, or an encrypted message.
 /// Responses and events are handled at once; only requests wait in their peer's queue.
-pub(crate) fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<String, mpsc::Sender<Request>>) {
+pub(crate) fn frame(
+    app: &tauri::AppHandle,
+    text: &str,
+    peers: &mut HashMap<String, mpsc::Sender<Request>>,
+) {
     if text == "pong" {
         return;
     }
-    let Ok(value) = serde_json::from_str::<Value>(text) else { return };
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
     match value["kind"].as_str() {
         Some("presence") => presence(app, &value["devices"]),
         Some("undeliverable") => {
             if let Some(to) = value["to"].as_str() {
-                let error = if value["reason"] == "rate" { "Too many requests to that computer. Try again in a moment." } else { OFFLINE };
-                remote(app).lock().fail_ref(to, value["ref"].as_str(), error);
+                let error = if value["reason"] == "rate" {
+                    "Too many requests to that computer. Try again in a moment."
+                } else {
+                    OFFLINE
+                };
+                remote(app)
+                    .lock()
+                    .fail_ref(to, value["ref"].as_str(), error);
             }
         }
-        Some("error") => eprintln!("Pantheon Connect relay: {}", value["error"].as_str().unwrap_or("error")),
+        Some("error") => eprintln!(
+            "Pantheon Connect relay: {}",
+            value["error"].as_str().unwrap_or("error")
+        ),
         _ => {
-            let (Some(from), Some(to), Some(body)) = (value["from"].as_str(), value["to"].as_str(), value["body"].as_str()) else { return };
+            let (Some(from), Some(to), Some(body)) = (
+                value["from"].as_str(),
+                value["to"].as_str(),
+                value["body"].as_str(),
+            ) else {
+                return;
+            };
             if host::valid_id(from).is_err() {
                 return;
             }
@@ -230,9 +303,15 @@ pub(crate) fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<Stri
             if to != me || from == me {
                 return;
             }
-            let Ok((key, trusted)) = peer_key(app, from) else { return };
-            let Ok(plain) = crypto::open(&key, from, to, body) else { return };
-            let Ok(message) = serde_json::from_slice::<Value>(&plain) else { return };
+            let Ok((key, trusted)) = peer_key(app, from) else {
+                return;
+            };
+            let Ok(plain) = crypto::open(&key, from, to, body) else {
+                return;
+            };
+            let Ok(message) = serde_json::from_slice::<Value>(&plain) else {
+                return;
+            };
             match message["type"].as_str() {
                 Some("req") => queue(app, from, (message, key, trusted), peers),
                 // Only a host trusted here may answer or send its tasks' events.
@@ -257,7 +336,12 @@ fn runs_apart(message: &Value) -> bool {
 const MAX_STARTS: usize = 4;
 static STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-fn queue(app: &tauri::AppHandle, from: &str, request: Request, peers: &mut HashMap<String, mpsc::Sender<Request>>) {
+fn queue(
+    app: &tauri::AppHandle,
+    from: &str,
+    request: Request,
+    peers: &mut HashMap<String, mpsc::Sender<Request>>,
+) {
     use std::sync::atomic::Ordering;
     if runs_apart(&request.0) && STARTS.fetch_add(1, Ordering::AcqRel) < MAX_STARTS {
         let (app, from) = (app.clone(), from.to_owned());
@@ -321,25 +405,41 @@ fn presence(app: &tauri::AppHandle, list: &Value) {
 fn apply_presence(inner: &mut Inner, list: &[Value]) {
     let devices = parse_devices(list);
     for old in &inner.devices {
-        if !devices.iter().any(|d| d.id == old.id && d.online == old.online && d.host == old.host) {
+        if !devices
+            .iter()
+            .any(|d| d.id == old.id && d.online == old.online && d.host == old.host)
+        {
             inner.catalog.forget(&old.id);
         }
     }
     inner.devices = devices;
     inner.presence = true;
-    let Inner { devices, subscribers, keys, .. } = inner;
+    let Inner {
+        devices,
+        subscribers,
+        keys,
+        ..
+    } = inner;
     subscribers.retain(|id, _| devices.iter().any(|d| &d.id == id));
     keys.retain(|id, _| devices.iter().any(|d| &d.id == id));
 }
 
 fn parse_devices(list: &[Value]) -> Vec<Device> {
-    list.iter().filter_map(|d| serde_json::from_value(d.clone()).ok()).filter(|d: &Device| host::valid_id(&d.id).is_ok()).take(64).collect()
+    list.iter()
+        .filter_map(|d| serde_json::from_value(d.clone()).ok())
+        .filter(|d: &Device| host::valid_id(&d.id).is_ok())
+        .take(64)
+        .collect()
 }
 
 /// Fetches the account's devices; used only before the socket's first presence frame.
 pub(crate) async fn refresh_devices(app: &tauri::AppHandle) -> Result<()> {
     let build = config::build().ok_or("Remote access is not configured in this build.")?;
-    let token = remote(app).lock().token.clone().ok_or("Sign in to Pantheon Connect first.")?;
+    let token = remote(app)
+        .lock()
+        .token
+        .clone()
+        .ok_or("Sign in to Pantheon Connect first.")?;
     let reply = match auth::relay(&build, &token, reqwest::Method::GET, "/v1/devices").await {
         Err(error) if error == auth::SIGNED_OUT => {
             sign_out_local(app, Some(&token));
@@ -347,13 +447,20 @@ pub(crate) async fn refresh_devices(app: &tauri::AppHandle) -> Result<()> {
         }
         other => other?,
     };
-    let devices = parse_devices(reply["devices"].as_array().map(Vec::as_slice).unwrap_or_default());
+    let devices = parse_devices(
+        reply["devices"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default(),
+    );
     {
         let state = remote(app);
         let mut inner = state.lock();
         // Presence that arrived meanwhile is newer.
         if !inner.presence {
-            inner.subscribers.retain(|id, _| devices.iter().any(|d| &d.id == id));
+            inner
+                .subscribers
+                .retain(|id, _| devices.iter().any(|d| &d.id == id));
             super::remember_names(&devices);
             inner.devices = devices;
         }
@@ -368,15 +475,28 @@ fn peer_key(app: &tauri::AppHandle, device_id: &str) -> Result<(crypto::Key, boo
     let state = remote(app);
     let (public, trusted) = {
         let inner = state.lock();
-        let public = &inner.devices.iter().find(|d| d.id == device_id).filter(|d| !d.public_key.is_empty()).ok_or(super::UNKNOWN_DEVICE)?.public_key;
+        let public = &inner
+            .devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .filter(|d| !d.public_key.is_empty())
+            .ok_or(super::UNKNOWN_DEVICE)?
+            .public_key;
         let trusted = inner.settings.is_trusted(device_id, public);
-        if let Some((_, key)) = inner.keys.get(device_id).filter(|(cached, _)| cached == public) {
+        if let Some((_, key)) = inner
+            .keys
+            .get(device_id)
+            .filter(|(cached, _)| cached == public)
+        {
             return Ok((*key, trusted));
         }
         (public.clone(), trusted)
     };
     let key = crypto::pair_key(&state.secret()?, &state.device_id(), &public, device_id)?;
-    state.lock().keys.insert(device_id.to_owned(), (public, key));
+    state
+        .lock()
+        .keys
+        .insert(device_id.to_owned(), (public, key));
     Ok((key, trusted))
 }
 
@@ -395,8 +515,14 @@ fn send_sealed(app: &tauri::AppHandle, to: &str, key: &crypto::Key, message: &Va
     let state = remote(app);
     let inner = state.lock();
     // The relay carries a frame for any device; a direct link only its own.
-    let relayed = inner.outbox.as_ref().is_some_and(|outbox| outbox.send(frame.clone()).is_ok());
-    let linked = inner.direct_peers.get(to).is_some_and(|peer| peer.send(frame).is_ok());
+    let relayed = inner
+        .outbox
+        .as_ref()
+        .is_some_and(|outbox| outbox.send(frame.clone()).is_ok());
+    let linked = inner
+        .direct_peers
+        .get(to)
+        .is_some_and(|peer| peer.send(frame).is_ok());
     if !relayed && !linked {
         return Err("That computer is not connected.".into());
     }
@@ -427,22 +553,83 @@ mod tests {
         let s = Duration::from_secs;
         assert_eq!(backoff(s(8), &Outcome::Failed), Some((s(8), s(16))));
         assert_eq!(backoff(s(40), &Outcome::Failed), Some((s(40), s(60))));
-        assert_eq!(backoff(s(8), &Outcome::Closed { up: s(5), code: None }), Some((s(8), s(16))));
-        assert_eq!(backoff(s(8), &Outcome::Closed { up: s(30), code: None }), Some((s(1), s(2))));
-        assert_eq!(backoff(s(1), &Outcome::Closed { up: s(300), code: Some(REPLACED) }), Some((s(60), s(2))));
-        assert_eq!(backoff(s(1), &Outcome::Closed { up: s(300), code: Some(REVOKED) }), None);
+        assert_eq!(
+            backoff(
+                s(8),
+                &Outcome::Closed {
+                    up: s(5),
+                    code: None
+                }
+            ),
+            Some((s(8), s(16)))
+        );
+        assert_eq!(
+            backoff(
+                s(8),
+                &Outcome::Closed {
+                    up: s(30),
+                    code: None
+                }
+            ),
+            Some((s(1), s(2)))
+        );
+        assert_eq!(
+            backoff(
+                s(1),
+                &Outcome::Closed {
+                    up: s(300),
+                    code: Some(REPLACED)
+                }
+            ),
+            Some((s(60), s(2)))
+        );
+        assert_eq!(
+            backoff(
+                s(1),
+                &Outcome::Closed {
+                    up: s(300),
+                    code: Some(REVOKED)
+                }
+            ),
+            None
+        );
         assert_eq!(backoff(s(1), &Outcome::Unauthorized), None);
     }
 
     #[test]
     fn presence_is_the_device_list_and_prunes_subscribers() {
         let mut inner = Inner::default();
-        inner.subscribers.insert("a".into(), super::super::Subscriber::default());
-        inner.subscribers.insert("b".into(), super::super::Subscriber::default());
-        apply_presence(&mut inner, &[json!({"id": "a", "name": "Mac", "platform": "macos", "publicKey": "k", "host": false, "online": true, "lastSeen": 5}), json!({"id": "c", "online": false, "host": true}), json!({"id": "bad id"})]);
+        inner
+            .subscribers
+            .insert("a".into(), super::super::Subscriber::default());
+        inner
+            .subscribers
+            .insert("b".into(), super::super::Subscriber::default());
+        apply_presence(
+            &mut inner,
+            &[
+                json!({"id": "a", "name": "Mac", "platform": "macos", "publicKey": "k", "host": false, "online": true, "lastSeen": 5}),
+                json!({"id": "c", "online": false, "host": true}),
+                json!({"id": "bad id"}),
+            ],
+        );
         assert!(inner.presence);
-        assert_eq!(inner.devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
-        assert_eq!((inner.devices[0].name.as_str(), inner.devices[0].online, inner.devices[0].host), ("Mac", true, false));
+        assert_eq!(
+            inner
+                .devices
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "c"]
+        );
+        assert_eq!(
+            (
+                inner.devices[0].name.as_str(),
+                inner.devices[0].online,
+                inner.devices[0].host
+            ),
+            ("Mac", true, false)
+        );
         assert_eq!(inner.subscribers.keys().collect::<Vec<_>>(), ["a"]);
         apply_presence(&mut inner, &[]);
         assert!(inner.devices.is_empty() && inner.subscribers.is_empty());
@@ -468,7 +655,9 @@ mod tests {
     fn trust_follows_the_pinned_key() {
         let (host, old, new) = (crypto::generate(), crypto::generate(), crypto::generate());
         let mut settings = config::Settings::default();
-        settings.trusted.insert("viewer".into(), crypto::public_key(&old));
+        settings
+            .trusted
+            .insert("viewer".into(), crypto::public_key(&old));
         assert!(settings.is_trusted("viewer", &crypto::public_key(&old)));
         // The relay (or the device) reports a new key: untrusted until trusted again.
         assert!(!settings.is_trusted("viewer", &crypto::public_key(&new)));
@@ -478,7 +667,16 @@ mod tests {
         let swapped = crypto::pair_key(&new, "viewer", &crypto::public_key(&host), "host").unwrap();
         let body = crypto::seal(&swapped, "viewer", "host", b"{}").unwrap();
         assert!(crypto::open(&pinned, "viewer", "host", &body).is_err());
-        let view = Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: crypto::public_key(&new), host: false, online: true, last_seen: Value::Null }.view("host", &settings);
+        let view = Device {
+            id: "viewer".into(),
+            name: String::new(),
+            platform: String::new(),
+            public_key: crypto::public_key(&new),
+            host: false,
+            online: true,
+            last_seen: Value::Null,
+        }
+        .view("host", &settings);
         assert_eq!(view["trusted"], false);
     }
 }

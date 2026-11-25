@@ -10,7 +10,7 @@ const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 12 * 1024 * 1024;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>, String> {
+pub(super) async fn load(_provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>, String> {
     if paths.len() > MAX_IMAGES {
         return Err(format!("Attach up to {MAX_IMAGES} screenshots per message"));
     }
@@ -50,20 +50,8 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
         // Codex's installed app-server schema: v2/TurnStartParams, LocalImageUserInput.
         // Claude: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
         // Kimi: https://agentclientprotocol.com/protocol/v1/content#image-content
-        images.push(match provider {
-            "codex" => json!({"type":"localImage","path":path}),
-            "claude" | "glm" | "mimo" => json!({"type":"image","source":{
-                "type":"base64","media_type":"image/png","data":STANDARD.encode(&bytes)
-            }}),
-            // Cline's ACP prompt keeps only text blocks; its read_files tool opens images.
-            "cline" => json!({"type":"text","text":super::cline::image_reference(path)}),
-            "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" => {
-                json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)})
-            }
-            // MSP TurnInputPart (`muse schema generate-ts`): an inline base64 image part.
-            "muse" => json!({"type":"image","mediaType":"image/png","base64Data":STANDARD.encode(&bytes)}),
-            _ => return Err("This provider does not support screenshot attachments".into()),
-        });
+        // ACP v1 image content block: the only shape the Pantheon agent accepts.
+        images.push(json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)}));
     }
     Ok(images)
 }
@@ -91,52 +79,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn screenshots_are_real_image_blocks_for_every_harness() {
+    async fn screenshots_are_real_image_blocks_for_the_agent() {
         let png = STANDARD.decode(PNG).unwrap();
         let file = TempImage::new(&png);
-        let paths = vec![file.0.clone()];
-        let claude = load("claude", &paths).await.unwrap();
-        assert_eq!(claude[0]["type"], "image");
-        assert_eq!(claude[0]["source"]["media_type"], "image/png");
+        let blocks = load("pantheon", std::slice::from_ref(&file.0))
+            .await
+            .unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["mimeType"], "image/png");
         assert_eq!(
             STANDARD
-                .decode(claude[0]["source"]["data"].as_str().unwrap())
+                .decode(blocks[0]["data"].as_str().unwrap())
                 .unwrap(),
-            png
-        );
-        let codex = load("codex", &paths).await.unwrap();
-        assert_eq!(codex, vec![json!({"type":"localImage","path":file.0})]);
-        for provider in ["glm", "mimo", "opencode", "kilo", "antigravity", "grok"] {
-            let blocks = load(provider, &paths).await.unwrap();
-            assert_eq!(blocks[0]["type"], "image");
-            if matches!(provider, "glm" | "mimo") {
-                assert_eq!(blocks[0]["source"]["media_type"], "image/png");
-            } else {
-                assert_eq!(blocks[0]["mimeType"], "image/png");
-            }
-        }
-        let kimi = load("kimi", &paths).await.unwrap();
-        assert_eq!(kimi[0]["type"], "image");
-        assert_eq!(kimi[0]["mimeType"], "image/png");
-        assert_eq!(
-            STANDARD.decode(kimi[0]["data"].as_str().unwrap()).unwrap(),
             png
         );
     }
 
     #[tokio::test]
     async fn missing_invalid_and_oversized_images_fail_instead_of_becoming_text() {
-        assert!(load("claude", &[PathBuf::from("relative.png")])
+        assert!(load("pantheon", &[PathBuf::from("relative.png")])
             .await
             .unwrap_err()
             .contains("absolute"));
         let missing = std::env::temp_dir().join(format!("missing-{}.png", uuid::Uuid::new_v4()));
-        assert!(load("claude", &[missing])
+        assert!(load("pantheon", &[missing])
             .await
             .unwrap_err()
             .contains("no longer available"));
         let invalid = TempImage::new(b"This is text, not a PNG image");
-        assert!(load("codex", std::slice::from_ref(&invalid.0))
+        assert!(load("pantheon", std::slice::from_ref(&invalid.0))
             .await
             .unwrap_err()
             .contains("not a PNG"));
@@ -147,7 +119,7 @@ mod tests {
             .unwrap()
             .set_len(MAX_IMAGE_BYTES + 1)
             .unwrap();
-        assert!(load("kimi", std::slice::from_ref(&large.0))
+        assert!(load("pantheon", std::slice::from_ref(&large.0))
             .await
             .unwrap_err()
             .contains("5 MB"));
@@ -155,17 +127,17 @@ mod tests {
 
     #[tokio::test]
     async fn image_count_and_total_bytes_are_bounded() {
-        assert!(load("claude", &vec![PathBuf::new(); MAX_IMAGES + 1])
+        assert!(load("pantheon", &vec![PathBuf::new(); MAX_IMAGES + 1])
             .await
             .unwrap_err()
             .contains("up to 4"));
         let mut bytes = STANDARD.decode(PNG).unwrap();
         bytes.resize(4 * 1024 * 1024 + 1, 0);
         let file = TempImage::new(&bytes);
-        assert!(load("codex", &vec![file.0.clone(); 3])
+        assert!(load("pantheon", &vec![file.0.clone(); 3])
             .await
             .unwrap_err()
             .contains("12 MB"));
-        assert!(load("codex", &[]).await.unwrap().is_empty());
+        assert!(load("pantheon", &[]).await.unwrap().is_empty());
     }
 }

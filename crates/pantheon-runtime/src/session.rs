@@ -3360,6 +3360,11 @@ impl Session {
         }
     }
 
+    /// The session's active goal, for `/goal` display and ACP clients.
+    pub fn goal_text(&self) -> Option<String> {
+        self.goal.lock().ok().and_then(|g| g.clone())
+    }
+
     /// The current budget override, for display (`None` = level mapping).
     pub fn reasoning_budget(&self) -> Option<u32> {
         self.policy_snapshot().reasoning_budget
@@ -5934,6 +5939,20 @@ Extracted:
         // notes, never a failed turn.
         let system_prompt = {
             let block = self.profile_persona_block();
+            if block.is_empty() {
+                system_prompt
+            } else {
+                format!("{system_prompt}\n\n{block}")
+            }
+        };
+        // Project instructions: `AGENTS.md` / `CLAUDE.md` in the workspace
+        // (or the nearest ancestor up to the repository root). A coding
+        // session that ignores the repo's own build/test/style guidance is
+        // not useful in that repo. Read per turn so an edit takes effect
+        // without a restart; the block carries its own untrusted-provenance
+        // envelope, so a cloned repo cannot smuggle instructions through it.
+        let system_prompt = {
+            let block = crate::project_instructions::block(&self.workspace_root());
             if block.is_empty() {
                 system_prompt
             } else {

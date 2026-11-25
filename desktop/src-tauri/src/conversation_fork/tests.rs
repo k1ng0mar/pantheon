@@ -32,9 +32,9 @@ fn all_messages(store: &Store, sid: &str) -> Vec<Message> {
 
 #[test]
 fn saved_message_content_is_complete_read_only_and_task_scoped() {
-    let (store, source) = fixture("claude");
+    let (store, source) = fixture("pantheon");
     let other = store
-        .create_session(&source.project_id, "codex", "model", "ask")
+        .create_session(&source.project_id, "pantheon", "model", "ask")
         .unwrap();
     for role in ["user", "assistant"] {
         let content = format!(
@@ -76,7 +76,7 @@ fn saved_message_content_is_complete_read_only_and_task_scoped() {
 
 #[test]
 fn edit_forks_stop_before_the_message_and_start_a_fresh_harness_session() {
-    let (store, source) = fixture("claude");
+    let (store, source) = fixture("pantheon");
     store.resume(&source.id, "native-source").unwrap();
     append(&store, &source.id, "user", "First request");
     append(&store, &source.id, "assistant", "First response");
@@ -84,38 +84,63 @@ fn edit_forks_stop_before_the_message_and_start_a_fresh_harness_session() {
     append(&store, &source.id, "assistant", "Mistaken response");
     let fork = before_message(&store, &source.id, mistake).unwrap();
     assert_eq!(fork.resume_id, None);
-    let copied: Vec<_> = all_messages(&store, &fork.id).into_iter().map(|m| m.content).collect();
+    let copied: Vec<_> = all_messages(&store, &fork.id)
+        .into_iter()
+        .map(|m| m.content)
+        .collect();
     assert_eq!(copied, ["First request", "First response"]);
     assert_eq!(all_messages(&store, &source.id).len(), 4);
     let first = all_messages(&store, &source.id)[0].id;
-    assert!(all_messages(&store, &before_message(&store, &source.id, first).unwrap().id).is_empty());
+    assert!(all_messages(
+        &store,
+        &before_message(&store, &source.id, first).unwrap().id
+    )
+    .is_empty());
 }
 
 #[test]
 fn forks_before_handoffs_keep_historical_authors_and_the_current_harness() {
-    let (store, source) = fixture("claude");
+    // A conversation begun under a removed harness, then continued on Pantheon:
+    // the fork must carry the author of each response and note the handoff.
+    let (store, source) = fixture("codex");
     append(&store, &source.id, "user", "Original request");
     let boundary = append(&store, &source.id, "assistant", "Original Claude response");
-    for _ in 0..110 { append(&store, &source.id, "tool", "Later activity"); }
-    store.configure(&source.id, "codex", "default", None).unwrap();
+    for _ in 0..110 {
+        append(&store, &source.id, "tool", "Later activity");
+    }
+    store
+        .configure(&source.id, "pantheon", "default", None)
+        .unwrap();
     append(&store, &source.id, "assistant", "Later Codex response");
     let fork = at_message(&store, &source.id, boundary).unwrap();
-    assert_eq!(fork.provider, "codex");
+    assert_eq!(fork.provider, "pantheon");
     let copied = all_messages(&store, &fork.id);
     assert_eq!(copied[1].content, "Original Claude response");
-    assert_eq!(serde_json::to_value(&copied[1]).unwrap()["authorProvider"], "claude");
+    assert_eq!(
+        serde_json::to_value(&copied[1]).unwrap()["authorProvider"],
+        "pantheon"
+    );
     assert!(!copied.iter().any(|m| m.content == "Later Codex response"));
-    assert_eq!(copied.last().unwrap().role, "handoff");
+    // The prefix keeps its own authors, so no handoff notice is needed inside it.
+    assert_eq!(copied.last().unwrap().role, "assistant");
+    assert_eq!(copied.last().unwrap().content, "Original Claude response");
     append(&store, &fork.id, "assistant", "New Codex response");
-    assert_eq!(serde_json::to_value(all_messages(&store, &fork.id).last().unwrap()).unwrap()["authorProvider"], "codex");
+    assert_eq!(
+        serde_json::to_value(all_messages(&store, &fork.id).last().unwrap()).unwrap()
+            ["authorProvider"],
+        "pantheon"
+    );
     let nested = at_message(&store, &fork.id, copied[1].id).unwrap();
-    assert_eq!(nested.provider, "codex");
-    assert_eq!(serde_json::to_value(&all_messages(&store, &nested.id)[1]).unwrap()["authorProvider"], "claude");
+    assert_eq!(nested.provider, "pantheon");
+    assert_eq!(
+        serde_json::to_value(&all_messages(&store, &nested.id)[1]).unwrap()["authorProvider"],
+        "pantheon"
+    );
 }
 
 #[test]
 fn inclusive_forks_are_isolated_complete_and_repeatable_across_pages() {
-    let (store, source) = fixture("codex");
+    let (store, source) = fixture("pantheon");
     let mut boundary = 0;
     for n in 0..230 {
         let id = append(
@@ -157,7 +182,10 @@ fn inclusive_forks_are_isolated_complete_and_repeatable_across_pages() {
 
 #[test]
 fn each_harness_recovers_only_the_prefix_including_a_first_user_boundary() {
-    for provider in ["codex", "claude", "kimi", "opencode", "glm", "antigravity", "grok", "mimo"] {
+    for provider in [
+        "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
+        "pantheon",
+    ] {
         let (store, source) = fixture(provider);
         let first = append(
             &store,
@@ -195,14 +223,15 @@ fn each_harness_recovers_only_the_prefix_including_a_first_user_boundary() {
 
 #[test]
 fn copies_full_saved_response_and_keeps_a_bounded_context_handoff() {
-    let (store, source) = fixture("claude");
+    let (store, source) = fixture("pantheon");
     append(&store, &source.id, "user", "Original question");
     let response = format!("{}\nEND_OF_FULL_RESPONSE", "🌿 Rust ".repeat(20_000));
     let boundary = append(&store, &source.id, "assistant", &response);
     assert!(store.messages(&source.id, None).unwrap()[1].content.len() < response.len());
     let fork = at_message(&store, &source.id, boundary).unwrap();
     let saved: String = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT content FROM messages WHERE session_id=?1 AND role='assistant'",
             [&fork.id],
             |row| row.get(0),
@@ -224,7 +253,7 @@ fn fork_history_and_pending_context_survive_restart_without_resuming_source() {
         let store = Store::open(&path).unwrap();
         let project = store.add_project(&root).unwrap();
         let source = store
-            .create_session(&project.id, "codex", "model", "ask")
+            .create_session(&project.id, "pantheon", "model", "ask")
             .unwrap();
         let boundary = append(&store, &source.id, "assistant", "Remember this answer");
         append(&store, &source.id, "user", "Later source-only request");
@@ -259,9 +288,9 @@ fn fork_history_and_pending_context_survive_restart_without_resuming_source() {
 
 #[test]
 fn wrong_missing_and_internal_boundaries_leave_no_task_or_history() {
-    let (store, source) = fixture("codex");
+    let (store, source) = fixture("pantheon");
     let other = store
-        .create_session(&source.project_id, "codex", "test-model", "ask")
+        .create_session(&source.project_id, "pantheon", "test-model", "ask")
         .unwrap();
     let foreign = append(&store, &other.id, "user", "Wrong task");
     let mut rejected = vec![foreign, -1, 0, i64::MAX];
@@ -285,7 +314,8 @@ fn wrong_missing_and_internal_boundaries_leave_no_task_or_history() {
         .contains("injected fork failure"));
     assert_eq!(store.sessions().unwrap().len(), 2);
     let queued: i64 = store
-        .conn().query_row("SELECT COUNT(*) FROM context_recovery", [], |row| {
+        .conn()
+        .query_row("SELECT COUNT(*) FROM context_recovery", [], |row| {
             row.get(0)
         })
         .unwrap();
@@ -294,14 +324,15 @@ fn wrong_missing_and_internal_boundaries_leave_no_task_or_history() {
 
 #[test]
 fn running_team_and_worker_forks_preserve_preferences_without_execution_state() {
-    let (store, source) = fixture("codex");
+    let (store, source) = fixture("pantheon");
     let first = append(&store, &source.id, "user", "Original request");
     let child = store
-        .create_session(&source.project_id, "codex", "worker-model", "plan")
+        .create_session(&source.project_id, "pantheon", "worker-model", "plan")
         .unwrap();
     let child_message = append(&store, &child.id, "assistant", "Worker answer");
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')",
             [&source.id],
         )
@@ -318,7 +349,7 @@ fn running_team_and_worker_forks_preserve_preferences_without_execution_state() 
         assert_eq!(fork.model, original.model);
         assert_eq!(fork.reasoning_effort, original.reasoning_effort);
         assert_eq!(fork.mode, original.mode);
-        assert_eq!(fork.codex_settings, original.codex_settings);
+        assert_eq!(fork.task_settings, original.task_settings);
         assert_eq!(fork.status, "idle");
         assert_eq!(fork.task_stage, "in_progress");
         assert!(!fork.archived);
@@ -341,7 +372,7 @@ fn running_team_and_worker_forks_preserve_preferences_without_execution_state() 
 
 #[test]
 fn tool_snapshots_and_metadata_cannot_update_or_reference_the_source() {
-    let (store, source) = fixture("codex");
+    let (store, source) = fixture("pantheon");
     let first = append(&store, &source.id, "user", "Inspect the project");
     store.finish_turn(&source.id, first, 4321).unwrap();
     let tool = json!({"type":"tool_activity","version":1,"id":"source-call","name":"Read","status":"running","input":"README.md","output":"partial"}).to_string();
@@ -376,13 +407,14 @@ fn tool_snapshots_and_metadata_cannot_update_or_reference_the_source() {
 
 #[test]
 fn worktree_forks_share_the_existing_checkout_and_reject_missing_metadata() {
-    let (store, source) = fixture("codex");
+    let (store, source) = fixture("pantheon");
     let root = std::env::temp_dir().join(format!("pantheon-fork-worktree-{}", storage::id()));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join(".git"), "gitdir: /unmodified/source/worktree").unwrap();
     std::fs::write(root.join("uncommitted.txt"), "Keep current checkout bytes").unwrap();
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "UPDATE sessions SET worktree_path=?2 WHERE id=?1",
             params![source.id, root.to_str()],
         )

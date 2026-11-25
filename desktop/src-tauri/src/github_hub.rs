@@ -140,9 +140,17 @@ pub struct ProjectRepo {
 /// `owner/name` as GitHub allows it, never an option or a path.
 pub fn valid_repo(value: &str) -> Result<String, String> {
     let value = value.trim();
-    let part = |s: &str| !s.is_empty() && s.len() <= 100 && !s.starts_with(['-', '.']) && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let part = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 100
+            && !s.starts_with(['-', '.'])
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
     match value.split_once('/') {
-        Some((owner, name)) if part(owner) && part(name) && !name.contains('/') && name != ".." => Ok(value.to_string()),
+        Some((owner, name)) if part(owner) && part(name) && !name.contains('/') && name != ".." => {
+            Ok(value.to_string())
+        }
         _ => Err("Choose a GitHub repository (owner/name).".into()),
     }
 }
@@ -162,20 +170,29 @@ pub fn repo_from_remote(url: &str) -> Option<String> {
 }
 
 fn account_root() -> PathBuf {
-    crate::agent_usage_providers::home().unwrap_or_else(std::env::temp_dir)
+    crate::home::home().unwrap_or_else(std::env::temp_dir)
 }
 
 fn repo_of(value: &serde_json::Value) -> HubRepo {
     HubRepo {
         name_with_owner: text(value, "full_name"),
         description: text(value, "description"),
-        private: value.get("private").and_then(|v| v.as_bool()).unwrap_or(false),
+        private: value
+            .get("private")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         fork: value.get("fork").and_then(|v| v.as_bool()).unwrap_or(false),
-        archived: value.get("archived").and_then(|v| v.as_bool()).unwrap_or(false),
+        archived: value
+            .get("archived")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         pushed_at: text(value, "pushed_at"),
         url: text(value, "html_url"),
         default_branch: text(value, "default_branch"),
-        open_issues: value.get("open_issues_count").and_then(|v| v.as_i64()).unwrap_or(0),
+        open_issues: value
+            .get("open_issues_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
         language: text(value, "language"),
     }
 }
@@ -185,21 +202,46 @@ fn repo_of(value: &serde_json::Value) -> HubRepo {
 pub fn repos() -> Result<Vec<HubRepo>, String> {
     let capture = run_gh(&account_root(), &["api", "user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member"], TIMEOUT)?;
     let value = json(&capture)?;
-    let items = value.as_array().ok_or("GitHub returned an unexpected response.")?;
-    Ok(items.iter().map(repo_of).filter(|repo| valid_repo(&repo.name_with_owner).is_ok()).collect())
+    let items = value
+        .as_array()
+        .ok_or("GitHub returned an unexpected response.")?;
+    Ok(items
+        .iter()
+        .map(repo_of)
+        .filter(|repo| valid_repo(&repo.name_with_owner).is_ok())
+        .collect())
 }
 
 /// One word for a pull request's checks: passing, failing, pending or none.
 pub fn checks_summary(rollup: Option<&serde_json::Value>) -> String {
-    let Some(items) = rollup.and_then(|v| v.as_array()) else { return "none".into() };
+    let Some(items) = rollup.and_then(|v| v.as_array()) else {
+        return "none".into();
+    };
     if items.is_empty() {
         return "none".into();
     }
-    let outcome = |item: &serde_json::Value| text(item, "conclusion").to_ascii_uppercase() + &text(item, "state").to_ascii_uppercase();
+    let outcome = |item: &serde_json::Value| {
+        text(item, "conclusion").to_ascii_uppercase() + &text(item, "state").to_ascii_uppercase()
+    };
     let outcomes: Vec<String> = items.iter().map(outcome).collect();
-    if outcomes.iter().any(|o| ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"].iter().any(|bad| o.contains(bad))) {
+    if outcomes.iter().any(|o| {
+        [
+            "FAILURE",
+            "ERROR",
+            "TIMED_OUT",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+        ]
+        .iter()
+        .any(|bad| o.contains(bad))
+    }) {
         "failing".into()
-    } else if outcomes.iter().any(|o| o.is_empty() || ["PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED"].iter().any(|wait| o.contains(wait))) {
+    } else if outcomes.iter().any(|o| {
+        o.is_empty()
+            || ["PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED"]
+                .iter()
+                .any(|wait| o.contains(wait))
+    }) {
         "pending".into()
     } else {
         "passing".into()
@@ -207,19 +249,38 @@ pub fn checks_summary(rollup: Option<&serde_json::Value>) -> String {
 }
 
 fn author(value: &serde_json::Value) -> String {
-    value.get("author").map(|author| text(author, "login")).unwrap_or_default()
+    value
+        .get("author")
+        .map(|author| text(author, "login"))
+        .unwrap_or_default()
 }
 
 pub fn pulls(repo: &str) -> Result<Vec<HubPull>, String> {
     let repo = valid_repo(repo)?;
     let fields = "number,title,author,state,isDraft,headRefName,baseRefName,updatedAt,url,reviewDecision,statusCheckRollup,additions,deletions,labels";
-    let capture = run_gh(&account_root(), &["pr", "list", &format!("--repo={repo}"), "--state=open", &format!("--limit={LIST_LIMIT}"), &format!("--json={fields}")], TIMEOUT)?;
+    let capture = run_gh(
+        &account_root(),
+        &[
+            "pr",
+            "list",
+            &format!("--repo={repo}"),
+            "--state=open",
+            &format!("--limit={LIST_LIMIT}"),
+            &format!("--json={fields}"),
+        ],
+        TIMEOUT,
+    )?;
     let value = json(&capture)?;
-    let items = value.as_array().ok_or("GitHub returned an unexpected response.")?;
+    let items = value
+        .as_array()
+        .ok_or("GitHub returned an unexpected response.")?;
     Ok(items
         .iter()
         .map(|item| HubPull {
-            number: item.get("number").and_then(|v| v.as_i64()).unwrap_or_default(),
+            number: item
+                .get("number")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default(),
             title: text(item, "title"),
             author: author(item),
             state: state_of(item),
@@ -229,8 +290,14 @@ pub fn pulls(repo: &str) -> Result<Vec<HubPull>, String> {
             url: text(item, "url"),
             review: text(item, "reviewDecision").to_ascii_lowercase(),
             checks: checks_summary(item.get("statusCheckRollup")),
-            additions: item.get("additions").and_then(|v| v.as_i64()).unwrap_or_default(),
-            deletions: item.get("deletions").and_then(|v| v.as_i64()).unwrap_or_default(),
+            additions: item
+                .get("additions")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default(),
+            deletions: item
+                .get("deletions")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default(),
             labels: names(item, "labels", "name"),
         })
         .collect())
@@ -238,18 +305,37 @@ pub fn pulls(repo: &str) -> Result<Vec<HubPull>, String> {
 
 pub fn issues(repo: &str) -> Result<Vec<HubIssue>, String> {
     let repo = valid_repo(repo)?;
-    let capture = run_gh(&account_root(), &["issue", "list", &format!("--repo={repo}"), "--state=open", &format!("--limit={LIST_LIMIT}"), "--json=number,title,author,updatedAt,url,comments,labels,assignees"], TIMEOUT)?;
+    let capture = run_gh(
+        &account_root(),
+        &[
+            "issue",
+            "list",
+            &format!("--repo={repo}"),
+            "--state=open",
+            &format!("--limit={LIST_LIMIT}"),
+            "--json=number,title,author,updatedAt,url,comments,labels,assignees",
+        ],
+        TIMEOUT,
+    )?;
     let value = json(&capture)?;
-    let items = value.as_array().ok_or("GitHub returned an unexpected response.")?;
+    let items = value
+        .as_array()
+        .ok_or("GitHub returned an unexpected response.")?;
     Ok(items
         .iter()
         .map(|item| HubIssue {
-            number: item.get("number").and_then(|v| v.as_i64()).unwrap_or_default(),
+            number: item
+                .get("number")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default(),
             title: text(item, "title"),
             author: author(item),
             updated_at: text(item, "updatedAt"),
             url: text(item, "url"),
-            comments: item.get("comments").and_then(|v| v.as_array()).map_or(0, |c| c.len() as i64),
+            comments: item
+                .get("comments")
+                .and_then(|v| v.as_array())
+                .map_or(0, |c| c.len() as i64),
             labels: names(item, "labels", "name"),
             assignees: names(item, "assignees", "login"),
         })
@@ -259,7 +345,10 @@ pub fn issues(repo: &str) -> Result<Vec<HubIssue>, String> {
 /// One word for a workflow run or job from its status and conclusion. A run that never
 /// started (an invalid workflow file, a missing runner) is `not_started`, not a failure to fix in code.
 pub fn run_state(status: &str, conclusion: &str) -> String {
-    match (status.to_ascii_lowercase().as_str(), conclusion.to_ascii_lowercase().as_str()) {
+    match (
+        status.to_ascii_lowercase().as_str(),
+        conclusion.to_ascii_lowercase().as_str(),
+    ) {
         ("completed", "success" | "neutral" | "skipped") => "passed",
         ("completed", "cancelled") => "cancelled",
         ("completed", "startup_failure") => "not_started",
@@ -274,7 +363,10 @@ fn number(value: &serde_json::Value, key: &str) -> i64 {
     value.get(key).and_then(|v| v.as_i64()).unwrap_or_default()
 }
 fn list<'a>(value: &'a serde_json::Value, key: &str) -> &'a [serde_json::Value] {
-    value.get(key).and_then(|v| v.as_array()).map_or(&[], |items| items.as_slice())
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map_or(&[], |items| items.as_slice())
 }
 
 /// Runs from the REST `actions/runs` response.
@@ -293,7 +385,11 @@ pub fn runs_of(value: &serde_json::Value) -> Vec<HubRun> {
             updated_at: text(item, "updated_at"),
             url: text(item, "html_url"),
             attempt: number(item, "run_attempt").max(1),
-            pulls: list(item, "pull_requests").iter().map(|pull| number(pull, "number")).filter(|n| *n > 0).collect(),
+            pulls: list(item, "pull_requests")
+                .iter()
+                .map(|pull| number(pull, "number"))
+                .filter(|n| *n > 0)
+                .collect(),
         })
         .collect()
 }
@@ -301,7 +397,14 @@ pub fn runs_of(value: &serde_json::Value) -> Vec<HubRun> {
 /// The repository's most recent workflow runs, newest first.
 pub fn runs(repo: &str) -> Result<Vec<HubRun>, String> {
     let repo = valid_repo(repo)?;
-    let capture = run_gh(&account_root(), &["api", &format!("repos/{repo}/actions/runs?per_page={LIST_LIMIT}")], TIMEOUT)?;
+    let capture = run_gh(
+        &account_root(),
+        &[
+            "api",
+            &format!("repos/{repo}/actions/runs?per_page={LIST_LIMIT}"),
+        ],
+        TIMEOUT,
+    )?;
     Ok(runs_of(&json(&capture)?))
 }
 
@@ -323,8 +426,16 @@ pub fn summaries_of(value: &serde_json::Value) -> std::collections::HashMap<i64,
         .iter()
         .filter_map(|check| {
             let output = check.get("output")?;
-            let parts: Vec<String> = [text(output, "summary"), text(output, "text")].into_iter().filter(|part| !part.trim().is_empty()).collect();
-            (!parts.is_empty()).then(|| (number(check, "id"), bounded(&parts.join("\n\n"), SUMMARY_LIMIT)))
+            let parts: Vec<String> = [text(output, "summary"), text(output, "text")]
+                .into_iter()
+                .filter(|part| !part.trim().is_empty())
+                .collect();
+            (!parts.is_empty()).then(|| {
+                (
+                    number(check, "id"),
+                    bounded(&parts.join("\n\n"), SUMMARY_LIMIT),
+                )
+            })
         })
         .collect()
 }
@@ -340,7 +451,12 @@ fn job_of(job: &serde_json::Value, summaries: &std::collections::HashMap<i64, St
         url: text(job, "html_url"),
         steps: list(job, "steps")
             .iter()
-            .map(|step| RunStep { name: text(step, "name"), state: run_state(&text(step, "status"), &text(step, "conclusion")), started_at: text(step, "started_at"), completed_at: text(step, "completed_at") })
+            .map(|step| RunStep {
+                name: text(step, "name"),
+                state: run_state(&text(step, "status"), &text(step, "conclusion")),
+                started_at: text(step, "started_at"),
+                completed_at: text(step, "completed_at"),
+            })
             .collect(),
         summary: summaries.get(&id).cloned().unwrap_or_default(),
     }
@@ -351,12 +467,26 @@ fn job_of(job: &serde_json::Value, summaries: &std::collections::HashMap<i64, St
 pub fn details_of(jobs: &serde_json::Value, artifacts: &serde_json::Value) -> RunDetails {
     details_with(jobs, artifacts, &Default::default())
 }
-fn details_with(jobs: &serde_json::Value, artifacts: &serde_json::Value, summaries: &std::collections::HashMap<i64, String>) -> RunDetails {
+fn details_with(
+    jobs: &serde_json::Value,
+    artifacts: &serde_json::Value,
+    summaries: &std::collections::HashMap<i64, String>,
+) -> RunDetails {
     RunDetails {
-        jobs: list(jobs, "jobs").iter().map(|job| job_of(job, summaries)).collect(),
+        jobs: list(jobs, "jobs")
+            .iter()
+            .map(|job| job_of(job, summaries))
+            .collect(),
         artifacts: list(artifacts, "artifacts")
             .iter()
-            .map(|artifact| RunArtifact { name: text(artifact, "name"), size: number(artifact, "size_in_bytes"), expired: artifact.get("expired").and_then(|v| v.as_bool()).unwrap_or(false) })
+            .map(|artifact| RunArtifact {
+                name: text(artifact, "name"),
+                size: number(artifact, "size_in_bytes"),
+                expired: artifact
+                    .get("expired")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            })
             .collect(),
         attempts: Vec::new(),
     }
@@ -364,15 +494,28 @@ fn details_with(jobs: &serde_json::Value, artifacts: &serde_json::Value, summari
 
 /// An earlier attempt from the REST `runs/{id}/attempts/{n}` response, with its jobs picked
 /// from a `filter=all` jobs response.
-pub fn attempt_of(run: &serde_json::Value, attempt: i64, all_jobs: &serde_json::Value, summaries: &std::collections::HashMap<i64, String>) -> RunAttempt {
+pub fn attempt_of(
+    run: &serde_json::Value,
+    attempt: i64,
+    all_jobs: &serde_json::Value,
+    summaries: &std::collections::HashMap<i64, String>,
+) -> RunAttempt {
     let url = text(run, "html_url");
     RunAttempt {
         attempt,
         state: run_state(&text(run, "status"), &text(run, "conclusion")),
         started_at: text(run, "run_started_at"),
         updated_at: text(run, "updated_at"),
-        url: if url.is_empty() || url.contains("/attempts/") { url } else { format!("{url}/attempts/{attempt}") },
-        jobs: list(all_jobs, "jobs").iter().filter(|job| number(job, "run_attempt") == attempt).map(|job| job_of(job, summaries)).collect(),
+        url: if url.is_empty() || url.contains("/attempts/") {
+            url
+        } else {
+            format!("{url}/attempts/{attempt}")
+        },
+        jobs: list(all_jobs, "jobs")
+            .iter()
+            .filter(|job| number(job, "run_attempt") == attempt)
+            .map(|job| job_of(job, summaries))
+            .collect(),
     }
 }
 
@@ -382,19 +525,44 @@ pub fn run_details(repo: &str, id: i64) -> Result<RunDetails, String> {
         return Err("Choose a workflow run.".into());
     }
     let root = account_root();
-    let api = |path: String| run_gh(&root, &["api", &path], TIMEOUT).and_then(|capture| json(&capture));
+    let api =
+        |path: String| run_gh(&root, &["api", &path], TIMEOUT).and_then(|capture| json(&capture));
     let jobs = api(format!("repos/{repo}/actions/runs/{id}/jobs?per_page=100"))?;
-    let artifacts = api(format!("repos/{repo}/actions/runs/{id}/artifacts?per_page=100"))?;
+    let artifacts = api(format!(
+        "repos/{repo}/actions/runs/{id}/artifacts?per_page=100"
+    ))?;
     // Summaries are extra: one check-runs read for the commit, skipped if it fails.
-    let sha = list(&jobs, "jobs").first().map(|job| text(job, "head_sha")).filter(|sha| !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()));
-    let summaries = sha.and_then(|sha| api(format!("repos/{repo}/commits/{sha}/check-runs?filter=all&per_page=100")).ok()).map(|value| summaries_of(&value)).unwrap_or_default();
+    let sha = list(&jobs, "jobs")
+        .first()
+        .map(|job| text(job, "head_sha"))
+        .filter(|sha| !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()));
+    let summaries = sha
+        .and_then(|sha| {
+            api(format!(
+                "repos/{repo}/commits/{sha}/check-runs?filter=all&per_page=100"
+            ))
+            .ok()
+        })
+        .map(|value| summaries_of(&value))
+        .unwrap_or_default();
     let mut details = details_with(&jobs, &artifacts, &summaries);
-    let latest = list(&jobs, "jobs").iter().map(|job| number(job, "run_attempt")).max().unwrap_or(1);
+    let latest = list(&jobs, "jobs")
+        .iter()
+        .map(|job| number(job, "run_attempt"))
+        .max()
+        .unwrap_or(1);
     if latest > 1 {
-        let all_jobs = api(format!("repos/{repo}/actions/runs/{id}/jobs?filter=all&per_page=100")).unwrap_or_default();
+        let all_jobs = api(format!(
+            "repos/{repo}/actions/runs/{id}/jobs?filter=all&per_page=100"
+        ))
+        .unwrap_or_default();
         details.attempts = (1.max(latest - ATTEMPTS_LIMIT)..latest)
             .rev()
-            .filter_map(|attempt| api(format!("repos/{repo}/actions/runs/{id}/attempts/{attempt}")).ok().map(|run| attempt_of(&run, attempt, &all_jobs, &summaries)))
+            .filter_map(|attempt| {
+                api(format!("repos/{repo}/actions/runs/{id}/attempts/{attempt}"))
+                    .ok()
+                    .map(|run| attempt_of(&run, attempt, &all_jobs, &summaries))
+            })
             .collect();
     }
     Ok(details)
@@ -403,8 +571,11 @@ pub fn run_details(repo: &str, id: i64) -> Result<RunDetails, String> {
 /// The GitHub repository behind a local project, from its `origin` remote.
 pub fn project_repo(root: &Path) -> Option<String> {
     let mut command = Command::new("git");
-    command.current_dir(root).args(["config", "--get", "remote.origin.url"]);
-    let output = checked(run_process(command, "Git", 4 * 1024, Duration::from_secs(5)).ok()?).ok()?;
+    command
+        .current_dir(root)
+        .args(["config", "--get", "remote.origin.url"]);
+    let output =
+        checked(run_process(command, "Git", 4 * 1024, Duration::from_secs(5)).ok()?).ok()?;
     repo_from_remote(&String::from_utf8_lossy(&output.bytes))
 }
 
@@ -417,7 +588,10 @@ pub fn clone_destination(parent: &Path, repo: &str) -> Result<PathBuf, String> {
     let name = repo.split_once('/').map(|(_, name)| name).unwrap_or(&repo);
     let destination = parent.join(name);
     if destination.exists() {
-        return Err(format!("{} already exists. Open it as a project instead, or choose another folder.", destination.display()));
+        return Err(format!(
+            "{} already exists. Open it as a project instead, or choose another folder.",
+            destination.display()
+        ));
     }
     Ok(destination)
 }
@@ -431,7 +605,10 @@ pub fn clone(repo: &str, parent: &Path) -> Result<PathBuf, String> {
 /// Clones `repo` into `destination`, whose parent must exist and which must not.
 pub fn clone_to(repo: &str, destination: &Path, timeout: Duration) -> Result<(), String> {
     let repo = valid_repo(repo)?;
-    let parent = destination.parent().filter(|parent| parent.is_dir()).ok_or("Choose an existing folder to clone into.")?;
+    let parent = destination
+        .parent()
+        .filter(|parent| parent.is_dir())
+        .ok_or("Choose an existing folder to clone into.")?;
     let target = destination.to_string_lossy().to_string();
     run_gh(parent, &["repo", "clone", &repo, &target], timeout)?;
     Ok(())
@@ -450,12 +627,17 @@ mod tests {
     fn live_lists_repositories_from_a_minimal_path() {
         let list = repos().expect("gh lists repositories");
         assert!(!list.is_empty());
-        assert!(list.iter().all(|repo| valid_repo(&repo.name_with_owner).is_ok()));
+        assert!(list
+            .iter()
+            .all(|repo| valid_repo(&repo.name_with_owner).is_ok()));
     }
 
     #[test]
     fn repositories_must_be_owner_and_name() {
-        assert_eq!(valid_repo(" orbit-labs/orbit ").unwrap(), "orbit-labs/orbit");
+        assert_eq!(
+            valid_repo(" orbit-labs/orbit ").unwrap(),
+            "orbit-labs/orbit"
+        );
         assert!(valid_repo("orbit").is_err());
         assert!(valid_repo("--repo=x/y").is_err());
         assert!(valid_repo("owner/../etc").is_err());
@@ -466,10 +648,22 @@ mod tests {
 
     #[test]
     fn remotes_name_their_repository() {
-        for url in ["git@github.com:orbit-labs/orbit.git", "https://github.com/orbit-labs/orbit", "https://github.com/orbit-labs/orbit.git/", "ssh://git@github.com/orbit-labs/orbit.git"] {
-            assert_eq!(repo_from_remote(url).as_deref(), Some("orbit-labs/orbit"), "{url}");
+        for url in [
+            "git@github.com:orbit-labs/orbit.git",
+            "https://github.com/orbit-labs/orbit",
+            "https://github.com/orbit-labs/orbit.git/",
+            "ssh://git@github.com/orbit-labs/orbit.git",
+        ] {
+            assert_eq!(
+                repo_from_remote(url).as_deref(),
+                Some("orbit-labs/orbit"),
+                "{url}"
+            );
         }
-        assert_eq!(repo_from_remote("https://gitlab.com/orbit-labs/orbit.git"), None);
+        assert_eq!(
+            repo_from_remote("https://gitlab.com/orbit-labs/orbit.git"),
+            None
+        );
         assert_eq!(repo_from_remote("git@github.com:orbit-labs"), None);
     }
 
@@ -477,9 +671,24 @@ mod tests {
     fn checks_fold_into_one_word() {
         assert_eq!(checks_summary(None), "none");
         assert_eq!(checks_summary(Some(&json!([]))), "none");
-        assert_eq!(checks_summary(Some(&json!([{ "conclusion": "SUCCESS" }, { "state": "SUCCESS" }]))), "passing");
-        assert_eq!(checks_summary(Some(&json!([{ "conclusion": "SUCCESS" }, { "status": "IN_PROGRESS", "conclusion": "" }]))), "pending");
-        assert_eq!(checks_summary(Some(&json!([{ "conclusion": "FAILURE" }, { "state": "PENDING" }]))), "failing");
+        assert_eq!(
+            checks_summary(Some(
+                &json!([{ "conclusion": "SUCCESS" }, { "state": "SUCCESS" }])
+            )),
+            "passing"
+        );
+        assert_eq!(
+            checks_summary(Some(
+                &json!([{ "conclusion": "SUCCESS" }, { "status": "IN_PROGRESS", "conclusion": "" }])
+            )),
+            "pending"
+        );
+        assert_eq!(
+            checks_summary(Some(
+                &json!([{ "conclusion": "FAILURE" }, { "state": "PENDING" }])
+            )),
+            "failing"
+        );
     }
 
     #[test]
@@ -504,8 +713,19 @@ mod tests {
         ]});
         let runs = runs_of(&value);
         assert_eq!(runs.len(), 2);
-        assert_eq!((runs[0].attempt, runs[0].pulls.clone(), runs[0].state.as_str(), runs[0].started_at.as_str()), (2, vec![124], "failed", "2026-10-20T10:01:00Z"));
-        assert_eq!((runs[1].attempt, runs[1].pulls.len(), runs[1].state.as_str()), (1, 0, "not_started"));
+        assert_eq!(
+            (
+                runs[0].attempt,
+                runs[0].pulls.clone(),
+                runs[0].state.as_str(),
+                runs[0].started_at.as_str()
+            ),
+            (2, vec![124], "failed", "2026-10-20T10:01:00Z")
+        );
+        assert_eq!(
+            (runs[1].attempt, runs[1].pulls.len(), runs[1].state.as_str()),
+            (1, 0, "not_started")
+        );
         assert!(runs_of(&json!({})).is_empty());
     }
 
@@ -514,8 +734,22 @@ mod tests {
         let jobs = json!({ "jobs": [{ "name": "test", "status": "completed", "conclusion": "success", "started_at": "a", "completed_at": "b", "html_url": "u" }, { "name": "lint", "status": "in_progress", "conclusion": null }] });
         let artifacts = json!({ "artifacts": [{ "name": "coverage", "size_in_bytes": 2048, "expired": false }, { "name": "old", "size_in_bytes": 1, "expired": true }] });
         let details = details_of(&jobs, &artifacts);
-        assert_eq!(details.jobs.iter().map(|job| (job.name.as_str(), job.state.as_str())).collect::<Vec<_>>(), [("test", "passed"), ("lint", "in_progress")]);
-        assert_eq!(details.artifacts[0], RunArtifact { name: "coverage".into(), size: 2048, expired: false });
+        assert_eq!(
+            details
+                .jobs
+                .iter()
+                .map(|job| (job.name.as_str(), job.state.as_str()))
+                .collect::<Vec<_>>(),
+            [("test", "passed"), ("lint", "in_progress")]
+        );
+        assert_eq!(
+            details.artifacts[0],
+            RunArtifact {
+                name: "coverage".into(),
+                size: 2048,
+                expired: false
+            }
+        );
         assert!(details.artifacts[1].expired);
         assert_eq!(details_of(&json!({}), &json!({})), RunDetails::default());
         assert!(details.jobs[1].steps.is_empty() && details.jobs[1].summary.is_empty());
@@ -536,15 +770,36 @@ mod tests {
             { "id": 9, "output": { "summary": null, "text": "" } },
             { "id": 11, "output": { "summary": "x".repeat(SUMMARY_LIMIT + 10) } } ] });
         let summaries = summaries_of(&checks);
-        assert_eq!(summaries.get(&7).map(String::as_str), Some("**2 failed**\n\ndetails"));
+        assert_eq!(
+            summaries.get(&7).map(String::as_str),
+            Some("**2 failed**\n\ndetails")
+        );
         assert!(!summaries.contains_key(&9));
         assert!(summaries[&11].len() <= SUMMARY_LIMIT + 8 && summaries[&11].ends_with('…'));
         assert_eq!(bounded("héllo", 2), "h\n\n…");
         let run = json!({ "status": "completed", "conclusion": "failure", "run_started_at": "s", "updated_at": "u", "html_url": "https://github.com/o/r/actions/runs/5" });
         let attempt = attempt_of(&run, 1, &jobs, &summaries);
-        assert_eq!((attempt.attempt, attempt.state.as_str(), attempt.url.as_str()), (1, "failed", "https://github.com/o/r/actions/runs/5/attempts/1"));
+        assert_eq!(
+            (
+                attempt.attempt,
+                attempt.state.as_str(),
+                attempt.url.as_str()
+            ),
+            (
+                1,
+                "failed",
+                "https://github.com/o/r/actions/runs/5/attempts/1"
+            )
+        );
         assert_eq!(attempt.jobs.len(), 1);
-        assert_eq!(attempt.jobs[0].steps.iter().map(|step| step.state.as_str()).collect::<Vec<_>>(), ["passed", "failed", "passed"]);
+        assert_eq!(
+            attempt.jobs[0]
+                .steps
+                .iter()
+                .map(|step| step.state.as_str())
+                .collect::<Vec<_>>(),
+            ["passed", "failed", "passed"]
+        );
         assert_eq!(attempt.jobs[0].summary, "**2 failed**\n\ndetails");
     }
 
@@ -552,8 +807,13 @@ mod tests {
     fn clones_never_overwrite() {
         let parent = std::env::temp_dir().join(format!("pantheon-clone-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(parent.join("orbit")).unwrap();
-        assert!(clone_destination(&parent, "orbit-labs/orbit").unwrap_err().contains("already exists"));
-        assert_eq!(clone_destination(&parent, "orbit-labs/meadow").unwrap(), parent.join("meadow"));
+        assert!(clone_destination(&parent, "orbit-labs/orbit")
+            .unwrap_err()
+            .contains("already exists"));
+        assert_eq!(
+            clone_destination(&parent, "orbit-labs/meadow").unwrap(),
+            parent.join("meadow")
+        );
         assert!(clone_destination(Path::new("relative"), "orbit-labs/meadow").is_err());
         std::fs::remove_dir_all(parent).unwrap();
     }

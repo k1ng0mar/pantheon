@@ -1,5 +1,8 @@
 # Verify
 
+> Examples named in this page live in the [anatomy-community gallery](https://github.com/octo-cat/anatomy-community), not inside this skill. Run the commands from that example's own directory.
+
+
 Look at the figure the way a demanding reviewer would, before anyone else does. Rendering it is cheap, and guessing is expensive.
 
 ## Capture
@@ -88,7 +91,7 @@ Every open subpath of every `.iso-line` in the card (seams, grooves, ribs from `
 Screenshots catch what you think to look at. A figure with pipes, cables and round parts also needs the geometry checked, because a cable through a duct or a part drawn over the thing in front of it is invisible at 1× and obvious at 4×. Wire `kit/audit.mjs` into the build (`kit.md`, section 12): helpers put into one `A.recorder(P, { order, spring })`, the build calls `A.settle(R, P)` and ends with `A.auditOrExit(R, P)`, then run:
 
 ```sh
-node examples/raptor-engine/build.mjs --audit
+node build.mjs --audit   # inside the gallery raptor-engine example
 ```
 ```
 clearance: 0 problems

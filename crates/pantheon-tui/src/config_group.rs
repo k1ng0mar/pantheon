@@ -6234,19 +6234,12 @@ pub mod gateway {
         policy: Policy,
     ) -> Result<pantheon_runtime::session::Session, pantheon_api::error::PantheonError> {
         let cfg = crate::config::Config::load_or_report(data_dir);
-        let default = cfg
-            .as_ref()
-            .and_then(|c| c.model.clone())
-            .map(|m| pantheon_api::model::DefaultModel {
-                provider: m.provider.clone(),
-                model: m.model.clone(),
-                key_env: None,
-            })
-            .unwrap_or(pantheon_api::model::DefaultModel {
-                provider: "local".into(),
-                model: "llama3.2".into(),
-                key_env: None,
-            });
+        // One resolver for every surface: no local-model guess here.
+        let default = pantheon_api::config_resolve::resolve_default_model(
+            cfg.as_ref(),
+            None,
+            None,
+        );
         let model_policy = pantheon_api::model::ModelPolicy {
             reasoning_budget: Default::default(),
             reasoning: Default::default(),
@@ -9162,11 +9155,14 @@ pub mod pipeline {
         policy: pantheon_api::capability::Policy,
     ) -> Result<pantheon_runtime::session::Session, pantheon_api::error::PantheonError> {
         let cfg = Config::load_or_report(data_dir);
-        let (provider, model) = cfg
-            .as_ref()
-            .and_then(|c| c.model.clone())
-            .map(|m| (m.provider, m.model))
-            .unwrap_or_else(|| ("local".into(), "llama3.2".into()));
+        // No hardcoded provider/model: an unconfigured session resolves
+        // to empty values and fails loudly at the provider gate.
+        let resolved = pantheon_api::config_resolve::resolve_default_model(
+            cfg.as_ref(),
+            None,
+            None,
+        );
+        let (provider, model) = (resolved.provider, resolved.model);
         let model_policy = pantheon_api::model::ModelPolicy {
             reasoning_budget: Default::default(),
             reasoning: Default::default(),

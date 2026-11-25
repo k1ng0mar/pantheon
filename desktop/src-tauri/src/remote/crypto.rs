@@ -35,11 +35,23 @@ fn decode_public(text: &str) -> Option<[u8; 32]> {
 
 /// First 8 bytes of SHA-256 of the raw public key, hex.
 pub(crate) fn fingerprint(public: &str) -> String {
-    decode_public(public).map(|raw| Sha256::digest(raw)[..8].iter().map(|b| format!("{b:02x}")).collect()).unwrap_or_default()
+    decode_public(public)
+        .map(|raw| {
+            Sha256::digest(raw)[..8]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// HKDF-SHA256 over the X25519 secret, salted with the sorted device ids.
-pub(crate) fn pair_key(mine: &StaticSecret, my_id: &str, their_public: &str, their_id: &str) -> crate::Result<Key> {
+pub(crate) fn pair_key(
+    mine: &StaticSecret,
+    my_id: &str,
+    their_public: &str,
+    their_id: &str,
+) -> crate::Result<Key> {
     let theirs = decode_public(their_public).ok_or("That computer's key is malformed.")?;
     let shared = mine.diffie_hellman(&PublicKey::from(theirs));
     if !shared.was_contributory() {
@@ -48,7 +60,9 @@ pub(crate) fn pair_key(mine: &StaticSecret, my_id: &str, their_public: &str, the
     let mut ids = [my_id, their_id];
     ids.sort_unstable();
     let mut key = [0u8; 32];
-    hkdf::Hkdf::<Sha256>::new(Some(ids.join("|").as_bytes()), shared.as_bytes()).expand(INFO, &mut key).map_err(|_| "Key derivation failed.")?;
+    hkdf::Hkdf::<Sha256>::new(Some(ids.join("|").as_bytes()), shared.as_bytes())
+        .expand(INFO, &mut key)
+        .map_err(|_| "Key derivation failed.")?;
     Ok(key)
 }
 
@@ -59,7 +73,15 @@ fn aad(from: &str, to: &str) -> Vec<u8> {
 /// `base64(nonce24 || ciphertext)` with `from|to` as associated data.
 pub(crate) fn seal(key: &Key, from: &str, to: &str, plaintext: &[u8]) -> crate::Result<String> {
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-    let sealed = XChaCha20Poly1305::new(key.into()).encrypt(&nonce, Payload { msg: plaintext, aad: &aad(from, to) }).map_err(|_| "Encryption failed.")?;
+    let sealed = XChaCha20Poly1305::new(key.into())
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad: &aad(from, to),
+            },
+        )
+        .map_err(|_| "Encryption failed.")?;
     let mut out = nonce.to_vec();
     out.extend_from_slice(&sealed);
     Ok(STANDARD.encode(out))
@@ -71,7 +93,15 @@ pub(crate) fn open(key: &Key, from: &str, to: &str, body: &str) -> crate::Result
         return Err("Unreadable frame.".into());
     }
     let (nonce, sealed) = bytes.split_at(NONCE);
-    XChaCha20Poly1305::new(key.into()).decrypt(XNonce::from_slice(nonce), Payload { msg: sealed, aad: &aad(from, to) }).map_err(|_| "A frame failed to decrypt.".into())
+    XChaCha20Poly1305::new(key.into())
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: sealed,
+                aad: &aad(from, to),
+            },
+        )
+        .map_err(|_| "A frame failed to decrypt.".into())
 }
 
 #[cfg(test)]
@@ -85,7 +115,10 @@ mod tests {
         let ba = pair_key(&b, "dev-b", &public_key(&a), "dev-a").unwrap();
         assert_eq!(ab, ba);
         let body = seal(&ab, "dev-a", "dev-b", b"{\"type\":\"req\"}").unwrap();
-        assert_eq!(open(&ba, "dev-a", "dev-b", &body).unwrap(), b"{\"type\":\"req\"}");
+        assert_eq!(
+            open(&ba, "dev-a", "dev-b", &body).unwrap(),
+            b"{\"type\":\"req\"}"
+        );
         // A third device derives a different key.
         let c = generate();
         assert_ne!(pair_key(&c, "dev-c", &public_key(&b), "dev-b").unwrap(), ab);

@@ -105,17 +105,10 @@ Step "3/4" "Initializing"
 Run "Creating $DataDir"
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
-Run "Initializing default configuration"
-if (Test-Path (Join-Path $DataDir "config.toml")) {
-    Ok "Configuration exists; leaving it alone"
-} else {
-    try {
-        & "$InstallDir/pantheon.exe" setup --yes | Out-Null
-        Ok "Default configuration written"
-    } catch {
-        Warn "could not write a default config; run `pantheon setup` by hand"
-    }
-}
+Run "Deferring model setup to the user"
+# The shell installer does the same: no config.toml is written here. The
+# first launch opens the setup wizard, where the user chooses a provider.
+Ok "Run `pantheon setup` to choose a provider and model"
 
 Run "Creating default agent profile"
 Ok "Default profile ready"

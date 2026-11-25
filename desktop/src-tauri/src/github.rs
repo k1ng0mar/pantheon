@@ -116,22 +116,37 @@ fn gh_command(root: &Path, args: &[&str]) -> Command {
     command
 }
 pub(crate) fn run_gh(root: &Path, args: &[&str], timeout: Duration) -> Result<Capture, String> {
-    checked(run_process(gh_command(root, args), "GitHub CLI", OUTPUT_LIMIT, timeout)?)
+    checked(run_process(
+        gh_command(root, args),
+        "GitHub CLI",
+        OUTPUT_LIMIT,
+        timeout,
+    )?)
 }
 pub(crate) fn json(capture: &Capture) -> Result<serde_json::Value, String> {
     if capture.truncated {
         return Err("The GitHub response was too large to read.".into());
     }
-    serde_json::from_slice(&capture.bytes).map_err(|_| "GitHub returned an unexpected response.".into())
+    serde_json::from_slice(&capture.bytes)
+        .map_err(|_| "GitHub returned an unexpected response.".into())
 }
 pub(crate) fn text(value: &serde_json::Value, key: &str) -> String {
-    value.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 pub(crate) fn names(value: &serde_json::Value, key: &str, field: &str) -> Vec<String> {
     value
         .get(key)
         .and_then(|v| v.as_array())
-        .map(|items| items.iter().filter_map(|item| item.get(field)?.as_str().map(str::to_string)).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get(field)?.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 pub(crate) fn state_of(value: &serde_json::Value) -> String {
@@ -234,14 +249,25 @@ pub fn status(root: &Path) -> GithubStatus {
 pub fn repository(root: &Path) -> Result<Repository, String> {
     let output = run_gh(
         root,
-        &["repo", "view", "--json", "nameWithOwner,defaultBranchRef,url"],
+        &[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,defaultBranchRef,url",
+        ],
         TIMEOUT,
     )
     .map_err(|error| {
         let lower = error.to_ascii_lowercase();
-        if ["no git remote", "not a git repository", "could not determine", "none of the git remotes", "unable to determine base repository"]
-            .iter()
-            .any(|marker| lower.contains(marker))
+        if [
+            "no git remote",
+            "not a git repository",
+            "could not determine",
+            "none of the git remotes",
+            "unable to determine base repository",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
         {
             String::new()
         } else {
@@ -271,12 +297,24 @@ fn item(kind: &str, value: &serde_json::Value) -> Option<Item> {
         title: text(value, "title"),
         state: state_of(value),
         url: text(value, "url"),
-        author: value.get("author").map(|a| text(a, "login")).unwrap_or_default(),
+        author: value
+            .get("author")
+            .map(|a| text(a, "login"))
+            .unwrap_or_default(),
     })
 }
-pub(crate) fn view(root: &Path, kind: &str, number: i64, fields: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn view(
+    root: &Path,
+    kind: &str,
+    number: i64,
+    fields: &str,
+) -> Result<serde_json::Value, String> {
     let command = if kind == "pull" { "pr" } else { "issue" };
-    let value = json(&run_gh(root, &[command, "view", &number.to_string(), "--json", fields], TIMEOUT)?)?;
+    let value = json(&run_gh(
+        root,
+        &[command, "view", &number.to_string(), "--json", fields],
+        TIMEOUT,
+    )?)?;
     // The REST-style issue lookup can answer for a pull request; keep the kinds honest.
     if kind == "issue" && text(&value, "url").contains("/pull/") {
         return Err("This number is a pull request.".into());
@@ -292,7 +330,8 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Item>, Strin
     if let Ok(number) = query.trim_start_matches('#').parse::<i64>() {
         if number > 0 {
             for kind in ["issue", "pull"] {
-                if let Ok(value) = view(root, kind, number, "number,title,state,url,author,isDraft") {
+                if let Ok(value) = view(root, kind, number, "number,title,state,url,author,isDraft")
+                {
                     items.extend(item(kind, &value));
                 }
             }
@@ -302,33 +341,67 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Item>, Strin
         }
     }
     for (kind, command) in [("issue", "issue"), ("pull", "pr")] {
-        let mut args = vec![command, "list", "--state", "open", "--limit", &limit, "--json", "number,title,state,url,author,isDraft"];
+        let mut args = vec![
+            command,
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            &limit,
+            "--json",
+            "number,title,state,url,author,isDraft",
+        ];
         let search = flag("search", &query);
         if !query.is_empty() {
             args.push(&search);
         }
         let value = json(&run_gh(root, &args, TIMEOUT)?)?;
-        items.extend(value.as_array().into_iter().flatten().filter_map(|v| item(kind, v)));
+        items.extend(
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| item(kind, v)),
+        );
     }
     Ok(items)
 }
 
 /// Open issues for the board import dialog.
 pub fn issues(root: &Path, filter: &IssueFilter) -> Result<Vec<Issue>, String> {
-    let mut args: Vec<String> = ["issue", "list", "--state", "open", "--limit", "50", "--json", "number,title,body,state,url,labels,assignees,updatedAt"]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let mut args: Vec<String> = [
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "50",
+        "--json",
+        "number,title,body,state,url,labels,assignees,updatedAt",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
     if filter.assigned_to_me {
         args.push(flag("assignee", "@me"));
     }
-    if let Some(label) = filter.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+    if let Some(label) = filter
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+    {
         if label.len() > 100 || label.contains('\0') {
             return Err("Shorten the label filter.".into());
         }
         args.push(flag("label", label));
     }
-    if let Some(query) = filter.query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+    if let Some(query) = filter
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+    {
         args.push(flag("search", &valid_query(query)?));
     }
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -371,7 +444,12 @@ pub fn resolve(root: &Path, numbers: &[i64]) -> Result<Vec<Reference>, String> {
                 let number = *number;
                 scope.spawn(move || {
                     for kind in ["issue", "pull"] {
-                        if let Ok(value) = view(root, kind, number, "number,title,state,url,author,body,labels,isDraft") {
+                        if let Ok(value) = view(
+                            root,
+                            kind,
+                            number,
+                            "number,title,state,url,author,body,labels,isDraft",
+                        ) {
                             let (body, truncated) = excerpt(&text(&value, "body"), BODY_LIMIT);
                             return Some(Reference {
                                 kind: kind.into(),
@@ -379,7 +457,10 @@ pub fn resolve(root: &Path, numbers: &[i64]) -> Result<Vec<Reference>, String> {
                                 title: text(&value, "title"),
                                 state: state_of(&value),
                                 url: text(&value, "url"),
-                                author: value.get("author").map(|a| text(a, "login")).unwrap_or_default(),
+                                author: value
+                                    .get("author")
+                                    .map(|a| text(a, "login"))
+                                    .unwrap_or_default(),
                                 body,
                                 labels: names(&value, "labels", "name"),
                                 truncated,
@@ -390,18 +471,29 @@ pub fn resolve(root: &Path, numbers: &[i64]) -> Result<Vec<Reference>, String> {
                 })
             })
             .collect();
-        handles.into_iter().map(|handle| handle.join().unwrap_or(None)).collect()
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or(None))
+            .collect()
     });
     Ok(results.into_iter().flatten().collect())
 }
 
 /// One GraphQL round trip for every linked number in a project.
-pub fn link_states(root: &Path, repo: &Repository, links: &[(String, i64)]) -> Result<Vec<LinkState>, String> {
+pub fn link_states(
+    root: &Path,
+    repo: &Repository,
+    links: &[(String, i64)],
+) -> Result<Vec<LinkState>, String> {
     let (owner, name) = repo
         .name_with_owner
         .split_once('/')
         .ok_or("The repository name is incomplete.")?;
-    let mut numbers: Vec<i64> = links.iter().map(|(_, number)| *number).filter(|n| *n > 0).collect();
+    let mut numbers: Vec<i64> = links
+        .iter()
+        .map(|(_, number)| *number)
+        .filter(|n| *n > 0)
+        .collect();
     numbers.sort_unstable();
     numbers.dedup();
     numbers.truncate(100);
@@ -419,12 +511,27 @@ pub fn link_states(root: &Path, repo: &Repository, links: &[(String, i64)]) -> R
     let query_flag = flag("raw-field", &format!("query={query}"));
     // One deleted or transferred number makes gh exit 1 while still returning every
     // other node, so the data is read before the exit status is judged.
-    let output = run_process(gh_command(root, &["api", "graphql", &owner_flag, &name_flag, &query_flag]), "GitHub CLI", OUTPUT_LIMIT, TIMEOUT)?;
+    let output = run_process(
+        gh_command(
+            root,
+            &["api", "graphql", &owner_flag, &name_flag, &query_flag],
+        ),
+        "GitHub CLI",
+        OUTPUT_LIMIT,
+        TIMEOUT,
+    )?;
     let value = match json(&output.stdout) {
         Ok(value) if value.pointer("/data/repository").is_some() => value,
-        _ => return checked(output).and_then(|capture| json(&capture)).map(|_| vec![]),
+        _ => {
+            return checked(output)
+                .and_then(|capture| json(&capture))
+                .map(|_| vec![])
+        }
     };
-    let repository = value.pointer("/data/repository").cloned().unwrap_or(serde_json::Value::Null);
+    let repository = value
+        .pointer("/data/repository")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     Ok(numbers
         .iter()
         .filter_map(|number| {
@@ -446,7 +553,13 @@ pub fn link_states(root: &Path, repo: &Repository, links: &[(String, i64)]) -> R
 }
 
 /// Open a pull request for an already pushed branch.
-pub fn create_pull_request(root: &Path, title: &str, body: &str, base: &str, head: &str) -> Result<PullRequest, String> {
+pub fn create_pull_request(
+    root: &Path,
+    title: &str,
+    body: &str,
+    base: &str,
+    head: &str,
+) -> Result<PullRequest, String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 256 {
         return Err("Give the pull request a title of up to 256 characters.".into());
@@ -455,13 +568,24 @@ pub fn create_pull_request(root: &Path, title: &str, body: &str, base: &str, hea
         return Err("Shorten the pull request description.".into());
     }
     for reference in [base, head] {
-        if reference.is_empty() || reference.len() > 200 || reference.starts_with('-') || reference.contains("..") {
+        if reference.is_empty()
+            || reference.len() > 200
+            || reference.starts_with('-')
+            || reference.contains("..")
+        {
             return Err("Choose valid base and head branches.".into());
         }
     }
     let output = run_gh(
         root,
-        &["pr", "create", &flag("title", title), &flag("body", body), &flag("base", base), &flag("head", head)],
+        &[
+            "pr",
+            "create",
+            &flag("title", title),
+            &flag("body", body),
+            &flag("base", base),
+            &flag("head", head),
+        ],
         Duration::from_secs(60),
     )?;
     let url = String::from_utf8_lossy(&output.bytes)
@@ -491,10 +615,17 @@ mod tests {
     fn gh_runs_with_the_tool_search_path_even_from_a_minimal_gui_path() {
         // Finder and the Dock start apps with PATH=/usr/bin:/bin; gh must still find Homebrew.
         let command = super::gh_command(std::path::Path::new("/"), &["--version"]);
-        let path = command.get_envs().find(|(key, _)| *key == "PATH").and_then(|(_, value)| value).expect("gh gets a PATH");
+        let path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .expect("gh gets a PATH");
         let dirs: Vec<_> = std::env::split_paths(path).collect();
         for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-            assert!(dirs.contains(&std::path::PathBuf::from(dir)), "{dir} is searched");
+            assert!(
+                dirs.contains(&std::path::PathBuf::from(dir)),
+                "{dir} is searched"
+            );
         }
     }
 
@@ -518,7 +649,10 @@ mod tests {
         assert_eq!(parsed.state, "open");
         assert_eq!(parsed.author, "octocat");
         assert_eq!(names(&value, "labels", "name"), vec!["bug"]);
-        let draft: serde_json::Value = serde_json::from_str(r#"{"number":3,"state":"OPEN","isDraft":true,"url":"","title":""}"#).unwrap();
+        let draft: serde_json::Value = serde_json::from_str(
+            r#"{"number":3,"state":"OPEN","isDraft":true,"url":"","title":""}"#,
+        )
+        .unwrap();
         assert_eq!(state_of(&draft), "draft");
         assert!(item("pull", &serde_json::json!({"title":"missing number"})).is_none());
     }
@@ -539,15 +673,34 @@ mod tests {
         assert!(status.installed && status.authenticated, "{status:?}");
         let repo = status.repo.expect("this checkout has a GitHub remote");
         assert!(!repo.default_branch.is_empty());
-        let states = link_states(&root, &Repository { name_with_owner: "cli/cli".into(), default_branch: "trunk".into(), url: String::new() }, &[("issue".into(), 1), ("pull".into(), 999_999_999)]).unwrap();
-        assert_eq!(states.len(), 1, "a missing number is skipped, not fatal: {states:?}");
+        let states = link_states(
+            &root,
+            &Repository {
+                name_with_owner: "cli/cli".into(),
+                default_branch: "trunk".into(),
+                url: String::new(),
+            },
+            &[("issue".into(), 1), ("pull".into(), 999_999_999)],
+        )
+        .unwrap();
+        assert_eq!(
+            states.len(),
+            1,
+            "a missing number is skipped, not fatal: {states:?}"
+        );
         assert_eq!(states[0].number, 1);
         assert!(["issue", "pull"].contains(&states[0].kind.as_str()));
     }
 
     #[test]
     fn a_missing_cli_is_named_and_other_failures_pass_through() {
-        assert_eq!(start_failure("Could not start GitHub CLI: No such file or directory"), "GitHub CLI (gh) is not installed.");
-        assert_eq!(start_failure("GitHub CLI operation timed out. Check the repository before retrying."), "GitHub CLI operation timed out. Check the repository before retrying.");
+        assert_eq!(
+            start_failure("Could not start GitHub CLI: No such file or directory"),
+            "GitHub CLI (gh) is not installed."
+        );
+        assert_eq!(
+            start_failure("GitHub CLI operation timed out. Check the repository before retrying."),
+            "GitHub CLI operation timed out. Check the repository before retrying."
+        );
     }
 }

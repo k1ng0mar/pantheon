@@ -13,7 +13,11 @@ const APPIMAGE_MARKERS: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 /// Changes that undo the AppImage environment: `(name, Some(value))` sets, `(name, None)`
 /// removes. Empty unless both `APPIMAGE` and an absolute `APPDIR` are present.
 fn appimage_overrides(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<OsString>)> {
-    let get = |name: &str| vars.iter().find(|(key, _)| key == name).map(|(_, value)| value);
+    let get = |name: &str| {
+        vars.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+    };
     let (Some(_), Some(appdir)) = (get("APPIMAGE"), get("APPDIR")) else {
         return Vec::new();
     };
@@ -35,7 +39,9 @@ fn appimage_overrides(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<Os
                 .into_iter()
                 .filter(|entry| !entry.as_os_str().is_empty() && !inside(entry.as_os_str()))
                 .collect();
-            let joined = (!kept.is_empty()).then(|| std::env::join_paths(kept).ok()).flatten();
+            let joined = (!kept.is_empty())
+                .then(|| std::env::join_paths(kept).ok())
+                .flatten();
             Some((key.clone(), joined))
         })
         .collect()
@@ -93,14 +99,20 @@ mod tests {
     use super::*;
 
     fn vars(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
-        pairs.iter().map(|(key, value)| (key.into(), value.into())).collect()
+        pairs
+            .iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect()
     }
 
     fn overrides(pairs: &[(&str, &str)]) -> Vec<(String, Option<String>)> {
         appimage_overrides(&vars(pairs))
             .into_iter()
             .map(|(key, value)| {
-                (key.into_string().unwrap(), value.map(|value| value.into_string().unwrap()))
+                (
+                    key.into_string().unwrap(),
+                    value.map(|value| value.into_string().unwrap()),
+                )
             })
             .collect()
     }
@@ -113,11 +125,23 @@ mod tests {
             ("APPDIR", mount),
             ("ARGV0", "pantheon"),
             ("OWD", "/home/me"),
-            ("PATH", "/tmp/.mount_templeK7xQz/usr/bin:/home/me/.local/bin:/usr/bin"),
-            ("LD_LIBRARY_PATH", "/tmp/.mount_templeK7xQz/usr/lib:/tmp/.mount_templeK7xQz/lib"),
+            (
+                "PATH",
+                "/tmp/.mount_templeK7xQz/usr/bin:/home/me/.local/bin:/usr/bin",
+            ),
+            (
+                "LD_LIBRARY_PATH",
+                "/tmp/.mount_templeK7xQz/usr/lib:/tmp/.mount_templeK7xQz/lib",
+            ),
             ("PYTHONHOME", "/tmp/.mount_templeK7xQz/usr"),
-            ("GDK_PIXBUF_MODULE_FILE", "/tmp/.mount_templeK7xQz/usr/lib/loaders.cache"),
-            ("XDG_DATA_DIRS", "/tmp/.mount_templeK7xQz/usr/share:/usr/local/share:/usr/share"),
+            (
+                "GDK_PIXBUF_MODULE_FILE",
+                "/tmp/.mount_templeK7xQz/usr/lib/loaders.cache",
+            ),
+            (
+                "XDG_DATA_DIRS",
+                "/tmp/.mount_templeK7xQz/usr/share:/usr/local/share:/usr/share",
+            ),
             // A sibling mount sharing the prefix is not inside APPDIR.
             ("OTHER", "/tmp/.mount_templeK7xQzx/lib"),
             ("HOME", "/home/me"),
@@ -133,7 +157,10 @@ mod tests {
                 ("LD_LIBRARY_PATH".into(), None),
                 ("PYTHONHOME".into(), None),
                 ("GDK_PIXBUF_MODULE_FILE".into(), None),
-                ("XDG_DATA_DIRS".into(), Some("/usr/local/share:/usr/share".into())),
+                (
+                    "XDG_DATA_DIRS".into(),
+                    Some("/usr/local/share:/usr/share".into())
+                ),
             ]
         );
     }

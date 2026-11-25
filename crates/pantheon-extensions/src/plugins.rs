@@ -2624,18 +2624,26 @@ print(json.dumps(result))
     /// child instead of being imported as trusted code.
     fn plugin_tree_hash(dir: &Path) -> Result<String, PantheonError> {
         let mut files = Vec::new();
-        collect_plugin_files(dir, &mut files)
-            .map_err(|e| xerr("EXT_TAMPERED", format!("walk {}: {e}", dir.display()), false))?;
-        files.sort_by(|a, b| {
-            relative_plugin_path(a, dir).cmp(&relative_plugin_path(b, dir))
-        });
+        collect_plugin_files(dir, &mut files).map_err(|e| {
+            xerr(
+                "EXT_TAMPERED",
+                format!("walk {}: {e}", dir.display()),
+                false,
+            )
+        })?;
+        files.sort_by_key(|a| relative_plugin_path(a, dir));
         let mut bytes = Vec::new();
         for file in &files {
             let rel = relative_plugin_path(file, dir);
             bytes.extend_from_slice(rel.as_bytes());
             bytes.push(0);
-            let contents = std::fs::read(file)
-                .map_err(|e| xerr("EXT_TAMPERED", format!("read {}: {e}", file.display()), false))?;
+            let contents = std::fs::read(file).map_err(|e| {
+                xerr(
+                    "EXT_TAMPERED",
+                    format!("read {}: {e}", file.display()),
+                    false,
+                )
+            })?;
             bytes.extend_from_slice(&contents);
             bytes.push(1);
         }

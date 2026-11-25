@@ -44,7 +44,7 @@ test('the composer Steer button shows the message pending, then delivered', asyn
 test('a harness without live steering sends it when the turn ends', async ({ page }) => {
   await page.locator('.task-item[data-id="session-3"]').click();
   await startRun(page);
-  await expect(prompt(page)).toHaveAttribute('placeholder', /⌘↩ steers now/);
+  await expect(prompt(page)).toHaveAttribute('placeholder', /(⌘↩|Ctrl\+↩) steers now/);
   await prompt(page).fill('Then add tests');
   await prompt(page).press('ControlOrMeta+Enter');
   await expect(lastUser(page).locator('.steer-state')).toHaveText('Sends when this turn ends');

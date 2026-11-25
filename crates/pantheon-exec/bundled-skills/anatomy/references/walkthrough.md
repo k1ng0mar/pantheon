@@ -1,6 +1,9 @@
 # Walkthrough: the test rig (Fig 6)
 
-How `examples/test-rig/` was designed. It is a figure for a "Stretch" section explaining how a glass button responds to touch: a press swells it, pulling makes it lean toward the finger (with less give the further you pull), and letting go springs it back past rest once.
+> Examples named in this page live in the [anatomy-community gallery](https://github.com/octo-cat/anatomy-community), not inside this skill. Run the commands from that example's own directory.
+
+
+How the test-rig example in the gallery was designed. It is a figure for a "Stretch" section explaining how a glass button responds to touch: a press swells it, pulling makes it lean toward the finger (with less give the further you pull), and letting go springs it back past rest once.
 
 ## 1. Truth
 The behaviour was copied into a pure model, `rig.ts`, from the library source:

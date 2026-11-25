@@ -35,8 +35,10 @@ pub(crate) fn automatic_on(conn: &rusqlite::Connection, sid: &str) -> Result<boo
             let generated = match first {
                 Some((id, prompt)) => {
                     description.is_empty()
-                        && crate::architect::internal_turns::legacy_kind_in_db(conn, sid, id, &prompt)?
-                            .is_none()
+                        && crate::architect::internal_turns::legacy_kind_in_db(
+                            conn, sid, id, &prompt,
+                        )?
+                        .is_none()
                         && title
                             == prompt
                                 .lines()
@@ -142,7 +144,8 @@ impl TitleRun {
             return Ok(None);
         }
         let prompt: String = store
-            .conn().query_row(
+            .conn()
+            .query_row(
                 "SELECT content FROM messages WHERE session_id=?1 AND id=?2",
                 params![sid, turn],
                 |r| r.get(0),
@@ -165,7 +168,10 @@ impl TitleRun {
 
     /// The per-message part: only the current title. How to use it is in [`GUIDANCE`].
     pub(crate) fn instruction(&self) -> String {
-        format!("\n\n<Pantheon task metadata>\nCurrent sidebar title: {}.\n</Pantheon task metadata>", serde_json::to_string(&self.original).unwrap_or_default())
+        format!(
+            "\n\n<Pantheon task metadata>\nCurrent sidebar title: {}.\n</Pantheon task metadata>",
+            serde_json::to_string(&self.original).unwrap_or_default()
+        )
     }
 
     fn suggest(&self, args: Value) -> Result<Value> {
@@ -325,7 +331,7 @@ mod tests {
         let db = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = db.add_project(&std::env::temp_dir()).unwrap();
         let session = db
-            .create_session(&project.id, "claude", "sonnet", "full")
+            .create_session(&project.id, "pantheon", "sonnet", "full")
             .unwrap();
         (db, session.id)
     }
@@ -409,7 +415,7 @@ mod tests {
         let task = db
             .create_board_task(
                 &db.session(&sid).unwrap().project_id,
-                "claude",
+                "pantheon",
                 "sonnet",
                 "full",
                 "Keep this task name",
@@ -430,7 +436,8 @@ mod tests {
             let (db, sid) = task();
             db.message(&sid, "user", "Repair Windows startup paths\nMore details")
                 .unwrap();
-            db.conn().execute(
+            db.conn()
+                .execute(
                     "UPDATE sessions SET title=?2,title_origin='legacy' WHERE id=?1",
                     params![sid, title],
                 )
@@ -460,7 +467,7 @@ mod tests {
         let (db, parent) = task();
         let project = db.session(&parent).unwrap().project_id;
         let worker = db
-            .create_session(&project, "claude", "sonnet", "full")
+            .create_session(&project, "pantheon", "sonnet", "full")
             .unwrap();
         db.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent, worker.id]).unwrap();
         let id = db
@@ -491,21 +498,23 @@ mod tests {
         let db = Store::open(&path).unwrap();
         let project = db.add_project(&dir).unwrap();
         let auto = db
-            .create_session(&project.id, "claude", "sonnet", "full")
+            .create_session(&project.id, "pantheon", "sonnet", "full")
             .unwrap();
         let manual = db
-            .create_session(&project.id, "claude", "sonnet", "full")
+            .create_session(&project.id, "pantheon", "sonnet", "full")
             .unwrap();
         for task in [&auto, &manual] {
             db.message(&task.id, "user", "Repair Windows startup paths")
                 .unwrap();
         }
-        db.conn().execute(
+        db.conn()
+            .execute(
                 "UPDATE sessions SET title='Repair Windows startup paths' WHERE id=?1",
                 [&auto.id],
             )
             .unwrap();
-        db.conn().execute(
+        db.conn()
+            .execute(
                 "UPDATE sessions SET title='My saved title' WHERE id=?1",
                 [&manual.id],
             )
@@ -656,16 +665,20 @@ mod tests {
 
         for kind in ["coordination", "command", "maintenance", "manual"] {
             let turn = match kind {
-                "coordination" => db.begin_task_turn_with_kind(
-                    &sid,
-                    "Review settled workers for this objective",
-                    Some(crate::architect::internal_turns::CoordinationKind::WorkerReview),
-                ).unwrap(),
+                "coordination" => db
+                    .begin_task_turn_with_kind(
+                        &sid,
+                        "Review settled workers for this objective",
+                        Some(crate::architect::internal_turns::CoordinationKind::WorkerReview),
+                    )
+                    .unwrap(),
                 "command" => db.begin_task_turn(&sid, "/review all changes").unwrap(),
                 "maintenance" => 0,
                 _ => {
-                    db.update(&sid, Some("My rollout".into()), None, None, None).unwrap();
-                    db.begin_task_turn(&sid, "Continue from where you left off.").unwrap()
+                    db.update(&sid, Some("My rollout".into()), None, None, None)
+                        .unwrap();
+                    db.begin_task_turn(&sid, "Continue from where you left off.")
+                        .unwrap()
                 }
             };
             let original = db.session(&sid).unwrap().title;
@@ -674,7 +687,9 @@ mod tests {
             let host = with_host(run.as_ref(), None, stopped.clone());
             assert_eq!(host.tools, vec![definition.clone()]);
             assert_eq!(
-                (host.handler)(TOOL.into(), json!({"title":"Unwanted rename"})).await.unwrap(),
+                (host.handler)(TOOL.into(), json!({"title":"Unwanted rename"}))
+                    .await
+                    .unwrap(),
                 json!({"staged":false})
             );
             db.message(&sid, "assistant", "Turn completed.").unwrap();
@@ -699,12 +714,16 @@ mod tests {
             json!({"existing":true})
         );
         assert_eq!(
-            (host.handler)(TOOL.into(), json!({"title":"Ignored"})).await.unwrap(),
+            (host.handler)(TOOL.into(), json!({"title":"Ignored"}))
+                .await
+                .unwrap(),
             json!({"staged":false})
         );
         stopped.store(true, Ordering::SeqCst);
         for name in [TOOL, "existing"] {
-            assert!((host.handler)(name.into(), json!({"title":"Too late"})).await.is_err());
+            assert!((host.handler)(name.into(), json!({"title":"Too late"}))
+                .await
+                .is_err());
         }
     }
 }

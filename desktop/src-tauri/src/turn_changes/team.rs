@@ -10,8 +10,10 @@ pub(super) fn merge(store: &Store, sid: &str, capture: &mut Captured) -> Result<
         return Ok(vec![]);
     }
     let rows = {
-        let conn = store.conn(); let mut  query = conn.prepare(
-            "SELECT child.id,child.session_id,child.summary FROM turn_changes child
+        let conn = store.conn();
+        let mut query = conn
+            .prepare(
+                "SELECT child.id,child.session_id,child.summary FROM turn_changes child
          JOIN architect_workers relation ON relation.session_id=child.session_id
          JOIN architect_teams team ON team.session_id=relation.parent_session_id
          JOIN json_each(team.content,'$.workers') worker
@@ -25,8 +27,8 @@ pub(super) fn merge(store: &Store, sid: &str, capture: &mut Captured) -> Result<
              WHERE parent.session_id=?1 AND source.value=child.id
            )
          ORDER BY child.message_id DESC LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         let mut result = query
             .query(params![sid, (SOURCES + 1) as i64])
             .map_err(|e| e.to_string())?;
@@ -228,21 +230,22 @@ mod tests {
             let store = Store::open(&files.root.join("state.sqlite")).unwrap();
             let project = store.add_project(&files.root).unwrap();
             let parent = store
-                .create_session(&project.id, "codex", "default", "ask")
+                .create_session(&project.id, "pantheon", "default", "ask")
                 .unwrap()
                 .id;
             let worker = store
-                .create_session(&project.id, "codex", "default", "ask")
+                .create_session(&project.id, "pantheon", "default", "ask")
                 .unwrap()
                 .id;
             let unrelated = store
-                .create_session(&project.id, "codex", "default", "ask")
+                .create_session(&project.id, "pantheon", "default", "ask")
                 .unwrap()
                 .id;
             store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker',?2)", params![parent,worker]).unwrap();
             let content = json!({"workers":[{"id":"worker","sessionId":worker,"status":"completed","abandoned":false}]}).to_string();
             store
-                .conn().execute(
+                .conn()
+                .execute(
                     "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                     params![parent, content],
                 )
@@ -314,7 +317,8 @@ mod tests {
         assert_eq!(summary(&f.store, &f.parent, &id).unwrap().files.len(), 1);
         let source_count: i64 = f
             .store
-            .conn().query_row(
+            .conn()
+            .query_row(
                 "SELECT json_array_length(summary,'$.teamSources') FROM turn_changes WHERE id=?1",
                 [&id],
                 |r| r.get(0),

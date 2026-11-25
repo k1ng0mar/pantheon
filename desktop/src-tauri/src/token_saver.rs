@@ -1,7 +1,12 @@
 //! Token saver: detects optional local tools the per-thread saver can lean on.
 //! The saver itself is prompt guidance assembled by the window; nothing here runs an agent.
 use serde::Serialize;
-use std::{path::{Path, PathBuf}, process::Command, sync::atomic::{AtomicBool, Ordering}, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use crate::workspace::{checked, run_process};
 
@@ -20,13 +25,21 @@ pub struct Tools {
 
 /// A CLI from the user's PATH or a standard Homebrew prefix; GUI launches miss shell PATHs.
 pub fn find_tool(name: &str) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
     if let Some(home) = std::env::var_os("HOME") {
         dirs.extend([".local/bin", ".cargo/bin"].map(|dir| Path::new(&home).join(dir)));
     }
-    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
-    dirs.into_iter().map(|dir| dir.join(&file)).find(|path| path.is_file())
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    dirs.into_iter()
+        .map(|dir| dir.join(&file))
+        .find(|path| path.is_file())
 }
 
 /// `rtk 0.37.1` → `0.37.1`; anything else stays as printed.
@@ -36,7 +49,10 @@ pub fn version_line(output: &str) -> String {
 }
 
 fn detect() -> Tools {
-    let mut tools = Tools { rtk_install: RTK_INSTALL.into(), ..Default::default() };
+    let mut tools = Tools {
+        rtk_install: RTK_INSTALL.into(),
+        ..Default::default()
+    };
     if let Some(path) = find_tool("rtk") {
         let mut command = Command::new(path);
         command.arg("--version");
@@ -100,12 +116,12 @@ mod tests {
 
     #[test]
     fn only_rtk_installs_and_one_at_a_time() {
-        let unknown = tauri::async_runtime::block_on(token_saver_install("curl".into())).unwrap_err();
+        let unknown =
+            tauri::async_runtime::block_on(token_saver_install("curl".into())).unwrap_err();
         assert_eq!(unknown, "Unknown tool.");
         INSTALLING.store(true, Ordering::SeqCst);
         let busy = tauri::async_runtime::block_on(token_saver_install("rtk".into())).unwrap_err();
         assert!(busy.contains("already being installed"), "{busy}");
         INSTALLING.store(false, Ordering::SeqCst);
     }
-
 }

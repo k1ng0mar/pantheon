@@ -1,5 +1,8 @@
 # React and Next.js
 
+> Examples named in this page live in the [anatomy-community gallery](https://github.com/octo-cat/anatomy-community), not inside this skill. Run the commands from that example's own directory.
+
+
 ## File layout for one figure
 ```
 components/iso/                 the kit: iso-kit.ts, iso.css, react/draw.tsx, react/live.tsx
@@ -13,7 +16,7 @@ components/figures/rig/
   rig.css        scoped tokens and styles (e.g. .rig { … })
   figure.tsx     <Plate fig title hint readout keys caption><RigArt /></Plate>
 ```
-`examples/test-rig/` follows this layout. It uses `rig.ts`, `view.ts`, `geometry.ts`, `pose.ts`, `art.tsx`, `live.tsx` and `figure.tsx`.
+the test-rig example in the gallery follows this layout. It uses `rig.ts`, `view.ts`, `geometry.ts`, `pose.ts`, `art.tsx`, `live.tsx` and `figure.tsx`.
 
 ## The server/client split
 - Geometry is pure TypeScript, so it runs on the server and the client receives finished path strings. No geometry code is shipped unless a moving part needs to rebuild per frame. Then `frame.ts` is imported by `live.tsx` and ships to the client.

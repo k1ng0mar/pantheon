@@ -77,9 +77,15 @@ pub(crate) fn home(sandbox: &dyn Sandbox, native: &str) -> crate::Result<String>
 
 /// The harness command, run by `runner.sh`. It removes itself once read: it may hold keys.
 pub(crate) fn command_script(spec: &Spec) -> crate::Result<String> {
-    let mut script = format!("rm -f -- \"$0\"\ncd {} || exit 126\n", shell_quote(&spec.remote_dir));
+    let mut script = format!(
+        "rm -f -- \"$0\"\ncd {} || exit 126\n",
+        shell_quote(&spec.remote_dir)
+    );
     for (key, value) in &spec.env {
-        if key.is_empty() || key.starts_with(|c: char| c.is_ascii_digit()) || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        if key.is_empty()
+            || key.starts_with(|c: char| c.is_ascii_digit())
+            || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
             return Err("A cloud agent environment variable has an invalid name.".into());
         }
         script.push_str(&format!("export {key}={}\n", shell_quote(value)));
@@ -98,10 +104,23 @@ pub(crate) fn command_script(spec: &Spec) -> crate::Result<String> {
 
 /// Uploads the runner and the command, then starts the run detached.
 fn start(sandbox: &dyn Sandbox, spec: &Spec, dir: &str) -> crate::Result<()> {
-    sandbox.upload(&spec.native, &format!("{dir}/runner.sh"), RUNNER.as_bytes(), false)?;
-    sandbox.upload(&spec.native, &format!("{dir}/cmd.sh"), command_script(spec)?.as_bytes(), true)?;
+    sandbox.upload(
+        &spec.native,
+        &format!("{dir}/runner.sh"),
+        RUNNER.as_bytes(),
+        false,
+    )?;
+    sandbox.upload(
+        &spec.native,
+        &format!("{dir}/cmd.sh"),
+        command_script(spec)?.as_bytes(),
+        true,
+    )?;
     sandbox.upload(&spec.native, &format!("{dir}/inbox"), b"", true)?;
-    sandbox.spawn(&spec.native, &format!("cd {d} && exec sh ./runner.sh", d = shell_quote(dir)))
+    sandbox.spawn(
+        &spec.native,
+        &format!("cd {d} && exec sh ./runner.sh", d = shell_quote(dir)),
+    )
 }
 
 /// Kills a run's process group, confirms it is gone, and records it as stopped (143) unless
@@ -118,7 +137,12 @@ pub(crate) fn kill(sandbox: &dyn Sandbox, native: &str, run_id: &str) -> crate::
 /// Waits for a run to end and returns its exit code (None when its folder is gone). After
 /// `grace` the process group is killed and its death confirmed. An error (the machine
 /// can't be reached, or the run would not die) means it may still be running.
-pub(crate) fn finish(sandbox: &dyn Sandbox, native: &str, run_id: &str, grace: Duration) -> crate::Result<Option<i32>> {
+pub(crate) fn finish(
+    sandbox: &dyn Sandbox,
+    native: &str,
+    run_id: &str,
+    grace: Duration,
+) -> crate::Result<Option<i32>> {
     let dir = shell_quote(&run_dir(&home(sandbox, native)?, run_id));
     let command = format!("d={dir}; if [ -f \"$d/exit\" ]; then cat \"$d/exit\"; elif [ -d \"$d\" ]; then echo running; else echo gone; fi");
     let (started, mut killed) = (Instant::now(), false);
@@ -141,7 +165,13 @@ pub(crate) fn finish(sandbox: &dyn Sandbox, native: &str, run_id: &str, grace: D
 /// Appends `bytes` to `inbox` once: the machine checks the acknowledged length first, so a
 /// retry after a lost answer is skipped, and the chunk is staged in a file and added with
 /// one write, so the runner never forwards half of it.
-fn append(sandbox: &dyn Sandbox, native: &str, dir: &str, acked: u64, bytes: &[u8]) -> crate::Result<()> {
+fn append(
+    sandbox: &dyn Sandbox,
+    native: &str,
+    dir: &str,
+    acked: u64,
+    bytes: &[u8],
+) -> crate::Result<()> {
     let end = acked + bytes.len() as u64;
     let command = format!(
         "d={}; printf %s {} | base64 -d > \"$d/inbox.part\" && s=$(wc -c < \"$d/inbox\" | tr -d ' ') && if [ \"$s\" -eq {acked} ]; then cat \"$d/inbox.part\" >> \"$d/inbox\"; elif [ \"$s\" -ne {end} ]; then echo \"{INBOX_MISMATCH} ($s bytes).\"; exit 3; fi; rm -f \"$d/inbox.part\"",
@@ -207,10 +237,20 @@ impl Poller {
 /// Runs the bridge until the remote run's `exit` appears (stdin closing only ends the
 /// harness's input); returns its exit code. `status` receives progress. Network errors never
 /// end it: it backs off (up to 30 s) and keeps trying, so only the run's end or a signal stops it.
-pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 'static, stdout: &mut dyn Write, stderr: &mut dyn Write, status: &mut dyn FnMut(&Status)) -> i32 {
+pub(crate) fn run(
+    sandbox: &dyn Sandbox,
+    spec: &Spec,
+    stdin: impl Read + Send + 'static,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    status: &mut dyn FnMut(&Status),
+) -> i32 {
     let native = spec.native.as_str();
     let mut poller = Poller { failures: 0 };
-    let mut report = Status { stage: "running".into(), ..Status::default() };
+    let mut report = Status {
+        stage: "running".into(),
+        ..Status::default()
+    };
     let reconnecting = |report: &mut Status, status: &mut dyn FnMut(&Status), error: &str| {
         if report.stage != "reconnecting" {
             report.stage = "reconnecting".into();
@@ -251,7 +291,11 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
     status(&report);
     let (local, remote) = (escaped(&spec.local_dir), escaped(&spec.remote_dir));
     let input = lines(stdin);
-    let (out, err, exit) = (format!("{dir}/out"), format!("{dir}/err"), format!("{dir}/exit"));
+    let (out, err, exit) = (
+        format!("{dir}/out"),
+        format!("{dir}/err"),
+        format!("{dir}/exit"),
+    );
     let mut pending: Vec<u8> = Vec::new();
     let mut partial: Vec<u8> = Vec::new();
     let (mut eof, mut eof_sent, mut err_offset, mut wait) = (false, false, 0u64, FAST);
@@ -259,7 +303,11 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
     let mut reported = Instant::now();
     loop {
         // Gather what Pantheon wrote, waking at once when it writes.
-        let mut first = match input.recv_timeout(if pending.is_empty() { wait } else { Duration::ZERO }) {
+        let mut first = match input.recv_timeout(if pending.is_empty() {
+            wait
+        } else {
+            Duration::ZERO
+        }) {
             Ok(line) => Some(line),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => Some(None),
@@ -281,7 +329,11 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
             if !pending.is_empty() {
                 // In order, whole lines when they fit; a failed append is retried (and
                 // skipped by the machine if it already landed) before anything newer.
-                let cut = pending.iter().take(APPEND_MAX).rposition(|b| *b == b'\n').map_or(pending.len().min(APPEND_MAX), |i| i + 1);
+                let cut = pending
+                    .iter()
+                    .take(APPEND_MAX)
+                    .rposition(|b| *b == b'\n')
+                    .map_or(pending.len().min(APPEND_MAX), |i| i + 1);
                 append(sandbox, native, &dir, report.inbox_bytes, &pending[..cut])?;
                 report.inbox_bytes += cut as u64;
                 report.inbox_lines += pending[..cut].iter().filter(|b| **b == b'\n').count() as u64;
@@ -299,7 +351,11 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
                 partial.extend(bytes);
                 if let Some(end) = partial.iter().rposition(|b| *b == b'\n') {
                     let rest = partial.split_off(end + 1);
-                    let _ = stdout.write_all(&replace(std::mem::replace(&mut partial, rest), &remote, &local));
+                    let _ = stdout.write_all(&replace(
+                        std::mem::replace(&mut partial, rest),
+                        &remote,
+                        &local,
+                    ));
                     let _ = stdout.flush();
                 }
                 return Ok(true);
@@ -328,12 +384,17 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
                     reported = Instant::now();
                 }
                 if let Some(code) = exit_code.filter(|_| !active) {
-                    let _ = stdout.write_all(&replace(std::mem::take(&mut partial), &remote, &local));
+                    let _ =
+                        stdout.write_all(&replace(std::mem::take(&mut partial), &remote, &local));
                     let _ = stdout.flush();
                     status(&report);
                     return code;
                 }
-                wait = if active { FAST } else { (wait * 3 / 2).min(IDLE) };
+                wait = if active {
+                    FAST
+                } else {
+                    (wait * 3 / 2).min(IDLE)
+                };
             }
             Err(error) if error.starts_with(INBOX_MISMATCH) => {
                 let _ = writeln!(stderr, "{error}");
@@ -354,7 +415,9 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
 
 /// `main` calls this first: true when this process was a bridge (and has finished).
 pub fn handle() -> bool {
-    let Some(path) = std::env::var_os(ENV) else { return false };
+    let Some(path) = std::env::var_os(ENV) else {
+        return false;
+    };
     let code = (|| -> crate::Result<i32> {
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&path);
@@ -370,7 +433,14 @@ pub fn handle() -> bool {
                 let _ = std::fs::rename(&temporary, &status_path);
             }
         };
-        Ok(run(&*sandbox, &spec, std::io::stdin(), &mut std::io::stdout(), &mut std::io::stderr(), &mut status))
+        Ok(run(
+            &*sandbox,
+            &spec,
+            std::io::stdin(),
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+            &mut status,
+        ))
     })();
     let code = code.unwrap_or_else(|error| {
         eprintln!("{error}");
@@ -397,9 +467,13 @@ pub(crate) mod tests {
     }
     impl Local {
         pub(crate) fn new() -> Self {
-            let home = std::env::temp_dir().join(format!("pantheon-cloud-{}", uuid::Uuid::new_v4()));
+            let home =
+                std::env::temp_dir().join(format!("pantheon-cloud-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&home).unwrap();
-            Self { home: home.canonicalize().unwrap(), offline: Arc::new(AtomicBool::new(false)) }
+            Self {
+                home: home.canonicalize().unwrap(),
+                offline: Arc::new(AtomicBool::new(false)),
+            }
         }
         fn shell(&self, command: &str) -> Command {
             let mut shell = Command::new("sh");
@@ -414,7 +488,10 @@ pub(crate) mod tests {
     }
     impl Sandbox for Local {
         fn info(&self) -> crate::cloud::sandbox::Info {
-            crate::cloud::sandbox::Info { persistent: true, max_unattended_minutes: 60 }
+            crate::cloud::sandbox::Info {
+                persistent: true,
+                max_unattended_minutes: 60,
+            }
         }
         fn list(&self) -> crate::Result<Vec<Machine>> {
             Ok(Vec::new())
@@ -425,19 +502,38 @@ pub(crate) mod tests {
         fn power(&self, _native: &str, _action: &str) -> crate::Result<()> {
             Ok(())
         }
-        fn exec(&self, _native: &str, command: &str, _timeout: Duration) -> crate::Result<(Option<i32>, String)> {
+        fn exec(
+            &self,
+            _native: &str,
+            command: &str,
+            _timeout: Duration,
+        ) -> crate::Result<(Option<i32>, String)> {
             if self.offline.load(Ordering::SeqCst) {
                 return Err("offline".into());
             }
             let output = self.shell(command).output().map_err(|e| e.to_string())?;
-            Ok((output.status.code(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))))
+            Ok((
+                output.status.code(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            ))
         }
         fn keep_alive(&self, _native: &str, _minutes: u32) -> crate::Result<()> {
             Ok(())
         }
         // macOS has no `setsid` command: start the runner in its own process group instead.
         fn spawn(&self, _native: &str, command: &str) -> crate::Result<()> {
-            let mut child = self.shell(command).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map_err(|e| e.to_string())?;
+            let mut child = self
+                .shell(command)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .map_err(|e| e.to_string())?;
             // Reaped like a real detached run, so a killed group really is gone.
             std::thread::spawn(move || child.wait());
             Ok(())
@@ -464,10 +560,21 @@ pub(crate) mod tests {
         fn power(&self, native: &str, action: &str) -> crate::Result<()> {
             self.local.power(native, action)
         }
-        fn exec(&self, native: &str, command: &str, timeout: Duration) -> crate::Result<(Option<i32>, String)> {
-            assert!(command.len() < crate::cloud::sandbox::COMMAND_MAX, "a {} byte command", command.len());
+        fn exec(
+            &self,
+            native: &str,
+            command: &str,
+            timeout: Duration,
+        ) -> crate::Result<(Option<i32>, String)> {
+            assert!(
+                command.len() < crate::cloud::sandbox::COMMAND_MAX,
+                "a {} byte command",
+                command.len()
+            );
             let result = self.local.exec(native, command, timeout);
-            if command.contains("inbox.part") && self.appends.fetch_add(1, Ordering::SeqCst) + 1 == self.lose {
+            if command.contains("inbox.part")
+                && self.appends.fetch_add(1, Ordering::SeqCst) + 1 == self.lose
+            {
                 return Err("connection reset".into());
             }
             result
@@ -509,10 +616,21 @@ pub(crate) mod tests {
         }
     }
 
-    fn bridge(local: &Local, spec: &Spec, input: &'static [u8]) -> (i32, String, String, Vec<Status>) {
+    fn bridge(
+        local: &Local,
+        spec: &Spec,
+        input: &'static [u8],
+    ) -> (i32, String, String, Vec<Status>) {
         let (mut out, mut err, mut statuses) = (Vec::new(), Vec::new(), Vec::new());
-        let code = run(local, spec, input, &mut out, &mut err, &mut |s: &Status| statuses.push(s.clone()));
-        (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap(), statuses)
+        let code = run(local, spec, input, &mut out, &mut err, &mut |s: &Status| {
+            statuses.push(s.clone())
+        });
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+            statuses,
+        )
     }
 
     /// Stdin that never closes until `release` is set, like a pipeline still running.
@@ -536,7 +654,8 @@ pub(crate) mod tests {
     fn a_run_carries_stdin_out_err_and_exit_and_maps_the_checkout_path() {
         let local = Local::new();
         let spec = spec(&local, "r1");
-        let (code, out, err, statuses) = bridge(&local, &spec, b"{\"cwd\":\"/Users/me/project/a\"}\n2\n");
+        let (code, out, err, statuses) =
+            bridge(&local, &spec, b"{\"cwd\":\"/Users/me/project/a\"}\n2\n");
         // Stdin closed: `eof` ends the harness's input; the bridge waits for its `exit`.
         assert_eq!(code, 3);
         assert_eq!(out, "{\"cwd\":\"/Users/me/project\",\"key\":\"it's secret\"}\n{\"got\":{\"cwd\":\"/Users/me/project/a\"}}\n{\"got\":2}\n");
@@ -548,18 +667,41 @@ pub(crate) mod tests {
         assert!(Path::new(&format!("{dir}/eof")).exists());
         assert!(statuses.iter().all(|s| s.stage == "running"));
         // Attach: replays everything from 0, skips the inbox bytes already there, ends with the exit code.
-        assert!(!Path::new(&format!("{dir}/cmd.sh")).exists(), "the command with keys removes itself");
+        assert!(
+            !Path::new(&format!("{dir}/cmd.sh")).exists(),
+            "the command with keys removes itself"
+        );
         // The replayed protocol writes the same lines again while its stdin stays open.
-        let attach = Spec { attach: true, ..spec.clone() };
+        let attach = Spec {
+            attach: true,
+            ..spec.clone()
+        };
         let release = Arc::new(AtomicBool::new(false));
         let (mut out, mut err, mut statuses) = (Vec::new(), Vec::new(), Vec::new());
-        let code = run(&local, &attach, Held(b"{\"cwd\":\"/Users/me/project/a\"}\n2\n", release.clone()), &mut out, &mut err, &mut |s: &Status| statuses.push(s.clone()));
+        let code = run(
+            &local,
+            &attach,
+            Held(b"{\"cwd\":\"/Users/me/project/a\"}\n2\n", release.clone()),
+            &mut out,
+            &mut err,
+            &mut |s: &Status| statuses.push(s.clone()),
+        );
         release.store(true, Ordering::SeqCst);
-        let (out, err) = (String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap());
+        let (out, err) = (
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        );
         assert_eq!(code, 3);
         assert_eq!(out, "{\"cwd\":\"/Users/me/project\",\"key\":\"it's secret\"}\n{\"got\":{\"cwd\":\"/Users/me/project/a\"}}\n{\"got\":2}\n");
         assert_eq!(err.trim(), "bye");
-        assert_eq!(std::fs::read_to_string(format!("{dir}/inbox")).unwrap().lines().count(), 2, "nothing written twice");
+        assert_eq!(
+            std::fs::read_to_string(format!("{dir}/inbox"))
+                .unwrap()
+                .lines()
+                .count(),
+            2,
+            "nothing written twice"
+        );
         assert_eq!(statuses.last().unwrap().inbox_lines, 2);
     }
 
@@ -573,7 +715,14 @@ pub(crate) mod tests {
         let (worker, held) = (local.clone(), Held(b"1\n", release.clone()));
         let thread = std::thread::spawn(move || {
             let (mut out, mut err, mut statuses) = (Vec::new(), Vec::new(), Vec::new());
-            let code = run(&*worker, &spec, held, &mut out, &mut err, &mut |s: &Status| statuses.push(s.stage.clone()));
+            let code = run(
+                &*worker,
+                &spec,
+                held,
+                &mut out,
+                &mut err,
+                &mut |s: &Status| statuses.push(s.stage.clone()),
+            );
             (code, String::from_utf8(out).unwrap(), statuses)
         });
         std::thread::sleep(Duration::from_millis(1500));
@@ -586,67 +735,150 @@ pub(crate) mod tests {
         release.store(true, Ordering::SeqCst);
         assert_eq!(code, 143);
         assert!(out.contains("{\"got\":1}"), "{out}");
-        assert!(statuses.contains(&"reconnecting".to_string()), "{statuses:?}");
+        assert!(
+            statuses.contains(&"reconnecting".to_string()),
+            "{statuses:?}"
+        );
         assert_eq!(statuses.last().map(String::as_str), Some("running"));
         let dir = run_dir(&local.home.to_string_lossy(), "r2");
-        let pid: i32 = std::fs::read_to_string(format!("{dir}/pid")).unwrap().trim().parse().unwrap();
-        assert_ne!(unsafe { libc::kill(-pid, 0) }, 0, "the process group is gone");
+        let pid: i32 = std::fs::read_to_string(format!("{dir}/pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_ne!(
+            unsafe { libc::kill(-pid, 0) },
+            0,
+            "the process group is gone"
+        );
     }
 
     #[test]
     fn command_scripts_quote_every_word_and_refuse_bad_names() {
-        let spec = Spec { remote_dir: "/h/a b".into(), program: "/bin/claude".into(), args: vec!["-p".into(), "it's".into()], env: vec![("A_1".into(), "x y".into())], ..Spec::default() };
+        let spec = Spec {
+            remote_dir: "/h/a b".into(),
+            program: "/bin/claude".into(),
+            args: vec!["-p".into(), "it's".into()],
+            env: vec![("A_1".into(), "x y".into())],
+            ..Spec::default()
+        };
         assert_eq!(command_script(&spec).unwrap(), "rm -f -- \"$0\"\ncd '/h/a b' || exit 126\nexport A_1='x y'\nexec '/bin/claude' '-p' 'it'\\''s'\n");
-        assert!(command_script(&Spec { env: vec![("A;B".into(), String::new())], ..spec.clone() }).is_err());
-        assert!(command_script(&Spec { env: vec![("1A".into(), String::new())], ..spec }).is_err());
+        assert!(command_script(&Spec {
+            env: vec![("A;B".into(), String::new())],
+            ..spec.clone()
+        })
+        .is_err());
+        assert!(command_script(&Spec {
+            env: vec![("1A".into(), String::new())],
+            ..spec
+        })
+        .is_err());
     }
 
     #[test]
     fn lost_append_answers_and_long_lines_never_duplicate_or_split_input() {
         let local = Local::new();
         let script = local.home.join("lengths.sh");
-        std::fs::write(&script, "while read -r line; do echo \"{\\\"len\\\":${#line}}\"; done\n").unwrap();
+        std::fs::write(
+            &script,
+            "while read -r line; do echo \"{\\\"len\\\":${#line}}\"; done\n",
+        )
+        .unwrap();
         let spec = spec_with(&local, "r3", script.to_string_lossy().into_owned());
         // One line longer than two appends, then a short one; the second append's answer is lost.
         let mut input = vec![b'a'; 2 * APPEND_MAX + 100];
         input.extend_from_slice(b"\nx\n");
         let input: &'static [u8] = Box::leak(input.into_boxed_slice());
-        let lossy = Lossy { local, appends: Default::default(), lose: 2 };
+        let lossy = Lossy {
+            local,
+            appends: Default::default(),
+            lose: 2,
+        };
         let (mut out, mut err, mut statuses) = (Vec::new(), Vec::new(), Vec::new());
-        let code = run(&lossy, &spec, input, &mut out, &mut err, &mut |s: &Status| statuses.push(s.clone()));
+        let code = run(
+            &lossy,
+            &spec,
+            input,
+            &mut out,
+            &mut err,
+            &mut |s: &Status| statuses.push(s.clone()),
+        );
         assert_eq!(code, 0);
         let expected = format!("{{\"len\":{}}}\n{{\"len\":1}}\n", 2 * APPEND_MAX + 100);
         assert_eq!(String::from_utf8(out).unwrap(), expected);
         assert!(statuses.iter().any(|s| s.stage == "reconnecting"));
         let dir = run_dir(&lossy.local.home.to_string_lossy(), "r3");
-        assert_eq!(std::fs::read(format!("{dir}/inbox")).unwrap(), input, "each byte exactly once");
+        assert_eq!(
+            std::fs::read(format!("{dir}/inbox")).unwrap(),
+            input,
+            "each byte exactly once"
+        );
         assert_eq!(statuses.last().unwrap().inbox_bytes, input.len() as u64);
         // A re-attach replaying the same writes adds nothing and reads the same output.
         let release = Arc::new(AtomicBool::new(false));
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = run(&lossy.local, &Spec { attach: true, ..spec }, Held(input, release.clone()), &mut out, &mut err, &mut |_: &Status| {});
+        let code = run(
+            &lossy.local,
+            &Spec {
+                attach: true,
+                ..spec
+            },
+            Held(input, release.clone()),
+            &mut out,
+            &mut err,
+            &mut |_: &Status| {},
+        );
         release.store(true, Ordering::SeqCst);
         assert_eq!((code, String::from_utf8(out).unwrap()), (0, expected));
-        assert_eq!(std::fs::read(format!("{dir}/inbox")).unwrap().len(), input.len());
+        assert_eq!(
+            std::fs::read(format!("{dir}/inbox")).unwrap().len(),
+            input.len()
+        );
     }
 
     #[test]
     fn finish_waits_for_exit_kills_a_run_that_would_not_end_and_knows_a_gone_run() {
         let local = Arc::new(Local::new());
-        assert_eq!(finish(&*local, "m", "never-started", Duration::ZERO).unwrap(), None);
+        assert_eq!(
+            finish(&*local, "m", "never-started", Duration::ZERO).unwrap(),
+            None
+        );
         let spec = spec(&local, "r4");
         let release = Arc::new(AtomicBool::new(false));
         let (worker, held) = (local.clone(), Held(b"1\n", release.clone()));
-        let thread = std::thread::spawn(move || run(&*worker, &spec, held, &mut Vec::new(), &mut Vec::new(), &mut |_: &Status| {}));
+        let thread = std::thread::spawn(move || {
+            run(
+                &*worker,
+                &spec,
+                held,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut |_: &Status| {},
+            )
+        });
         std::thread::sleep(Duration::from_millis(800));
         // The harness keeps waiting for input: after the grace period it is killed, confirmed dead.
-        assert_eq!(finish(&*local, "m", "r4", Duration::from_secs(1)).unwrap(), Some(143));
-        assert_eq!(thread.join().unwrap(), 143, "the bridge ends only once `exit` exists");
+        assert_eq!(
+            finish(&*local, "m", "r4", Duration::from_secs(1)).unwrap(),
+            Some(143)
+        );
+        assert_eq!(
+            thread.join().unwrap(),
+            143,
+            "the bridge ends only once `exit` exists"
+        );
         release.store(true, Ordering::SeqCst);
         let dir = run_dir(&local.home.to_string_lossy(), "r4");
-        let pid: i32 = std::fs::read_to_string(format!("{dir}/pid")).unwrap().trim().parse().unwrap();
+        let pid: i32 = std::fs::read_to_string(format!("{dir}/pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         assert_ne!(unsafe { libc::kill(-pid, 0) }, 0);
         // Finished runs answer at once with their code.
-        assert_eq!(finish(&*local, "m", "r4", Duration::ZERO).unwrap(), Some(143));
+        assert_eq!(
+            finish(&*local, "m", "r4", Duration::ZERO).unwrap(),
+            Some(143)
+        );
     }
 }

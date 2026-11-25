@@ -35,7 +35,10 @@ struct Producer {
 }
 impl Producer {
     fn idle(&self) -> bool {
-        self.pulled.lock().map(|at| at.elapsed() > IDLE).unwrap_or(true)
+        self.pulled
+            .lock()
+            .map(|at| at.elapsed() > IDLE)
+            .unwrap_or(true)
     }
     fn push(&self, jpeg: Vec<u8>) {
         if let Ok(mut latest) = self.latest.lock() {
@@ -72,7 +75,11 @@ pub fn take_jpegs(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
             buffer.drain(..buffer.len() - keep);
             return frames;
         };
-        let Some(end) = buffer[start + 2..].windows(2).position(|w| w == [0xFF, 0xD9]).map(|i| start + 2 + i + 2) else {
+        let Some(end) = buffer[start + 2..]
+            .windows(2)
+            .position(|w| w == [0xFF, 0xD9])
+            .map(|i| start + 2 + i + 2)
+        else {
             buffer.drain(..start);
             if buffer.len() > MAX_FRAME {
                 buffer.clear();
@@ -85,9 +92,21 @@ pub fn take_jpegs(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
 }
 
 fn run_axe(producer: &Arc<Producer>, udid: &str) -> bool {
-    let Some(axe) = super::axe_path() else { return false };
+    let Some(axe) = super::axe_path() else {
+        return false;
+    };
     let child = Command::new(axe)
-        .args(["stream-video", "--udid", udid, "--fps", "12", "--quality", "72", "--scale", "0.5"])
+        .args([
+            "stream-video",
+            "--udid",
+            udid,
+            "--fps",
+            "12",
+            "--quality",
+            "72",
+            "--scale",
+            "0.5",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -101,19 +120,20 @@ fn run_axe(producer: &Arc<Producer>, udid: &str) -> bool {
     // A stalled stream blocks the read below, so idleness is judged on its own thread.
     let watchdog = {
         let (child, producer) = (child.clone(), producer.clone());
-        thread::spawn(move || {
-            loop {
-                thread::sleep(Duration::from_millis(500));
-                let exited = child.lock().map(|mut c| c.try_wait().map(|s| s.is_some()).unwrap_or(true)).unwrap_or(true);
-                if exited {
-                    return;
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(500));
+            let exited = child
+                .lock()
+                .map(|mut c| c.try_wait().map(|s| s.is_some()).unwrap_or(true))
+                .unwrap_or(true);
+            if exited {
+                return;
+            }
+            if producer.idle() {
+                if let Ok(mut c) = child.lock() {
+                    let _ = c.kill();
                 }
-                if producer.idle() {
-                    if let Ok(mut c) = child.lock() {
-                        let _ = c.kill();
-                    }
-                    return;
-                }
+                return;
             }
         })
     };
@@ -174,15 +194,24 @@ impl Streams {
                 return existing.clone();
             }
         }
-        let producer = Arc::new(Producer { latest: Mutex::default(), ready: Condvar::new(), pulled: Mutex::new(Instant::now()) });
+        let producer = Arc::new(Producer {
+            latest: Mutex::default(),
+            ready: Condvar::new(),
+            pulled: Mutex::new(Instant::now()),
+        });
         map.insert(key.clone(), producer.clone());
-        let (worker, udid) = (producer.clone(), udid.split('|').next().unwrap_or_default().to_string());
+        let (worker, udid) = (
+            producer.clone(),
+            udid.split('|').next().unwrap_or_default().to_string(),
+        );
         thread::spawn(move || {
             // An AXe stream that ends after delivering frames was stopped on purpose
             // or lost the device; only one that never delivered falls back.
             // AXe streams iOS only; Android frames come from screencap. Its stream likely
             // shows only the main display, so a Duo's inner display uses screenshots.
-            let streamed = super::android::avd(&udid).is_none() && display != Some(super::duo::INNER) && run_axe(&worker, &udid);
+            let streamed = super::android::avd(&udid).is_none()
+                && display != Some(super::duo::INNER)
+                && run_axe(&worker, &udid);
             if !streamed && !worker.idle() {
                 run_screenshots(&worker, &udid, display);
             }
@@ -197,13 +226,22 @@ impl Streams {
     }
 
     /// The newest frame after `after`, waiting up to `wait` for one to arrive.
-    pub fn next(&self, udid: &str, display: Option<&'static str>, after: u64, wait: Duration) -> Result<Option<Frame>, String> {
+    pub fn next(
+        &self,
+        udid: &str,
+        display: Option<&'static str>,
+        after: u64,
+        wait: Duration,
+    ) -> Result<Option<Frame>, String> {
         let producer = self.producer(udid, display);
         let deadline = Instant::now() + wait;
         let mut latest = producer.latest.lock().map_err(|e| e.to_string())?;
         loop {
             if latest.seq > after {
-                return Ok(Some(Frame { seq: latest.seq, jpeg: latest.jpeg.clone() }));
+                return Ok(Some(Frame {
+                    seq: latest.seq,
+                    jpeg: latest.jpeg.clone(),
+                }));
             }
             if latest.finished {
                 return match latest.error.clone() {
@@ -215,7 +253,11 @@ impl Streams {
             if left.is_zero() {
                 return Ok(None);
             }
-            latest = producer.ready.wait_timeout(latest, left).map_err(|e| e.to_string())?.0;
+            latest = producer
+                .ready
+                .wait_timeout(latest, left)
+                .map_err(|e| e.to_string())?
+                .0;
         }
     }
 
@@ -223,7 +265,11 @@ impl Streams {
     pub fn stop(&self, udid: &str) {
         let prefix = format!("{udid}|");
         let mut map = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
-        let keys: Vec<String> = map.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+        let keys: Vec<String> = map
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
         for producer in keys.iter().filter_map(|k| map.remove(k)) {
             if let Ok(mut pulled) = producer.pulled.lock() {
                 *pulled = Instant::now() - IDLE * 2;

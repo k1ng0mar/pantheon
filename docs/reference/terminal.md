@@ -28,13 +28,26 @@ pantheon --help | --version
 ## Talk to it
 
 ```sh
-pantheon run --taskID <id> --say "text" [--deliver session|telegram|discord]
-pantheon run [--id ID] [--say TEXT] [--tool NAME] [--fail CODE] [--ext] [--platform P]
+pantheon run --say "text" [--taskID <id>] [--agent PROFILE] [--mode plan|build]
+pantheon run --say "fix the test" --output-format text|json|plain
+pantheon run --say - < prompt.txt --output-format json      # stdin, never argv
+pantheon run --say "add a test" --print > notes.md          # answer only
+pantheon run --taskID <id> --resume                         # continue a run
 pantheon run --taskID <id> --grant <scope> [--no-resume]
 pantheon run --taskID <id> --deny  <scope> [--no-resume]
+pantheon run --taskID <id> --say "text" [--synthetic|--tool NAME|--fail CODE]
 ```
 
-With `--deliver` (default `session`): a real reply from the model, printed here or sent to your phone. Without it: no model call, just a recorded note (`--say` writes a line, `--fail CODE` ends the run), used for testing and recovery.
+`--say` runs a real model turn and prints the answer. `session` is the default
+delivery target; `--deliver telegram|discord` sends it to the gateway outbox
+instead. Output shapes: `text` (answer then run id, default), `plain` (answer
+only, for pipes), `json` (`run_id`, `status`, `answer`). Errors go to stderr in
+every shape; in `json` they are a structured object with the status `failed`.
+
+`--synthetic` writes ledger events without calling a model. It is the
+deterministic path the eval harness and recovery tests use, not a way to get
+an answer. `--tool` and `--fail` select it too, since neither has meaning
+without a model turn.
 
 ## Look at past work
 
@@ -48,8 +61,7 @@ pantheon logs [agent|errors|gateway] [-n N] [-f] [--level LVL] [--since DUR] [--
 ## Set up
 
 ```sh
-pantheon setup [--yes] [--profile P] [--provider P] [--model M]
-               [--api-key-env ENV] [--key SECRET]
+pantheon setup [--provider P] [--model M] [--api-key-env ENV] [--key SECRET]
                [--policy reader|coder|coder_memory] [--memory BACKEND]
                [--fallback-provider P] [--fallback-model M]
 pantheon update [--check] [--version TAG] [--repo OWNER/REPO]
@@ -58,7 +70,7 @@ pantheon provider <add|list|remove>            # your custom AI endpoints
 pantheon provider models <name>                # fetch that endpoint's model list
 pantheon providers                             # everything in the catalog
 pantheon fallback <add|list|remove>            # backup models, in order
-pantheon doctor [<plugin_dir>]                 # health check (changes nothing)
+pantheon doctor [<plugin_dir>] [--workspace <dir>] [--ping|--verbose|--json]
 pantheon repair [--dry-run] [--json]           # fix what can be fixed safely
 pantheon reset [--config|--state|--everything] [--yes]  # typed confirmation unless --yes
 ```
@@ -98,12 +110,17 @@ pantheon schedule <task> [--every 30m | --cron "*/5 * * * *"] [--agent N] [--mod
 pantheon schedule list|pause|resume|cancel|run <id>
 pantheon schedule tick [--watch]      # fire due jobs now; --watch keeps looping
 pantheon swarm status [<id>] | list   # query recorded collaborations (read-only)
-pantheon swarm <N> "<task>" [--roles a,b]   # SPAWN a real multi-agent run
+pantheon swarm <N> "<task>" [--roles a,b] [--worktree] [--keep-worktrees]
 pantheon gateway start|restart|stop|status|run [discord|telegram]
 pantheon serve [--port N] [--host H]      # the local web page + API
 pantheon pipeline --spec "task" [RUN_ID]
 pantheon pipeline RUN_ID --approve plan|review | --deny plan|review
 ```
+
+`pantheon swarm --worktree` creates a private git worktree per agent and binds
+each turn's file tools to that tree, so agents editing the same code cannot
+overwrite each other. Worktrees are removed after the run; `--keep-worktrees`
+preserves them for review. Both flags require a git checkout.
 
 ## Environment variables
 

@@ -30,7 +30,13 @@ fn tart() -> Result<Command, String> {
 }
 fn output(mut command: Command, timeout: Duration) -> Result<String, String> {
     command.env("TART_NO_AUTO_PRUNE", "1");
-    let output = checked(run_process(command, "Tart", 1 << 20, timeout)?).map_err(|error| if error == "Git operation failed" { "Tart failed.".into() } else { error })?;
+    let output = checked(run_process(command, "Tart", 1 << 20, timeout)?).map_err(|error| {
+        if error == "Git operation failed" {
+            "Tart failed.".into()
+        } else {
+            error
+        }
+    })?;
     Ok(String::from_utf8_lossy(&output.bytes).into_owned())
 }
 
@@ -57,8 +63,18 @@ struct Listed {
 }
 /// Local VMs only; pulled images (OCI entries) are a cache, not machines.
 pub fn parse_list(json: &str) -> Result<Vec<Vm>, String> {
-    let listed: Vec<Listed> = serde_json::from_str(json).map_err(|e| format!("Unexpected Tart list output: {e}"))?;
-    Ok(listed.into_iter().filter(|vm| vm.source == "local").map(|vm| Vm { name: vm.name, running: vm.running, size_gb: vm.size, disk_gb: vm.disk }).collect())
+    let listed: Vec<Listed> =
+        serde_json::from_str(json).map_err(|e| format!("Unexpected Tart list output: {e}"))?;
+    Ok(listed
+        .into_iter()
+        .filter(|vm| vm.source == "local")
+        .map(|vm| Vm {
+            name: vm.name,
+            running: vm.running,
+            size_gb: vm.size,
+            disk_gb: vm.disk,
+        })
+        .collect())
 }
 pub fn list() -> Result<Vec<Vm>, String> {
     let mut command = tart()?;
@@ -76,8 +92,14 @@ pub struct Details {
     pub height: u32,
 }
 pub fn parse_details(json: &str) -> Result<Details, String> {
-    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("Unexpected Tart output: {e}"))?;
-    let (width, height) = value["Display"].as_str().and_then(|d| d.split_once('x')).map_or((1024, 768), |(w, h)| (w.parse().unwrap_or(1024), h.parse().unwrap_or(768)));
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("Unexpected Tart output: {e}"))?;
+    let (width, height) = value["Display"]
+        .as_str()
+        .and_then(|d| d.split_once('x'))
+        .map_or((1024, 768), |(w, h)| {
+            (w.parse().unwrap_or(1024), h.parse().unwrap_or(768))
+        });
     Ok(Details {
         os: value["OS"].as_str().unwrap_or("linux").to_string(),
         memory_mb: value["Memory"].as_u64().unwrap_or(0),
@@ -99,7 +121,14 @@ pub fn clone(image: &str, name: &str) -> Result<(), String> {
 }
 pub fn configure(name: &str, memory_mb: u64, cpus: u64) -> Result<(), String> {
     let mut command = tart()?;
-    command.args(["set", name, "--memory", &memory_mb.to_string(), "--cpu", &cpus.to_string()]);
+    command.args([
+        "set",
+        name,
+        "--memory",
+        &memory_mb.to_string(),
+        "--cpu",
+        &cpus.to_string(),
+    ]);
     output(command, QUICK).map(|_| ())
 }
 pub fn stop(name: &str) -> Result<(), String> {
@@ -121,7 +150,12 @@ pub fn delete(name: &str) -> Result<(), String> {
 
 /// How a VM is started: headless, with the framework's own VNC server for its screen.
 pub fn run_arguments(name: &str, macos: bool, share: Option<&std::path::Path>) -> Vec<String> {
-    let mut args = vec!["run".to_string(), name.to_string(), "--no-graphics".into(), "--vnc-experimental".into()];
+    let mut args = vec![
+        "run".to_string(),
+        name.to_string(),
+        "--no-graphics".into(),
+        "--vnc-experimental".into(),
+    ];
     if macos {
         args.push("--suspendable".into());
     }
@@ -134,8 +168,15 @@ pub fn spawn_run(args: &[String]) -> Result<Child, String> {
     let mut command = tart()?;
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("TART_NO_AUTO_PRUNE", "1");
-    command.spawn().map_err(|error| format!("Could not start the VM: {error}"))
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("TART_NO_AUTO_PRUNE", "1");
+    command
+        .spawn()
+        .map_err(|error| format!("Could not start the VM: {error}"))
 }
 
 pub struct Exec {
@@ -147,13 +188,24 @@ pub struct Exec {
 /// Run a shell command in the guest through the Tart Guest Agent (no SSH needed).
 pub fn exec(name: &str, macos: bool, script: &str, timeout: Duration) -> Result<Exec, String> {
     let mut command = tart()?;
-    command.args(["exec", name, if macos { "/bin/zsh" } else { "/bin/bash" }, "-lc", script]);
+    command.args([
+        "exec",
+        name,
+        if macos { "/bin/zsh" } else { "/bin/bash" },
+        "-lc",
+        script,
+    ]);
     let out = run_process(command, "Tart", 256 * 1024, timeout)?;
     let stderr = String::from_utf8_lossy(&out.stderr.bytes).into_owned();
     if stderr.contains("guest agent") && !out.status.success() {
         return Err("This VM has no Tart Guest Agent, so commands cannot run in it. Use a Cirrus Labs base image.".into());
     }
-    Ok(Exec { code: out.status.code(), stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(), stderr, truncated: out.stdout.truncated || out.stderr.truncated })
+    Ok(Exec {
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(),
+        stderr,
+        truncated: out.stdout.truncated || out.stderr.truncated,
+    })
 }
 
 #[cfg(test)]
@@ -163,21 +215,43 @@ mod tests {
     #[test]
     fn lists_local_vms_and_skips_the_image_cache() {
         let json = r#"[{"State":"running","Name":"pantheon-ubuntu","Size":5,"Disk":20,"Running":true,"Source":"local"},{"State":"stopped","Name":"ghcr.io/cirruslabs/ubuntu:latest","Size":5,"Disk":20,"Running":false,"Source":"OCI"}]"#;
-        assert_eq!(parse_list(json).unwrap(), vec![Vm { name: "pantheon-ubuntu".into(), running: true, size_gb: 5, disk_gb: 20 }]);
+        assert_eq!(
+            parse_list(json).unwrap(),
+            vec![Vm {
+                name: "pantheon-ubuntu".into(),
+                running: true,
+                size_gb: 5,
+                disk_gb: 20
+            }]
+        );
         assert!(parse_list("nope").is_err());
     }
     #[test]
     fn reads_os_memory_and_display() {
         let json = r#"{"Memory":2048,"CPU":2,"Display":"1024x768","Running":true,"OS":"linux"}"#;
-        assert_eq!(parse_details(json).unwrap(), Details { os: "linux".into(), memory_mb: 2048, cpus: 2, width: 1024, height: 768 });
+        assert_eq!(
+            parse_details(json).unwrap(),
+            Details {
+                os: "linux".into(),
+                memory_mb: 2048,
+                cpus: 2,
+                width: 1024,
+                height: 768
+            }
+        );
     }
     #[test]
     fn runs_headless_and_shares_the_project_read_only() {
         let args = run_arguments("vm", true, Some(std::path::Path::new("/p/app")));
-        assert_eq!(&args[..4], ["run", "vm", "--no-graphics", "--vnc-experimental"]);
+        assert_eq!(
+            &args[..4],
+            ["run", "vm", "--no-graphics", "--vnc-experimental"]
+        );
         assert!(args.contains(&"--suspendable".into()));
         assert!(args.contains(&"--dir=project:/p/app:ro".into()));
         let linux = run_arguments("vm", false, None);
-        assert!(!linux.iter().any(|a| a.contains("suspend") || a.contains("--dir")));
+        assert!(!linux
+            .iter()
+            .any(|a| a.contains("suspend") || a.contains("--dir")));
     }
 }

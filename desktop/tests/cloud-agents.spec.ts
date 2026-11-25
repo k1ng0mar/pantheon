@@ -53,13 +53,13 @@ test('a new task on E2B becomes a cloud task with a fixed chip and live stages',
   await startOnE2b(page, 'Run the suite in the cloud');
   await expect.poll(() => page.evaluate(() => (window as any).__cloudStarts?.length)).toBe(1);
   const started = await page.evaluate(() => (window as any).__cloudStarts);
-  expect(started[0]).toMatchObject({ provider: 'e2b', projectId: 'project-1', prompt: 'Run the suite in the cloud', harness: 'claude' });
+  expect(started[0]).toMatchObject({ provider: 'e2b', projectId: 'project-1', prompt: 'Run the suite in the cloud', harness: 'pantheon' });
   expect(started[0].sessionId).toBeTruthy();
 
   await expect(page.locator('#composer-area .composer-computer-fixed')).toHaveText('on E2B');
   await expect(page.locator('#composer-computer')).toHaveCount(0);
   // Preparation steps go by every 400 ms in the preview; each shows with a spinner.
-  await expect(strip(page)).toContainText(/E2B · (Creating machine|Installing Claude Code|Copying logins|Uploading checkout|Running)/);
+  await expect(strip(page)).toContainText(/E2B · (Creating machine|Installing Pantheon|Copying logins|Uploading checkout|Running)/);
   await expect(strip(page).locator('.support-spinner')).toBeVisible();
   await expect(page.getByRole('log', { name: 'Conversation' })).toContainText('Run the suite in the cloud');
   await expect(strip(page)).toContainText('E2B · Ready');
@@ -95,7 +95,7 @@ test('the cloud machine menu syncs, stops and deletes after confirming', async (
   await expect.poll(actions).toEqual(['sync', 'stop', 'delete']);
 });
 
-test('Settings → Cloud connects keyed providers and saves a Claude token', async ({ page }) => {
+test('Settings → Cloud connects keyed providers and declares the runtime it uploads', async ({ page }) => {
   await newTask(page);
   const settings = await openCloudSettings(page);
   for (const name of ['E2B', 'Modal', 'CodeSandbox', 'Runloop', 'Blaxel', 'Tensorlake', 'Freestyle', 'boat']) await expect(settings.getByRole('button', { name: `Connect ${name}`, exact: true })).toBeVisible();
@@ -117,13 +117,11 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
   await settings.getByRole('button', { name: 'Connect Google Cloud', exact: true }).click();
   await expect(settings.getByLabel('Google Cloud Zone')).toBeVisible();
 
-  const claude = settings.getByRole('form', { name: 'Claude login for cloud agents' });
-  await claude.getByRole('button', { name: 'Save token' }).click();
-  await expect(claude.getByRole('alert')).toHaveText('Paste the token from claude setup-token.');
-  await claude.getByLabel('Claude token for cloud agents').fill('sk-ant-oat01-preview');
-  await claude.getByRole('button', { name: 'Save token' }).click();
-  await expect(claude.getByRole('status')).toContainText('Saved.');
-  await expect(settings.locator('.cloud-claude .info-mark')).toHaveAttribute('data-tip', /claude setup-token/);
+  // The desktop ships its own runtime, so there is no per-agent sign-in to store.
+  await expect(settings.getByRole('form', { name: 'Claude login for cloud agents' })).toHaveCount(0);
+  const note = settings.locator('.cloud-agent-note');
+  await expect(note).toContainText("this app's own Pantheon runtime");
+  await expect(note).toContainText('Only your GitHub token and git identity are sent');
 });
 
 test('switching tasks while a machine prepares keeps the strip and chip with the cloud task', async ({ page }) => {

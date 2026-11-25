@@ -45,7 +45,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMessage> {
         session_id: r.get(1)?,
         position: r.get(2)?,
         text: r.get(3)?,
-        attachments: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_else(|_| serde_json::json!([])),
+        attachments: serde_json::from_str(&r.get::<_, String>(4)?)
+            .unwrap_or_else(|_| serde_json::json!([])),
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
     })
@@ -54,24 +55,45 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMessage> {
 const COLUMNS: &str = "id,session_id,position,text,attachments,created_at,updated_at";
 
 pub(crate) fn list(store: &Store, session_id: Option<&str>) -> Result<Vec<QueuedMessage>> {
-    let conn = store.conn(); let mut  statement = conn.prepare(&format!("SELECT {COLUMNS} FROM queued_messages WHERE ?1 IS NULL OR session_id=?1 ORDER BY session_id,position,created_at"))
+    let conn = store.conn();
+    let mut  statement = conn.prepare(&format!("SELECT {COLUMNS} FROM queued_messages WHERE ?1 IS NULL OR session_id=?1 ORDER BY session_id,position,created_at"))
         .map_err(|e| e.to_string())?;
-    let rows = statement.query_map([session_id], row).map_err(|e| e.to_string())?;
-    rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
+    let rows = statement
+        .query_map([session_id], row)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<_>>()
+        .map_err(|e| e.to_string())
 }
 
 fn get(store: &Store, id: &str) -> Result<QueuedMessage> {
     store
-        .conn().query_row(&format!("SELECT {COLUMNS} FROM queued_messages WHERE id=?1"), [id], row)
+        .conn()
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM queued_messages WHERE id=?1"),
+            [id],
+            row,
+        )
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This queued message was already sent or removed.".into())
 }
 
-pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &serde_json::Value) -> Result<QueuedMessage> {
+pub(crate) fn add(
+    store: &Store,
+    session_id: &str,
+    text: &str,
+    attachments: &serde_json::Value,
+) -> Result<QueuedMessage> {
     store.session(session_id)?;
     let encoded = validate(text, attachments)?;
-    let count: i64 = store.conn().query_row("SELECT COUNT(*) FROM queued_messages WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let count: i64 = store
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM queued_messages WHERE session_id=?1",
+            [session_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     if count >= MAX_PER_TASK {
         return Err(format!("A task can queue up to {MAX_PER_TASK} messages."));
     }
@@ -86,10 +108,19 @@ pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &ser
     get(store, &id)
 }
 
-pub(crate) fn update(store: &Store, id: &str, text: &str, attachments: &serde_json::Value) -> Result<QueuedMessage> {
+pub(crate) fn update(
+    store: &Store,
+    id: &str,
+    text: &str,
+    attachments: &serde_json::Value,
+) -> Result<QueuedMessage> {
     let encoded = validate(text, attachments)?;
     let changed = store
-        .conn().execute("UPDATE queued_messages SET text=?2,attachments=?3,updated_at=?4 WHERE id=?1", params![id, text, encoded, crate::storage::now()])
+        .conn()
+        .execute(
+            "UPDATE queued_messages SET text=?2,attachments=?3,updated_at=?4 WHERE id=?1",
+            params![id, text, encoded, crate::storage::now()],
+        )
         .map_err(|e| e.to_string())?;
     if changed == 0 {
         return Err("This queued message was already sent or removed.".into());
@@ -98,13 +129,23 @@ pub(crate) fn update(store: &Store, id: &str, text: &str, attachments: &serde_js
 }
 
 pub(crate) fn remove(store: &Store, id: &str) -> Result<()> {
-    store.conn().execute("DELETE FROM queued_messages WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    store
+        .conn()
+        .execute("DELETE FROM queued_messages WHERE id=?1", [id])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Reorders a task's queue to `ids`, which must name exactly its current entries.
-pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result<Vec<QueuedMessage>> {
-    let mut current: Vec<String> = list(store, Some(session_id))?.into_iter().map(|entry| entry.id).collect();
+pub(crate) fn reorder(
+    store: &Store,
+    session_id: &str,
+    ids: &[String],
+) -> Result<Vec<QueuedMessage>> {
+    let mut current: Vec<String> = list(store, Some(session_id))?
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
     let mut requested = ids.to_vec();
     current.sort();
     requested.sort();
@@ -115,7 +156,11 @@ pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result
         let conn = store.conn();
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
         for (position, id) in ids.iter().enumerate() {
-            tx.execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE queued_messages SET position=?2 WHERE id=?1",
+                params![id, position as i64],
+            )
+            .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
     }
@@ -145,21 +190,44 @@ pub(crate) fn restore(store: &Store, entry: &QueuedMessage) -> Result<QueuedMess
 }
 
 #[tauri::command]
-pub async fn queue_list(state: State<'_, AppState>, session_id: Option<String>) -> Result<Vec<QueuedMessage>> {
+pub async fn queue_list(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+) -> Result<Vec<QueuedMessage>> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     list(&store, session_id.as_deref())
 }
 
 #[tauri::command]
-pub async fn queue_add(state: State<'_, AppState>, session_id: String, text: String, attachments: Option<serde_json::Value>) -> Result<QueuedMessage> {
+pub async fn queue_add(
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    attachments: Option<serde_json::Value>,
+) -> Result<QueuedMessage> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    add(&store, &session_id, &text, &attachments.unwrap_or_else(|| serde_json::json!([])))
+    add(
+        &store,
+        &session_id,
+        &text,
+        &attachments.unwrap_or_else(|| serde_json::json!([])),
+    )
 }
 
 #[tauri::command]
-pub async fn queue_update(state: State<'_, AppState>, id: String, text: String, attachments: Option<serde_json::Value>) -> Result<QueuedMessage> {
+pub async fn queue_update(
+    state: State<'_, AppState>,
+    id: String,
+    text: String,
+    attachments: Option<serde_json::Value>,
+) -> Result<QueuedMessage> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    update(&store, &id, &text, &attachments.unwrap_or_else(|| serde_json::json!([])))
+    update(
+        &store,
+        &id,
+        &text,
+        &attachments.unwrap_or_else(|| serde_json::json!([])),
+    )
 }
 
 #[tauri::command]
@@ -169,7 +237,11 @@ pub async fn queue_remove(state: State<'_, AppState>, id: String) -> Result<()> 
 }
 
 #[tauri::command]
-pub async fn queue_reorder(state: State<'_, AppState>, session_id: String, ids: Vec<String>) -> Result<Vec<QueuedMessage>> {
+pub async fn queue_reorder(
+    state: State<'_, AppState>,
+    session_id: String,
+    ids: Vec<String>,
+) -> Result<Vec<QueuedMessage>> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     reorder(&store, &session_id, &ids)
 }
@@ -181,7 +253,10 @@ pub async fn queue_take(state: State<'_, AppState>, id: String) -> Result<Queued
 }
 
 #[tauri::command]
-pub async fn queue_restore(state: State<'_, AppState>, entry: QueuedMessage) -> Result<QueuedMessage> {
+pub async fn queue_restore(
+    state: State<'_, AppState>,
+    entry: QueuedMessage,
+) -> Result<QueuedMessage> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     restore(&store, &entry)
 }
@@ -192,13 +267,26 @@ pub async fn queue_restore(state: State<'_, AppState>, entry: QueuedMessage) -> 
 /// with that id report `delivered`, or `failed` if the run ends first. On an error the
 /// message should stay queued.
 #[tauri::command]
-pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, text: String) -> Result<serde_json::Value> {
+pub async fn steer_task(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+) -> Result<serde_json::Value> {
     let text = text.trim().to_owned();
     if text.is_empty() {
         return Err("Write a message to steer with.".into());
     }
     // A task on another computer steers there and saves the message in its own history.
-    if let Some(reply) = crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await? {
+    if let Some(reply) = crate::remote::route(
+        &app,
+        &state,
+        &session_id,
+        "task.steer",
+        serde_json::json!({"text": text}),
+    )
+    .await?
+    {
         return Ok(reply);
     }
     // Save the steering message before the agent can accept it, so a
@@ -211,10 +299,18 @@ pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, sessi
         .start_turn_message(&session_id, &text)?;
     let reply = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
-        let agent = agents.get(&session_id).ok_or("The agent is not running; the message stays queued.")?;
+        let agent = agents
+            .get(&session_id)
+            .ok_or("The agent is not running; the message stays queued.")?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let id = uuid::Uuid::new_v4().to_string();
-        agent.send(RunInput::Steer { id, text: text.clone(), reply: tx }).map_err(|_| "The agent has stopped.".to_string())?;
+        agent
+            .send(RunInput::Steer {
+                id,
+                text: text.clone(),
+                reply: tx,
+            })
+            .map_err(|_| "The agent has stopped.".to_string())?;
         rx
     };
     let reply = tokio::time::timeout(std::time::Duration::from_secs(15), reply)
@@ -233,7 +329,9 @@ mod tests {
     fn store() -> (Store, String) {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
+        let task = store
+            .create_session(&project.id, "pantheon", "sonnet", "full")
+            .unwrap();
         (store, task.id)
     }
 
@@ -241,40 +339,112 @@ mod tests {
     fn queues_keep_order_and_survive_reorder_edit_and_take() {
         let (store, task) = store();
         let first = add(&store, &task, "first", &json!([])).unwrap();
-        let second = add(&store, &task, "second", &json!([{"kind":"image","id":"abc"}])).unwrap();
+        let second = add(
+            &store,
+            &task,
+            "second",
+            &json!([{"kind":"image","id":"abc"}]),
+        )
+        .unwrap();
         let third = add(&store, &task, "third", &json!([])).unwrap();
-        assert_eq!(list(&store, Some(&task)).unwrap().iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["first", "second", "third"]);
-        let order = reorder(&store, &task, &[third.id.clone(), first.id.clone(), second.id.clone()]).unwrap();
-        assert_eq!(order.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["third", "first", "second"]);
-        assert!(reorder(&store, &task, std::slice::from_ref(&first.id)).is_err(), "a partial order is refused");
+        assert_eq!(
+            list(&store, Some(&task))
+                .unwrap()
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        let order = reorder(
+            &store,
+            &task,
+            &[third.id.clone(), first.id.clone(), second.id.clone()],
+        )
+        .unwrap();
+        assert_eq!(
+            order.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            ["third", "first", "second"]
+        );
+        assert!(
+            reorder(&store, &task, std::slice::from_ref(&first.id)).is_err(),
+            "a partial order is refused"
+        );
         let edited = update(&store, &second.id, "second, edited", &json!([])).unwrap();
         assert_eq!(edited.attachments, json!([]));
         let taken = take(&store, &third.id).unwrap();
         assert_eq!(taken.text, "third");
-        assert!(take(&store, &third.id).is_err(), "an entry is delivered once");
+        assert!(
+            take(&store, &third.id).is_err(),
+            "an entry is delivered once"
+        );
         assert_eq!(list(&store, None).unwrap().len(), 2);
         // A new message goes to the end even after reordering.
-        assert_eq!(add(&store, &task, "fourth", &json!([])).unwrap().position, 3);
+        assert_eq!(
+            add(&store, &task, "fourth", &json!([])).unwrap().position,
+            3
+        );
     }
 
     #[test]
     fn a_failed_delivery_restores_the_entry_to_the_front() {
         let (store, task) = store();
-        let first = add(&store, &task, "first", &json!([{"kind":"image","id":"abc"}])).unwrap();
+        let first = add(
+            &store,
+            &task,
+            "first",
+            &json!([{"kind":"image","id":"abc"}]),
+        )
+        .unwrap();
         add(&store, &task, "second", &json!([])).unwrap();
         let taken = take(&store, &first.id).unwrap();
         add(&store, &task, "third", &json!([])).unwrap();
         let restored = restore(&store, &taken).unwrap();
-        assert_eq!((restored.id.as_str(), restored.attachments.clone(), restored.created_at), (first.id.as_str(), json!([{"kind":"image","id":"abc"}]), first.created_at));
-        assert_eq!(list(&store, Some(&task)).unwrap().iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["first", "second", "third"]);
-        assert!(restore(&store, &restored).is_err(), "an entry still queued is not duplicated");
+        assert_eq!(
+            (
+                restored.id.as_str(),
+                restored.attachments.clone(),
+                restored.created_at
+            ),
+            (
+                first.id.as_str(),
+                json!([{"kind":"image","id":"abc"}]),
+                first.created_at
+            )
+        );
+        assert_eq!(
+            list(&store, Some(&task))
+                .unwrap()
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        assert!(
+            restore(&store, &restored).is_err(),
+            "an entry still queued is not duplicated"
+        );
         // After a reorder it still lands first, and new messages still go last.
         let taken = take(&store, &first.id).unwrap();
-        let ids: Vec<String> = list(&store, Some(&task)).unwrap().into_iter().rev().map(|e| e.id).collect();
+        let ids: Vec<String> = list(&store, Some(&task))
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|e| e.id)
+            .collect();
         reorder(&store, &task, &ids).unwrap();
         restore(&store, &taken).unwrap();
-        assert_eq!(list(&store, Some(&task)).unwrap().iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["first", "third", "second"]);
-        assert_eq!(add(&store, &task, "fourth", &json!([])).unwrap().position, 2);
+        assert_eq!(
+            list(&store, Some(&task))
+                .unwrap()
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "third", "second"]
+        );
+        assert_eq!(
+            add(&store, &task, "fourth", &json!([])).unwrap().position,
+            2
+        );
     }
 
     #[test]
@@ -284,12 +454,21 @@ mod tests {
         assert!(add(&store, &task, "", &json!({"not":"a list"})).is_err());
         assert!(add(&store, &task, &"x".repeat(MAX_TEXT + 1), &json!([])).is_err());
         assert!(add(&store, "missing", "hello", &json!([])).is_err());
-        assert!(add(&store, &task, "", &json!([{"kind":"document"}])).is_ok(), "an attachment alone can be queued");
+        assert!(
+            add(&store, &task, "", &json!([{"kind":"document"}])).is_ok(),
+            "an attachment alone can be queued"
+        );
         for i in 1..MAX_PER_TASK {
             add(&store, &task, &format!("m{i}"), &json!([])).unwrap();
         }
         assert!(add(&store, &task, "one too many", &json!([])).is_err());
-        store.conn().execute("DELETE FROM sessions WHERE id=?1", [&task]).unwrap();
-        assert!(list(&store, None).unwrap().is_empty(), "deleting a task removes its queue");
+        store
+            .conn()
+            .execute("DELETE FROM sessions WHERE id=?1", [&task])
+            .unwrap();
+        assert!(
+            list(&store, None).unwrap().is_empty(),
+            "deleting a task removes its queue"
+        );
     }
 }

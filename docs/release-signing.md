@@ -46,6 +46,30 @@ limitation, so an unsigned release is visible rather than silent.
 The `.minisig` file is a minisign signature over the archive bytes,
 fetched by the updater from `{asset_url}.minisig`.
 
+## Verifying an install by hand (installer)
+
+`install.sh` verifies the published `.sha256` by default and, when you pin a
+key, also verifies the minisign signature:
+
+```sh
+PANTHEON_MINISIGN_PUBKEY='RW...' \
+  curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
+```
+
+`PANTHEON_MINISIGN_PUBKEY_FILE=release.pub` works too (the `RW...` line is
+read from it). With a key set, the installer fetches `<asset>.minisig`, runs
+`minisign -V` against your key, and refuses to install on a mismatch. It
+refuses an unsigned asset unless `PANTHEON_ALLOW_UNVERIFIED=1` is set, so the
+opt-out is visible in the command that used it. Without a key the installer
+says exactly what it proved (integrity only) rather than implying
+authentication.
+
+## Supply-chain inventory
+
+Every CLI release attaches an SPDX JSON SBOM per asset
+(`<asset>.sbom.spdx.json`, generated with a pinned syft), matching what the
+desktop build already publishes.
+
 ## Verifying a release by hand
 
 ```

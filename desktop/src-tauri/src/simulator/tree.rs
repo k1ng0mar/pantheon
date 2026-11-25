@@ -7,10 +7,17 @@ const MAX_TEXT: usize = 120;
 
 fn clip(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.chars().count() <= MAX_TEXT { text } else { format!("{}…", text.chars().take(MAX_TEXT).collect::<String>()) }
+    if text.chars().count() <= MAX_TEXT {
+        text
+    } else {
+        format!("{}…", text.chars().take(MAX_TEXT).collect::<String>())
+    }
 }
 fn field<'a>(node: &'a Value, key: &str) -> Option<&'a str> {
-    node.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+    node.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 fn walk(node: &Value, depth: usize, lines: &mut Vec<String>, omitted: &mut usize) {
@@ -25,17 +32,38 @@ fn walk(node: &Value, depth: usize, lines: &mut Vec<String>, omitted: &mut usize
     let value = field(node, "AXValue");
     let id = field(node, "AXUniqueId");
     let frame = &node["frame"];
-    let (x, y, w, h) = ["x", "y", "width", "height"].map(|k| frame[k].as_f64().unwrap_or(0.0)).into();
+    let (x, y, w, h) = ["x", "y", "width", "height"]
+        .map(|k| frame[k].as_f64().unwrap_or(0.0))
+        .into();
     // Containers and off-screen placeholders carry no target; their children still count.
-    let useful = (label.is_some() || value.is_some() || id.is_some()) && w > 0.0 && h > 0.0 && kind != "Application";
+    let useful = (label.is_some() || value.is_some() || id.is_some())
+        && w > 0.0
+        && h > 0.0
+        && kind != "Application";
     if useful {
         if lines.len() < MAX_LINES {
             let mut line = format!("{}{kind}", "  ".repeat(depth.min(6)));
-            if let Some(label) = label { line.push_str(&format!(" \"{}\"", clip(label))); }
-            if let Some(value) = value.filter(|v| Some(*v) != label) { line.push_str(&format!(" value=\"{}\"", clip(value))); }
-            if let Some(id) = id { line.push_str(&format!(" id={}", clip(id))); }
-            if node["enabled"].as_bool() == Some(false) { line.push_str(" disabled"); }
-            line.push_str(&format!(" center=({:.0},{:.0}) frame=({:.0},{:.0},{:.0}×{:.0})", x + w / 2.0, y + h / 2.0, x, y, w, h));
+            if let Some(label) = label {
+                line.push_str(&format!(" \"{}\"", clip(label)));
+            }
+            if let Some(value) = value.filter(|v| Some(*v) != label) {
+                line.push_str(&format!(" value=\"{}\"", clip(value)));
+            }
+            if let Some(id) = id {
+                line.push_str(&format!(" id={}", clip(id)));
+            }
+            if node["enabled"].as_bool() == Some(false) {
+                line.push_str(" disabled");
+            }
+            line.push_str(&format!(
+                " center=({:.0},{:.0}) frame=({:.0},{:.0},{:.0}×{:.0})",
+                x + w / 2.0,
+                y + h / 2.0,
+                x,
+                y,
+                w,
+                h
+            ));
             lines.push(line);
         } else {
             *omitted += 1;
@@ -88,15 +116,33 @@ fn remap(node: &Value, map: &dyn Fn([f64; 4]) -> [f64; 4]) -> Value {
 /// displays, each framed in its panel's native axes (`shown`, `hidden`); app windows
 /// already come in interface points. Native frames are turned by `to_ui`, and the
 /// root is framed as the interface (`ui`) so the screen size reads right.
-pub fn for_display(tree: &Value, shown: (f64, f64), hidden: (f64, f64), ui: (f64, f64), to_ui: &dyn Fn([f64; 4]) -> [f64; 4]) -> Value {
-    let roots = tree.as_array().cloned().unwrap_or_else(|| vec![tree.clone()]);
+pub fn for_display(
+    tree: &Value,
+    shown: (f64, f64),
+    hidden: (f64, f64),
+    ui: (f64, f64),
+    to_ui: &dyn Fn([f64; 4]) -> [f64; 4],
+) -> Value {
+    let roots = tree
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| vec![tree.clone()]);
     let children: Vec<Value> = roots
         .iter()
         .flat_map(|root| root["children"].as_array().cloned().unwrap_or_default())
         .filter(|group| shown == hidden || !same_size(frame(group), hidden))
-        .map(|group| if same_size(frame(&group), shown) { remap(&group, to_ui) } else { group })
+        .map(|group| {
+            if same_size(frame(&group), shown) {
+                remap(&group, to_ui)
+            } else {
+                group
+            }
+        })
         .collect();
-    let label = roots.first().map(|r| r["AXLabel"].clone()).unwrap_or(Value::Null);
+    let label = roots
+        .first()
+        .map(|r| r["AXLabel"].clone())
+        .unwrap_or(Value::Null);
     serde_json::json!([{"type": "Application", "AXLabel": label, "frame": {"x": 0, "y": 0, "width": ui.0, "height": ui.1}, "children": children}])
 }
 
@@ -105,14 +151,23 @@ pub fn for_display(tree: &Value, shown: (f64, f64), hidden: (f64, f64), ui: (f64
 /// to its root as plain elements.
 pub fn with_frames(tree: &Value, found: &[(String, [f64; 4])]) -> Value {
     let labeled = sorted_targets(tree);
-    let once = |label: &str| found.iter().filter(|(l, _)| l == label).count() == 1 && labeled.iter().filter(|(n, ..)| field(n, "AXLabel") == Some(label)).count() == 1;
+    let once = |label: &str| {
+        found.iter().filter(|(l, _)| l == label).count() == 1
+            && labeled
+                .iter()
+                .filter(|(n, ..)| field(n, "AXLabel") == Some(label))
+                .count()
+                == 1
+    };
     let fixes: Vec<_> = found.iter().filter(|(label, _)| once(label)).collect();
     fn walk(node: &Value, fixes: &[&(String, [f64; 4])]) -> Value {
         if let Some(items) = node.as_array() {
             return items.iter().map(|item| walk(item, fixes)).collect();
         }
         let mut copy = node.clone();
-        if let Some((_, [x, y, width, height])) = field(node, "AXLabel").and_then(|label| fixes.iter().find(|(l, _)| l == label)) {
+        if let Some((_, [x, y, width, height])) =
+            field(node, "AXLabel").and_then(|label| fixes.iter().find(|(l, _)| l == label))
+        {
             copy["frame"] = serde_json::json!({"x": x, "y": y, "width": width, "height": height});
         }
         if let Some(children) = node["children"].as_array() {
@@ -121,9 +176,17 @@ pub fn with_frames(tree: &Value, found: &[(String, [f64; 4])]) -> Value {
         copy
     }
     let mut fixed = walk(tree, &fixes);
-    let missing = found.iter().filter(|(label, _)| !labeled.iter().any(|(n, ..)| field(n, "AXLabel") == Some(label)));
+    let missing = found.iter().filter(|(label, _)| {
+        !labeled
+            .iter()
+            .any(|(n, ..)| field(n, "AXLabel") == Some(label))
+    });
     let added: Vec<Value> = missing.map(|(label, [x, y, width, height])| serde_json::json!({"type": "Element", "AXLabel": label, "frame": {"x": x, "y": y, "width": width, "height": height}})).collect();
-    if let Some(children) = fixed.get_mut(0).and_then(|root| root.get_mut("children")).and_then(Value::as_array_mut) {
+    if let Some(children) = fixed
+        .get_mut(0)
+        .and_then(|root| root.get_mut("children"))
+        .and_then(Value::as_array_mut)
+    {
         children.extend(added);
     }
     fixed
@@ -136,7 +199,11 @@ fn targets(node: &Value, found: &mut Vec<(Value, (f64, f64), f64)>) {
         return;
     }
     let [x, y, w, h] = frame(node);
-    if field(node, "type") != Some("Application") && (field(node, "AXLabel").is_some() || field(node, "AXUniqueId").is_some()) && w > 0.0 && h > 0.0 {
+    if field(node, "type") != Some("Application")
+        && (field(node, "AXLabel").is_some() || field(node, "AXUniqueId").is_some())
+        && w > 0.0
+        && h > 0.0
+    {
         let mut leaf = node.clone();
         leaf["children"] = serde_json::json!([]);
         found.push((leaf, (x + w / 2.0, y + h / 2.0), w * h));
@@ -153,10 +220,13 @@ fn sorted_targets(tree: &Value) -> Vec<(Value, (f64, f64), f64)> {
 }
 /// The smallest labeled element whose frame holds the point.
 pub fn at_point(tree: &Value, (px, py): (f64, f64)) -> Option<Value> {
-    sorted_targets(tree).into_iter().map(|(node, ..)| node).find(|node| {
-        let [x, y, w, h] = frame(node);
-        px >= x && px <= x + w && py >= y && py <= y + h
-    })
+    sorted_targets(tree)
+        .into_iter()
+        .map(|(node, ..)| node)
+        .find(|node| {
+            let [x, y, w, h] = frame(node);
+            px >= x && px <= x + w && py >= y && py <= y + h
+        })
 }
 /// Center of the smallest element labeled `label` that lies within `ui`.
 pub fn find_label(tree: &Value, label: &str, ui: (f64, f64)) -> Option<(f64, f64)> {
@@ -181,8 +251,16 @@ mod tests {
                 {"type":"TextField","AXLabel":"Email","AXValue":"me@example.com","AXUniqueId":"email","enabled":false,"frame":{"x":20,"y":100,"width":360,"height":44}}]}]}]);
         let text = summarize(&tree);
         assert!(text.contains("Screen 402×874"), "{text}");
-        assert!(text.contains("Button \"Settings\" center=(340,434)"), "{text}");
-        assert!(text.contains("TextField \"Email\" value=\"me@example.com\" id=email disabled center=(200,122)"), "{text}");
+        assert!(
+            text.contains("Button \"Settings\" center=(340,434)"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "TextField \"Email\" value=\"me@example.com\" id=email disabled center=(200,122)"
+            ),
+            "{text}"
+        );
         assert!(!text.contains("Hidden"));
         assert!(!text.contains("Group"));
     }
@@ -191,8 +269,10 @@ mod tests {
     fn a_duo_tree_keeps_the_shown_display_in_interface_points() {
         // Shaped like `axe describe-ui` on an open iPhone Duo's home screen (AXe 1.8, Xcode 27.1):
         // groups alternate between the inner (669×951 native) and cover (466×678) displays.
-        let group = |w: f64, h: f64, label: &str, x: f64, y: f64| serde_json::json!({"type":"Group","frame":{"x":0,"y":0,"width":w,"height":h},"children":[
-            {"type":"Button","AXLabel":label,"frame":{"x":x,"y":y,"width":86.7,"height":68}}]});
+        let group = |w: f64, h: f64, label: &str, x: f64, y: f64| {
+            serde_json::json!({"type":"Group","frame":{"x":0,"y":0,"width":w,"height":h},"children":[
+            {"type":"Button","AXLabel":label,"frame":{"x":x,"y":y,"width":86.7,"height":68}}]})
+        };
         let tree = serde_json::json!([{"type":"Application","AXLabel":" ","frame":{"x":0,"y":0,"width":466,"height":678},"children":[
             group(669.0, 951.0, "Settings", 52.0, 417.0), group(466.0, 678.0, "Phone", 20.0, 40.0),
             group(669.0, 951.0, "Safari", 347.7, 15.8), group(466.0, 678.0, "Safari", 386.2, 352.0)]}]);
@@ -200,19 +280,49 @@ mod tests {
         let open = for_display(&tree, (669.0, 951.0), (466.0, 678.0), (951.0, 669.0), &turn);
         let text = summarize(&open);
         assert!(text.contains("Screen 951×669"), "{text}");
-        assert!(text.contains("Button \"Settings\" center=(500,95) frame=(466,52,68×87)"), "{text}");
-        assert!(text.contains("Button \"Safari\" center=(901,391)"), "{text}");
+        assert!(
+            text.contains("Button \"Settings\" center=(500,95) frame=(466,52,68×87)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Button \"Safari\" center=(901,391)"),
+            "{text}"
+        );
         assert!(!text.contains("Phone"), "{text}");
-        assert_eq!(find_label(&open, "Settings", (951.0, 669.0)), Some((500.0, 95.35)));
+        assert_eq!(
+            find_label(&open, "Settings", (951.0, 669.0)),
+            Some((500.0, 95.35))
+        );
         assert_eq!(find_label(&open, "Phone", (951.0, 669.0)), None);
-        assert_eq!(at_point(&open, (900.0, 380.0)).unwrap()["AXLabel"], "Safari");
+        assert_eq!(
+            at_point(&open, (900.0, 380.0)).unwrap()["AXLabel"],
+            "Safari"
+        );
         assert!(at_point(&open, (10.0, 10.0)).is_none());
         // Closed: the cover groups stay as they are.
-        let closed = summarize(&for_display(&tree, (466.0, 678.0), (669.0, 951.0), (466.0, 678.0), &|r| r));
-        assert!(closed.contains("Screen 466×678") && closed.contains("Button \"Phone\" center=(63,74)") && !closed.contains("Settings"), "{closed}");
+        let closed = summarize(&for_display(
+            &tree,
+            (466.0, 678.0),
+            (669.0, 951.0),
+            (466.0, 678.0),
+            &|r| r,
+        ));
+        assert!(
+            closed.contains("Screen 466×678")
+                && closed.contains("Button \"Phone\" center=(63,74)")
+                && !closed.contains("Settings"),
+            "{closed}"
+        );
         // An app window already in interface points is kept.
         let app = serde_json::json!([{"type":"Application","AXLabel":"Settings","frame":{"x":0,"y":0,"width":669,"height":951},"children":[group(951.0, 669.0, "General", 20.0, 254.0)]}]);
-        assert!(summarize(&for_display(&app, (669.0, 951.0), (466.0, 678.0), (951.0, 669.0), &turn)).contains("Button \"General\" center=(63,288)"));
+        assert!(summarize(&for_display(
+            &app,
+            (669.0, 951.0),
+            (466.0, 678.0),
+            (951.0, 669.0),
+            &turn
+        ))
+        .contains("Button \"General\" center=(63,288)"));
     }
 
     #[test]
@@ -226,20 +336,50 @@ mod tests {
         let tree = serde_json::json!([{"type":"Application","frame":{"x":0,"y":0,"width":466,"height":678},"children":[inner]}]);
         let turn = |r: [f64; 4]| super::super::duo::rect_to_ui(90, (669.0, 951.0), r);
         let open = for_display(&tree, (669.0, 951.0), (466.0, 678.0), (951.0, 669.0), &turn);
-        assert_eq!(find_label(&open, "Settings", (951.0, 669.0)), Some((855.65, 56.7)), "AXe alone lands on the far edge");
+        assert_eq!(
+            find_label(&open, "Settings", (951.0, 669.0)),
+            Some((855.65, 56.7)),
+            "AXe alone lands on the far edge"
+        );
         // `elements` from the helper, already turned to interface points.
-        let found = [("Settings".to_string(), turn([52.0, 417.3, 86.7, 68.0])), ("Safari".to_string(), turn([347.7, 15.8, 64.0, 64.0]))];
+        let found = [
+            ("Settings".to_string(), turn([52.0, 417.3, 86.7, 68.0])),
+            ("Safari".to_string(), turn([347.7, 15.8, 64.0, 64.0])),
+        ];
         let fixed = with_frames(&open, &found);
         let (x, y) = find_label(&fixed, "Settings", (951.0, 669.0)).unwrap();
-        assert!((x - 499.7).abs() < 0.1 && (y - 95.35).abs() < 0.1, "({x}, {y})");
-        assert_eq!(find_label(&fixed, "Safari", (951.0, 669.0)), find_label(&open, "Safari", (951.0, 669.0)));
-        assert!(summarize(&fixed).contains("Button \"Settings\" center=(500,95)"), "{}", summarize(&fixed));
+        assert!(
+            (x - 499.7).abs() < 0.1 && (y - 95.35).abs() < 0.1,
+            "({x}, {y})"
+        );
+        assert_eq!(
+            find_label(&fixed, "Safari", (951.0, 669.0)),
+            find_label(&open, "Safari", (951.0, 669.0))
+        );
+        assert!(
+            summarize(&fixed).contains("Button \"Settings\" center=(500,95)"),
+            "{}",
+            summarize(&fixed)
+        );
         // A label shared by two elements is left alone rather than guessed.
-        let twice = with_frames(&open, &[("Settings".into(), [1.0, 1.0, 2.0, 2.0]), ("Settings".into(), [5.0, 5.0, 2.0, 2.0])]);
+        let twice = with_frames(
+            &open,
+            &[
+                ("Settings".into(), [1.0, 1.0, 2.0, 2.0]),
+                ("Settings".into(), [5.0, 5.0, 2.0, 2.0]),
+            ],
+        );
         assert_eq!(twice, open);
         // Elements AXe misses (an app's rows on the inner display) are added.
         let app = with_frames(&open, &[("About".into(), [340.0, 303.5, 527.0, 52.0])]);
-        assert_eq!(find_label(&app, "About", (951.0, 669.0)), Some((603.5, 329.5)));
-        assert!(summarize(&app).contains("Element \"About\" center=(604,330)"), "{}", summarize(&app));
+        assert_eq!(
+            find_label(&app, "About", (951.0, 669.0)),
+            Some((603.5, 329.5))
+        );
+        assert!(
+            summarize(&app).contains("Element \"About\" center=(604,330)"),
+            "{}",
+            summarize(&app)
+        );
     }
 }

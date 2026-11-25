@@ -11,16 +11,44 @@ const LIMIT: u64 = 256 * 1024;
 
 /// Checked in order; the first readable image wins. Vector and larger icons come first.
 const CANDIDATES: &[&str] = &[
-    "public/favicon.svg", "public/icon.svg", "public/logo.svg", "public/apple-touch-icon.png",
-    "public/favicon.png", "public/icon.png", "public/logo.png", "public/favicon.ico",
-    "static/favicon.svg", "static/favicon.png", "static/favicon.ico",
-    "app/icon.svg", "app/icon.png", "app/apple-icon.png", "app/favicon.ico",
-    "src/app/icon.svg", "src/app/icon.png", "src/app/apple-icon.png", "src/app/favicon.ico",
-    "src/assets/icon.svg", "src/assets/logo.svg", "src/assets/icon.png", "src/assets/logo.png",
-    "assets/icon.svg", "assets/icon.png", "assets/logo.svg", "assets/logo.png",
-    "src-tauri/icons/128x128.png", "src-tauri/icons/icon.png",
-    "build/icon.png", "resources/icon.png",
-    "favicon.svg", "favicon.png", "favicon.ico", "icon.svg", "icon.png", "logo.svg", "logo.png",
+    "public/favicon.svg",
+    "public/icon.svg",
+    "public/logo.svg",
+    "public/apple-touch-icon.png",
+    "public/favicon.png",
+    "public/icon.png",
+    "public/logo.png",
+    "public/favicon.ico",
+    "static/favicon.svg",
+    "static/favicon.png",
+    "static/favicon.ico",
+    "app/icon.svg",
+    "app/icon.png",
+    "app/apple-icon.png",
+    "app/favicon.ico",
+    "src/app/icon.svg",
+    "src/app/icon.png",
+    "src/app/apple-icon.png",
+    "src/app/favicon.ico",
+    "src/assets/icon.svg",
+    "src/assets/logo.svg",
+    "src/assets/icon.png",
+    "src/assets/logo.png",
+    "assets/icon.svg",
+    "assets/icon.png",
+    "assets/logo.svg",
+    "assets/logo.png",
+    "src-tauri/icons/128x128.png",
+    "src-tauri/icons/icon.png",
+    "build/icon.png",
+    "resources/icon.png",
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+    "icon.svg",
+    "icon.png",
+    "logo.svg",
+    "logo.png",
 ];
 
 fn media_type(path: &str) -> &'static str {
@@ -35,11 +63,15 @@ fn media_type(path: &str) -> &'static str {
 pub fn find(root: &Path) -> Option<String> {
     for candidate in CANDIDATES {
         let path = root.join(candidate);
-        let Ok(metadata) = std::fs::metadata(&path) else { continue };
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LIMIT {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
         if !looks_like(candidate, &bytes) {
             continue;
         }
@@ -54,7 +86,8 @@ pub fn find(root: &Path) -> Option<String> {
 fn looks_like(path: &str, bytes: &[u8]) -> bool {
     match media_type(path) {
         "image/svg+xml" => {
-            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
+            let head =
+                String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
             head.contains("<svg")
         }
         "image/x-icon" => bytes.starts_with(&[0, 0, 1, 0]) || bytes.starts_with(b"\x89PNG"),
@@ -78,9 +111,20 @@ mod tests {
         assert_eq!(find(&root), None);
         std::fs::create_dir_all(root.join("public")).unwrap();
         std::fs::write(root.join("public/favicon.ico"), [0u8, 0, 1, 0, 1, 0]).unwrap();
-        assert!(find(&root).unwrap().starts_with("data:image/x-icon;base64,"));
-        std::fs::write(root.join("public/favicon.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
-        assert!(find(&root).unwrap().starts_with("data:image/svg+xml;base64,"), "an SVG is preferred");
+        assert!(find(&root)
+            .unwrap()
+            .starts_with("data:image/x-icon;base64,"));
+        std::fs::write(
+            root.join("public/favicon.svg"),
+            "<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )
+        .unwrap();
+        assert!(
+            find(&root)
+                .unwrap()
+                .starts_with("data:image/svg+xml;base64,"),
+            "an SVG is preferred"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

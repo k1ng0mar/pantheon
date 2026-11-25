@@ -109,11 +109,13 @@ mod tests {
                 marker.display()
             ),
         );
-        let report =
-            search_with(Some(&codedb), temp.path(), "  hello  ", false).unwrap();
+        let report = search_with(Some(&codedb), temp.path(), "  hello  ", false).unwrap();
         assert_eq!(
             fs::read_to_string(&marker).unwrap(),
-            format!("{}|search|--no-telemetry|--|hello|1|1", temp.path().display())
+            format!(
+                "{}|search|--no-telemetry|--|hello|1|1",
+                temp.path().display()
+            )
         );
         assert_eq!(report["query"], "hello");
         assert_eq!(report["symbols"], false);
@@ -138,13 +140,13 @@ mod tests {
     #[test]
     fn queries_are_bounded() {
         let temp = Scratch::new("bounded");
-        let error = |query: &str| {
-            search_with(None, temp.path(), query, false)
-                .unwrap_err()
-        };
+        let error = |query: &str| search_with(None, temp.path(), query, false).unwrap_err();
         assert!(error("").contains("query must be"), "empty");
         assert!(error("   ").contains("query must be"), "blank");
-        assert!(error(&"x".repeat(QUERY_MAX)).contains("query must be"), "long");
+        assert!(
+            error(&"x".repeat(QUERY_MAX)).contains("query must be"),
+            "long"
+        );
     }
 
     #[test]

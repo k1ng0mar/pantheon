@@ -24,7 +24,7 @@ fn starts(events: &[AgentEvent]) -> Vec<String> {
 
 #[test]
 fn acp_message_ids_preserve_boundaries_and_chunks_remain_incremental() {
-    let mut protocol = Protocol::new(config("kimi"));
+    let mut protocol = Protocol::new(config("pantheon"));
     protocol.remote_id = "main".into();
     protocol.phase = 1;
     let events: Vec<_> = [
@@ -46,7 +46,7 @@ fn acp_message_ids_preserve_boundaries_and_chunks_remain_incremental() {
 
 #[test]
 fn legacy_acp_separates_text_around_tools_and_ignores_resume_history() {
-    let mut protocol = Protocol::new(config("kimi"));
+    let mut protocol = Protocol::new(config("pantheon"));
     protocol.remote_id = "main".into();
     assert!(protocol
         .receive(chunk(None, "history"))
@@ -70,7 +70,7 @@ fn legacy_acp_separates_text_around_tools_and_ignores_resume_history() {
 
 #[test]
 fn foreign_sessions_nontext_content_and_thoughts_do_not_become_answer_text() {
-    let mut protocol = Protocol::new(config("kimi"));
+    let mut protocol = Protocol::new(config("pantheon"));
     protocol.remote_id = "main".into();
     protocol.phase = 1;
     let mut foreign = chunk(None, "foreign");

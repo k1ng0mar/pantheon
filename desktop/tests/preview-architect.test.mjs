@@ -15,7 +15,7 @@ function fixture(t) {
   globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
   Date.now = () => time;
   t.after(() => { globalThis.window = previous.window; globalThis.localStorage = previous.storage; Date.now = previous.now; });
-  const parents = new Map(['parent', 'other'].map(id => [id, { id, title: 'New conversation', status: 'idle', taskStage: 'pending', archived: false, provider: 'codex', model: 'sample-model', reasoningEffort: null, updatedAt: 0 }]));
+  const parents = new Map(['parent', 'other'].map(id => [id, { id, title: 'New conversation', status: 'idle', taskStage: 'pending', archived: false, provider: 'pantheon', model: 'sample-model', reasoningEffort: null, updatedAt: 0 }]));
   const host = {
     parent(id) { const value = parents.get(id); if (!value) throw Error('Task not found'); return value; },
     assertIdle(parent) { if (['running', 'waiting'].includes(parent.status)) throw Error('Task is running'); },
@@ -29,7 +29,7 @@ function fixture(t) {
   return { api, host, timers, events, parents, history, storage, tick };
 }
 const config = (count = 3) => ({
-  workers: Array.from({ length: count }, (_, i) => ({ id: `profile-${i}`, name: `Worker ${i + 1}`, provider: 'codex', model: 'sample-model', reasoningEffort: 'low' })),
+  workers: Array.from({ length: count }, (_, i) => ({ id: `profile-${i}`, name: `Worker ${i + 1}`, provider: 'pantheon', model: 'sample-model', reasoningEffort: 'low' })),
   maxParallel: 2, maxRounds: 2, maxAssignments: 6, workspace: 'shared', summaryLimit: 512,
 });
 
@@ -247,7 +247,7 @@ test('preview checkpoints survive interruption and team messages page without cr
   assert.equal(finished.blocker, null);
 });
 
-const setup = (count = 2) => ({ architect: { provider: 'claude', model: 'sample-model', reasoningEffort: 'high' }, config: config(count) });
+const setup = (count = 2) => ({ architect: { provider: 'pantheon', model: 'sample-model', reasoningEffort: 'high' }, config: config(count) });
 
 test('team profiles save templates separately from applying and inheriting the default', t => {
   const { api, host, parents, history, events } = fixture(t);
@@ -259,7 +259,7 @@ test('team profiles save templates separately from applying and inheriting the d
   assert.equal(saved.lastSetup, null);
   assert.equal(api.get('parent'), null);
   api.configure('parent', profile.setup.config, profile.setup.architect, profile.id);
-  assert.equal(parents.get('parent').provider, 'claude');
+  assert.equal(parents.get('parent').provider, 'pantheon');
   assert.equal(parents.get('parent').reasoningEffort, 'high');
   const remembered = api.profiles();
   assert.equal(remembered.enabled, true);
@@ -269,7 +269,7 @@ test('team profiles save templates separately from applying and inheriting the d
   assert.deepEqual(reloaded.profiles(), remembered);
   reloaded.inherit('other');
   assert.deepEqual(reloaded.get('other').config, profile.setup.config);
-  assert.equal(parents.get('other').provider, 'claude');
+  assert.equal(parents.get('other').provider, 'pantheon');
   assert.equal(reloaded.get('other').status, 'ready');
   assert.equal(reloaded.get('other').workers.length, 0);
   assert.equal(history.length, 0, 'inheriting never starts an agent');
@@ -326,11 +326,11 @@ test('team defaults migrate the latest owned legacy config once and never overwr
   const { host, storage, parents } = fixture(t);
   parents.get('parent').updatedAt = 10;
   parents.get('other').updatedAt = 20;
-  parents.get('other').provider = 'kimi';
+  parents.get('other').provider = 'pantheon';
   storage.set('pantheon.preview.architect-configs', JSON.stringify({ parent: config(1), removed: config(3), other: config(2) }));
   const migrated = createPreviewArchitect(host);
   assert.equal(migrated.profiles().enabled, true);
-  assert.equal(migrated.profiles().lastSetup.architect.provider, 'kimi');
+  assert.equal(migrated.profiles().lastSetup.architect.provider, 'pantheon');
   assert.equal(migrated.profiles().lastSetup.config.workers.length, 2);
   migrated.configure('other', null);
   assert.equal(createPreviewArchitect(host).profiles().enabled, false);
@@ -347,8 +347,8 @@ test('used teams apply valid profile changes without losing history and reject i
   assert.throws(() => api.configure('parent', config(2), { ...setup().architect, reasoningEffort: 'unsupported' }), /effort/);
   assert.deepEqual(api.profiles(), library);
   assert.deepEqual(api.get('parent'), before);
-  assert.equal(parents.get('parent').provider, 'codex');
-  parents.get('parent').resumeId = 'previous-harness-context';
+  assert.equal(parents.get('parent').provider, 'pantheon');
+  parents.get('parent').resumeId = 'kept-context';
   parents.get('parent').contextUsage = { used: 1000, capacity: 10000 };
   const increased = { ...config(3), maxRounds: 4 };
   api.configure('parent', increased, setup().architect);
@@ -357,24 +357,29 @@ test('used teams apply valid profile changes without losing history and reject i
   assert.deepEqual(api.get('parent').workers, before.workers);
   assert.deepEqual(before.workers.map(worker => api.workerMessages('parent', worker.id)), workerLogs);
   assert.deepEqual(history, parentHistory);
-  assert.equal(parents.get('parent').provider, 'claude');
-  assert.equal(parents.get('parent').resumeId, null);
-  assert.equal(parents.get('parent').contextUsage, null);
+  assert.equal(parents.get('parent').provider, 'pantheon');
+  // Pantheon is still the agent, so the conversation it holds stays attached.
+  assert.equal(parents.get('parent').resumeId, 'kept-context');
+  assert.deepEqual(parents.get('parent').contextUsage, { used: 1000, capacity: 10000 });
   assert.deepEqual(api.profiles().lastSetup.architect, setup().architect);
   assert.equal(api.profiles().lastSetup.config.maxRounds, 4);
   parents.get('other').resumeId = 'already-started';
-  assert.throws(() => api.configure('other', config(1), setup().architect), /harness/);
-  assert.equal(api.get('other'), null);
+  // Pantheon is the only agent, so a started task keeps its conversation when
+  // the roster changes; nothing is silently re-pointed at another harness.
+  api.configure('other', config(1), setup().architect);
+  assert.equal(parents.get('other').provider, 'pantheon');
+  assert.equal(parents.get('other').resumeId, 'already-started');
+  assert.equal(api.get('other').config.workers.length, 1);
 });
 
 test('active team profile changes keep the latest pending setup and can cancel it without restarting workers', t => {
   const { api, parents, history, timers, tick } = fixture(t);
   api.configure('parent', config(2));
-  const effective = { architect: { provider: 'codex', model: 'sample-model', reasoningEffort: null }, config: api.get('parent').config };
+  const effective = { architect: { provider: 'pantheon', model: 'sample-model', reasoningEffort: null }, config: api.get('parent').config };
   const first = api.saveProfile(undefined, 'First choice', setup(3)).profiles[0];
   const latestSetup = setup(1);
-  latestSetup.architect.provider = 'kimi';
-  latestSetup.config.workers[0] = { ...latestSetup.config.workers[0], name: 'Future builder', provider: 'claude', reasoningEffort: 'high' };
+  latestSetup.architect.provider = 'pantheon';
+  latestSetup.config.workers[0] = { ...latestSetup.config.workers[0], name: 'Future builder', provider: 'pantheon', reasoningEffort: 'high' };
   const latest = api.saveProfile(undefined, 'Latest choice', latestSetup).profiles[1];
   api.start('parent', 'Keep the current assignments');
   tick();
@@ -410,7 +415,7 @@ test('active team profile changes keep the latest pending setup and can cancel i
   assert.equal(applied.status, 'completed');
   assert.equal(applied.pendingSetup, null);
   assert.deepEqual(applied.config, latest.setup.config);
-  assert.equal(parents.get('parent').provider, 'kimi');
+  assert.equal(parents.get('parent').provider, 'pantheon');
   assert.deepEqual(applied.workers.map(worker => [worker.id, worker.provider, worker.model]), before.workers.map(worker => [worker.id, worker.provider, worker.model]));
   const finishedLogs = applied.workers.map(worker => api.workerMessages('parent', worker.id));
   api.start('parent', 'Use the updated setup for new assignments');
@@ -418,7 +423,7 @@ test('active team profile changes keep the latest pending setup and can cancel i
   assert.deepEqual(continued.workers.slice(0, before.workers.length), applied.workers);
   assert.deepEqual(applied.workers.map(worker => api.workerMessages('parent', worker.id)), finishedLogs);
   assert.equal(continued.workers.at(-1).name, 'Future builder');
-  assert.equal(continued.workers.at(-1).provider, 'claude');
+  assert.equal(continued.workers.at(-1).provider, 'pantheon');
   assert.equal(history.filter(message => message.role === 'user').length, 2);
 });
 
@@ -433,16 +438,16 @@ test('architect preview carries lead guidance and rejects oversized guidance', t
 });
 
 test('a guidance-only edit is a different team setup', () => {
-  const setup = { architect: { provider: 'codex', model: 'm', reasoningEffort: null }, config: { ...config(), leadGuidance: 'Lead only.' } };
+  const setup = { architect: { provider: 'pantheon', model: 'm', reasoningEffort: null }, config: { ...config(), leadGuidance: 'Lead only.' } };
   assert.equal(sameTeamSetup(setup, structuredClone(setup)), true);
   assert.equal(sameTeamSetup(setup, { ...setup, config: { ...setup.config, leadGuidance: 'Review everything.' } }), false);
   assert.equal(sameTeamSetup({ ...setup, config: { ...setup.config, leadGuidance: null } }, { ...setup, config: { ...setup.config, leadGuidance: undefined } }), true);
 });
 
 test('named teams keep lead guidance and a separate effort per role', () => {
-  const sol = { provider: 'codex', harness: 'Codex', model: 'sol-6.1', name: 'Sol 6.1' };
+  const sol = { provider: 'pantheon', harness: 'Pantheon', model: 'sol-6.1', name: 'Sol 6.1' };
   const setup = namedTeamSetup(' Sol ', { ...sol, reasoningEffort: 'high' }, [{ ...sol, reasoningEffort: 'medium' }, { ...sol, model: 'mini', name: 'Mini', reasoningEffort: '' }], { ...config(), leadGuidance: 'Lead only.' });
-  assert.deepEqual(setup.architect, { provider: 'codex', model: 'sol-6.1', reasoningEffort: 'high' });
+  assert.deepEqual(setup.architect, { provider: 'pantheon', model: 'sol-6.1', reasoningEffort: 'high' });
   assert.deepEqual(setup.config.workers.map(worker => worker.reasoningEffort), ['medium', null]);
   assert.equal(setup.config.leadGuidance, 'Lead only.');
   assert.equal('leadGuidance' in namedTeamSetup('Sol', sol, [sol]).config, false);

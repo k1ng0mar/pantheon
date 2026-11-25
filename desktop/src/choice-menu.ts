@@ -60,6 +60,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     cancelAnimationFrame(positionFrame);
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onEscape, true);
+    window.removeEventListener('blur', onBlur);
     window.removeEventListener('resize', schedulePosition);
     window.removeEventListener('scroll', schedulePosition, true);
     window.visualViewport?.removeEventListener('resize', schedulePosition);
@@ -168,6 +169,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     const target = event.target;
     if (target instanceof Node && !panel.contains(target) && !anchor.contains(target)) close(false);
   }
+  function onBlur(): void { close(false); }
   function onEscape(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
     event.preventDefault(); event.stopPropagation(); close();
@@ -225,9 +227,14 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   showPopover(panel, anchor);
   if (search) search.focus({ preventScroll: true });
   else if (active >= 0 && buttons[active] && !buttons[active].disabled) focusItem(active);
+  // Menu-button pattern: opening moves focus into the menu, so arrow keys, Enter
+  // and Escape act on items without a second Tab. Menus without a selected item
+  // used to leave focus on the panel, which ignored the first keypress.
+  else if (buttons.some(button => !button.disabled)) focusItem(buttons.findIndex(button => !button.disabled));
   else panel.focus({ preventScroll: true });
   document.addEventListener('pointerdown', onOutside, true);
   document.addEventListener('keydown', onEscape, true);
+  window.addEventListener('blur', onBlur);
   window.addEventListener('resize', schedulePosition);
   window.addEventListener('scroll', schedulePosition, true);
   window.visualViewport?.addEventListener('resize', schedulePosition);

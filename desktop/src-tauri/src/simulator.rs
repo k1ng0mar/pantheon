@@ -64,7 +64,11 @@ impl Screen {
     /// The geometry of the display in use: a Duo on its inner display is `inner`.
     pub fn shown(self, display: Option<&str>) -> Screen {
         match (display, self.inner) {
-            (Some(duo::INNER), Some(inner)) => Screen { width: inner.width, height: inner.height, ..self },
+            (Some(duo::INNER), Some(inner)) => Screen {
+                width: inner.width,
+                height: inner.height,
+                ..self
+            },
             _ => self,
         }
     }
@@ -90,16 +94,37 @@ pub struct Status {
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Input {
-    Tap { x: f64, y: f64 },
+    Tap {
+        x: f64,
+        y: f64,
+    },
     #[serde(rename_all = "camelCase")]
-    LongPress { x: f64, y: f64, duration_ms: Option<u64> },
+    LongPress {
+        x: f64,
+        y: f64,
+        duration_ms: Option<u64>,
+    },
     #[serde(rename_all = "camelCase")]
-    Swipe { x: f64, y: f64, end_x: f64, end_y: f64, duration_ms: Option<u64> },
-    Type { text: String },
-    Button { button: String },
+    Swipe {
+        x: f64,
+        y: f64,
+        end_x: f64,
+        end_y: f64,
+        duration_ms: Option<u64>,
+    },
+    Type {
+        text: String,
+    },
+    Button {
+        button: String,
+    },
     /// A named key: return, backspace, tab, escape, space or an arrow.
-    Key { key: String },
-    TapLabel { label: String },
+    Key {
+        key: String,
+    },
+    TapLabel {
+        label: String,
+    },
 }
 
 #[derive(Default)]
@@ -120,28 +145,40 @@ pub struct Simulators {
 pub(crate) fn xcrun(args: &[&str], timeout: Duration) -> Result<Capture, String> {
     let mut command = Command::new("/usr/bin/xcrun");
     command.args(args);
-    checked(run_process(command, "Simulator", OUTPUT_LIMIT, timeout).map_err(|error| {
-        if error.starts_with("Could not start") { "Install Xcode to use the iOS Simulator.".to_string() } else { error }
-    })?)
+    checked(
+        run_process(command, "Simulator", OUTPUT_LIMIT, timeout).map_err(|error| {
+            if error.starts_with("Could not start") {
+                "Install Xcode to use the iOS Simulator.".to_string()
+            } else {
+                error
+            }
+        })?,
+    )
 }
 
 /// AXe from the user's PATH or a standard Homebrew prefix; GUI launches miss shell PATHs.
 pub fn axe_path() -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|path| std::env::split_paths(&path).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
     dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(Path::new(&home).join(".local/bin"));
     }
-    dirs.into_iter().map(|dir| dir.join("axe")).find(|path| path.is_file())
+    dirs.into_iter()
+        .map(|dir| dir.join("axe"))
+        .find(|path| path.is_file())
 }
 fn axe(args: &[&str], timeout: Duration) -> Result<Capture, String> {
-    let path = axe_path().ok_or_else(|| format!("Touch input needs AXe. Install it with `{AXE_INSTALL}`."))?;
+    let path = axe_path()
+        .ok_or_else(|| format!("Touch input needs AXe. Install it with `{AXE_INSTALL}`."))?;
     let mut command = Command::new(path);
     command.args(args);
     checked(run_process(command, "AXe", OUTPUT_LIMIT, timeout)?)
 }
 pub(crate) fn json(capture: &Capture) -> Result<serde_json::Value, String> {
-    serde_json::from_slice(&capture.bytes).map_err(|_| "The simulator tools returned an unexpected response.".into())
+    serde_json::from_slice(&capture.bytes)
+        .map_err(|_| "The simulator tools returned an unexpected response.".into())
 }
 
 /// `com.apple.CoreSimulator.SimRuntime.iOS-26-2` → `iOS 26.2`.
@@ -159,40 +196,68 @@ pub fn parse_devices(value: &serde_json::Value) -> Vec<Device> {
         .flatten()
         .filter(|(runtime, _)| runtime.contains("SimRuntime.iOS"))
         .flat_map(|(runtime, list)| {
-            list.as_array().into_iter().flatten().filter(|d| d["isAvailable"].as_bool() != Some(false)).filter_map(move |d| {
-                let device_type = d["deviceTypeIdentifier"].as_str().unwrap_or_default().to_string();
-                let name = d["name"].as_str()?.to_string();
-                let duo = duo::is_duo_type(&device_type);
-                Some(Device {
-                    udid: d["udid"].as_str()?.to_string(),
-                    name,
-                    runtime: runtime_name(runtime),
-                    state: d["state"].as_str().unwrap_or("Shutdown").to_string(),
-                    family: if device_type.contains("iPad") { "pad" } else { "phone" }.into(),
-                    device_type,
-                    platform: "ios".into(),
-                    duo,
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter(|d| d["isAvailable"].as_bool() != Some(false))
+                .filter_map(move |d| {
+                    let device_type = d["deviceTypeIdentifier"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let name = d["name"].as_str()?.to_string();
+                    let duo = duo::is_duo_type(&device_type);
+                    Some(Device {
+                        udid: d["udid"].as_str()?.to_string(),
+                        name,
+                        runtime: runtime_name(runtime),
+                        state: d["state"].as_str().unwrap_or("Shutdown").to_string(),
+                        family: if device_type.contains("iPad") {
+                            "pad"
+                        } else {
+                            "phone"
+                        }
+                        .into(),
+                        device_type,
+                        platform: "ios".into(),
+                        duo,
+                    })
                 })
-            })
         })
         .collect();
     // Booted first, then newest runtime, then name.
-    devices.sort_by(|a, b| (b.state == "Booted").cmp(&(a.state == "Booted")).then(b.runtime.cmp(&a.runtime)).then(a.name.cmp(&b.name)));
+    devices.sort_by(|a, b| {
+        (b.state == "Booted")
+            .cmp(&(a.state == "Booted"))
+            .then(b.runtime.cmp(&a.runtime))
+            .then(a.name.cmp(&b.name))
+    });
     devices
 }
 /// iOS simulators and Android emulators; either platform alone is enough.
 pub fn devices() -> Result<Vec<Device>, String> {
-    let ios = xcrun(&["simctl", "list", "devices", "available", "-j"], QUICK).and_then(|output| json(&output)).map(|value| parse_devices(&value));
+    let ios = xcrun(&["simctl", "list", "devices", "available", "-j"], QUICK)
+        .and_then(|output| json(&output))
+        .map(|value| parse_devices(&value));
     let android = android::devices();
     match ios {
-        Ok(mut list) => { list.extend(android); Ok(sort(list)) }
+        Ok(mut list) => {
+            list.extend(android);
+            Ok(sort(list))
+        }
         Err(_) if !android.is_empty() => Ok(sort(android)),
         Err(error) => Err(error),
     }
 }
 /// Running first, then iOS before Android, newest runtime, then name.
 fn sort(mut devices: Vec<Device>) -> Vec<Device> {
-    devices.sort_by(|a, b| (b.state == "Booted").cmp(&(a.state == "Booted")).then(a.platform.cmp(&b.platform).reverse()).then(b.runtime.cmp(&a.runtime)).then(a.name.cmp(&b.name)));
+    devices.sort_by(|a, b| {
+        (b.state == "Booted")
+            .cmp(&(a.state == "Booted"))
+            .then(a.platform.cmp(&b.platform).reverse())
+            .then(b.runtime.cmp(&a.runtime))
+            .then(a.name.cmp(&b.name))
+    });
     devices
 }
 
@@ -238,19 +303,30 @@ impl Simulators {
                 .ok_or("No simulator is running. Boot one from the Simulator tab or with pantheon_simulator_manage.")?,
         };
         if booted && device.state != "Booted" {
-            return Err(format!("{} is {}. Boot it first.", device.name, device.state.to_lowercase()));
+            return Err(format!(
+                "{} is {}. Boot it first.",
+                device.name,
+                device.state.to_lowercase()
+            ));
         }
         Ok(device)
     }
     pub fn screen(&self, device: &Device) -> Result<Screen, String> {
         // Android screens are read from the running emulator, so they are cached per device.
-        let key = if device.platform == "android" { device.udid.clone() } else { device.device_type.clone() };
+        let key = if device.platform == "android" {
+            device.udid.clone()
+        } else {
+            device.device_type.clone()
+        };
         if let Some(screen) = self.screens.lock().map_err(|e| e.to_string())?.get(&key) {
             return Ok(*screen);
         }
         if let Some(name) = android::avd(&device.udid) {
             let screen = android::screen(name)?;
-            self.screens.lock().map_err(|e| e.to_string())?.insert(key, screen);
+            self.screens
+                .lock()
+                .map_err(|e| e.to_string())?
+                .insert(key, screen);
             return Ok(screen);
         }
         let types = json(&xcrun(&["simctl", "list", "devicetypes", "-j"], QUICK)?)?;
@@ -264,26 +340,51 @@ impl Simulators {
             .to_string();
         let plist = |name: &str| {
             let mut command = Command::new("/usr/bin/plutil");
-            command.args(["-convert", "json", "-o", "-"]).arg(Path::new(&bundle).join("Contents/Resources").join(name));
-            json(&checked(run_process(command, "plutil", OUTPUT_LIMIT, QUICK)?)?)
+            command
+                .args(["-convert", "json", "-o", "-"])
+                .arg(Path::new(&bundle).join("Contents/Resources").join(name));
+            json(&checked(run_process(
+                command,
+                "plutil",
+                OUTPUT_LIMIT,
+                QUICK,
+            )?)?)
         };
         let profile = plist("profile.plist")?;
-        let caps = if device.duo { plist("capabilities.plist").ok() } else { None };
-        let cover = caps.as_ref().and_then(|caps| duo::parse_display(caps, duo::COVER)).map(|(size, scale)| Screen {
-            width: size.width,
-            height: size.height,
-            scale,
-            // Touch ID sits in the top button; the displays have rounded corners.
-            home_button: false,
-            inner: None,
-        });
-        let mut screen = parse_screen(&profile).or(cover).ok_or("The device profile has no screen size.")?;
+        let caps = if device.duo {
+            plist("capabilities.plist").ok()
+        } else {
+            None
+        };
+        let cover = caps
+            .as_ref()
+            .and_then(|caps| duo::parse_display(caps, duo::COVER))
+            .map(|(size, scale)| Screen {
+                width: size.width,
+                height: size.height,
+                scale,
+                // Touch ID sits in the top button; the displays have rounded corners.
+                home_button: false,
+                inner: None,
+            });
+        let mut screen = parse_screen(&profile)
+            .or(cover)
+            .ok_or("The device profile has no screen size.")?;
         screen.inner = caps.and_then(|caps| duo::parse_inner(&caps));
-        self.screens.lock().map_err(|e| e.to_string())?.insert(device.device_type.clone(), screen);
+        self.screens
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(device.device_type.clone(), screen);
         Ok(screen)
     }
     pub fn status(&self) -> Status {
-        let mut status = Status { axe: axe_path().is_some(), axe_install: AXE_INSTALL.into(), android: android::emulator_path().is_some(), selected: self.selected(), ..Default::default() };
+        let mut status = Status {
+            axe: axe_path().is_some(),
+            axe_install: AXE_INSTALL.into(),
+            android: android::emulator_path().is_some(),
+            selected: self.selected(),
+            ..Default::default()
+        };
         // The Duo probe (two `simctl` lists, once a minute) runs beside the device list.
         let (listed, duo_available) = std::thread::scope(|scope| {
             let probe = scope.spawn(|| self.duo_available());
@@ -292,14 +393,27 @@ impl Simulators {
         match listed {
             Ok(list) => {
                 status.available = true;
-                if status.selected.as_ref().is_some_and(|u| !list.iter().any(|d| &d.udid == u)) {
+                if status
+                    .selected
+                    .as_ref()
+                    .is_some_and(|u| !list.iter().any(|d| &d.udid == u))
+                {
                     status.selected = None;
                 }
                 self.note_duos(&list);
                 status.duo_available = duo_available;
-                status.pose = status.selected.as_deref().filter(|u| list.iter().any(|d| d.duo && d.udid == *u)).map(|u| self.pose(u));
-                let shown = status.selected.clone().and_then(|u| list.iter().find(|d| d.udid == u).cloned());
-                status.screen = shown.filter(|d| d.platform == "ios" || d.state == "Booted").and_then(|d| self.screen(&d).ok());
+                status.pose = status
+                    .selected
+                    .as_deref()
+                    .filter(|u| list.iter().any(|d| d.duo && d.udid == *u))
+                    .map(|u| self.pose(u));
+                let shown = status
+                    .selected
+                    .clone()
+                    .and_then(|u| list.iter().find(|d| d.udid == u).cloned());
+                status.screen = shown
+                    .filter(|d| d.platform == "ios" || d.state == "Booted")
+                    .and_then(|d| self.screen(&d).ok());
                 status.devices = list;
             }
             Err(error) => status.error = Some(error),
@@ -308,15 +422,23 @@ impl Simulators {
     }
     fn note_duos(&self, list: &[Device]) {
         if let Ok(mut poses) = self.poses.lock() {
-            for d in list.iter().filter(|d| d.duo) { poses.entry(d.udid.clone()).or_default(); }
+            for d in list.iter().filter(|d| d.duo) {
+                poses.entry(d.udid.clone()).or_default();
+            }
         }
     }
     /// Cached for a minute: it costs two `simctl` calls.
     fn duo_available(&self) -> bool {
-        let Ok(mut cache) = self.duo_support.lock() else { return false };
+        let Ok(mut cache) = self.duo_support.lock() else {
+            return false;
+        };
         match *cache {
             Some((at, yes)) if at.elapsed() < Duration::from_secs(60) => yes,
-            _ => { let yes = duo::probe(); *cache = Some((Instant::now(), yes)); yes }
+            _ => {
+                let yes = duo::probe();
+                *cache = Some((Instant::now(), yes));
+                yes
+            }
         }
     }
     /// A Duo listed by an earlier status; asks no simulator tool.
@@ -332,20 +454,31 @@ impl Simulators {
         if self.recorded(udid).is_none() {
             return Vec::new();
         }
-        let cached = self.duo_displays.lock().ok().and_then(|cache| cache.get(udid).filter(|(at, _)| at.elapsed() < Duration::from_secs(1)).map(|(_, list)| list.clone()));
+        let cached = self.duo_displays.lock().ok().and_then(|cache| {
+            cache
+                .get(udid)
+                .filter(|(at, _)| at.elapsed() < Duration::from_secs(1))
+                .map(|(_, list)| list.clone())
+        });
         if let Some(list) = cached {
             return list;
         }
         // Asked without the lock held, so status, frames and input never queue behind `devicectl`.
         let list = duo::displays(udid).unwrap_or_default();
-        if let Ok(mut cache) = self.duo_displays.lock() { cache.insert(udid.to_string(), (Instant::now(), list.clone())); }
+        if let Ok(mut cache) = self.duo_displays.lock() {
+            cache.insert(udid.to_string(), (Instant::now(), list.clone()));
+        }
         list
     }
     /// The pose: the active display wins over the recorded pose, which only tells Book from Open.
     pub fn pose(&self, udid: &str) -> duo::Pose {
-        let Some(recorded) = self.recorded(udid) else { return duo::Pose::default() };
+        let Some(recorded) = self.recorded(udid) else {
+            return duo::Pose::default();
+        };
         let pose = duo::reconcile(recorded, duo::active(&self.duo(udid)).map(|d| d.inner));
-        if let Ok(mut poses) = self.poses.lock() { poses.insert(udid.to_string(), pose); }
+        if let Ok(mut poses) = self.poses.lock() {
+            poses.insert(udid.to_string(), pose);
+        }
         pose
     }
     /// The display to capture and stream: set only for a known Duo.
@@ -357,7 +490,11 @@ impl Simulators {
     pub fn shown(&self, device: &Device) -> Result<Screen, String> {
         let screen = self.screen(device)?;
         Ok(match duo::active(&self.duo(&device.udid)) {
-            Some(active) => Screen { width: active.ui().0, height: active.ui().1, ..screen },
+            Some(active) => Screen {
+                width: active.ui().0,
+                height: active.ui().1,
+                ..screen
+            },
             None => screen.shown(self.display(&device.udid)),
         })
     }
@@ -369,9 +506,17 @@ impl Simulators {
             .run(|overtaken| {
                 // The device's pose, not the record: a sweep from where the hinge is not does not move it.
                 let displays = duo::fold(udid, self.pose(udid), pose, overtaken)?;
-                self.poses.lock().map_err(|e| e.to_string())?.insert(udid.to_string(), pose);
-                let Some(displays) = displays else { return Ok(()) };
-                self.duo_displays.lock().map_err(|e| e.to_string())?.insert(udid.to_string(), (Instant::now(), displays));
+                self.poses
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .insert(udid.to_string(), pose);
+                let Some(displays) = displays else {
+                    return Ok(());
+                };
+                self.duo_displays
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .insert(udid.to_string(), (Instant::now(), displays));
                 self.streams.stop(udid);
                 self.streams.start(udid, Some(duo::display_for(pose)));
                 Ok(())
@@ -380,12 +525,16 @@ impl Simulators {
     }
     /// Forget a device's cached screen, e.g. after it boots or shuts down.
     pub fn forget_screen(&self, udid: &str) {
-        if let Ok(mut screens) = self.screens.lock() { screens.remove(udid); }
+        if let Ok(mut screens) = self.screens.lock() {
+            screens.remove(udid);
+        }
     }
 }
 
 pub fn boot(udid: &str) -> Result<(), String> {
-    if let Some(name) = android::avd(udid) { return android::boot(name); }
+    if let Some(name) = android::avd(udid) {
+        return android::boot(name);
+    }
     if let Err(error) = xcrun(&["simctl", "boot", udid], BOOT) {
         if !error.contains("current state: Booted") {
             return Err(error);
@@ -394,7 +543,9 @@ pub fn boot(udid: &str) -> Result<(), String> {
     xcrun(&["simctl", "bootstatus", udid, "-b"], BOOT).map(|_| ())
 }
 pub fn shutdown(udid: &str) -> Result<(), String> {
-    if let Some(name) = android::avd(udid) { return android::shutdown(name); }
+    if let Some(name) = android::avd(udid) {
+        return android::shutdown(name);
+    }
     match xcrun(&["simctl", "shutdown", udid], QUICK) {
         Err(error) if !error.contains("current state: Shutdown") => Err(error),
         _ => Ok(()),
@@ -422,7 +573,11 @@ pub fn frame(udid: &str, display: Option<&str>) -> Result<Vec<u8>, String> {
 
 /// A PNG of the screen at full resolution, or JPEG resized to points when `points` is set.
 /// `display` picks a Duo's `primary` (cover) or `primary-1` (inner) display.
-pub fn screenshot(udid: &str, points: Option<Screen>, display: Option<&str>) -> Result<Vec<u8>, String> {
+pub fn screenshot(
+    udid: &str,
+    points: Option<Screen>,
+    display: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let dir = std::env::temp_dir().join("pantheon-simulator");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stem = dir.join(format!("{}-{}", udid, crate::storage::id()));
@@ -431,7 +586,9 @@ pub fn screenshot(udid: &str, points: Option<Screen>, display: Option<&str>) -> 
         match android::avd(udid) {
             Some(name) => {
                 let png = android::screenshot(name)?;
-                if points.is_none() || !Path::new("/usr/bin/sips").is_file() { return Ok(png); }
+                if points.is_none() || !Path::new("/usr/bin/sips").is_file() {
+                    return Ok(png);
+                }
                 std::fs::write(&raw, png).map_err(|e| e.to_string())?;
             }
             None => {
@@ -443,10 +600,20 @@ pub fn screenshot(udid: &str, points: Option<Screen>, display: Option<&str>) -> 
                 xcrun(&args, QUICK)?;
             }
         }
-        let Some(screen) = points else { return std::fs::read(&raw).map_err(|e| e.to_string()) };
+        let Some(screen) = points else {
+            return std::fs::read(&raw).map_err(|e| e.to_string());
+        };
         let mut command = Command::new("/usr/bin/sips");
         command
-            .args(["-s", "format", "jpeg", "-s", "formatOptions", "80", "--resampleHeightWidth"])
+            .args([
+                "-s",
+                "format",
+                "jpeg",
+                "-s",
+                "formatOptions",
+                "80",
+                "--resampleHeightWidth",
+            ])
             .arg(screen.height.to_string())
             .arg(screen.width.to_string())
             .arg(&raw)
@@ -462,22 +629,46 @@ pub fn screenshot(udid: &str, points: Option<Screen>, display: Option<&str>) -> 
 
 fn point(value: f64, limit: f64, axis: &str) -> Result<String, String> {
     if !value.is_finite() || value < 0.0 || value > limit {
-        return Err(format!("{axis} must be within the screen (0–{limit} points)."));
+        return Err(format!(
+            "{axis} must be within the screen (0–{limit} points)."
+        ));
     }
     Ok(format!("{value:.1}"))
 }
 const BUTTONS: [&str; 5] = ["home", "lock", "side-button", "siri", "apple-pay"];
 /// HID usage IDs for the keys an agent or the panel can press.
-pub const KEYS: [(&str, u8); 10] = [("return", 40), ("escape", 41), ("backspace", 42), ("tab", 43), ("space", 44), ("right", 79), ("left", 80), ("down", 81), ("up", 82), ("delete", 76)];
+pub const KEYS: [(&str, u8); 10] = [
+    ("return", 40),
+    ("escape", 41),
+    ("backspace", 42),
+    ("tab", 43),
+    ("space", 44),
+    ("right", 79),
+    ("left", 80),
+    ("down", 81),
+    ("up", 82),
+    ("delete", 76),
+];
 
 /// Deliver one input through AXe. Coordinates are points within `screen`. On an
 /// iPhone Duo (`duo` lists its displays) touches go through the helper to the active
 /// display, since AXe only reaches the cover.
-pub fn input(udid: &str, screen: Screen, duo: &[duo::Display], input: &Input) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::input(name, screen, input); }
+pub fn input(
+    udid: &str,
+    screen: Screen,
+    duo: &[duo::Display],
+    input: &Input,
+) -> Result<String, String> {
+    if let Some(name) = android::avd(udid) {
+        return android::input(name, screen, input);
+    }
     let (w, h) = (screen.width, screen.height);
     if let Some(display) = duo::active(duo) {
-        let at = |x: f64, y: f64| -> Result<(f64, f64), String> { point(x, w, "x")?; point(y, h, "y")?; Ok((x, y)) };
+        let at = |x: f64, y: f64| -> Result<(f64, f64), String> {
+            point(x, w, "x")?;
+            point(y, h, "y")?;
+            Ok((x, y))
+        };
         match input {
             Input::Tap { x, y } => {
                 duo::helper(udid, &duo::tap_args(display, at(*x, *y)?, 0.08))?;
@@ -488,13 +679,30 @@ pub fn input(udid: &str, screen: Screen, duo: &[duo::Display], input: &Input) ->
                 duo::helper(udid, &duo::tap_args(display, at(*x, *y)?, hold))?;
                 return Ok(format!("Long-pressed ({x:.0}, {y:.0}) for {hold:.2}s."));
             }
-            Input::Swipe { x, y, end_x, end_y, duration_ms } => {
+            Input::Swipe {
+                x,
+                y,
+                end_x,
+                end_y,
+                duration_ms,
+            } => {
                 let seconds = duration_ms.unwrap_or(300).clamp(50, 5_000) as f64 / 1000.0;
-                duo::helper(udid, &duo::swipe_args(display, at(*x, *y)?, at(*end_x, *end_y)?, seconds))?;
-                return Ok(format!("Swiped from ({x:.0}, {y:.0}) to ({end_x:.0}, {end_y:.0})."));
+                duo::helper(
+                    udid,
+                    &duo::swipe_args(display, at(*x, *y)?, at(*end_x, *end_y)?, seconds),
+                )?;
+                return Ok(format!(
+                    "Swiped from ({x:.0}, {y:.0}) to ({end_x:.0}, {end_y:.0})."
+                ));
             }
             Input::TapLabel { label } if !label.trim().is_empty() && label.len() <= 500 => {
-                let (x, y) = tree::find_label(&ui_tree(udid, duo)?, label, display.ui()).ok_or_else(|| format!("No element labeled \"{label}\" is on the {} display.", display.name()))?;
+                let (x, y) = tree::find_label(&ui_tree(udid, duo)?, label, display.ui())
+                    .ok_or_else(|| {
+                        format!(
+                            "No element labeled \"{label}\" is on the {} display.",
+                            display.name()
+                        )
+                    })?;
                 duo::helper(udid, &duo::tap_args(display, (x, y), 0.08))?;
                 return Ok(format!("Tapped \"{label}\" at ({x:.0}, {y:.0})."));
             }
@@ -508,25 +716,85 @@ pub fn input(udid: &str, screen: Screen, duo: &[duo::Display], input: &Input) ->
     }
     match input {
         Input::Tap { x, y } => {
-            axe(&["tap", "-x", &point(*x, w, "x")?, "-y", &point(*y, h, "y")?, "--udid", udid], QUICK)?;
+            axe(
+                &[
+                    "tap",
+                    "-x",
+                    &point(*x, w, "x")?,
+                    "-y",
+                    &point(*y, h, "y")?,
+                    "--udid",
+                    udid,
+                ],
+                QUICK,
+            )?;
             Ok(format!("Tapped ({x:.0}, {y:.0})."))
         }
         Input::LongPress { x, y, duration_ms } => {
-            let hold = format!("{:.2}", duration_ms.unwrap_or(800).clamp(100, 10_000) as f64 / 1000.0);
-            axe(&["touch", "-x", &point(*x, w, "x")?, "-y", &point(*y, h, "y")?, "--down", "--up", "--delay", &hold, "--udid", udid], QUICK)?;
+            let hold = format!(
+                "{:.2}",
+                duration_ms.unwrap_or(800).clamp(100, 10_000) as f64 / 1000.0
+            );
+            axe(
+                &[
+                    "touch",
+                    "-x",
+                    &point(*x, w, "x")?,
+                    "-y",
+                    &point(*y, h, "y")?,
+                    "--down",
+                    "--up",
+                    "--delay",
+                    &hold,
+                    "--udid",
+                    udid,
+                ],
+                QUICK,
+            )?;
             Ok(format!("Long-pressed ({x:.0}, {y:.0}) for {hold}s."))
         }
-        Input::Swipe { x, y, end_x, end_y, duration_ms } => {
-            let duration = format!("{:.2}", duration_ms.unwrap_or(300).clamp(50, 5_000) as f64 / 1000.0);
-            axe(&["swipe", "--start-x", &point(*x, w, "x")?, "--start-y", &point(*y, h, "y")?, "--end-x", &point(*end_x, w, "endX")?, "--end-y", &point(*end_y, h, "endY")?, "--duration", &duration, "--udid", udid], QUICK)?;
-            Ok(format!("Swiped from ({x:.0}, {y:.0}) to ({end_x:.0}, {end_y:.0})."))
+        Input::Swipe {
+            x,
+            y,
+            end_x,
+            end_y,
+            duration_ms,
+        } => {
+            let duration = format!(
+                "{:.2}",
+                duration_ms.unwrap_or(300).clamp(50, 5_000) as f64 / 1000.0
+            );
+            axe(
+                &[
+                    "swipe",
+                    "--start-x",
+                    &point(*x, w, "x")?,
+                    "--start-y",
+                    &point(*y, h, "y")?,
+                    "--end-x",
+                    &point(*end_x, w, "endX")?,
+                    "--end-y",
+                    &point(*end_y, h, "endY")?,
+                    "--duration",
+                    &duration,
+                    "--udid",
+                    udid,
+                ],
+                QUICK,
+            )?;
+            Ok(format!(
+                "Swiped from ({x:.0}, {y:.0}) to ({end_x:.0}, {end_y:.0})."
+            ))
         }
         Input::Type { text } => {
             if text.is_empty() || text.chars().count() > MAX_TEXT || text.contains('\0') {
                 return Err(format!("Type between 1 and {MAX_TEXT} characters."));
             }
             // `--` keeps text such as `-v` from being read as an option.
-            axe(&["type", "--udid", udid, "--", text], Duration::from_secs(60))?;
+            axe(
+                &["type", "--udid", udid, "--", text],
+                Duration::from_secs(60),
+            )?;
             Ok(format!("Typed {} characters.", text.chars().count()))
         }
         Input::Button { button } => {
@@ -537,7 +805,13 @@ pub fn input(udid: &str, screen: Screen, duo: &[duo::Display], input: &Input) ->
             Ok(format!("Pressed {button}."))
         }
         Input::Key { key } => {
-            let code = KEYS.iter().find(|(name, _)| name == key).map(|(_, code)| code.to_string()).ok_or_else(|| format!("Press one of: {}.", KEYS.map(|(name, _)| name).join(", ")))?;
+            let code = KEYS
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, code)| code.to_string())
+                .ok_or_else(|| {
+                    format!("Press one of: {}.", KEYS.map(|(name, _)| name).join(", "))
+                })?;
             axe(&["key", &code, "--udid", udid], QUICK)?;
             Ok(format!("Pressed {key}."))
         }
@@ -545,20 +819,45 @@ pub fn input(udid: &str, screen: Screen, duo: &[duo::Display], input: &Input) ->
             if label.trim().is_empty() || label.len() > 500 {
                 return Err("Give the accessibility label to tap.".into());
             }
-            let output = axe(&["tap", "--label", label, "--wait-timeout", "2", "--udid", udid], QUICK)?;
+            let output = axe(
+                &[
+                    "tap",
+                    "--label",
+                    label,
+                    "--wait-timeout",
+                    "2",
+                    "--udid",
+                    udid,
+                ],
+                QUICK,
+            )?;
             let report = String::from_utf8_lossy(&output.bytes).trim().to_string();
-            Ok(if report.is_empty() { format!("Tapped \"{label}\".") } else { report })
+            Ok(if report.is_empty() {
+                format!("Tapped \"{label}\".")
+            } else {
+                report
+            })
         }
     }
 }
 
 /// AXe's tree; for a Duo, only the active display's elements, in its interface points.
 fn ui_tree(udid: &str, duo: &[duo::Display]) -> Result<serde_json::Value, String> {
-    let tree = json(&axe(&["describe-ui", "--udid", udid], Duration::from_secs(45))?)?;
-    let Some(shown) = duo::active(duo) else { return Ok(tree) };
-    let hidden = duo.iter().find(|d| !d.active).map_or(shown.native, |d| d.native);
+    let tree = json(&axe(
+        &["describe-ui", "--udid", udid],
+        Duration::from_secs(45),
+    )?)?;
+    let Some(shown) = duo::active(duo) else {
+        return Ok(tree);
+    };
+    let hidden = duo
+        .iter()
+        .find(|d| !d.active)
+        .map_or(shown.native, |d| d.native);
     let (rotation, native) = (shown.rotation, shown.native);
-    let tree = tree::for_display(&tree, shown.native, hidden, shown.ui(), &|rect| duo::rect_to_ui(rotation, native, rect));
+    let tree = tree::for_display(&tree, shown.native, hidden, shown.ui(), &|rect| {
+        duo::rect_to_ui(rotation, native, rect)
+    });
     if !shown.inner {
         return Ok(tree);
     }
@@ -566,13 +865,22 @@ fn ui_tree(udid: &str, duo: &[duo::Display]) -> Result<serde_json::Value, String
     Ok(tree::with_frames(&tree, &duo::elements(udid, shown)?))
 }
 /// The accessibility tree as compact lines, or the element at one point.
-pub fn describe(udid: &str, at: Option<(f64, f64)>, duo: &[duo::Display]) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::describe(name, android::screen(name)?.scale); }
+pub fn describe(
+    udid: &str,
+    at: Option<(f64, f64)>,
+    duo: &[duo::Display],
+) -> Result<String, String> {
+    if let Some(name) = android::avd(udid) {
+        return android::describe(name, android::screen(name)?.scale);
+    }
     if duo::active(duo).is_some() {
         // AXe's `--point` misses the inner display, so the point is looked up here.
         let tree = ui_tree(udid, duo)?;
         return Ok(match at {
-            Some(point) => tree::at_point(&tree, point).map_or_else(|| "No labeled element at that point.".to_string(), |node| tree::summarize(&node)),
+            Some(point) => tree::at_point(&tree, point).map_or_else(
+                || "No labeled element at that point.".to_string(),
+                |node| tree::summarize(&node),
+            ),
             None => tree::summarize(&tree),
         });
     }
@@ -581,30 +889,59 @@ pub fn describe(udid: &str, at: Option<(f64, f64)>, duo: &[duo::Display]) -> Res
     if let Some(at) = at.as_deref() {
         args.extend(["--point", at]);
     }
-    Ok(tree::summarize(&json(&axe(&args, Duration::from_secs(45))?)?))
+    Ok(tree::summarize(&json(&axe(
+        &args,
+        Duration::from_secs(45),
+    )?)?))
 }
 
 fn valid_bundle_id(id: &str) -> Result<(), String> {
-    if id.is_empty() || id.len() > 255 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') || id.starts_with('-') {
+    if id.is_empty()
+        || id.len() > 255
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        || id.starts_with('-')
+    {
         return Err("Give a bundle identifier such as com.example.App.".into());
     }
     Ok(())
 }
 pub fn launch(udid: &str, bundle_id: &str) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::launch(name, bundle_id); }
+    if let Some(name) = android::avd(udid) {
+        return android::launch(name, bundle_id);
+    }
     valid_bundle_id(bundle_id)?;
-    xcrun(&["simctl", "launch", "--terminate-running-process", udid, bundle_id], QUICK)?;
+    xcrun(
+        &[
+            "simctl",
+            "launch",
+            "--terminate-running-process",
+            udid,
+            bundle_id,
+        ],
+        QUICK,
+    )?;
     Ok(format!("Launched {bundle_id}."))
 }
 pub fn terminate(udid: &str, bundle_id: &str) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::terminate(name, bundle_id); }
+    if let Some(name) = android::avd(udid) {
+        return android::terminate(name, bundle_id);
+    }
     valid_bundle_id(bundle_id)?;
     xcrun(&["simctl", "terminate", udid, bundle_id], QUICK)?;
     Ok(format!("Terminated {bundle_id}."))
 }
 pub fn open_url(udid: &str, url: &str) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::open_url(name, url); }
-    let scheme_ok = url.split_once(':').is_some_and(|(scheme, _)| !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b)));
+    if let Some(name) = android::avd(udid) {
+        return android::open_url(name, url);
+    }
+    let scheme_ok = url.split_once(':').is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
+    });
     if url.len() > 4096 || url.chars().any(char::is_whitespace) || !scheme_ok {
         return Err("Give a URL such as https://example.com or myapp://path.".into());
     }
@@ -613,16 +950,30 @@ pub fn open_url(udid: &str, url: &str) -> Result<String, String> {
 }
 /// Install a built `.app` bundle, e.g. from Xcode's DerivedData.
 pub fn install(udid: &str, path: &Path) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::install(name, path); }
-    let path = path.canonicalize().map_err(|_| "That app bundle does not exist.".to_string())?;
+    if let Some(name) = android::avd(udid) {
+        return android::install(name, path);
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|_| "That app bundle does not exist.".to_string())?;
     if path.extension().and_then(|e| e.to_str()) != Some("app") || !path.is_dir() {
         return Err("Give the path of a built .app bundle for the simulator.".into());
     }
-    xcrun(&["simctl", "install", udid, &path.to_string_lossy()], INSTALL)?;
-    Ok(format!("Installed {}.", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
+    xcrun(
+        &["simctl", "install", udid, &path.to_string_lossy()],
+        INSTALL,
+    )?;
+    Ok(format!(
+        "Installed {}.",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ))
 }
 pub fn appearance(udid: &str, mode: &str) -> Result<String, String> {
-    if let Some(name) = android::avd(udid) { return android::appearance(name, mode); }
+    if let Some(name) = android::avd(udid) {
+        return android::appearance(name, mode);
+    }
     if !["light", "dark"].contains(&mode) {
         return Err("Appearance is light or dark.".into());
     }
@@ -643,7 +994,15 @@ mod tests {
                 {"udid":"FD7CC5DD-38EC-4008-A6BA-D62FF4BC3728","name":"Broken","state":"Shutdown","isAvailable":false,"deviceTypeIdentifier":"x"}],
             "com.apple.CoreSimulator.SimRuntime.watchOS-26-0":[{"udid":"AAAAAAAA-B8C5-4DAC-9425-6A4685BC533E","name":"Watch","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"w"}]}});
         let list = parse_devices(&value);
-        assert_eq!(list.iter().map(|d| (d.name.as_str(), d.family.as_str(), d.runtime.as_str())).collect::<Vec<_>>(), vec![("iPad Air", "pad", "iOS 26.2"), ("iPhone 17 Pro", "phone", "iOS 26.2")]);
+        assert_eq!(
+            list.iter()
+                .map(|d| (d.name.as_str(), d.family.as_str(), d.runtime.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("iPad Air", "pad", "iOS 26.2"),
+                ("iPhone 17 Pro", "phone", "iOS 26.2")
+            ]
+        );
     }
 
     #[test]
@@ -653,12 +1012,30 @@ mod tests {
             {"udid":"73BD9B70-5E3A-49BD-B2C9-AA7256897283","name":"Fold","state":"Shutdown","deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.V68"},
             {"udid":"FD7CC5DD-38EC-4008-A6BA-D62FF4BC3728","name":"iPhone Duo","state":"Shutdown","deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPad-A16"}]}});
         let list = parse_devices(&value);
-        assert_eq!(list.iter().map(|d| (d.udid.as_str(), d.duo, d.family.as_str())).collect::<Vec<_>>(), vec![("73BD9B70-5E3A-49BD-B2C9-AA7256897283", true, "phone"), ("3720D4A0-B8C5-4DAC-9425-6A4685BC533E", true, "phone"), ("FD7CC5DD-38EC-4008-A6BA-D62FF4BC3728", false, "pad")]);
+        assert_eq!(
+            list.iter()
+                .map(|d| (d.udid.as_str(), d.duo, d.family.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("73BD9B70-5E3A-49BD-B2C9-AA7256897283", true, "phone"),
+                ("3720D4A0-B8C5-4DAC-9425-6A4685BC533E", true, "phone"),
+                ("FD7CC5DD-38EC-4008-A6BA-D62FF4BC3728", false, "pad")
+            ]
+        );
     }
 
     #[test]
     fn the_inner_display_replaces_the_size_only_when_shown() {
-        let screen = Screen { width: 466.0, height: 678.0, scale: 3.0, home_button: false, inner: Some(Size { width: 951.0, height: 669.0 }) };
+        let screen = Screen {
+            width: 466.0,
+            height: 678.0,
+            scale: 3.0,
+            home_button: false,
+            inner: Some(Size {
+                width: 951.0,
+                height: 669.0,
+            }),
+        };
         assert_eq!(screen.shown(Some("primary-1")).width, 951.0);
         assert_eq!(screen.shown(Some("primary")), screen);
         assert_eq!(screen.shown(None), screen);
@@ -667,7 +1044,16 @@ mod tests {
     #[test]
     fn screens_come_from_device_profiles() {
         let profile = serde_json::json!({"mainScreenScale":3,"mainScreenWidth":1206,"mainScreenHeight":2622,"supportedFeatures":{"com.apple.pearl-id":true}});
-        assert_eq!(parse_screen(&profile), Some(Screen { width: 402.0, height: 874.0, scale: 3.0, home_button: false, inner: None }));
+        assert_eq!(
+            parse_screen(&profile),
+            Some(Screen {
+                width: 402.0,
+                height: 874.0,
+                scale: 3.0,
+                home_button: false,
+                inner: None
+            })
+        );
         let se = serde_json::json!({"mainScreenScale":2,"mainScreenWidth":750,"mainScreenHeight":1334,"supportedFeatures":{}});
         assert!(parse_screen(&se).unwrap().home_button);
         assert!(parse_screen(&serde_json::json!({"mainScreenScale":0})).is_none());
@@ -683,9 +1069,24 @@ mod tests {
         assert!(valid_bundle_id("com.example App").is_err());
         assert!(valid_udid("3720D4A0-B8C5-4DAC-9425-6A4685BC533E"));
         assert!(!valid_udid("booted"));
-        assert_eq!(runtime_name("com.apple.CoreSimulator.SimRuntime.iOS-26-2"), "iOS 26.2");
-        let input: Input = serde_json::from_value(serde_json::json!({"kind":"swipe","x":1,"y":2,"endX":3,"endY":4})).unwrap();
-        assert_eq!(input, Input::Swipe { x: 1.0, y: 2.0, end_x: 3.0, end_y: 4.0, duration_ms: None });
+        assert_eq!(
+            runtime_name("com.apple.CoreSimulator.SimRuntime.iOS-26-2"),
+            "iOS 26.2"
+        );
+        let input: Input = serde_json::from_value(
+            serde_json::json!({"kind":"swipe","x":1,"y":2,"endX":3,"endY":4}),
+        )
+        .unwrap();
+        assert_eq!(
+            input,
+            Input::Swipe {
+                x: 1.0,
+                y: 2.0,
+                end_x: 3.0,
+                end_y: 4.0,
+                duration_ms: None
+            }
+        );
     }
 
     /// Drives a booted simulator end to end; run with `cargo test -- --ignored simulator::tests::live` with one booted and AXe installed.
@@ -698,17 +1099,53 @@ mod tests {
         assert!(screen.width > 300.0 && screen.scale >= 2.0, "{screen:?}");
         let jpeg = screenshot(&device.udid, Some(screen), None).unwrap();
         assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
-        input(&device.udid, screen, &[], &Input::Button { button: "home".into() }).unwrap();
+        input(
+            &device.udid,
+            screen,
+            &[],
+            &Input::Button {
+                button: "home".into(),
+            },
+        )
+        .unwrap();
         let tree = describe(&device.udid, None, &[]).unwrap();
-        assert!(tree.contains(&format!("Screen {}×{}", screen.width, screen.height)), "{tree}");
-        input(&device.udid, screen, &[], &Input::Swipe { x: 300.0, y: 500.0, end_x: 60.0, end_y: 500.0, duration_ms: None }).unwrap();
-        input(&device.udid, screen, &[], &Input::Button { button: "home".into() }).unwrap();
+        assert!(
+            tree.contains(&format!("Screen {}×{}", screen.width, screen.height)),
+            "{tree}"
+        );
+        input(
+            &device.udid,
+            screen,
+            &[],
+            &Input::Swipe {
+                x: 300.0,
+                y: 500.0,
+                end_x: 60.0,
+                end_y: 500.0,
+                duration_ms: None,
+            },
+        )
+        .unwrap();
+        input(
+            &device.udid,
+            screen,
+            &[],
+            &Input::Button {
+                button: "home".into(),
+            },
+        )
+        .unwrap();
         let streams = stream::Streams::default();
-        let frame = streams.next(&device.udid, None, 0, Duration::from_secs(10)).unwrap().expect("a live frame");
+        let frame = streams
+            .next(&device.udid, None, 0, Duration::from_secs(10))
+            .unwrap()
+            .expect("a live frame");
         assert_eq!(&frame.jpeg[..2], &[0xFF, 0xD8]);
-        let later = streams.next(&device.udid, None, frame.seq, Duration::from_secs(5)).unwrap().expect("frames keep coming");
+        let later = streams
+            .next(&device.udid, None, frame.seq, Duration::from_secs(5))
+            .unwrap()
+            .expect("frames keep coming");
         assert!(later.seq > frame.seq);
         streams.stop(&device.udid);
     }
-
 }

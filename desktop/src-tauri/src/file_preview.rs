@@ -300,7 +300,10 @@ impl FilePreviews {
     /// private webview has no preview cookie, even though the saved URL is clean.
     /// Never authorize guest-initiated navigation or an unrelated localhost server.
     pub(crate) fn navigation_url(&self, url: &tauri::Url) -> Result<tauri::Url> {
-        let mut servers = self.servers.lock().map_err(|_| "File preview is unavailable.")?;
+        let mut servers = self
+            .servers
+            .lock()
+            .map_err(|_| "File preview is unavailable.")?;
         let Some(server) = servers.iter_mut().find(|server| {
             server.origin == url.origin().ascii_serialization() && !server.stop.is_closed()
         }) else {
@@ -309,7 +312,11 @@ impl FilePreviews {
         server.touched = Instant::now();
         let mut navigation = url.clone();
         if !url.path().starts_with("/__pantheon_preview/") {
-            navigation.set_path(&format!("/__pantheon_preview/{}{}", server.token, url.path()));
+            navigation.set_path(&format!(
+                "/__pantheon_preview/{}{}",
+                server.token,
+                url.path()
+            ));
         }
         Ok(navigation)
     }
@@ -741,7 +748,9 @@ mod tests {
     async fn authorize(url: &tauri::Url) -> String {
         let response = request(url, url.path(), "").await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        assert!(response.contains("location.replace(\"/web/hello%20world.html\" + location.search + location.hash)"));
+        assert!(response.contains(
+            "location.replace(\"/web/hello%20world.html\" + location.search + location.hash)"
+        ));
         let cookie = response
             .lines()
             .find_map(|line| line.strip_prefix("Set-Cookie: "))
@@ -804,22 +813,35 @@ mod tests {
         let f = Fixture::new();
         f.write("web/hello world.html", "<h1>Hello</h1>");
         let state = FilePreviews::default();
-        let bootstrap = tauri::Url::parse(&state.prepare(&f.0, "web/hello world.html").unwrap().url).unwrap();
-        let clean = bootstrap.join("/web/hello%20world.html?tab=design#preview").unwrap();
+        let bootstrap =
+            tauri::Url::parse(&state.prepare(&f.0, "web/hello world.html").unwrap().url).unwrap();
+        let clean = bootstrap
+            .join("/web/hello%20world.html?tab=design#preview")
+            .unwrap();
         let restored = state.navigation_url(&clean).unwrap();
         assert_eq!(restored.path(), bootstrap.path());
         assert_eq!(restored.query(), clean.query());
         assert_eq!(restored.fragment(), clean.fragment());
-        assert_eq!(state.navigation_url(&restored).unwrap(), restored, "do not wrap twice");
+        assert_eq!(
+            state.navigation_url(&restored).unwrap(),
+            restored,
+            "do not wrap twice"
+        );
         for value in [
             "https://example.com/index.html".into(),
             "http://127.0.0.1:3000/index.html".into(),
             clean.as_str().replace("127.0.0.1", "localhost"),
-            clean.as_str().replace("127.0.0.1", "127.0.0.1.evil.example"),
+            clean
+                .as_str()
+                .replace("127.0.0.1", "127.0.0.1.evil.example"),
             clean.as_str().replace("http:", "https:"),
         ] {
             let url = tauri::Url::parse(&value).unwrap();
-            assert_eq!(state.navigation_url(&url).unwrap(), url, "never authorize unrelated origins");
+            assert_eq!(
+                state.navigation_url(&url).unwrap(),
+                url,
+                "never authorize unrelated origins"
+            );
         }
         state.shutdown();
         assert_eq!(state.navigation_url(&clean).unwrap(), clean);
@@ -832,19 +854,32 @@ mod tests {
         f.write("web/index.html", "<h1>Directory preview</h1>");
         f.write(".env", "PRIVATE");
         let state = FilePreviews::default();
-        let initial = tauri::Url::parse(&state.prepare(&f.0, "web/index.html").unwrap().url).unwrap();
-        let directory = state.navigation_url(&initial.join("/web/").unwrap()).unwrap();
+        let initial =
+            tauri::Url::parse(&state.prepare(&f.0, "web/index.html").unwrap().url).unwrap();
+        let directory = state
+            .navigation_url(&initial.join("/web/").unwrap())
+            .unwrap();
         let response = request(&directory, directory.path(), "").await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response.contains("location.replace(\"/web/\" + location.search + location.hash)"));
-        let cookie = response.lines().find_map(|line| line.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap();
+        let cookie = response
+            .lines()
+            .find_map(|line| line.strip_prefix("Set-Cookie: "))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
         let cookie = format!("Cookie: {cookie}\r\n");
-        assert!(request(&directory, "/web/", &cookie).await.contains("Directory preview"));
+        assert!(request(&directory, "/web/", &cookie)
+            .await
+            .contains("Directory preview"));
         let root = state.navigation_url(&initial.join("/").unwrap()).unwrap();
         let response = request(&root, root.path(), "").await;
         assert!(response.starts_with("HTTP/1.1 200"));
         assert!(response.contains("location.replace(\"/\" + location.search + location.hash)"));
-        let secret = state.navigation_url(&initial.join("/.env").unwrap()).unwrap();
+        let secret = state
+            .navigation_url(&initial.join("/.env").unwrap())
+            .unwrap();
         let response = request(&secret, secret.path(), "").await;
         assert!(response.starts_with("HTTP/1.1 404"));
         assert!(!response.contains("PRIVATE"));
@@ -976,8 +1011,10 @@ mod tests {
         f.write("logo.svg", "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><rect width='32' height='32' fill='gold'/></svg>");
         let state = FilePreviews::default();
         let preview = state.prepare(&f.0, "web/hello world.html").unwrap();
-        let clean = tauri::Url::parse(&preview.url).unwrap()
-            .join("/web/hello%20world.html?restored=two%20words#preview-heading").unwrap();
+        let clean = tauri::Url::parse(&preview.url)
+            .unwrap()
+            .join("/web/hello%20world.html?restored=two%20words#preview-heading")
+            .unwrap();
         let restored = state.navigation_url(&clean).unwrap();
         let output = tokio::task::spawn_blocking(move || {
             let mut command = std::process::Command::new("node");
@@ -1048,7 +1085,7 @@ mod tests {
         let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&main.0).unwrap();
         let source = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         let task = store
             .create_worktree_session_on(&source, &checkout.0, None)

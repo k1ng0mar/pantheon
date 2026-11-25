@@ -99,7 +99,9 @@ pub struct Session {
     pub task_description: String,
     pub completed_at: Option<i64>,
     pub goal_state: Option<crate::goal_state::GoalState>,
-    pub codex_settings: Option<serde_json::Value>,
+    /// Plan / fast-service preferences. The column keeps its original name so a
+    /// database written by an older build still loads.
+    pub task_settings: Option<serde_json::Value>,
     /// GitHub work linked to this task; at most one issue and one pull request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue: Option<TaskLink>,
@@ -194,7 +196,9 @@ impl Store {
     /// beats cascading that panic into every later caller. `secret_store::update`
     /// locks the same way.
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -636,12 +640,14 @@ impl Store {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| path_str.clone());
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "INSERT OR IGNORE INTO projects(id,name,path) VALUES (?1,?2,?3)",
                 params![id(), name, path_str],
             )
             .map_err(|e| e.to_string())?;
-        self.conn().query_row(
+        self.conn()
+            .query_row(
                 "SELECT id,name,path FROM projects WHERE path=?1",
                 [path_str],
                 |r| {
@@ -655,7 +661,8 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     pub fn project(&self, project_id: &str) -> Result<Project> {
-        self.conn().query_row(
+        self.conn()
+            .query_row(
                 "SELECT id,name,path FROM projects WHERE id=?1",
                 [project_id],
                 |r| {
@@ -671,7 +678,8 @@ impl Store {
             .ok_or_else(|| "Project not found.".into())
     }
     pub fn remove_project(&self, project_id: &str) -> Result<()> {
-        self.conn().execute("DELETE FROM projects WHERE id=?1", [project_id])
+        self.conn()
+            .execute("DELETE FROM projects WHERE id=?1", [project_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -721,7 +729,7 @@ impl Store {
                 .get::<_, Option<String>>(19)?
                 .and_then(|s| serde_json::from_str::<crate::goal_state::GoalState>(&s).ok())
                 .filter(|g| g.is_valid()),
-            codex_settings: r
+            task_settings: r
                 .get::<_, Option<String>>(20)?
                 .and_then(|s| serde_json::from_str(&s).ok()),
             worktree_branch: r.get(21)?,
@@ -746,8 +754,7 @@ impl Store {
             let rows = stmt
                 .query_map([], Self::session_row)
                 .map_err(|e| e.to_string())?;
-            rows
-                .collect::<std::result::Result<Vec<_>, _>>()
+            rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?
         };
         self.attach_links(&mut sessions)?;
@@ -814,15 +821,14 @@ impl Store {
             });
             Ok(serde_json::json!({"taskId": r.get::<_, String>(0)?, "title": r.get::<_, String>(1)?, "updatedAt": r.get::<_, i64>(2)?, "excerpt": excerpt}))
         }).map_err(|e| e.to_string())?;
-        
-        
+
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
-    
     }
     pub fn set_limited(&self, sid: &str, until: Option<i64>) -> Result<()> {
         let until = until.filter(|at| *at > 0 && *at < 4_102_444_800_000);
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "UPDATE sessions SET limited_at=?2,limited_until=?3 WHERE id=?1",
                 params![sid, now(), until],
             )
@@ -843,68 +849,6 @@ impl Store {
     pub fn clear_limited(&self, sid: &str) -> Result<()> {
         self.conn().execute("UPDATE sessions SET limited_at=NULL,limited_until=NULL,resume_at_reset=0 WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
         Ok(())
-    }
-
-    /// The Pantheon task already continuing an agent conversation, if any.
-    pub fn imported_task(&self, provider: &str, resume_id: &str) -> Result<Option<String>> {
-        self.conn().query_row("SELECT id FROM sessions WHERE provider=?1 AND resume_id=?2 ORDER BY updated_at DESC LIMIT 1", params![provider, resume_id], |row| row.get(0))
-            .optional()
-            .map_err(|e| e.to_string())
-    }
-
-    /// Adds a conversation started outside Pantheon as a task that continues it:
-    /// its history keeps original times, and the agent resumes `resume_id` on the next prompt.
-    #[allow(clippy::too_many_arguments)]
-    pub fn import_task(
-        &self,
-        project_id: &str,
-        provider: &str,
-        model: &str,
-        title: &str,
-        resume_id: &str,
-        reasoning_effort: Option<&str>,
-        created_at: i64,
-        entries: &[(&str, String, i64)],
-    ) -> Result<Session> {
-        self.project(project_id)?;
-        let sid = {
-            let mut conn = self.conn();
-            let transaction = conn.transaction().map_err(|e| e.to_string())?;
-            let sid =
-                Self::insert_new_session(&transaction, project_id, provider, model, DEFAULT_PERMISSION_MODE)?;
-            let title: String = title
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(200)
-                .collect();
-            let title = if title.trim().is_empty() {
-                "Imported conversation".to_owned()
-            } else {
-                title.trim().to_owned()
-            };
-            let first = entries
-                .first()
-                .map_or(created_at, |entry| entry.2)
-                .min(created_at.max(1));
-            let last = entries.last().map_or(created_at, |entry| entry.2).max(first);
-            transaction
-                .execute(
-                    "UPDATE sessions SET resume_id=?2,title=?3,title_origin='manual',reasoning_effort=?4,task_stage='in_progress',created_at=?5,updated_at=?6 WHERE id=?1",
-                    params![sid, resume_id, title, reasoning_effort, first, last],
-                )
-                .map_err(|e| e.to_string())?;
-            for (role, content, at) in entries {
-                transaction
-                    .execute(
-                        "INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,?2,?3,?4)",
-                        params![sid, role, content, at],
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-            transaction.commit().map_err(|e| e.to_string())?;
-            sid
-        };
-        self.session(&sid)
     }
 
     /// Hides a task opened from New task until its first prompt is saved.
@@ -982,14 +926,14 @@ impl Store {
         transaction.commit().map_err(|e| e.to_string())?;
         drop(conn);
         self.sessions()
-
     }
     fn attach_links(&self, sessions: &mut [Session]) -> Result<()> {
         if sessions.is_empty() {
             return Ok(());
         }
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
+        let mut stmt = conn
+            .prepare("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
             .map_err(|e| e.to_string())?;
         let links = stmt
             .query_map([], |r| {
@@ -1038,7 +982,8 @@ impl Store {
                     params![sid, kind, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
             }
             None => {
-                self.conn().execute(
+                self.conn()
+                    .execute(
                         "DELETE FROM task_links WHERE session_id=?1 AND kind=?2",
                         params![sid, kind],
                     )
@@ -1100,7 +1045,8 @@ impl Store {
     }
     /// How many messages the user has sent in a task, including the one being sent.
     pub fn user_turns(&self, sid: &str) -> Result<i64> {
-        self.conn().query_row(
+        self.conn()
+            .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role='user'",
                 [sid],
                 |r| r.get(0),
@@ -1117,7 +1063,8 @@ impl Store {
             return Ok(false);
         }
         let messages: i64 = self
-            .conn().query_row(
+            .conn()
+            .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id=?1",
                 [sid],
                 |r| r.get(0),
@@ -1131,31 +1078,24 @@ impl Store {
         goal: Option<&crate::goal_state::GoalState>,
     ) -> Result<()> {
         let task = self.session(sid)?;
-        if goal.is_some_and(|g| {
-            !g.is_valid()
-                || task.provider != "codex"
-                || task.resume_id.as_deref() != Some(&g.thread_id)
-        }) {
-            return Err("Goal metadata does not belong to this Codex task.".into());
+        // A goal is this task's own state: the row is keyed by the session id,
+        // so provenance (`thread_id`, written by older builds) is informational
+        // and is not required to match. What matters is that the snapshot is
+        // well-formed and that the owning task is a Pantheon task; a row left
+        // behind by a removed harness can be opened but holds no goal.
+        if goal.is_some_and(|g| !g.is_valid() || task.provider != "pantheon") {
+            return Err("Goal metadata does not belong to this task.".into());
         }
         let data = goal
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| e.to_string())?;
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "UPDATE sessions SET goal_state=?2 WHERE id=?1",
                 params![sid, data],
             )
             .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    pub fn begin_goal_operation(&self, sid: &str) -> Result<()> {
-        let task = self.session(sid)?;
-        if task.archived || task.task_stage == "completed" {
-            return Err("Reopen this task first.".into());
-        }
-        self.conn().execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,updated_at=?2 WHERE id=?1", params![sid,now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
 
@@ -1169,25 +1109,11 @@ impl Store {
         model: &str,
         mode: &str,
     ) -> Result<String> {
-        if ![
-            "claude",
-            "codex",
-            "kimi",
-            "opencode",
-            "glm",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
-        ]
-        .contains(&provider)
+        // Storage keeps any well-formed provider id: rows written by an older
+        // build still open, and only the launch path decides what can start.
+        if provider.is_empty()
+            || provider.len() > 64
+            || !provider.bytes().all(|byte| byte.is_ascii_graphic())
         {
             return Err("Unknown provider.".into());
         }
@@ -1293,7 +1219,8 @@ impl Store {
         }
         self.session(sid)?;
         let changed = self
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET task_stage=?2,
                completed_at=CASE WHEN ?2='completed' THEN COALESCE(completed_at,?3) ELSE NULL END,
                updated_at=?3 WHERE id=?1 AND status NOT IN ('running','waiting') AND archived=0",
@@ -1309,7 +1236,8 @@ impl Store {
     /// Archive deadlines depend on completion time, never unrelated task edits.
     /// The partial index keeps the once-per-minute sweep bounded to completed tasks.
     pub fn archive_completed(&self, timestamp: i64) -> Result<usize> {
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "UPDATE sessions SET archived=1,updated_at=?1
              WHERE archived=0 AND task_stage='completed' AND completed_at<=?2
                AND status NOT IN ('running','waiting')",
@@ -1360,8 +1288,7 @@ impl Store {
         branch: Option<&str>,
     ) -> Result<Session> {
         self.project(&source.project_id)?;
-        let sid =
-            Self::create_worktree_session_on_conn(&self.conn(), source, path, branch)?;
+        let sid = Self::create_worktree_session_on_conn(&self.conn(), source, path, branch)?;
         self.session(&sid)
     }
     pub(crate) fn create_worktree_session_on_conn(
@@ -1393,25 +1320,11 @@ impl Store {
         project_id: Option<&str>,
     ) -> Result<Session> {
         crate::architect::check_manual(self, sid)?;
-        if ![
-            "claude",
-            "codex",
-            "kimi",
-            "opencode",
-            "glm",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
-        ]
-        .contains(&provider)
+        // Storage keeps any well-formed provider id: rows written by an older
+        // build still open, and only the launch path decides what can start.
+        if provider.is_empty()
+            || provider.len() > 64
+            || !provider.bytes().all(|byte| byte.is_ascii_graphic())
         {
             return Err("Unknown provider.".into());
         }
@@ -1468,7 +1381,10 @@ impl Store {
             if project_id.is_some_and(|id| id != session.project_id) {
                 return Err("Create a new task to use a different project after a conversation has started.".into());
             }
-            Err("Create a new task to use a different provider after a conversation has started.".into())
+            Err(
+                "Create a new task to use a different provider after a conversation has started."
+                    .into(),
+            )
         };
         if needs_handoff {
             // Switch provider, queue the handoff cutoff, and write the notice in
@@ -1522,7 +1438,8 @@ impl Store {
             return Err("Invalid context usage metadata.".into());
         }
         let changed = self
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET context_used_tokens=?2,context_window=?3 WHERE id=?1",
                 params![
                     sid,
@@ -1575,7 +1492,8 @@ impl Store {
         Ok(())
     }
     pub fn status(&self, sid: &str, status: &str) -> Result<()> {
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "UPDATE sessions SET status=?2,updated_at=?3 WHERE id=?1",
                 params![sid, status, now()],
             )
@@ -1608,7 +1526,8 @@ impl Store {
     }
     /// RETURNING ties the timer to this exact insert even with concurrent tasks.
     pub fn start_turn_message(&self, sid: &str, content: &str) -> Result<i64> {
-        self.conn().query_row(
+        self.conn()
+            .query_row(
                 "INSERT INTO messages(session_id,role,content,created_at)
             VALUES (?1,'user',?2,?3) RETURNING id",
                 params![sid, content, now()],
@@ -1619,6 +1538,10 @@ impl Store {
 
     /// Claim execution and save its initiating message together. A failed insert
     /// rolls the claim back; concurrent callers cannot enqueue a second run.
+    /// Start an ordinary task turn. Goals travel as turns, so this is the one
+    /// entry point; it exists as a named method because tests describe turns
+    /// without mentioning coordination kinds.
+    #[cfg(test)]
     pub fn begin_task_turn(&self, sid: &str, content: &str) -> Result<i64> {
         self.begin_task_turn_with_kind(sid, content, None)
     }
@@ -1661,7 +1584,9 @@ impl Store {
                 .map_err(|e| e.to_string())?;
             if claimed == 0 {
                 tx.rollback().map_err(|e| e.to_string())?;
-                return Err("Restore or reopen the task and stop its agent before starting it.".into());
+                return Err(
+                    "Restore or reopen the task and stop its agent before starting it.".into(),
+                );
             }
             let message_id = if let Some(kind) = kind {
                 let saved = crate::architect::internal_turns::encode(kind, content)?;
@@ -1722,7 +1647,8 @@ impl Store {
             return Err("Turn duration cannot be negative.".into());
         }
         let changed = self
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE messages SET turn_duration_ms=COALESCE(turn_duration_ms,?3)
             WHERE session_id=?1 AND id=?2 AND role IN ('user','coordination')",
                 params![sid, message_id, duration_ms],
@@ -1739,7 +1665,8 @@ impl Store {
         if tool_id.is_empty() || tool_id.len() > 512 || content.len() > 96 * 1024 {
             return Err("Tool activity exceeded its storage limit.".into());
         }
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "INSERT INTO messages(session_id,role,content,created_at,tool_id)
           VALUES (?1,'tool',?2,?3,?4)
           ON CONFLICT(session_id,tool_id) DO UPDATE SET content=excluded.content",
@@ -1771,7 +1698,8 @@ impl Store {
             params![sid,activity.id,content,activity.updated_at]).map_err(|error| error.to_string())?;
         // Keep current work regardless of age; older terminal snapshots give
         // way to the newest 64 entries without growing every parent turn.
-        self.conn().execute(
+        self.conn()
+            .execute(
                 "DELETE FROM subagents WHERE session_id=?1
             AND json_extract(content,'$.status') NOT IN ('running','waiting')
             AND id NOT IN (SELECT id FROM subagents WHERE session_id=?1
@@ -1795,14 +1723,12 @@ impl Store {
         let rows = query
             .query_map([sid], |row| row.get::<_, String>(0))
             .map_err(|error| error.to_string())?;
-        
-        
+
         rows.map(|row| {
             let content = row.map_err(|error| error.to_string())?;
             serde_json::from_str(&content).map_err(|error| error.to_string())
         })
         .collect::<std::result::Result<Vec<_>, _>>()
-    
     }
     pub fn finish_subagents(&self, sid: &str, status: &str) -> Result<()> {
         settle_unfinished_subagents(&self.conn(), Some(sid), status)
@@ -1810,9 +1736,23 @@ impl Store {
 
     /// Fetch one complete saved conversation message on demand. App-origin
     /// coordination prompts stay private even if older versions stored them as user text.
+    /// The newest persisted message id, or `None` for a task with no turns.
+    /// Forking a task needs this boundary; reading it here keeps the SQL in
+    /// the storage layer where the schema lives.
+    pub fn last_message_id(&self, sid: &str) -> Result<Option<i64>> {
+        self.conn()
+            .query_row(
+                "SELECT MAX(id) FROM messages WHERE session_id=?1",
+                [sid],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(|e| e.to_string())
+    }
+
     pub fn message_content(&self, sid: &str, message_id: i64) -> Result<String> {
         let selected: Option<(String, String)> = self
-            .conn().query_row(
+            .conn()
+            .query_row(
                 "SELECT role,content FROM messages WHERE session_id=?1 AND id=?2",
                 params![sid, message_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1850,41 +1790,41 @@ impl Store {
         self.session(sid)?;
         let result_rows: Vec<Message> = {
             let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
-        let rows = stmt
-            .query_map(params![sid, before.unwrap_or(i64::MAX)], |r| {
-                let role: String = r.get(2)?;
-                let content = match r.get_ref(3)? {
-                    rusqlite::types::ValueRef::Blob(bytes) if role == "assistant" => {
-                        String::from_utf8_lossy(bytes).into_owned()
-                    }
-                    _ => r.get(3)?,
-                };
-                Ok(Message {
-                    id: r.get(0)?,
-                    session_id: r.get(1)?,
-                    role,
-                    content,
-                    created_at: r.get(4)?,
-                    turn_duration_ms: r.get(5)?,
-                    author_provider: None,
-                    coordination_kind: None,
-                    turn_changes: r
-                        .get::<_, Option<String>>(6)?
-                        .map(|s| {
-                            serde_json::from_str(&s).map_err(|e| {
-                                rusqlite::Error::FromSqlConversionFailure(
-                                    6,
-                                    rusqlite::types::Type::Text,
-                                    Box::new(e),
-                                )
+            let mut stmt = conn.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
+            let rows = stmt
+                .query_map(params![sid, before.unwrap_or(i64::MAX)], |r| {
+                    let role: String = r.get(2)?;
+                    let content = match r.get_ref(3)? {
+                        rusqlite::types::ValueRef::Blob(bytes) if role == "assistant" => {
+                            String::from_utf8_lossy(bytes).into_owned()
+                        }
+                        _ => r.get(3)?,
+                    };
+                    Ok(Message {
+                        id: r.get(0)?,
+                        session_id: r.get(1)?,
+                        role,
+                        content,
+                        created_at: r.get(4)?,
+                        turn_duration_ms: r.get(5)?,
+                        author_provider: None,
+                        coordination_kind: None,
+                        turn_changes: r
+                            .get::<_, Option<String>>(6)?
+                            .map(|s| {
+                                serde_json::from_str(&s).map_err(|e| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        6,
+                                        rusqlite::types::Type::Text,
+                                        Box::new(e),
+                                    )
+                                })
                             })
-                        })
-                        .transpose()?,
+                            .transpose()?,
+                    })
                 })
-            })
-            .map_err(|e| e.to_string())?;
-            
+                .map_err(|e| e.to_string())?;
+
             rows.collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?
         };
@@ -1928,7 +1868,6 @@ impl Store {
         }
         page.reverse();
         Ok(page)
-    
     }
     pub fn message_page(&self, sid: &str, before: Option<i64>) -> Result<MessagePage> {
         let messages = self.messages(sid, before)?;
@@ -1937,7 +1876,8 @@ impl Store {
         // this lookup bounded even when the returned page hit its byte limit.
         let has_older = match messages.first() {
             Some(first) => self
-                .conn().query_row(
+                .conn()
+                .query_row(
                     "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id<?2)",
                     params![sid, first.id],
                     |row| row.get(0),
@@ -1957,27 +1897,7 @@ fn handoff_from_provider(content: &str) -> Option<String> {
     let from = value.get("fromProvider")?.as_str()?;
     let to = value.get("toProvider")?.as_str()?;
     value.get("summary")?.as_str()?;
-    let known = |provider: &str| {
-        matches!(
-            provider,
-            "claude"
-                | "codex"
-                | "kimi"
-                | "opencode"
-                | "glm"
-                | "antigravity"
-                | "grok"
-                | "mimo"
-                | "pi"
-                | "deepseek"
-                | "commandcode"
-                | "cline"
-                | "kilo"
-                | "omp"
-                | "github-copilot"
-                | "muse"
-        )
-    };
+    let known = |provider: &str| matches!(provider, "pantheon");
     (known(from) && known(to)).then(|| from.to_owned())
 }
 
@@ -1988,11 +1908,22 @@ mod sidebar_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A row saved by an older build, before Pantheon was the only agent this
+    /// app runs. Storage keeps such rows openable; the launch path decides.
+    fn legacy_session(provider: &str) -> (Store, Session) {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let session = store
+            .create_session(&project.id, provider, "default", "ask")
+            .unwrap();
+        (store, session)
+    }
+
     fn empty_session() -> (Store, Session) {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let session = store
-            .create_session(&project.id, "claude", "sonnet", "auto")
+            .create_session(&project.id, "pantheon", "sonnet", "auto")
             .unwrap();
         (store, session)
     }
@@ -2001,7 +1932,7 @@ mod tests {
     fn new_task_drafts_stay_hidden_until_their_first_prompt() {
         let (store, listed) = empty_session();
         let draft = store
-            .create_session(&listed.project_id, "codex", "gpt-5", "auto")
+            .create_session(&listed.project_id, "pantheon", "gpt-5", "auto")
             .unwrap();
         let draft = store.mark_draft(&draft.id).unwrap();
         assert!(draft.draft);
@@ -2097,7 +2028,7 @@ mod tests {
             )
             .unwrap();
         let other = store
-            .create_session(&task.project_id, "codex", "gpt-5", "full")
+            .create_session(&task.project_id, "pantheon", "gpt-5", "full")
             .unwrap();
         store
             .message(
@@ -2118,7 +2049,7 @@ mod tests {
         let elsewhere = store.add_project(&folder).unwrap();
         assert_ne!(elsewhere.id, task.project_id);
         let foreign = store
-            .create_session(&elsewhere.id, "codex", "gpt-5", "full")
+            .create_session(&elsewhere.id, "pantheon", "gpt-5", "full")
             .unwrap();
         store
             .message(&foreign.id, "user", "billing secrets")
@@ -2149,11 +2080,11 @@ mod tests {
     fn startup_discards_only_empty_drafts() {
         let (store, board_like) = empty_session();
         let empty = store
-            .create_session(&board_like.project_id, "codex", "gpt-5", "auto")
+            .create_session(&board_like.project_id, "pantheon", "gpt-5", "auto")
             .unwrap();
         store.mark_draft(&empty.id).unwrap();
         let replied = store
-            .create_session(&board_like.project_id, "codex", "gpt-5", "auto")
+            .create_session(&board_like.project_id, "pantheon", "gpt-5", "auto")
             .unwrap();
         store.mark_draft(&replied.id).unwrap();
         store.message(&replied.id, "assistant", "partial").unwrap();
@@ -2176,7 +2107,10 @@ mod tests {
         store.message(&task.id, "assistant", "reply").unwrap();
         store.message(&task.id, "user", "second").unwrap();
         let activity = store.prompt_activity(0).unwrap();
-        assert_eq!(activity, vec![(now() / 3_600_000, "claude".to_string(), 2)]);
+        assert_eq!(
+            activity,
+            vec![(now() / 3_600_000, "pantheon".to_string(), 2)]
+        );
         assert!(store.prompt_activity(now() + 3_600_000).unwrap().is_empty());
     }
 
@@ -2194,7 +2128,7 @@ mod tests {
         let task = store
             .create_board_task(
                 &source.project_id,
-                "codex",
+                "pantheon",
                 "gpt-5",
                 "plan",
                 "  Build game  ",
@@ -2215,9 +2149,9 @@ mod tests {
         assert!(store.messages(&task.id, None).unwrap().is_empty());
         let count = store.sessions().unwrap().len();
         for (provider, title, details) in [
-            ("bad", "Valid", ""),
-            ("codex", "  ", ""),
-            ("codex", "Valid", &"x".repeat(128 * 1024 + 1)),
+            ("", "Valid", ""),
+            ("pantheon", "  ", ""),
+            ("pantheon", "Valid", &"x".repeat(128 * 1024 + 1)),
         ] {
             assert!(store
                 .create_board_task(
@@ -2241,7 +2175,7 @@ mod tests {
         let task = store
             .create_board_task(
                 &source.project_id,
-                "codex",
+                "pantheon",
                 "default",
                 "ask",
                 "Long specification",
@@ -2274,7 +2208,8 @@ mod tests {
         let (store, task) = empty_session();
         store.set_task_stage(&task.id, "completed").unwrap();
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET created_at=0,updated_at=0,completed_at=?2 WHERE id=?1",
                 params![task.id, now() - COMPLETED_ARCHIVE_DELAY_MS],
             )
@@ -2374,7 +2309,8 @@ mod tests {
         store.set_task_stage(&task.id, "completed").unwrap();
         let completed_at = now() - COMPLETED_ARCHIVE_DELAY_MS;
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET completed_at=?2 WHERE id=?1",
                 params![task.id, completed_at],
             )
@@ -2424,7 +2360,7 @@ mod tests {
             let project = store.add_project(&directory).unwrap();
             let create = || {
                 store
-                    .create_session(&project.id, "claude", "sonnet", "ask")
+                    .create_session(&project.id, "pantheon", "sonnet", "ask")
                     .unwrap()
             };
             empty = create().id;
@@ -2463,7 +2399,8 @@ mod tests {
             assert_eq!(store.session(&failed).unwrap().task_stage, "in_progress");
             store.set_task_stage(&answered, "completed").unwrap();
             store
-                .conn().execute(
+                .conn()
+                .execute(
                     "UPDATE sessions SET completed_at=?2 WHERE id=?1",
                     params![answered, now() - COMPLETED_ARCHIVE_DELAY_MS],
                 )
@@ -2521,7 +2458,8 @@ mod tests {
             .unwrap();
         for (used, window) in [(-1, 200_000), (100, -1), (100, 0)] {
             store
-                .conn().execute(
+                .conn()
+                .execute(
                     "UPDATE sessions SET context_used_tokens=?2,context_window=?3 WHERE id=?1",
                     params![session.id, used, window],
                 )
@@ -2540,7 +2478,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&directory).unwrap();
             sid = store
-                .create_session(&project.id, "claude", "sonnet", "ask")
+                .create_session(&project.id, "pantheon", "sonnet", "ask")
                 .unwrap()
                 .id;
             store
@@ -2639,7 +2577,7 @@ mod tests {
             .unwrap();
         store.record_context_usage(&session.id, &usage).unwrap();
         let unchanged = store
-            .configure(&session.id, "claude", "sonnet", None)
+            .configure(&session.id, "pantheon", "sonnet", None)
             .unwrap();
         assert_eq!(unchanged.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(unchanged.context_usage.as_ref(), Some(&usage));
@@ -2656,7 +2594,7 @@ mod tests {
         assert_eq!(renamed.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(renamed.context_usage.as_ref(), Some(&usage));
         let different_model = store
-            .configure(&session.id, "claude", "opus", None)
+            .configure(&session.id, "pantheon", "opus", None)
             .unwrap();
         assert!(different_model.reasoning_effort.is_none());
         assert!(different_model.context_usage.is_none());
@@ -2707,7 +2645,7 @@ mod tests {
                 .unwrap_err()
                 .contains("Stop the agent"));
             assert!(store
-                .configure(&session.id, "claude", "opus", None)
+                .configure(&session.id, "pantheon", "opus", None)
                 .is_err());
             assert!(store
                 .update(
@@ -2765,7 +2703,7 @@ mod tests {
     fn turn_duration_is_scoped_to_its_user_message_and_never_overwritten() {
         let (store, task) = empty_session();
         let other = store
-            .create_session(&task.project_id, "codex", "default", "ask")
+            .create_session(&task.project_id, "pantheon", "default", "ask")
             .unwrap();
         let first = store.start_turn_message(&task.id, "First turn").unwrap();
         let unrelated = store.start_turn_message(&other.id, "Other task").unwrap();
@@ -2821,7 +2759,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&directory).unwrap();
             task = store
-                .create_session(&project.id, "claude", "sonnet", "ask")
+                .create_session(&project.id, "pantheon", "sonnet", "ask")
                 .unwrap();
             store.message(&task.id, "user", "Legacy prompt").unwrap();
             store
@@ -2901,7 +2839,7 @@ mod tests {
             .message(&other.id, "user", "Unrelated history")
             .unwrap();
         let task = store
-            .create_session(&other.project_id, "claude", "sonnet", "ask")
+            .create_session(&other.project_id, "pantheon", "sonnet", "ask")
             .unwrap();
         let empty = store.message_page(&task.id, None).unwrap();
         assert!(empty.messages.is_empty());
@@ -2925,7 +2863,7 @@ mod tests {
     fn message_page_distinguishes_full_and_incomplete_pages_with_interleaved_tasks() {
         let (store, other) = empty_session();
         let task = store
-            .create_session(&other.project_id, "claude", "sonnet", "ask")
+            .create_session(&other.project_id, "pantheon", "sonnet", "ask")
             .unwrap();
         for i in 0..100 {
             store.message(&other.id, "user", "Other task").unwrap();
@@ -2959,48 +2897,50 @@ mod tests {
     fn message_pages_preserve_authors_across_off_page_handoffs_and_other_tasks() {
         let (store, task) = empty_session();
         store
-            .message(&task.id, "assistant", "Claude response")
+            .message(&task.id, "assistant", "First response")
             .unwrap();
         let claude_id = store.conn().last_insert_rowid();
         let other = store
-            .create_session(&task.project_id, "grok", "default", "ask")
+            .create_session(&task.project_id, "pantheon", "default", "ask")
             .unwrap();
         store
             .message(&other.id, "assistant", "Another task")
             .unwrap();
-        store.configure(&other.id, "mimo", "default", None).unwrap();
         // The next switch is farther away than any message page.
         for _ in 0..110 {
             store.message(&task.id, "tool", "Completed").unwrap();
         }
-        store.configure(&task.id, "codex", "default", None).unwrap();
         store
-            .message(&task.id, "assistant", "Codex response")
+            .configure(&task.id, "pantheon", "default", None)
+            .unwrap();
+        store
+            .message(&task.id, "assistant", "Second response")
             .unwrap();
         let codex_id = store.conn().last_insert_rowid();
-        store.configure(&task.id, "kimi", "default", None).unwrap();
         store
-            .message(&task.id, "assistant", "Kimi response")
+            .configure(&task.id, "pantheon", "default", None)
+            .unwrap();
+        store
+            .message(&task.id, "assistant", "Third response")
             .unwrap();
         let recent = serde_json::to_value(store.message_page(&task.id, None).unwrap()).unwrap();
         let recent = recent["messages"].as_array().unwrap();
         assert_eq!(
             recent.iter().find(|m| m["id"] == codex_id).unwrap()["authorProvider"],
-            "codex"
+            "pantheon"
         );
-        assert_eq!(recent.last().unwrap()["authorProvider"], "kimi");
+        assert_eq!(recent.last().unwrap()["authorProvider"], "pantheon");
         let old = serde_json::to_value(store.message_page(&task.id, Some(claude_id + 1)).unwrap())
             .unwrap();
         assert_eq!(old["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(old["messages"][0]["authorProvider"], "claude");
+        assert_eq!(old["messages"][0]["authorProvider"], "pantheon");
         let unrelated = serde_json::to_value(store.message_page(&other.id, None).unwrap()).unwrap();
-        assert_eq!(unrelated["messages"][0]["authorProvider"], "grok");
+        assert_eq!(unrelated["messages"][0]["authorProvider"], "pantheon");
     }
 
     #[test]
     fn failed_handoff_notice_rolls_back_context_and_provider_together() {
         let (store, task) = empty_session();
-        let task = store.configure(&task.id, "codex", "default", None).unwrap();
         store
             .message(&task.id, "user", "Keep this conversation")
             .unwrap();
@@ -3023,9 +2963,12 @@ mod tests {
                 }),
             )
             .unwrap();
+        // Same row shape a pre-Pantheon build left behind: goal snapshot and
+        // task settings already stored under a harness this app no longer runs.
         store
-            .conn().execute(
-                "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
+            .conn()
+            .execute(
+                "UPDATE sessions SET codex_settings=?2, provider='codex' WHERE id=?1",
                 params![task.id, r#"{"personality":"friendly"}"#],
             )
             .unwrap();
@@ -3033,7 +2976,7 @@ mod tests {
         let history = serde_json::to_value(store.messages(&task.id, None).unwrap()).unwrap();
         store.conn().execute_batch("CREATE TRIGGER reject_handoff BEFORE INSERT ON messages WHEN NEW.role='handoff' BEGIN SELECT RAISE(ABORT,'injected notice failure'); END;").unwrap();
         assert!(store
-            .configure(&task.id, "kimi", "default", None)
+            .configure(&task.id, "pantheon", "default", None)
             .unwrap_err()
             .contains("injected notice failure"));
         let restored = store.session(&task.id).unwrap();
@@ -3047,10 +2990,12 @@ mod tests {
             .conn()
             .execute_batch("DROP TRIGGER reject_handoff;")
             .unwrap();
-        let switched = store.configure(&task.id, "kimi", "default", None).unwrap();
+        let switched = store
+            .configure(&task.id, "pantheon", "default", None)
+            .unwrap();
         assert!(switched.resume_id.is_none());
         assert!(switched.goal_state.is_none());
-        assert!(switched.codex_settings.is_none());
+        assert!(switched.task_settings.is_none());
         assert!(crate::context_recovery::pending(&store, &switched).unwrap());
     }
 
@@ -3094,7 +3039,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&dir).unwrap();
             sid = store
-                .create_session(&project.id, "claude", "sonnet", "ask")
+                .create_session(&project.id, "pantheon", "sonnet", "ask")
                 .unwrap()
                 .id;
             store.message(&sid, "tool", "Read").unwrap();
@@ -3127,7 +3072,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&dir).unwrap();
             sid = store
-                .create_session(&project.id, "claude", "sonnet", "ask")
+                .create_session(&project.id, "pantheon", "sonnet", "ask")
                 .unwrap()
                 .id;
             store.status(&sid, "running").unwrap();
@@ -3171,7 +3116,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&std::env::temp_dir()).unwrap();
             sid = store
-                .create_session(&project.id, "codex", "", "full")
+                .create_session(&project.id, "pantheon", "", "full")
                 .unwrap()
                 .id;
             for (role, content, time) in [
@@ -3276,7 +3221,8 @@ mod tests {
             .unwrap();
         let response = store.session(&session.id).unwrap().last_response_at;
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET updated_at=0 WHERE id=?1",
                 [&session.id],
             )
@@ -3291,7 +3237,7 @@ mod tests {
             )
             .unwrap();
         store
-            .configure(&session.id, "claude", "haiku", None)
+            .configure(&session.id, "pantheon", "haiku", None)
             .unwrap();
         store.resume(&session.id, "remote-session").unwrap();
         store.status(&session.id, "idle").unwrap();
@@ -3311,7 +3257,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&std::env::temp_dir()).unwrap();
             let task = store
-                .create_session(&project.id, "claude", "sonnet", "full")
+                .create_session(&project.id, "pantheon", "sonnet", "full")
                 .unwrap();
             store.message(&task.id, "user", "Keep this thread").unwrap();
             store.message(&task.id, "assistant", "It stays").unwrap();
@@ -3358,7 +3304,8 @@ mod tests {
             .unwrap();
         let sessions = store.sessions().unwrap();
         let messages: i64 = store
-            .conn().query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .conn()
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
             .unwrap();
         println!("user_version={version} projects={} sessions={} (worktrees={}, linked={}) messages={messages}", store.projects().unwrap().len(), sessions.len(), sessions.iter().filter(|s| s.worktree_path.is_some()).count(), sessions.iter().filter(|s| s.issue.is_some() || s.pull_request.is_some()).count());
         for session in sessions.iter().take(5) {
@@ -3463,7 +3410,8 @@ mod tests {
             // A reopened current schema must retain the recorded activity even if
             // old transcript rows have been pruned, rather than rerun a backfill.
             store
-                .conn().execute("DELETE FROM messages WHERE session_id='answered'", [])
+                .conn()
+                .execute("DELETE FROM messages WHERE session_id='answered'", [])
                 .unwrap();
         }
         {
@@ -3493,16 +3441,17 @@ mod tests {
             )
             .unwrap();
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET updated_at=0 WHERE id=?1",
                 [&session.id],
             )
             .unwrap();
         let before = store.session(&session.id).unwrap();
         let updated = store
-            .configure(&session.id, "codex", "gpt-5.6-sol", None)
+            .configure(&session.id, "pantheon", "gpt-5.6-sol", None)
             .unwrap();
-        assert_eq!(updated.provider, "codex");
+        assert_eq!(updated.provider, "pantheon");
         assert_eq!(updated.model, "gpt-5.6-sol");
         assert_eq!(updated.mode, before.mode);
         assert_eq!(updated.resume_id, None);
@@ -3526,17 +3475,18 @@ mod tests {
             let source = store.add_project(&dir).unwrap();
             let destination = store.add_project(&dir.join("destination")).unwrap();
             let task = store
-                .create_session(&source.id, "claude", "sonnet", "auto")
+                .create_session(&source.id, "pantheon", "sonnet", "auto")
                 .unwrap();
             store
                 .update(&task.id, Some("Draft task".into()), Some(true), None, None)
                 .unwrap();
             store
-                .conn().execute("UPDATE sessions SET updated_at=0 WHERE id=?1", [&task.id])
+                .conn()
+                .execute("UPDATE sessions SET updated_at=0 WHERE id=?1", [&task.id])
                 .unwrap();
             let before = store.session(&task.id).unwrap();
             let moved = store
-                .configure(&task.id, "claude", "sonnet", Some(&destination.id))
+                .configure(&task.id, "pantheon", "sonnet", Some(&destination.id))
                 .unwrap();
             assert_eq!(moved.project_id, destination.id);
             assert!(moved.updated_at > before.updated_at);
@@ -3573,7 +3523,7 @@ mod tests {
             let before = serde_json::to_value(store.session(&task.id).unwrap()).unwrap();
             assert!(
                 store
-                    .configure(&task.id, "claude", "opus", Some(&destination.id))
+                    .configure(&task.id, "pantheon", "opus", Some(&destination.id))
                     .is_err(),
                 "History kind {role} must prevent moving"
             );
@@ -3582,7 +3532,7 @@ mod tests {
                 before
             );
             let same = store
-                .configure(&task.id, "claude", "opus", Some(&task.project_id))
+                .configure(&task.id, "pantheon", "opus", Some(&task.project_id))
                 .unwrap();
             assert_eq!(same.project_id, task.project_id);
             assert_eq!(
@@ -3607,7 +3557,7 @@ mod tests {
             .all(|m| m.role == "tool"));
         let before = serde_json::to_value(store.session(&task.id).unwrap()).unwrap();
         assert!(store
-            .configure(&task.id, "claude", "opus", Some(&destination.id))
+            .configure(&task.id, "pantheon", "opus", Some(&destination.id))
             .is_err());
         assert_eq!(
             serde_json::to_value(store.session(&task.id).unwrap()).unwrap(),
@@ -3623,7 +3573,7 @@ mod tests {
             store.status(&task.id, status).unwrap();
             let before = serde_json::to_value(store.session(&task.id).unwrap()).unwrap();
             assert!(store
-                .configure(&task.id, "claude", "opus", Some(&destination.id))
+                .configure(&task.id, "pantheon", "opus", Some(&destination.id))
                 .is_err());
             assert_eq!(
                 serde_json::to_value(store.session(&task.id).unwrap()).unwrap(),
@@ -3638,7 +3588,7 @@ mod tests {
         let before = serde_json::to_value(store.session(&task.id).unwrap()).unwrap();
         for project in ["missing", ""] {
             assert!(store
-                .configure(&task.id, "codex", "default", Some(project))
+                .configure(&task.id, "pantheon", "default", Some(project))
                 .is_err());
             assert_eq!(
                 serde_json::to_value(store.session(&task.id).unwrap()).unwrap(),
@@ -3647,10 +3597,15 @@ mod tests {
         }
         let destination = store.add_project(Path::new("/")).unwrap();
         assert!(store
-            .configure(&task.id, "unknown", "default", Some(&destination.id))
+            .configure(&task.id, &"p".repeat(65), "default", Some(&destination.id))
             .is_err());
         assert!(store
-            .configure(&task.id, "codex", &"x".repeat(201), Some(&destination.id))
+            .configure(
+                &task.id,
+                "pantheon",
+                &"x".repeat(201),
+                Some(&destination.id)
+            )
             .is_err());
         assert_eq!(
             serde_json::to_value(store.session(&task.id).unwrap()).unwrap(),
@@ -3660,7 +3615,7 @@ mod tests {
 
     #[test]
     fn configure_provider_change_preserves_history_outside_current_page() {
-        let (store, session) = empty_session();
+        let (store, session) = legacy_session("codex");
         store
             .message(&session.id, "user", "Original prompt")
             .unwrap();
@@ -3674,9 +3629,9 @@ mod tests {
                 .unwrap();
         }
         let updated = store
-            .configure(&session.id, "kimi", "default", None)
+            .configure(&session.id, "pantheon", "default", None)
             .unwrap();
-        assert_eq!(updated.provider, "kimi");
+        assert_eq!(updated.provider, "pantheon");
         assert_eq!(updated.project_id, session.project_id);
         assert!(updated.resume_id.is_none());
         assert!(crate::context_recovery::pending(&store, &updated).unwrap());
@@ -3703,10 +3658,10 @@ mod tests {
 
     #[test]
     fn configure_provider_change_clears_resume_without_inventing_missing_history() {
-        let (store, session) = empty_session();
+        let (store, session) = legacy_session("codex");
         store.resume(&session.id, "provider-session-1").unwrap();
         let updated = store
-            .configure(&session.id, "codex", "default", None)
+            .configure(&session.id, "pantheon", "default", None)
             .unwrap();
         assert!(updated.resume_id.is_none());
         assert_eq!(
@@ -3724,7 +3679,7 @@ mod tests {
             .message(&session.id, "user", "Original prompt")
             .unwrap();
         let updated = store
-            .configure(&session.id, "claude", "opus", None)
+            .configure(&session.id, "pantheon", "opus", None)
             .unwrap();
         assert_eq!(updated.model, "opus");
         assert_eq!(updated.mode, "auto");
@@ -3739,21 +3694,19 @@ mod tests {
     fn configure_rejects_invalid_provider_model_and_missing_task_atomically() {
         let (store, session) = empty_session();
         let before = serde_json::to_value(store.session(&session.id).unwrap()).unwrap();
+        assert!(store.configure(&session.id, "", "default", None).is_err());
         assert!(store
-            .configure(&session.id, "shell", "default", None)
+            .configure(&session.id, "pantheon", &"x".repeat(201), None)
             .is_err());
         assert!(store
-            .configure(&session.id, "codex", &"x".repeat(201), None)
-            .is_err());
-        assert!(store
-            .configure("missing", "claude", "sonnet", None)
+            .configure("missing", "pantheon", "sonnet", None)
             .is_err());
         assert_eq!(
             serde_json::to_value(store.session(&session.id).unwrap()).unwrap(),
             before
         );
         assert!(store
-            .configure(&session.id, "claude", &"x".repeat(200), None)
+            .configure(&session.id, "pantheon", &"x".repeat(200), None)
             .is_ok());
     }
 
@@ -3833,7 +3786,8 @@ mod tests {
                 message.content.capacity()
             );
             let saved: String = store
-                .conn().query_row(
+                .conn()
+                .query_row(
                     "SELECT content FROM messages WHERE id=?1",
                     [message.id],
                     |row| row.get(0),
@@ -3856,7 +3810,7 @@ mod tests {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let p = store.add_project(&std::env::temp_dir()).unwrap();
         let s = store
-            .create_session(&p.id, "claude", "default", "ask")
+            .create_session(&p.id, "pantheon", "default", "ask")
             .unwrap();
         for _ in 0..30 {
             store
@@ -3884,7 +3838,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let p = store.add_project(&dir).unwrap();
             assert_eq!(store.add_project(&dir).unwrap().id, p.id);
-            let s = store.create_session(&p.id, "codex", "", "ask").unwrap();
+            let s = store.create_session(&p.id, "pantheon", "", "ask").unwrap();
             sid = s.id;
             store.resume(&sid, "provider-session-1").unwrap();
             store.status(&sid, "running").unwrap();
@@ -3912,9 +3866,12 @@ mod tests {
     fn rejects_unknown_providers_and_permission_modes() {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let p = store.add_project(&std::env::temp_dir()).unwrap();
-        assert!(store.create_session(&p.id, "shell", "", "ask").is_err());
+        assert!(store.create_session(&p.id, "", "", "ask").is_err());
         assert!(store
-            .create_session(&p.id, "codex", "", "dangerously-bypass")
+            .create_session(&p.id, &"p".repeat(65), "", "ask")
+            .is_err());
+        assert!(store
+            .create_session(&p.id, "pantheon", "", "dangerously-bypass")
             .is_err());
         assert!(store.messages("missing", None).is_err());
     }
@@ -3929,22 +3886,9 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&dir).unwrap();
             for provider in [
-                "claude",
-                "codex",
-                "kimi",
-                "glm",
-                "opencode",
-                "antigravity",
-                "grok",
-                "mimo",
-                "pi",
-                "deepseek",
-                "commandcode",
-                "cline",
-                "kilo",
-                "omp",
-                "github-copilot",
-                "muse",
+                "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
+                "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
+                "pantheon", "pantheon",
             ] {
                 for mode in ["ask", "auto", "plan", "full"] {
                     let session = store
@@ -3965,11 +3909,7 @@ mod tests {
                         .mode,
                     mode
                 );
-                let next_provider = if provider == "codex" {
-                    "claude"
-                } else {
-                    "codex"
-                };
+                let next_provider = "pantheon";
                 assert_eq!(
                     store
                         .configure(&sid, next_provider, "default", None)
@@ -3987,7 +3927,7 @@ mod tests {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let session = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         for status in ["running", "waiting"] {
             store.status(&session.id, status).unwrap();

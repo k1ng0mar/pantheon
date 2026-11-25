@@ -106,7 +106,12 @@ pub(crate) struct Inner {
 
 impl Inner {
     pub(crate) fn fail_pending(&mut self, device: Option<&str>, error: &str) {
-        let ids: Vec<String> = self.pending.iter().filter(|(_, (d, _))| device.is_none_or(|device| d == device)).map(|(id, _)| id.clone()).collect();
+        let ids: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|(_, (d, _))| device.is_none_or(|device| d == device))
+            .map(|(id, _)| id.clone())
+            .collect();
         for id in ids {
             if let Some((_, reply)) = self.pending.remove(&id) {
                 let _ = reply.send(Err(error.to_owned()));
@@ -116,7 +121,9 @@ impl Inner {
 
     /// An undeliverable frame fails the call it carried, or every call to `to` without a ref.
     fn fail_ref(&mut self, to: &str, reference: Option<&str>, error: &str) {
-        let Some(id) = reference else { return self.fail_pending(Some(to), error) };
+        let Some(id) = reference else {
+            return self.fail_pending(Some(to), error);
+        };
         if self.pending.get(id).is_some_and(|(device, _)| device == to) {
             if let Some((_, reply)) = self.pending.remove(id) {
                 let _ = reply.send(Err(error.to_owned()));
@@ -126,10 +133,20 @@ impl Inner {
 
     /// Calls and task content go only to a device trusted here with its current key.
     fn callable(&self, device_id: &str) -> Result<()> {
-        let device = self.devices.iter().find(|d| d.id == device_id).ok_or(UNKNOWN_DEVICE)?;
+        let device = self
+            .devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .ok_or(UNKNOWN_DEVICE)?;
         if !self.settings.is_trusted(device_id, &device.public_key) {
-            let name = if device.name.is_empty() { "That computer" } else { &device.name };
-            return Err(format!("{name} isn't trusted on this computer yet. Trust it in Settings → Remote access."));
+            let name = if device.name.is_empty() {
+                "That computer"
+            } else {
+                &device.name
+            };
+            return Err(format!(
+                "{name} isn't trusted on this computer yet. Trust it in Settings → Remote access."
+            ));
         }
         Ok(())
     }
@@ -166,15 +183,26 @@ impl Remote {
     /// protocol in a test.
     #[cfg(test)]
     pub(crate) fn new(dir: &std::path::Path) -> Self {
-        Self { dir: dir.to_owned(), inner: Mutex::new(Inner { settings: config::load(dir), ..Default::default() }), key: Mutex::new(None) }
+        Self {
+            dir: dir.to_owned(),
+            inner: Mutex::new(Inner {
+                settings: config::load(dir),
+                ..Default::default()
+            }),
+            key: Mutex::new(None),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn key(&self) -> MutexGuard<'_, Option<StaticSecret>> {
-        self.key.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(crate) fn save(&self, settings: &config::Settings) {
@@ -189,7 +217,10 @@ impl Remote {
         if let Some(secret) = key.as_ref() {
             return Ok(secret.clone());
         }
-        let secret = secrets::read(&self.dir).key.and_then(|text| crypto::decode_secret(&text)).ok_or("This computer has no Pantheon Connect key. Sign in again.")?;
+        let secret = secrets::read(&self.dir)
+            .key
+            .and_then(|text| crypto::decode_secret(&text))
+            .ok_or("This computer has no Pantheon Connect key. Sign in again.")?;
         *key = Some(secret.clone());
         Ok(secret)
     }
@@ -200,7 +231,9 @@ impl Remote {
         if let Some(secret) = key.as_ref() {
             return Ok(secret.clone());
         }
-        let secret = config::load_or_create_key(secrets::read(&self.dir).key, |text| secrets::set_key(&self.dir, text))?;
+        let secret = config::load_or_create_key(secrets::read(&self.dir).key, |text| {
+            secrets::set_key(&self.dir, text)
+        })?;
         *key = Some(secret.clone());
         Ok(secret)
     }
@@ -211,8 +244,21 @@ impl Remote {
 
     fn status(&self) -> Value {
         let signed_in = self.lock().token.is_some();
-        let cached = self.key().as_ref().map(|secret| crypto::fingerprint(&crypto::public_key(secret)));
-        let fingerprint = cached.or_else(|| signed_in.then(|| self.secret().map(|secret| crypto::fingerprint(&crypto::public_key(&secret))).ok()).flatten()).unwrap_or_default();
+        let cached = self
+            .key()
+            .as_ref()
+            .map(|secret| crypto::fingerprint(&crypto::public_key(secret)));
+        let fingerprint = cached
+            .or_else(|| {
+                signed_in
+                    .then(|| {
+                        self.secret()
+                            .map(|secret| crypto::fingerprint(&crypto::public_key(&secret)))
+                            .ok()
+                    })
+                    .flatten()
+            })
+            .unwrap_or_default();
         let inner = self.lock();
         let mut status = json!({
             "configured": config::build().is_some(),
@@ -230,7 +276,11 @@ impl Remote {
 
     fn devices_view(&self) -> Vec<Value> {
         let inner = self.lock();
-        inner.devices.iter().map(|device| device.view(&inner.settings.device_id, &inner.settings)).collect()
+        inner
+            .devices
+            .iter()
+            .map(|device| device.view(&inner.settings.device_id, &inner.settings))
+            .collect()
     }
 }
 
@@ -251,9 +301,23 @@ pub(crate) fn setup(app: &tauri::AppHandle, dir: &std::path::Path) {
     let settings = config::load(dir);
     // Only a signed-in computer reads the secrets file; an expired token means signed out.
     let now = chrono::Utc::now().timestamp();
-    let token = if settings.account.is_some() { secrets::read(dir).token.filter(|token| config::token_valid(token, now)) } else { None };
+    let token = if settings.account.is_some() {
+        secrets::read(dir)
+            .token
+            .filter(|token| config::token_valid(token, now))
+    } else {
+        None
+    };
     let signed_in = token.is_some();
-    app.manage(Remote { dir: dir.to_owned(), inner: Mutex::new(Inner { settings, token, ..Default::default() }), key: Mutex::new(None) });
+    app.manage(Remote {
+        dir: dir.to_owned(),
+        inner: Mutex::new(Inner {
+            settings,
+            token,
+            ..Default::default()
+        }),
+        key: Mutex::new(None),
+    });
     if signed_in && config::build().is_some() {
         socket::start(app);
     }
@@ -285,7 +349,13 @@ pub(crate) fn agent_event(app: &tauri::AppHandle, event: &crate::providers::Agen
 }
 
 /// Hooked into every run end, with the text of its `done` event.
-pub(crate) fn run_finished(app: &tauri::AppHandle, session_id: &str, successful: bool, stopped: bool, text: &str) {
+pub(crate) fn run_finished(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    successful: bool,
+    stopped: bool,
+    text: &str,
+) {
     host::run_finished(app, session_id, successful, stopped, text);
 }
 
@@ -297,7 +367,13 @@ fn names() -> &'static Mutex<HashMap<String, String>> {
 
 /// A device's name, or a neutral label before presence names it.
 pub(crate) fn device_label(id: &str) -> String {
-    names().lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|name| !name.is_empty()).cloned().unwrap_or_else(|| "another computer".into())
+    names()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .unwrap_or_else(|| "another computer".into())
 }
 
 /// Remembers the names in a device list; true if any changed.
@@ -362,19 +438,20 @@ pub async fn remote_sign_in_finish(app: tauri::AppHandle) -> Result<Value> {
         _ = cancelled => return Err("Sign-in was cancelled.".into()),
     };
     let device = |id: String| json!({"id": id, "name": config::device_name(), "platform": std::env::consts::OS, "publicKey": public_key});
-    let (token, account) = match auth::register(&build, &github_token, device(state.device_id())).await {
-        // This id is registered with another key (the key file was lost, say): become a new device once.
-        Err(error) if error == auth::KEY_CHANGED => {
-            let settings = {
-                let mut inner = state.lock();
-                inner.settings.device_id = uuid::Uuid::new_v4().to_string();
-                inner.settings.clone()
-            };
-            state.save(&settings);
-            auth::register(&build, &github_token, device(settings.device_id)).await?
-        }
-        other => other?,
-    };
+    let (token, account) =
+        match auth::register(&build, &github_token, device(state.device_id())).await {
+            // This id is registered with another key (the key file was lost, say): become a new device once.
+            Err(error) if error == auth::KEY_CHANGED => {
+                let settings = {
+                    let mut inner = state.lock();
+                    inner.settings.device_id = uuid::Uuid::new_v4().to_string();
+                    inner.settings.clone()
+                };
+                state.save(&settings);
+                auth::register(&build, &github_token, device(settings.device_id)).await?
+            }
+            other => other?,
+        };
     if config::parse_token(&token).is_none_or(|claims| claims.dev != state.device_id()) {
         return Err("The relay returned an unexpected sign-in token.".into());
     }
@@ -400,7 +477,13 @@ pub async fn remote_sign_out(app: tauri::AppHandle) -> Result<Value> {
     };
     // Free this computer's slot on the account; signing out locally never waits on it.
     if let (Some(build), Some(token)) = (config::build(), token) {
-        let _ = auth::relay(&build, &token, reqwest::Method::DELETE, &format!("/v1/devices/{me}")).await;
+        let _ = auth::relay(
+            &build,
+            &token,
+            reqwest::Method::DELETE,
+            &format!("/v1/devices/{me}"),
+        )
+        .await;
     }
     sign_out_local(&app, None);
     Ok(remote(&app).status())
@@ -437,7 +520,11 @@ pub async fn remote_devices(app: tauri::AppHandle) -> Result<Vec<Value>> {
 /// Pins (or forgets) a device's current public key, for both directions: only trusted
 /// devices may drive this one, and this one calls only trusted hosts.
 #[tauri::command]
-pub async fn remote_set_trusted(app: tauri::AppHandle, device_id: String, trusted: bool) -> Result<Vec<Value>> {
+pub async fn remote_set_trusted(
+    app: tauri::AppHandle,
+    device_id: String,
+    trusted: bool,
+) -> Result<Vec<Value>> {
     valid_device_id(&device_id)?;
     if trusted && !remote(&app).lock().presence && config::build().is_some() {
         socket::refresh_devices(&app).await?;
@@ -449,7 +536,13 @@ pub async fn remote_set_trusted(app: tauri::AppHandle, device_id: String, truste
             return Err("That is this computer.".into());
         }
         if trusted {
-            let key = inner.devices.iter().find(|d| d.id == device_id).map(|d| d.public_key.clone()).filter(|key| !crypto::fingerprint(key).is_empty()).ok_or(UNKNOWN_DEVICE)?;
+            let key = inner
+                .devices
+                .iter()
+                .find(|d| d.id == device_id)
+                .map(|d| d.public_key.clone())
+                .filter(|key| !crypto::fingerprint(key).is_empty())
+                .ok_or(UNKNOWN_DEVICE)?;
             inner.settings.trusted.insert(device_id, key);
         } else {
             inner.settings.trusted.remove(&device_id);
@@ -470,9 +563,22 @@ pub async fn remote_revoke_device(app: tauri::AppHandle, device_id: String) -> R
     let (token, me) = {
         let state = remote(&app);
         let inner = state.lock();
-        (inner.token.clone().ok_or("Sign in to Pantheon Connect first.")?, inner.settings.device_id.clone())
+        (
+            inner
+                .token
+                .clone()
+                .ok_or("Sign in to Pantheon Connect first.")?,
+            inner.settings.device_id.clone(),
+        )
     };
-    auth::relay(&build, &token, reqwest::Method::DELETE, &format!("/v1/devices/{device_id}")).await.inspect_err(|error| {
+    auth::relay(
+        &build,
+        &token,
+        reqwest::Method::DELETE,
+        &format!("/v1/devices/{device_id}"),
+    )
+    .await
+    .inspect_err(|error| {
         if error == auth::SIGNED_OUT {
             sign_out_local(&app, Some(&token));
         }
@@ -540,13 +646,23 @@ pub async fn remote_direct_code(app: tauri::AppHandle) -> Result<Value> {
     let code = direct::code(&app);
     let state = remote(&app);
     let expires = state.lock().pairing.as_ref().map(|pairing| pairing.expires);
-    let seconds = expires.map(|expires| expires.saturating_duration_since(std::time::Instant::now()).as_secs()).unwrap_or(0);
+    let seconds = expires
+        .map(|expires| {
+            expires
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs()
+        })
+        .unwrap_or(0);
     Ok(json!({"code": code, "expiresIn": seconds}))
 }
 
 /// Pairs this computer with another one on the same network.
 #[tauri::command]
-pub async fn remote_direct_connect(app: tauri::AppHandle, address: String, code: String) -> Result<Value> {
+pub async fn remote_direct_connect(
+    app: tauri::AppHandle,
+    address: String,
+    code: String,
+) -> Result<Value> {
     direct::connect(app.clone(), address, code).await
 }
 
@@ -561,7 +677,15 @@ mod tests {
     use super::*;
 
     fn device(id: &str, name: &str, key: &str) -> Device {
-        Device { id: id.into(), name: name.into(), platform: String::new(), public_key: key.into(), host: true, online: true, last_seen: Value::Null }
+        Device {
+            id: id.into(),
+            name: name.into(),
+            platform: String::new(),
+            public_key: key.into(),
+            host: true,
+            online: true,
+            last_seen: Value::Null,
+        }
     }
 
     #[test]
@@ -588,9 +712,18 @@ mod tests {
 
     #[test]
     fn the_viewer_refuses_hosts_it_does_not_trust() {
-        let (old, new) = (crypto::public_key(&crypto::generate()), crypto::public_key(&crypto::generate()));
-        let mut inner = Inner { devices: vec![device("host", "Studio Mac", &new)], ..Default::default() };
-        let refused = Err("Studio Mac isn't trusted on this computer yet. Trust it in Settings → Remote access.".to_string());
+        let (old, new) = (
+            crypto::public_key(&crypto::generate()),
+            crypto::public_key(&crypto::generate()),
+        );
+        let mut inner = Inner {
+            devices: vec![device("host", "Studio Mac", &new)],
+            ..Default::default()
+        };
+        let refused = Err(
+            "Studio Mac isn't trusted on this computer yet. Trust it in Settings → Remote access."
+                .to_string(),
+        );
         assert_eq!(inner.callable("host"), refused);
         // Pinned to an older key: still refused.
         inner.settings.trusted.insert("host".into(), old);
@@ -605,22 +738,53 @@ mod tests {
         let key = crypto::public_key(&crypto::generate());
         let mut guest = device("guest", "Laptop", &key);
         guest.host = false;
-        let mut inner = Inner { devices: vec![device("me", "This Mac", &key), device("studio", "Studio Mac", &key), device("stranger", "Other", &key), guest], ..Default::default() };
+        let mut inner = Inner {
+            devices: vec![
+                device("me", "This Mac", &key),
+                device("studio", "Studio Mac", &key),
+                device("stranger", "Other", &key),
+                guest,
+            ],
+            ..Default::default()
+        };
         inner.settings.device_id = "me".into();
         for id in ["me", "studio", "guest"] {
             inner.settings.trusted.insert(id.into(), key.clone());
         }
-        assert_eq!(targets(&inner), vec![json!({"deviceId": "studio", "name": "Studio Mac", "platform": "", "online": true})]);
+        assert_eq!(
+            targets(&inner),
+            vec![
+                json!({"deviceId": "studio", "name": "Studio Mac", "platform": "", "online": true})
+            ]
+        );
     }
 
     #[test]
     fn a_stale_token_never_signs_out_a_newer_sign_in() {
-        let mut inner = Inner { token: Some("new".into()), generation: 3, ..Default::default() };
+        let mut inner = Inner {
+            token: Some("new".into()),
+            generation: 3,
+            ..Default::default()
+        };
         inner.settings.account = Some(config::Account::default());
         assert!(!inner.clear_sign_in(Some("old")));
-        assert_eq!((inner.token.as_deref(), inner.generation, inner.settings.account.is_some()), (Some("new"), 3, true));
+        assert_eq!(
+            (
+                inner.token.as_deref(),
+                inner.generation,
+                inner.settings.account.is_some()
+            ),
+            (Some("new"), 3, true)
+        );
         assert!(inner.clear_sign_in(Some("new")));
-        assert_eq!((inner.token.as_deref(), inner.generation, inner.settings.account.is_some()), (None, 4, false));
+        assert_eq!(
+            (
+                inner.token.as_deref(),
+                inner.generation,
+                inner.settings.account.is_some()
+            ),
+            (None, 4, false)
+        );
         inner.token = Some("again".into());
         assert!(inner.clear_sign_in(None));
         assert!(inner.token.is_none());

@@ -936,21 +936,18 @@ pub mod entry {
     /// Fail fast with Ollama guidance when the configured provider is
     /// `local` and nothing answers at its base URL.
     ///
-    /// The `local` provider is Ollama (install.sh installs it), and a bare
-    /// `pantheon` with Ollama down used to open a session whose first
-    /// message died with a bare PROVIDER_HTTP network error - no mention of
-    /// Ollama, no `pantheon setup` hint. Probing before the TUI opens turns
-    /// that into the fix: start Ollama, pull the model, or pick another
-    /// provider.
+    /// `local` is Ollama. A bare `pantheon` with Ollama down used to open a
+    /// session whose first message died with a bare PROVIDER_HTTP network
+    /// error - no mention of Ollama, no fix. Probing before the TUI opens
+    /// turns that into the fix: start Ollama and pull the model.
     ///
-    /// A fresh install lands here: the installer writes the `local`
-    /// default non-interactively, and nothing on a clean box runs Ollama.
-    /// Exiting with instructions made the first run a wall of text ending
-    /// in "run `pantheon setup`" - so when the terminal is interactive the
-    /// wizard opens directly instead, and the user is walked through a
-    /// provider choice rather than told to go run a command. Only `local`
-    /// is probed: a cloud endpoint hiccup at launch time must not refuse
-    /// to open the session.
+    /// `local` only appears in config when the user chose it: the installer
+    /// writes no config, and setup never defaults to `local`. So an
+    /// unreachable `local` is a deliberate provider that is momentarily
+    /// down, not an install that guessed. It is reported with the start hint
+    /// and a non-zero exit - never by hijacking the user back into setup,
+    /// which would silently discard their choice. Only `local` is probed: a
+    /// cloud endpoint hiccup at launch must not refuse to open the session.
     fn check_local_provider(data_dir: &std::path::Path) {
         let model = match crate::config::Config::load(data_dir) {
             Ok(cfg) => match cfg.model {
@@ -971,22 +968,14 @@ pub mod entry {
         if crate::doctor::tcp_probe(&url, std::time::Duration::from_secs(3)) {
             return;
         }
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            eprintln!(
-                "pantheon: the configured provider \"local\" (Ollama) is not reachable at {url}."
-            );
-            eprintln!("pantheon: opening setup so you can choose a provider.");
-            crate::setup_wizard::run_setup_flow(data_dir);
-            std::process::exit(0);
-        }
         eprintln!(
             "pantheon: the configured provider \"local\" (Ollama) is not reachable at {url}."
         );
         eprintln!(
-            "pantheon: if you use Ollama: start it with `ollama serve`, then `ollama pull {}`.",
+            "pantheon: start it with `ollama serve`, then `ollama pull {}`.",
             model.model
         );
-        eprintln!("pantheon: or run `pantheon setup` to choose a different provider.");
+        eprintln!("pantheon: or switch providers with `pantheon model`.");
         std::process::exit(1);
     }
 
@@ -2433,6 +2422,7 @@ pub mod acp {
     use crate::config;
     use pantheon_api::events::Event;
     use pantheon_api::mode::AgentMode;
+    use pantheon_mcp::{McpAuth, McpServerSpec, McpTransport};
     use pantheon_runtime::session::Session;
     use serde_json::{json, Value};
     use std::collections::HashMap;
@@ -2668,11 +2658,13 @@ pub mod acp {
                                 "agentCapabilities": {
                                     "loadSession": true,
                                     "promptCapabilities": {
-                                        "image": false,
+                                        "image": true,
                                         "audio": false,
                                         "embeddedContext": true
                                     },
-                                    "mcpCapabilities": {"http": false, "sse": false}
+                                    // `session/new` accepts client-supplied servers, so both
+                                    // remote transports are real capabilities.
+                                    "mcpCapabilities": {"http": true, "sse": true}
                                 },
                                 "authMethods": [],
                                 "agentInfo": {
@@ -2700,10 +2692,25 @@ pub mod acp {
                         shared.error(id, -32000, format!("set cwd: {e}"));
                         continue;
                     }
+                    apply_client_mcp_servers(&session, &params);
                     let run_id = pantheon_runtime::new_run_id();
                     if let Ok(mut sessions) = shared.sessions.lock() {
                         sessions.insert(run_id.clone(), run_id.clone());
                     }
+                    // The client's slash palette is filled from the dispatch
+                    // catalog, so a command that exists is offered and a
+                    // command that is offered exists.
+                    let available: Vec<Value> = crate::commands::registry()
+                        .into_iter()
+                        .map(|(name, meta)| json!({"name": name, "description": meta.desc}))
+                        .collect();
+                    shared.update(
+                        &run_id,
+                        json!({
+                            "sessionUpdate": "available_commands_update",
+                            "availableCommands": available
+                        }),
+                    );
                     shared.respond(
                         id,
                         json!({
@@ -2734,6 +2741,7 @@ pub mod acp {
                             continue;
                         }
                     }
+                    apply_client_mcp_servers(&session, &params);
                     let run_id = session_id.to_string();
                     if let Ok(mut sessions) = shared.sessions.lock() {
                         sessions.insert(session_id.to_string(), run_id.clone());
@@ -2757,7 +2765,19 @@ pub mod acp {
                         shared.error(id, -32000, "another prompt is already running");
                         continue;
                     }
-                    let text = prompt_text(&params);
+                    let mut text = prompt_text(&params);
+                    let blocks = params
+                        .get("prompt")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    match ingest_prompt_images(&session, &blocks) {
+                        Ok(block) => text.push_str(&block),
+                        Err(e) => {
+                            shared.error(id, -32000, e);
+                            continue;
+                        }
+                    }
                     if text.trim().is_empty() {
                         shared.error(id, -32602, "prompt contains no text");
                         continue;
@@ -2814,6 +2834,34 @@ pub mod acp {
                                 Err(e) => shared.error(id, -32000, e.to_string()),
                             }
                         }
+                    }
+                }
+                "_pantheon/goal" => {
+                    let Some(id) = id else { continue };
+                    let action = params
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .unwrap_or("get");
+                    let objective = params
+                        .get("objective")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    match action {
+                        "set" if objective.is_empty() => {
+                            shared.error(id, -32602, "setting a goal needs a non-empty objective")
+                        }
+                        "set" => {
+                            session.set_goal(Some(objective));
+                            shared.respond(id, json!({"goal": session.goal_text()}));
+                        }
+                        "clear" => {
+                            session.set_goal(None);
+                            shared.respond(id, json!({"goal": Value::Null}));
+                        }
+                        "get" => shared.respond(id, json!({"goal": session.goal_text()})),
+                        other => shared.error(id, -32602, format!("unknown goal action: {other}")),
                     }
                 }
                 "session/close" => {
@@ -2913,6 +2961,27 @@ pub mod acp {
                                     Some(&message.content),
                                 );
                             }
+                        }
+                        Event::UsageRecorded {
+                            run_id: r,
+                            model,
+                            input_tokens,
+                            output_tokens,
+                            total_tokens,
+                            cost_usd,
+                            ..
+                        } if r == &run_id => {
+                            shared.notify(
+                                "_pantheon/usage",
+                                json!({
+                                    "sessionId": session_id,
+                                    "model": model,
+                                    "inputTokens": input_tokens,
+                                    "outputTokens": output_tokens,
+                                    "totalTokens": total_tokens,
+                                    "costUsd": cost_usd,
+                                }),
+                            );
                         }
                         Event::ApprovalRequested { run_id: r, scope } if r == &run_id => {
                             if let Ok(mut a) = approvals.lock() {
@@ -3419,6 +3488,166 @@ pub mod acp {
         serde_json::from_str(args).unwrap_or_else(|_| json!(args))
     }
 
+    /// Ceiling for one ACP image block, matching the dashboard's upload cap.
+    const MAX_PROMPT_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+
+    /// ACP carries pixels inline, but the runtime reads attachments from
+    /// `<data_dir>/uploads` and refuses any path outside it. So each image
+    /// block is stored as a real upload first (same id shape, sidecar and data
+    /// file the dashboard writes), then named in an `[attachments]` block -
+    /// the one shape `attachment_images` parses and the vision pass consumes.
+    ///
+    /// A block that is not an image is skipped, not an error: text and
+    /// resource blocks already flowed through `prompt_text`. A block that
+    /// claims to be an image and is not usable fails the prompt, because
+    /// silently dropping a picture the user attached is worse than saying so.
+    fn ingest_prompt_images(session: &Session, blocks: &[Value]) -> Result<String, String> {
+        prompt_images_from_blocks(&session.supervisor.data_dir().join("uploads"), blocks)
+    }
+
+    /// The uploads-dir half of [`ingest_prompt_images`], separate so the
+    /// round trip through `[attachments]` can be tested without a session.
+    fn prompt_images_from_blocks(dir: &Path, blocks: &[Value]) -> Result<String, String> {
+        let mut lines = Vec::new();
+        for (index, entry) in blocks.iter().enumerate() {
+            if entry.get("type").and_then(Value::as_str) != Some("image") {
+                continue;
+            }
+            let data = entry
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("image block {index} arrived without data"))?;
+            let mime = entry
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|m| m.starts_with("image/"))
+                .ok_or_else(|| {
+                    format!("image block {index} is not labelled image/*; only images are accepted")
+                })?;
+            let bytes = b64decode(data).map_err(|e| format!("image block {index}: {e}"))?;
+            if bytes.is_empty() {
+                return Err(format!("image block {index} decoded to no bytes"));
+            }
+            if bytes.len() > MAX_PROMPT_IMAGE_BYTES {
+                return Err(format!(
+                    "image block {index} is {} MiB; the limit is {} MiB",
+                    bytes.len() / 1024 / 1024,
+                    MAX_PROMPT_IMAGE_BYTES / 1024 / 1024
+                ));
+            }
+            let name = format!("image-{:02}{}", index + 1, image_extension(mime));
+            let (id, path) = store_upload(dir, &name, mime, &bytes)?;
+            lines.push(format!(
+                "- {} ({}, {}, id: {}): {}",
+                name,
+                mime,
+                human_size(bytes.len()),
+                id,
+                path.display()
+            ));
+        }
+        if lines.is_empty() {
+            return Ok(String::new());
+        }
+        Ok(format!("\n\n[attachments]\n{}\n", lines.join("\n")))
+    }
+
+    /// Extension for the stored attachment name. Cosmetic only: the mime is
+    /// what the runtime sniffs and what the vision pass trusts.
+    fn image_extension(mime: &str) -> &'static str {
+        match mime {
+            "image/jpeg" | "image/jpg" => ".jpg",
+            "image/webp" => ".webp",
+            "image/gif" => ".gif",
+            _ => ".png",
+        }
+    }
+
+    fn human_size(bytes: usize) -> String {
+        if bytes >= 1024 * 1024 {
+            format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        } else {
+            format!("{} KB", (bytes / 1024).max(1))
+        }
+    }
+
+    /// `upl_<epochms>_<nnnn>`, the shape `uploads::resolve_in` accepts.
+    fn new_upload_id() -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let n = COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(std::process::id() as u64)
+            % 10_000;
+        format!("upl_{ms}_{n:04}")
+    }
+
+    /// Write one upload: `<id>_<name>` plus the `<id>.json` sidecar that
+    /// `resolve_in` reads. Returns the id and the absolute path to name in the
+    /// attachments block.
+    fn store_upload(
+        dir: &Path,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<(String, PathBuf), String> {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create uploads dir: {e}"))?;
+        let id = new_upload_id();
+        let path = dir.join(format!("{id}_{name}"));
+        std::fs::write(&path, bytes).map_err(|e| format!("write attachment: {e}"))?;
+        let sidecar = json!({"name": name, "mime": mime, "size_bytes": bytes.len()});
+        if let Err(e) = std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::to_string(&sidecar).unwrap_or_default(),
+        ) {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("write attachment sidecar: {e}"));
+        }
+        Ok((id, path))
+    }
+
+    /// Minimal base64 decoder (standard + URL-safe, padding optional), copied
+    /// from the dashboard rather than adding a dependency for one call site.
+    fn b64decode(input: &str) -> Result<Vec<u8>, String> {
+        fn val(c: u8) -> Option<u8> {
+            match c {
+                b'A'..=b'Z' => Some(c - b'A'),
+                b'a'..=b'z' => Some(c - b'a' + 26),
+                b'0'..=b'9' => Some(c - b'0' + 52),
+                b'+' | b'-' => Some(62),
+                b'/' | b'_' => Some(63),
+                _ => None,
+            }
+        }
+        let clean: Vec<u8> = input
+            .bytes()
+            .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+            .collect();
+        if clean.len() % 4 == 1 {
+            return Err("invalid base64 length".to_string());
+        }
+        let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+        for chunk in clean.chunks(4) {
+            let mut n: u32 = 0;
+            for (i, &c) in chunk.iter().enumerate() {
+                n |= (val(c).ok_or_else(|| format!("invalid base64 char {c:?}"))? as u32)
+                    << (18 - 6 * i);
+            }
+            out.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        Ok(out)
+    }
+
     fn prompt_text(params: &Value) -> String {
         let Some(prompt) = params.get("prompt").and_then(|p| p.as_array()) else {
             return String::new();
@@ -3435,6 +3664,107 @@ pub mod acp {
         out
     }
 
+    /// Merge the ACP client's `mcpServers` into this run's MCP config.
+    ///
+    /// The client that spawned this process is the local application the user is
+    /// already driving, so its servers are the operator's choice for this
+    /// session: they bypass the `mcp approve` consent store that governs
+    /// third-party declarations, exactly as `[mcp.servers]` written into the
+    /// user's own config does. A config-defined server keeps its slot unless the
+    /// client defines the same name, because the client is the narrower scope.
+    ///
+    /// Returns how many client servers were applied.
+    fn apply_client_mcp_servers(session: &Session, params: &Value) -> usize {
+        let Some(list) = params.get("mcpServers").and_then(Value::as_array) else {
+            return 0;
+        };
+        let client: Vec<McpServerSpec> = list.iter().filter_map(acp_mcp_spec).collect();
+        if client.is_empty() {
+            return 0;
+        }
+        let applied = client.len();
+        let mut cfg = session
+            .mcp_config
+            .lock()
+            .map(|cfg| cfg.clone())
+            .unwrap_or_default();
+        cfg.servers
+            .retain(|server| !client.iter().any(|entry| entry.name == server.name));
+        cfg.servers.extend(client);
+        cfg.enabled = true;
+        session.set_mcp_config(cfg);
+        applied
+    }
+
+    /// One ACP `mcpServer` entry as a Pantheon spec. `None` when the entry has
+    /// no usable name or target, so one malformed server cannot blank the list.
+    fn acp_mcp_spec(entry: &Value) -> Option<McpServerSpec> {
+        let name = entry.get("name").and_then(Value::as_str)?.trim().to_owned();
+        if name.is_empty() {
+            return None;
+        }
+        let command = entry
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let url = entry.get("url").and_then(Value::as_str).map(str::to_owned);
+        let transport = match entry.get("type").and_then(Value::as_str) {
+            Some(declared) => McpTransport::parse(declared)?,
+            None if command.is_some() => McpTransport::Stdio,
+            None if url.is_some() => McpTransport::Http,
+            None => return None,
+        };
+        Some(McpServerSpec {
+            name,
+            transport,
+            command,
+            args: entry
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|args| {
+                    args.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            env: acp_pairs(entry.get("env")),
+            url,
+            enabled: true,
+            timeout: Duration::from_secs(30),
+            headers: acp_pairs(entry.get("headers")),
+            auth: McpAuth::None,
+            scopes: Vec::new(),
+            client_id: None,
+        })
+    }
+
+    /// ACP sends env and headers as `[{"name","value"}]`; accept the object
+    /// form too so a hand-written client is not silently ignored.
+    fn acp_pairs(value: Option<&Value>) -> HashMap<String, String> {
+        let mut pairs = HashMap::new();
+        match value {
+            Some(Value::Array(items)) => {
+                for item in items {
+                    let key = item.get("name").and_then(Value::as_str);
+                    let val = item.get("value").and_then(Value::as_str);
+                    if let (Some(key), Some(val)) = (key, val) {
+                        pairs.insert(key.to_owned(), val.to_owned());
+                    }
+                }
+            }
+            Some(Value::Object(map)) => {
+                for (key, val) in map {
+                    if let Some(val) = val.as_str() {
+                        pairs.insert(key.clone(), val.to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+        pairs
+    }
+
     fn agent_mode_id(mode: AgentMode) -> &'static str {
         match mode {
             AgentMode::Plan => "plan",
@@ -3445,6 +3775,64 @@ pub mod acp {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// A real 1x1 PNG: the attachment parser sniffs magic bytes, so a
+        /// fabricated payload would test the wrong thing.
+        const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+        #[test]
+        fn image_blocks_become_uploads_the_runtime_reads_back() {
+            let dir = std::env::temp_dir().join(new_upload_id());
+            let block = prompt_images_from_blocks(
+                &dir,
+                &json!([
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image", "mimeType": "image/png", "data": ONE_PIXEL_PNG}
+                ])
+                .as_array()
+                .cloned()
+                .unwrap(),
+            )
+            .expect("image accepted");
+            assert!(block.starts_with("\n\n[attachments]\n"), "{block}");
+            assert!(block.contains("(image/png,"), "{block}");
+
+            // The runtime's own parser is the acceptance test: it must find
+            // the picture, resolve it inside the uploads dir, and sniff it.
+            let images =
+                pantheon_api::message::attachment_images(&format!("what is this?{block}"), &dir);
+            assert_eq!(images.len(), 1, "parser found {images:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn image_blocks_that_are_not_images_fail_loudly() {
+            let dir = std::env::temp_dir().join(new_upload_id());
+            for blocks in [
+                json!([{"type": "image", "mimeType": "application/pdf", "data": ONE_PIXEL_PNG}]),
+                json!([{"type": "image", "mimeType": "image/png", "data": "%%%not-base64%%%"}]),
+                json!([{"type": "image", "mimeType": "image/png"}]),
+            ] {
+                let blocks = blocks.as_array().cloned().unwrap();
+                assert!(
+                    prompt_images_from_blocks(&dir, &blocks).is_err(),
+                    "accepted {blocks:?}"
+                );
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn attachment_ids_match_the_shape_the_upload_resolver_requires() {
+            let id = new_upload_id();
+            assert!(id.starts_with("upl_"), "{id}");
+            let rest = id.strip_prefix("upl_").unwrap_or_default();
+            let parts: Vec<&str> = rest.split('_').collect();
+            assert_eq!(parts.len(), 2, "{id}");
+            assert!(parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())));
+        }
 
         #[test]
         fn prompt_text_joins_text_blocks_and_ignores_other_kinds() {
@@ -3472,6 +3860,51 @@ pub mod acp {
             assert_eq!(tool_kind("apply_files"), "edit");
             assert_eq!(tool_kind("shell"), "execute");
             assert_eq!(tool_kind("unknown"), "other");
+        }
+
+        #[test]
+        fn client_mcp_servers_keep_stdio_and_http_entries_out_of_the_consent_store() {
+            let stdio = acp_mcp_spec(&json!({
+                "name": "architect",
+                "command": "/usr/bin/pantheon-mcp",
+                "args": ["--stdio"],
+                "env": [{"name": "PANTHEON_TOKEN", "value": "t"}]
+            }))
+            .expect("stdio server");
+            assert_eq!(stdio.name, "architect");
+            assert_eq!(stdio.transport, McpTransport::Stdio);
+            assert_eq!(stdio.args, vec!["--stdio".to_string()]);
+            assert_eq!(
+                stdio.env.get("PANTHEON_TOKEN").map(String::as_str),
+                Some("t")
+            );
+            assert!(stdio.enabled);
+
+            let http = acp_mcp_spec(&json!({
+                "name": "preview",
+                "type": "http",
+                "url": "http://127.0.0.1:9/mcp",
+                "headers": {"authorization": "Bearer x"}
+            }))
+            .expect("http server");
+            assert_eq!(http.transport, McpTransport::Http);
+            assert_eq!(http.url.as_deref(), Some("http://127.0.0.1:9/mcp"));
+            assert_eq!(
+                http.headers.get("authorization").map(String::as_str),
+                Some("Bearer x")
+            );
+        }
+
+        #[test]
+        fn malformed_client_mcp_entries_are_skipped_not_fatal() {
+            for entry in [
+                json!({"command": "/bin/x"}),
+                json!({"name": "   "}),
+                json!({"name": "weird", "type": "carrier-pigeon", "url": "x://y"}),
+                json!({"name": "nothing"}),
+            ] {
+                assert!(acp_mcp_spec(&entry).is_none(), "accepted {entry}");
+            }
         }
 
         #[test]

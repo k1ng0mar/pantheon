@@ -88,10 +88,17 @@ fn number(value: &serde_json::Value, key: &str) -> i64 {
     value.get(key).and_then(|v| v.as_i64()).unwrap_or_default()
 }
 fn login(value: &serde_json::Value) -> String {
-    value.get("author").map(|author| text(author, "login")).unwrap_or_default()
+    value
+        .get("author")
+        .map(|author| text(author, "login"))
+        .unwrap_or_default()
 }
 fn items(value: &serde_json::Value, key: &str) -> Vec<serde_json::Value> {
-    value.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default()
+    value
+        .get(key)
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 fn lower(value: &serde_json::Value, key: &str) -> String {
     text(value, key).to_ascii_lowercase()
@@ -105,21 +112,35 @@ fn check(value: &serde_json::Value) -> Check {
             "failure" | "error" => "failure",
             _ => "pending",
         };
-        return Check { name: text(value, "context"), state: state.into(), url: text(value, "targetUrl") };
+        return Check {
+            name: text(value, "context"),
+            state: state.into(),
+            url: text(value, "targetUrl"),
+        };
     }
     let state = if lower(value, "status") != "completed" {
         "pending"
     } else {
         match lower(value, "conclusion").as_str() {
             "success" => "success",
-            "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure" => "failure",
+            "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure" => {
+                "failure"
+            }
             "skipped" => "skipped",
             _ => "neutral",
         }
     };
     let (workflow, job) = (text(value, "workflowName"), text(value, "name"));
-    let name = if workflow.is_empty() || workflow == job { job } else { format!("{workflow} / {job}") };
-    Check { name, state: state.into(), url: text(value, "detailsUrl") }
+    let name = if workflow.is_empty() || workflow == job {
+        job
+    } else {
+        format!("{workflow} / {job}")
+    };
+    Check {
+        name,
+        state: state.into(),
+        url: text(value, "detailsUrl"),
+    }
 }
 
 fn comment(kind: &str, value: &serde_json::Value, date_key: &str) -> Comment {
@@ -127,17 +148,31 @@ fn comment(kind: &str, value: &serde_json::Value, date_key: &str) -> Comment {
     Comment {
         kind: kind.into(),
         author: login(value),
-        body: if truncated { format!("{body}\n\n[Comment truncated]") } else { body },
-        state: if kind == "review" { lower(value, "state") } else { String::new() },
+        body: if truncated {
+            format!("{body}\n\n[Comment truncated]")
+        } else {
+            body
+        },
+        state: if kind == "review" {
+            lower(value, "state")
+        } else {
+            String::new()
+        },
         created_at: text(value, date_key),
     }
 }
 
 /// Parse `gh pr view --json DETAIL_FIELDS`.
 pub fn parse_detail(value: &serde_json::Value) -> Result<PullDetail, String> {
-    let number = value.get("number").and_then(|v| v.as_i64()).ok_or("GitHub returned an unexpected pull request.")?;
+    let number = value
+        .get("number")
+        .and_then(|v| v.as_i64())
+        .ok_or("GitHub returned an unexpected pull request.")?;
     let (body, body_truncated) = excerpt(&text(value, "body"), BODY_LIMIT);
-    let mut timeline: Vec<Comment> = items(value, "comments").iter().map(|c| comment("comment", c, "createdAt")).collect();
+    let mut timeline: Vec<Comment> = items(value, "comments")
+        .iter()
+        .map(|c| comment("comment", c, "createdAt"))
+        .collect();
     // A review with neither text nor a verdict is a line-comment container; its lines live on GitHub.
     timeline.extend(
         items(value, "reviews")
@@ -168,10 +203,17 @@ pub fn parse_detail(value: &serde_json::Value) -> Result<PullDetail, String> {
         mergeable: lower(value, "mergeable"),
         review_decision: lower(value, "reviewDecision"),
         labels: names(value, "labels", "name"),
-        checks: items(value, "statusCheckRollup").iter().map(check).collect(),
+        checks: items(value, "statusCheckRollup")
+            .iter()
+            .map(check)
+            .collect(),
         files: items(value, "files")
             .iter()
-            .map(|f| PullFile { path: text(f, "path"), additions: self::number(f, "additions"), deletions: self::number(f, "deletions") })
+            .map(|f| PullFile {
+                path: text(f, "path"),
+                additions: self::number(f, "additions"),
+                deletions: self::number(f, "deletions"),
+            })
             .collect(),
         commits: commits
             .iter()
@@ -183,7 +225,11 @@ pub fn parse_detail(value: &serde_json::Value) -> Result<PullDetail, String> {
                     .get("authors")
                     .and_then(|a| a.as_array())
                     .and_then(|a| a.first())
-                    .map(|a| Some(text(a, "login")).filter(|l| !l.is_empty()).unwrap_or_else(|| text(a, "name")))
+                    .map(|a| {
+                        Some(text(a, "login"))
+                            .filter(|l| !l.is_empty())
+                            .unwrap_or_else(|| text(a, "name"))
+                    })
                     .unwrap_or_default(),
                 date: text(c, "committedDate"),
             })
@@ -198,8 +244,15 @@ pub fn detail(root: &Path, number: i64) -> Result<PullDetail, String> {
 
 /// The PR's unified diff; a very large one is cut and flagged rather than refused.
 pub fn diff(root: &Path, number: i64) -> Result<PullDiff, String> {
-    let output = run_gh(root, &["pr", "diff", &number.to_string(), "--color=never"], Duration::from_secs(60))?;
-    Ok(PullDiff { patch: String::from_utf8_lossy(&output.bytes).into_owned(), truncated: output.truncated })
+    let output = run_gh(
+        root,
+        &["pr", "diff", &number.to_string(), "--color=never"],
+        Duration::from_secs(60),
+    )?;
+    Ok(PullDiff {
+        patch: String::from_utf8_lossy(&output.bytes).into_owned(),
+        truncated: output.truncated,
+    })
 }
 
 /// Pull request numbers in `text` that point at this repository, in order of appearance.
@@ -209,10 +262,18 @@ pub fn pull_numbers(text: &str, name_with_owner: &str) -> Vec<i64> {
     let mut found = Vec::new();
     for (start, _) in haystack.match_indices(&needle) {
         // `notgithub.com/...` is someone else's host.
-        if haystack[..start].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        if haystack[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        {
             continue;
         }
-        let digits: String = haystack[start + needle.len()..].chars().take_while(char::is_ascii_digit).take(9).collect();
+        let digits: String = haystack[start + needle.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .take(9)
+            .collect();
         if let Ok(number) = digits.parse::<i64>() {
             if number > 0 && !found.contains(&number) {
                 found.push(number);
@@ -227,7 +288,11 @@ pub fn parse_reference(reference: &str, name_with_owner: &str) -> Result<i64, St
     let reference = reference.trim();
     let invalid = || "Enter a pull request number or its GitHub URL.".to_string();
     if let Ok(number) = reference.trim_start_matches('#').parse::<i64>() {
-        return if number > 0 { Ok(number) } else { Err(invalid()) };
+        return if number > 0 {
+            Ok(number)
+        } else {
+            Err(invalid())
+        };
     }
     if !reference.contains("/pull/") {
         return Err(invalid());
@@ -250,29 +315,43 @@ fn link_from(value: &serde_json::Value) -> Option<TaskLink> {
 }
 
 fn epoch_ms(timestamp: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(timestamp).ok().map(|time| time.timestamp_millis())
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|time| time.timestamp_millis())
 }
 
 /// Whether a PR mentioned in a turn is the turn's own work rather than a reference.
 fn belongs_to_turn(value: &serde_json::Value, branch: &str, turn_started: i64) -> bool {
     let same_branch = !branch.is_empty() && text(value, "headRefName") == branch;
-    let created_during_turn = epoch_ms(&text(value, "createdAt")).is_some_and(|at| at >= turn_started - TURN_SLACK_MS);
+    let created_during_turn =
+        epoch_ms(&text(value, "createdAt")).is_some_and(|at| at >= turn_started - TURN_SLACK_MS);
     same_branch || created_during_turn
 }
 
 /// The PR a turn opened: mentioned in its output (newest first), and either on the
 /// checkout's branch or created after the turn began.
-pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
+pub fn detect(
+    root: &Path,
+    repo: &Repository,
+    turn: &[String],
+    branch: &str,
+    turn_started: i64,
+) -> Result<Option<TaskLink>, String> {
     let mut candidates: Vec<i64> = Vec::new();
     for message in turn {
-        for number in pull_numbers(message, &repo.name_with_owner).into_iter().rev() {
+        for number in pull_numbers(message, &repo.name_with_owner)
+            .into_iter()
+            .rev()
+        {
             if !candidates.contains(&number) {
                 candidates.push(number);
             }
         }
     }
     for number in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view(root, "pull", number, LINK_FIELDS) else { continue };
+        let Ok(value) = view(root, "pull", number, LINK_FIELDS) else {
+            continue;
+        };
         if belongs_to_turn(&value, branch, turn_started) {
             return Ok(link_from(&value));
         }
@@ -282,8 +361,18 @@ pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, tur
 
 /// Look a pull request up so a manual link carries its real title and state.
 pub fn lookup(root: &Path, number: i64) -> Result<TaskLink, String> {
-    let value = run_gh(root, &["pr", "view", &number.to_string(), "--json", LINK_FIELDS], TIMEOUT)
-        .map_err(|error| if error.to_ascii_lowercase().contains("could not resolve") { format!("Pull request #{number} was not found.") } else { error })?;
+    let value = run_gh(
+        root,
+        &["pr", "view", &number.to_string(), "--json", LINK_FIELDS],
+        TIMEOUT,
+    )
+    .map_err(|error| {
+        if error.to_ascii_lowercase().contains("could not resolve") {
+            format!("Pull request #{number} was not found.")
+        } else {
+            error
+        }
+    })?;
     link_from(&json(&value)?).ok_or_else(|| "GitHub returned an unexpected pull request.".into())
 }
 
@@ -301,7 +390,11 @@ pub fn merge_flag(method: &str) -> Result<&'static str, String> {
 /// Local branches and worktrees are left alone; GitHub's branch settings decide the rest.
 pub fn merge(root: &Path, number: i64, method: &str) -> Result<TaskLink, String> {
     let flag = merge_flag(method)?;
-    run_gh(root, &["pr", "merge", &number.to_string(), flag], Duration::from_secs(60))?;
+    run_gh(
+        root,
+        &["pr", "merge", &number.to_string(), flag],
+        Duration::from_secs(60),
+    )?;
     lookup(root, number)
 }
 
@@ -328,15 +421,44 @@ mod tests {
     #[test]
     fn details_parse_recorded_gh_json() {
         let detail = parse_detail(&serde_json::from_str(RECORDED).unwrap()).unwrap();
-        assert_eq!((detail.number, detail.state.as_str(), detail.head.as_str(), detail.base.as_str()), (42, "open", "feat/debounce", "main"));
-        assert_eq!((detail.additions, detail.deletions, detail.changed_files), (30, 4, 2));
+        assert_eq!(
+            (
+                detail.number,
+                detail.state.as_str(),
+                detail.head.as_str(),
+                detail.base.as_str()
+            ),
+            (42, "open", "feat/debounce", "main")
+        );
+        assert_eq!(
+            (detail.additions, detail.deletions, detail.changed_files),
+            (30, 4, 2)
+        );
         assert_eq!(detail.review_decision, "approved");
         assert_eq!(detail.labels, vec!["perf"]);
-        assert_eq!(detail.checks.iter().map(|c| (c.name.as_str(), c.state.as_str())).collect::<Vec<_>>(), vec![("CI / test", "success"), ("lint", "pending"), ("vercel", "failure")]);
+        assert_eq!(
+            detail
+                .checks
+                .iter()
+                .map(|c| (c.name.as_str(), c.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("CI / test", "success"),
+                ("lint", "pending"),
+                ("vercel", "failure")
+            ]
+        );
         assert_eq!(detail.commits[0].oid, "abcdef1");
         assert_eq!(detail.commits[0].author, "octocat");
         // The empty COMMENTED review is dropped; the rest sort by time.
-        assert_eq!(detail.timeline.iter().map(|c| (c.kind.as_str(), c.author.as_str(), c.state.as_str())).collect::<Vec<_>>(), vec![("comment", "mara", ""), ("review", "devon", "approved")]);
+        assert_eq!(
+            detail
+                .timeline
+                .iter()
+                .map(|c| (c.kind.as_str(), c.author.as_str(), c.state.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("comment", "mara", ""), ("review", "devon", "approved")]
+        );
         assert!(parse_detail(&serde_json::json!({"title":"no number"})).is_err());
     }
 
@@ -352,8 +474,13 @@ mod tests {
     fn references_accept_numbers_and_urls_of_this_repository() {
         assert_eq!(parse_reference(" #12 ", "o/r"), Ok(12));
         assert_eq!(parse_reference("12", "o/r"), Ok(12));
-        assert_eq!(parse_reference("https://github.com/o/r/pull/34/files", "o/r"), Ok(34));
-        assert!(parse_reference("https://github.com/o/x/pull/34", "o/r").unwrap_err().contains("not in o/r"));
+        assert_eq!(
+            parse_reference("https://github.com/o/r/pull/34/files", "o/r"),
+            Ok(34)
+        );
+        assert!(parse_reference("https://github.com/o/x/pull/34", "o/r")
+            .unwrap_err()
+            .contains("not in o/r"));
         assert!(parse_reference("0", "o/r").is_err());
         assert!(parse_reference("feature branch", "o/r").is_err());
     }
@@ -362,10 +489,26 @@ mod tests {
     fn a_turn_owns_prs_on_its_branch_or_created_after_it_began() {
         let pr = |head: &str, created: &str| serde_json::json!({"headRefName": head, "createdAt": created});
         let start = epoch_ms("2026-10-14T10:00:00Z").unwrap();
-        assert!(belongs_to_turn(&pr("feat/x", "2020-01-01T00:00:00Z"), "feat/x", start));
-        assert!(belongs_to_turn(&pr("other", "2026-10-14T10:05:00Z"), "feat/x", start));
-        assert!(belongs_to_turn(&pr("other", "2026-10-14T09:59:30Z"), "feat/x", start));
-        assert!(!belongs_to_turn(&pr("other", "2026-10-13T10:00:00Z"), "feat/x", start));
+        assert!(belongs_to_turn(
+            &pr("feat/x", "2020-01-01T00:00:00Z"),
+            "feat/x",
+            start
+        ));
+        assert!(belongs_to_turn(
+            &pr("other", "2026-10-14T10:05:00Z"),
+            "feat/x",
+            start
+        ));
+        assert!(belongs_to_turn(
+            &pr("other", "2026-10-14T09:59:30Z"),
+            "feat/x",
+            start
+        ));
+        assert!(!belongs_to_turn(
+            &pr("other", "2026-10-13T10:00:00Z"),
+            "feat/x",
+            start
+        ));
         assert!(!belongs_to_turn(&pr("", "not a date"), "", start));
     }
 }

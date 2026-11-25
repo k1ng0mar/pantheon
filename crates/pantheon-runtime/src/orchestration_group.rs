@@ -91,10 +91,7 @@ pub mod harness {
         }
     }
 
-    pub fn initialize_harness_artifacts(
-        root: &Path,
-        task: &str,
-    ) -> Result<FeatureList, String> {
+    pub fn initialize_harness_artifacts(root: &Path, task: &str) -> Result<FeatureList, String> {
         let list = FeatureList {
             features: vec![Feature {
                 description: task.trim().to_string(),

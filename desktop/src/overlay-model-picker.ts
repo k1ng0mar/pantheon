@@ -13,8 +13,7 @@ function watchModelPreferences(): Promise<unknown> {
     if (nativeOverlay) {
       await (await import('@tauri-apps/api/event')).listen<{provider:string}>('provider-models-changed', event => { if ((event.payload.provider as any) === 'pantheon') invalidate(); });
     } else {
-      window.addEventListener('storage', event => { if (event.key === 'pantheon.preview.opencode-models') invalidate(); });
-      window.addEventListener('pantheon-preview-models-changed', invalidate);
+            window.addEventListener('pantheon-preview-models-changed', invalidate);
     }
   })().catch(error => { watching = undefined; throw error; });
 }
@@ -40,10 +39,8 @@ export async function openOverlayModelPicker(options: {
   if (!options.valid()) return;
   available.forEach(provider => options.catalog(provider.id,provider.models));
   if (!available.length) throw new Error('No harnesses found. Check your agent connections in Pantheon.');
-  // Native discovery lists a saved OpenCode selection as its models; with none, shorten the full catalog.
-  const openCodeSaved = (available.find(provider => provider.id === 'pantheon')?.models.length ?? 0) > 1;
   return openModelPicker({
-    recent: provider => provider === 'pantheon' && !openCodeSaved ? [] : null,
+    recent: () => null,
     anchor:options.anchor, providers:available, current:{...options.current,provider:options.current.provider as ProviderId},
     canSwitchProvider:true, placement:'below', onSelect:options.select, onClose:options.close,
     loadModels: async provider => {

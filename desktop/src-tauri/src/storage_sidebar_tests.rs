@@ -3,7 +3,7 @@ use super::*;
 fn tasks(store: &Store, count: usize) -> Vec<Session> {
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     (0..count).map(|i| {
-        let task = store.create_session(&project.id, "codex", "default", "full").unwrap();
+        let task = store.create_session(&project.id, "pantheon", "default", "full").unwrap();
         // Metadata edit time deliberately opposes activity order.
         store.conn().execute("UPDATE sessions SET created_at=1,updated_at=?2,last_response_at=?3,last_prompt_at=NULL WHERE id=?1", params![task.id, i as i64 + 1, (count - i) as i64 + 10]).unwrap();
         store.session(&task.id).unwrap()
@@ -102,13 +102,15 @@ fn sidebar_order_uses_prompt_response_then_creation_and_not_metadata_edits() {
     let store = Store::open(Path::new(":memory:")).unwrap();
     let tasks = tasks(&store, 3);
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "UPDATE sessions SET last_prompt_at=30,last_response_at=20,created_at=100 WHERE id=?1",
             [&tasks[0].id],
         )
         .unwrap();
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "UPDATE sessions SET last_prompt_at=NULL,last_response_at=40,updated_at=1 WHERE id=?1",
             [&tasks[1].id],
         )
@@ -171,7 +173,8 @@ fn sidebar_old_pinned_and_ranked_tasks_are_included_before_the_list_limit() {
     let tasks = tasks(&store, 502);
     store.pin_session(&tasks[501].id, true).unwrap();
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "UPDATE sessions SET sidebar_order=0 WHERE id=?1",
             [&tasks[500].id],
         )
@@ -202,7 +205,9 @@ fn sidebar_forks_start_unpinned_unordered_and_deletion_preserves_other_preferenc
     store.message(&source.id, "user", "Saved prompt").unwrap();
     let boundary = store.conn().last_insert_rowid();
     store.pin_session(&source.id, true).unwrap();
-    store.reorder_sessions(std::slice::from_ref(&source.id)).unwrap();
+    store
+        .reorder_sessions(std::slice::from_ref(&source.id))
+        .unwrap();
     let fork = crate::conversation_fork::at_message(&store, &source.id, boundary).unwrap();
     assert!(!fork.pinned);
     assert_eq!(fork.sidebar_order, None);
@@ -217,7 +222,8 @@ fn sidebar_forks_start_unpinned_unordered_and_deletion_preserves_other_preferenc
     assert_eq!(worktree.sidebar_order, None);
     let retained = serde_json::to_value(store.session(&tasks[1].id).unwrap()).unwrap();
     store
-        .conn().execute("DELETE FROM sessions WHERE id=?1", [&source.id])
+        .conn()
+        .execute("DELETE FROM sessions WHERE id=?1", [&source.id])
         .unwrap();
     assert_eq!(
         serde_json::to_value(store.session(&tasks[1].id).unwrap()).unwrap(),
@@ -244,7 +250,10 @@ fn sidebar_v20_migration_is_idempotent_and_retains_existing_preferences() {
         assert_eq!(task.sidebar_order, None);
         store.pin_session(&sid, true).unwrap();
         store.reorder_sessions(std::slice::from_ref(&sid)).unwrap();
-        store.conn().execute_batch("PRAGMA user_version=20;").unwrap();
+        store
+            .conn()
+            .execute_batch("PRAGMA user_version=20;")
+            .unwrap();
     }
     {
         let store = Store::open(&path).unwrap();

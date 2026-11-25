@@ -1472,8 +1472,8 @@ pub mod skills {
     /// and the raw `{repo}` import, so neither can reach an internal host
     /// through the clone transport (audit SEC-12).
     fn guard_clone_url(raw: &str) -> Result<(), String> {
-        let parsed = crate::link_preview::guard_url(raw)
-            .map_err(|e| format!("{}: {}", e.code, e.msg))?;
+        let parsed =
+            crate::link_preview::guard_url(raw).map_err(|e| format!("{}: {}", e.code, e.msg))?;
         if parsed.scheme() != "https" {
             return Err("repository URL must use https".to_string());
         }

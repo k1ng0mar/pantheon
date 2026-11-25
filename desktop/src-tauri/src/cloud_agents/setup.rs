@@ -3,11 +3,14 @@ use crate::cloud::sandbox::Sandbox;
 use crate::Result;
 use std::time::Duration;
 
-/// Harnesses that can run on a cloud machine.
-pub(crate) const HARNESSES: [&str; 5] = ["claude", "glm", "mimo", "codex", "opencode"];
+/// The only agent runtime this app runs, on this computer or on a machine.
+pub(crate) const HARNESSES: [&str; 1] = ["pantheon"];
+/// Where a machine keeps the uploaded runtime.
+const REMOTE_BINARY: &str = ".pantheon/bin/pantheon";
 
-/// Makes sure `harness` can run on the machine; returns the absolute path of the program
-/// to execute there (for `glm`/`mimo`, Claude Code). Idempotent and quick when installed.
+/// Makes sure Pantheon can run on the machine; returns the absolute path to
+/// execute there. The desktop uploads the same binary it runs locally, so a
+/// cloud machine never downloads a second release or depends on npm.
 pub(crate) fn ensure_runtime(
     sandbox: &dyn Sandbox,
     native: &str,
@@ -20,100 +23,52 @@ pub(crate) fn ensure_runtime(
             HARNESSES.join(", ")
         ));
     }
-    let cli = match harness {
-        "claude" | "glm" | "mimo" => "claude",
-        "codex" => "codex",
-        "opencode" => "opencode",
-        _ => unreachable!(),
-    };
-    let onboarding = if matches!(harness, "claude" | "glm" | "mimo") {
-        r#"  if [ ! -e "$HOME/.claude.json" ]; then
-    (umask 077; printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json")
-    chmod 600 "$HOME/.claude.json"
-  fi"#
-    } else {
-        ""
-    };
+    let marker = format!("$HOME/.pantheon/runtime/{harness}");
     let cached = execute(
         sandbox,
         native,
         &format!(
             r#"set -eu
-marker="$HOME/.pantheon/runtime/{harness}"
+marker="{marker}"
 if [ -s "$marker" ]; then
   program=$(sed -n '1p' "$marker")
   if [ "${{program#/}}" != "$program" ] && [ -x "$program" ] && "$program" --version >/dev/null 2>&1; then
-{onboarding}
     printf '%s\n' "$program"
   fi
 fi
-"#,
-            onboarding = onboarding,
+"#
         ),
     )?;
     if let Some(path) = cached.lines().last().filter(|line| line.starts_with('/')) {
         return Ok(path.to_owned());
     }
 
-    let (arch, libc) = detect_linux(sandbox, native)?;
-    let mut tools = vec!["git", "curl", "tar"];
-    if matches!(harness, "claude" | "glm" | "mimo") {
-        tools.push("bash");
+    let (_arch, _libc) = detect_linux(sandbox, native)?;
+    ensure_tools(sandbox, native, &["git", "curl", "tar"], progress)?;
+    let local = crate::providers::executable("pantheon")
+        .ok_or("Install Pantheon on this computer before running a task on a machine.")?;
+    let bytes = std::fs::read(&local).map_err(|error| {
+        format!(
+            "Could not read {} to send it to the machine: {error}",
+            local.display()
+        )
+    })?;
+    // The machine is Linux; a non-Linux build would only fail once it ran.
+    if !bytes.starts_with(b"\x7fELF") {
+        return Err(
+            "This computer's Pantheon build cannot run on a Linux machine. Install a Linux build, or run this task here."
+                .into(),
+        );
     }
-    ensure_tools(sandbox, native, &tools, progress)?;
-    match harness {
-        "claude" | "glm" | "mimo" => {
-            progress("Installing Claude Code…");
-            let attempt = sandbox.exec(native, r#"set -u
-home=$(cd "$HOME" && pwd -P)
-export PATH="$home/.local/bin:$home/.pantheon/npm/bin:$home/.pantheon/node/bin:$PATH"
-if curl -fsSL https://claude.ai/install.sh | bash && command -v claude >/dev/null 2>&1 && claude --version >/dev/null 2>&1; then exit 0; fi
-exit 31
-"#, Duration::from_secs(900))?;
-            if attempt.0 != Some(0) {
-                ensure_node(sandbox, native, &arch, &libc, progress)?;
-                progress("Installing Claude Code with npm…");
-                execute(
-                    sandbox,
-                    native,
-                    r#"set -eu
-home=$(cd "$HOME" && pwd -P)
-export PATH="$home/.pantheon/node/bin:$home/.pantheon/npm/bin:$home/.local/bin:$PATH"
-mkdir -p "$home/.pantheon/npm"
-npm install -g --prefix "$home/.pantheon/npm" @anthropic-ai/claude-code
-"#,
-                )?;
-            }
-        }
-        "codex" | "opencode" => {
-            ensure_node(sandbox, native, &arch, &libc, progress)?;
-            let (label, package) = if harness == "codex" {
-                ("Installing Codex CLI…", "@openai/codex")
-            } else {
-                ("Installing OpenCode…", "opencode-ai")
-            };
-            progress(label);
-            execute(
-                sandbox,
-                native,
-                &format!(
-                    r#"set -eu
-home=$(cd "$HOME" && pwd -P)
-export PATH="$home/.pantheon/node/bin:$home/.pantheon/npm/bin:$home/.local/bin:$PATH"
-mkdir -p "$home/.pantheon/npm"
-npm install -g --prefix "$home/.pantheon/npm" {}
-"#,
-                    crate::cloud::shell_quote(package)
-                ),
-            )?;
-        }
-        _ => unreachable!(),
-    }
-    let path = mark_runtime(sandbox, native, harness, cli)?;
-    if matches!(harness, "claude" | "glm" | "mimo") {
-        ensure_onboarding_file(sandbox, native)?;
-    }
-    Ok(path)
+    progress("Sending Pantheon to the machine…");
+    execute(sandbox, native, "set -eu\nmkdir -p \"$HOME/.pantheon/bin\"")?;
+    sandbox.upload(native, REMOTE_BINARY, &bytes, false)?;
+    execute(
+        sandbox,
+        native,
+        "set -eu\nchmod 755 \"$HOME/.pantheon/bin/pantheon\"\n\"$HOME/.pantheon/bin/pantheon\" --version >/dev/null",
+    )?;
+    mark_runtime(sandbox, native, harness, "pantheon")
 }
 
 fn execute(sandbox: &dyn Sandbox, native: &str, command: &str) -> Result<String> {
@@ -205,70 +160,23 @@ fn package_names(tools: &[&str], manager: &str) -> Result<String> {
         .map(|packages| packages.join(" "))
 }
 
-fn ensure_node(
-    sandbox: &dyn Sandbox,
-    native: &str,
-    arch: &str,
-    libc: &str,
-    progress: &dyn Fn(&str),
-) -> Result<()> {
-    let ready = execute(
-        sandbox,
-        native,
-        r#"home=$(cd "$HOME" && pwd -P)
-export PATH="$home/.pantheon/node/bin:$PATH"
-if command -v node >/dev/null 2>&1; then
-  major=$(node -p 'parseInt(process.versions.node.split(".")[0], 10)' 2>/dev/null || printf 0)
-  [ "$major" -ge 20 ] && printf yes || printf no
-else printf no; fi
-"#,
-    )?;
-    if ready.trim() == "yes" {
-        return Ok(());
-    }
-    progress("Installing Node.js…");
-    ensure_tools(sandbox, native, &["curl", "tar", "xz"], progress)?;
-    let platform = if libc == "musl" {
-        format!("linux-{arch}-musl")
-    } else {
-        format!("linux-{arch}")
-    };
-    let command = format!(
-        r#"set -eu
-home=$(cd "$HOME" && pwd -P)
-root="$home/.pantheon"
-mkdir -p "$root/node"
-manifest=$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt)
-archive=$(printf '%s\n' "$manifest" | awk -v suffix="-{platform}.tar.xz" '$2 ~ /^node-v22\./ && substr($2, length($2)-length(suffix)+1) == suffix {{ print $2; exit }}')
-[ -n "$archive" ] || {{ echo 'The official Node.js download did not list a compatible Linux tarball.' >&2; exit 1; }}
-tmp="$root/node-download.tar.xz"
-curl -fsSL "https://nodejs.org/dist/latest-v22.x/$archive" -o "$tmp"
-xz -dc "$tmp" | tar -xf - -C "$root/node" --strip-components=1
-rm -f "$tmp"
-"$root/node/bin/node" -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
-"#
-    );
-    execute(sandbox, native, &command)?;
-    Ok(())
-}
-
 fn mark_runtime(sandbox: &dyn Sandbox, native: &str, harness: &str, cli: &str) -> Result<String> {
     let command = format!(
         r#"set -eu
 home=$(cd "$HOME" && pwd -P)
-export PATH="$home/.local/bin:$home/.pantheon/npm/bin:$home/.pantheon/node/bin:$PATH"
+export PATH="$home/.pantheon/bin:$home/.local/bin:$PATH"
 resolve() {{
   name=$1
-  for dir in "$home/.local/bin" "$home/.pantheon/npm/bin" "$home/.pantheon/node/bin" /usr/local/bin /usr/bin /bin; do
+  for dir in "$home/.pantheon/bin" "$home/.local/bin" /usr/local/bin /usr/bin /bin; do
     if [ -x "$dir/$name" ]; then printf '%s\n' "$dir/$name"; return 0; fi
   done
   found=$(command -v "$name" || true)
   case "$found" in /*) printf '%s\n' "$found" ;; *) return 1 ;; esac
 }}
-program=$(resolve {}) || {{ echo 'The harness installer completed, but its executable was not found.' >&2; exit 1; }}
-"$program" --version >/dev/null 2>&1 || {{ echo 'The harness executable did not pass its version check.' >&2; exit 1; }}
+program=$(resolve {}) || {{ echo 'Pantheon was not found on the machine.' >&2; exit 1; }}
+"$program" --version >/dev/null 2>&1 || {{ echo 'The Pantheon binary on the machine did not pass its version check.' >&2; exit 1; }}
 version=$("$program" --version 2>&1 | sed -n '1p')
-[ -n "$version" ] || {{ echo 'The harness executable did not return a version.' >&2; exit 1; }}
+[ -n "$version" ] || {{ echo 'The Pantheon binary on the machine did not return a version.' >&2; exit 1; }}
 mkdir -p "$home/.pantheon/runtime"
 tmp="$home/.pantheon/runtime/.{harness}.$$"
 printf '%s\n%s\n' "$program" "$version" > "$tmp"
@@ -281,25 +189,9 @@ printf '%s\n' "$program"
     let output = execute(sandbox, native, &command)?;
     let path = output.lines().last().unwrap_or_default();
     if !path.starts_with('/') {
-        return Err("The cloud harness executable path was not absolute.".into());
+        return Err("The cloud runtime path was not absolute.".into());
     }
     Ok(path.to_owned())
-}
-
-fn ensure_onboarding_file(sandbox: &dyn Sandbox, native: &str) -> Result<()> {
-    execute(
-        sandbox,
-        native,
-        r#"set -eu
-home=$(cd "$HOME" && pwd -P)
-if [ ! -e "$home/.claude.json" ]; then
-  umask 077
-  printf '{"hasCompletedOnboarding":true}\n' > "$home/.claude.json"
-  chmod 600 "$home/.claude.json"
-fi
-"#,
-    )?;
-    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -387,14 +279,14 @@ mod tests {
         let temp = TempDir::new();
         let root = temp.0.join("machine");
         fs::create_dir_all(root.join("home/.pantheon/runtime")).unwrap();
-        fs::create_dir_all(root.join("bin")).unwrap();
-        let executable = root.join("bin/claude");
-        fs::write(&executable, "#!/bin/sh\nprintf 'Claude Code 1.0.0\\n'\n").unwrap();
+        fs::create_dir_all(root.join("home/.pantheon/bin")).unwrap();
+        let executable = root.join("home/.pantheon/bin/pantheon");
+        fs::write(&executable, "#!/bin/sh\nprintf 'pantheon 1.0.0\\n'\n").unwrap();
         let mut permissions = fs::metadata(&executable).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&executable, permissions).unwrap();
         fs::write(
-            root.join("home/.pantheon/runtime/claude"),
+            root.join("home/.pantheon/runtime/pantheon"),
             executable.to_string_lossy().as_bytes(),
         )
         .unwrap();
@@ -404,7 +296,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let progress = RefCell::new(Vec::new());
-        let path = ensure_runtime(&sandbox, "fake", "claude", &|label| {
+        let path = ensure_runtime(&sandbox, "fake", "pantheon", &|label| {
             progress.borrow_mut().push(label.to_owned())
         })
         .unwrap();

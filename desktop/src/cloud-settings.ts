@@ -68,18 +68,9 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
     note: `Create a key at ${provider.docs}. Cloud agents run on machines in your own account.`, connect: 'Connect',
   }])) as Record<KeyedProvider, { name: string; summary: string; key?: Field; fields: Field[]; note: string; connect: string }>,
 };
-const CLAUDE_TOKEN_HELP = 'Run `claude setup-token` and paste the long-lived token it prints. Without one, Pantheon copies this computer’s Claude Code login to the machine before each run.';
 
 export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost): () => void {
-  host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
-      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}<small class="cloud-detail">Optional long-lived token</small></div></div>
-      <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
-        <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="From claude setup-token" aria-label="Claude token for cloud agents" required></label>
-        <p class="cloud-progress" role="status" hidden></p>
-        <p class="cloud-error" role="alert" hidden></p>
-        <div class="cloud-actions"><button type="submit" class="primary-button">Save token</button></div>
-      </form>
-    </div>${(Object.keys(PROVIDERS) as CloudConnection['provider'][]).map(id => {
+  host.innerHTML = `<p class="cloud-agent-note">Cloud agents run this app's own Pantheon runtime, which it uploads to the machine. Only your GitHub token and git identity are sent; no agent sign-in is stored here.</p><div class="settings-group cloud-settings" aria-label="Cloud sandboxes">${(Object.keys(PROVIDERS) as CloudConnection['provider'][]).map(id => {
     const provider = PROVIDERS[id];
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
     return `<div class="cloud-provider" data-provider="${id}">
@@ -144,13 +135,6 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     catch (error) { line.textContent = error instanceof Error ? error.message : String(error); line.classList.add('cloud-error'); }
     finally { busy = ''; if (!disposed) render(); }
   }
-  async function saveClaudeToken(form: HTMLFormElement): Promise<void> {
-    const root = form.closest<HTMLElement>('.cloud-provider')!, input = form.querySelector<HTMLInputElement>('input')!, token = input.value.trim();
-    say(root, 'progress', ''); say(root, 'error', '');
-    if (!token) { say(root, 'error', 'Paste the token from claude setup-token.'); return; }
-    try { await options.call('cloud_agent_set_claude_token', { token }); if (!disposed) { form.reset(); say(root, 'progress', 'Saved. Cloud agents sign in to Claude with this token.'); } }
-    catch (error) { if (!disposed) say(root, 'error', error instanceof Error ? error.message : String(error)); }
-  }
   async function disconnect(id: CloudConnection['provider']): Promise<void> {
     busy = id; render();
     try { connections = await options.call<CloudConnection[]>('cloud_disconnect', { provider: id }); }
@@ -173,7 +157,6 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   host.addEventListener('submit', event => {
     event.preventDefault();
     const form = event.target as HTMLFormElement;
-    if (form.classList.contains('cloud-claude-form')) { void saveClaudeToken(form); return; }
     const id = form.closest<HTMLElement>('.cloud-provider')!.dataset.provider as CloudConnection['provider'];
     void connect(id, form);
   });

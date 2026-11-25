@@ -63,14 +63,26 @@ pub struct JjStatus {
 
 /// The folder holding `.jj`, at the checkout or any ancestor.
 pub fn repo_root(root: &Path) -> Option<PathBuf> {
-    root.ancestors().find(|dir| dir.join(".jj").is_dir()).map(Path::to_path_buf)
+    root.ancestors()
+        .find(|dir| dir.join(".jj").is_dir())
+        .map(Path::to_path_buf)
 }
 
 pub fn status(root: &Path) -> Result<JjStatus, String> {
-    let Some(repo) = repo_root(root) else { return Ok(JjStatus::default()) };
-    let mut changes = parse_log(&run(root, &["log", "--no-graph", "-r", "@", "-T", TEMPLATE])?)?;
+    let Some(repo) = repo_root(root) else {
+        return Ok(JjStatus::default());
+    };
+    let mut changes = parse_log(&run(
+        root,
+        &["log", "--no-graph", "-r", "@", "-T", TEMPLATE],
+    )?)?;
     let files = parse_summary(&run(root, &["diff", "--summary", "-r", "@"])?);
-    Ok(JjStatus { is_repo: true, colocated: repo.join(".git").exists(), change: changes.pop(), files })
+    Ok(JjStatus {
+        is_repo: true,
+        colocated: repo.join(".git").exists(),
+        change: changes.pop(),
+        files,
+    })
 }
 
 pub fn diff(root: &Path, path: Option<&str>) -> Result<String, String> {
@@ -80,7 +92,12 @@ pub fn diff(root: &Path, path: Option<&str>) -> Result<String, String> {
         args.push("--".into());
         args.push(fileset(path)?);
     }
-    let output = checked(run_process(command(root, &args), "jj", DIFF_LIMIT, TIMEOUT)?)?;
+    let output = checked(run_process(
+        command(root, &args),
+        "jj",
+        DIFF_LIMIT,
+        TIMEOUT,
+    )?)?;
     let mut text = String::from_utf8_lossy(&output.bytes).into_owned();
     if output.truncated {
         let mut end = DIFF_LIMIT.saturating_sub(TRUNCATED.len()).min(text.len());
@@ -119,11 +136,16 @@ pub fn commit(root: &Path, message: &str) -> Result<JjStatus, String> {
 pub fn log(root: &Path, limit: usize) -> Result<Vec<Change>, String> {
     require(root)?;
     let limit = limit.clamp(1, MAX_LOG).to_string();
-    parse_log(&run(root, &["log", "--no-graph", "--limit", &limit, "-T", TEMPLATE])?)
+    parse_log(&run(
+        root,
+        &["log", "--no-graph", "--limit", &limit, "-T", TEMPLATE],
+    )?)
 }
 
 fn require(root: &Path) -> Result<(), String> {
-    repo_root(root).map(|_| ()).ok_or_else(|| "This folder is not a Jujutsu repository.".into())
+    repo_root(root)
+        .map(|_| ())
+        .ok_or_else(|| "This folder is not a Jujutsu repository.".into())
 }
 
 fn message_flag(message: &str) -> Result<String, String> {
@@ -139,11 +161,16 @@ fn fileset(path: &str) -> Result<String, String> {
     let bad = path.is_empty()
         || path.contains('\0')
         || path.starts_with('/')
-        || Path::new(path).components().any(|part| matches!(part, std::path::Component::ParentDir));
+        || Path::new(path)
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
     if bad {
         return Err("Path must stay inside the repository.".into());
     }
-    Ok(format!("root-file:\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\"")))
+    Ok(format!(
+        "root-file:\"{}\"",
+        path.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
 }
 
 fn command(root: &Path, args: &[impl AsRef<std::ffi::OsStr>]) -> Command {
@@ -159,13 +186,14 @@ fn command(root: &Path, args: &[impl AsRef<std::ffi::OsStr>]) -> Command {
 }
 
 fn run(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = run_process(command(root, args), "jj", OUTPUT_LIMIT, TIMEOUT).map_err(|error| {
-        if error.starts_with("Could not start jj") {
-            "Jujutsu (jj) is not installed or not on PATH.".to_string()
-        } else {
-            error
-        }
-    })?;
+    let output =
+        run_process(command(root, args), "jj", OUTPUT_LIMIT, TIMEOUT).map_err(|error| {
+            if error.starts_with("Could not start jj") {
+                "Jujutsu (jj) is not installed or not on PATH.".to_string()
+            } else {
+                error
+            }
+        })?;
     let capture = checked(output)?;
     if capture.truncated {
         return Err("jj returned more output than Pantheon reads.".into());
@@ -186,7 +214,11 @@ fn parse_log(output: &str) -> Result<Vec<Change>, String> {
             change_id: f[0].into(),
             commit_id: f[1].into(),
             description: f[2].trim_end().into(),
-            bookmarks: f[3].split(',').filter(|b| !b.is_empty()).map(str::to_string).collect(),
+            bookmarks: f[3]
+                .split(',')
+                .filter(|b| !b.is_empty())
+                .map(str::to_string)
+                .collect(),
             author: f[4].into(),
             when: f[5].into(),
             conflict: f[6] == "1",
@@ -202,16 +234,26 @@ fn parse_summary(output: &str) -> Vec<JjFile> {
         .lines()
         .filter_map(|line| {
             let (status, path) = line.split_once(' ')?;
-            (status.len() == 1).then(|| JjFile { status: status.into(), path: renamed_to(path) })
+            (status.len() == 1).then(|| JjFile {
+                status: status.into(),
+                path: renamed_to(path),
+            })
         })
         .collect()
 }
 
 fn renamed_to(path: &str) -> String {
-    let (Some(open), Some(close)) = (path.find('{'), path.rfind('}')) else { return path.into() };
-    let Some((_, to)) = path[open + 1..close].split_once(" => ") else { return path.into() };
+    let (Some(open), Some(close)) = (path.find('{'), path.rfind('}')) else {
+        return path.into();
+    };
+    let Some((_, to)) = path[open + 1..close].split_once(" => ") else {
+        return path.into();
+    };
     // `{ => b}/x` and `a/{x => }/y` leave doubled or leading slashes behind.
-    format!("{}{}{}", &path[..open], to, &path[close + 1..]).replace("//", "/").trim_start_matches('/').into()
+    format!("{}{}{}", &path[..open], to, &path[close + 1..])
+        .replace("//", "/")
+        .trim_start_matches('/')
+        .into()
 }
 
 #[cfg(test)]
@@ -236,10 +278,20 @@ mod tests {
     #[test]
     fn parses_summary_lines_and_renames() {
         let files = parse_summary("M src/main.rs\nA docs/new file.md\nD old.txt\nR src/{a.rs => b.rs}\nR {x => y}/z.rs\nC lib/{ => sub}/c.rs\n");
-        let paths: Vec<_> = files.iter().map(|f| (f.status.as_str(), f.path.as_str())).collect();
+        let paths: Vec<_> = files
+            .iter()
+            .map(|f| (f.status.as_str(), f.path.as_str()))
+            .collect();
         assert_eq!(
             paths,
-            [("M", "src/main.rs"), ("A", "docs/new file.md"), ("D", "old.txt"), ("R", "src/b.rs"), ("R", "y/z.rs"), ("C", "lib/sub/c.rs")]
+            [
+                ("M", "src/main.rs"),
+                ("A", "docs/new file.md"),
+                ("D", "old.txt"),
+                ("R", "src/b.rs"),
+                ("R", "y/z.rs"),
+                ("C", "lib/sub/c.rs")
+            ]
         );
         assert!(parse_summary("Working copy changes:\n").is_empty());
     }
@@ -249,7 +301,9 @@ mod tests {
         assert_eq!(message_flag("-r root()").unwrap(), "--message=-r root()");
         assert!(message_flag("a\0b").is_err());
         assert_eq!(fileset("a \"b\"|c").unwrap(), r#"root-file:"a \"b\"|c""#);
-        assert!(fileset("../x").is_err() && fileset("/etc/passwd").is_err() && fileset("").is_err());
+        assert!(
+            fileset("../x").is_err() && fileset("/etc/passwd").is_err() && fileset("").is_err()
+        );
     }
 
     #[test]
@@ -273,7 +327,13 @@ mod tests {
         run(&base, &["git", "init"]).unwrap();
         std::fs::write(base.join("a b.txt"), "hello\n").unwrap();
         let state = status(&base).unwrap();
-        assert!(state.is_repo && state.files.iter().any(|f| f.path == "a b.txt" && f.status == "A"));
+        assert!(
+            state.is_repo
+                && state
+                    .files
+                    .iter()
+                    .any(|f| f.path == "a b.txt" && f.status == "A")
+        );
         assert!(diff(&base, Some("a b.txt")).unwrap().contains("+hello"));
         let state = commit(&base, "-r root() first").unwrap();
         assert!(state.files.is_empty() && state.change.unwrap().empty);

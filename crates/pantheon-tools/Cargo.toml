@@ -20,6 +20,8 @@ pantheon-secrets = { path = "../pantheon-secrets" }
 pantheon-storage = { path = "../pantheon-storage" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# Native grep/glob tools compile and match patterns over confined paths.
+regex = "1"
 # Persistent terminal sessions. `portable-pty` uses openpty on Unix and
 # ConPTY on Windows; the tool manager owns the process for the session.
 portable-pty = "0.9"

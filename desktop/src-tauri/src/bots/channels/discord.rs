@@ -13,8 +13,15 @@ const API: &str = "https://discord.com/api/v10";
 /// GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT.
 const INTENTS: u64 = (1 << 9) | (1 << 12) | (1 << 15);
 
-async fn rest(token: &str, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
-    let mut request = client()?.request(method, format!("{API}{path}")).header("Authorization", format!("Bot {token}"));
+async fn rest(
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value> {
+    let mut request = client()?
+        .request(method, format!("{API}{path}"))
+        .header("Authorization", format!("Bot {token}"));
     if let Some(body) = body {
         request = request.json(&body);
     }
@@ -34,27 +41,60 @@ pub(crate) fn inbound(message: &Value, bot_user: &str) -> Option<(String, String
         return None;
     }
     let direct = message["guild_id"].is_null();
-    let mentioned = message["mentions"].as_array().into_iter().flatten().any(|user| user["id"].as_str() == Some(bot_user));
+    let mentioned = message["mentions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|user| user["id"].as_str() == Some(bot_user));
     if !direct && !mentioned {
         return None;
     }
-    let text = message["content"].as_str()?.replace(&format!("<@{bot_user}>"), "").replace(&format!("<@!{bot_user}>"), "").trim().to_owned();
+    let text = message["content"]
+        .as_str()?
+        .replace(&format!("<@{bot_user}>"), "")
+        .replace(&format!("<@!{bot_user}>"), "")
+        .trim()
+        .to_owned();
     if text.is_empty() {
         return None;
     }
     let author = &message["author"];
-    let name = author["global_name"].as_str().or(author["username"].as_str()).unwrap_or("Discord user").to_owned();
-    Some((author["id"].as_str()?.to_owned(), name, message["channel_id"].as_str()?.to_owned(), text))
+    let name = author["global_name"]
+        .as_str()
+        .or(author["username"].as_str())
+        .unwrap_or("Discord user")
+        .to_owned();
+    Some((
+        author["id"].as_str()?.to_owned(),
+        name,
+        message["channel_id"].as_str()?.to_owned(),
+        text,
+    ))
 }
 
-pub(crate) async fn run(app: &tauri::AppHandle, channel: &Channel, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-    let token = secrets::get(&channel.id, "token").ok_or("auth:The Discord bot token is missing.")?;
+pub(crate) async fn run(
+    app: &tauri::AppHandle,
+    channel: &Channel,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    let token =
+        secrets::get(&channel.id, "token").ok_or("auth:The Discord bot token is missing.")?;
     let gateway = rest(&token, reqwest::Method::GET, "/gateway/bot", None).await?;
-    let url = format!("{}/?v=10&encoding=json", gateway["url"].as_str().ok_or("Discord did not return a gateway URL.")?);
-    let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str()).await.map_err(|e| format!("Could not open Discord's gateway: {e}"))?;
+    let url = format!(
+        "{}/?v=10&encoding=json",
+        gateway["url"]
+            .as_str()
+            .ok_or("Discord did not return a gateway URL.")?
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str())
+        .await
+        .map_err(|e| format!("Could not open Discord's gateway: {e}"))?;
     let mut sequence = Value::Null;
     // Replaced on Hello; a plain interval would tick at once and heartbeat before Hello.
-    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(3600), Duration::from_secs(3600));
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(3600),
+        Duration::from_secs(3600),
+    );
     let mut bot_user = String::new();
     loop {
         let frame = tokio::select! {
@@ -84,24 +124,56 @@ pub(crate) async fn run(app: &tauri::AppHandle, channel: &Channel, mut stop: tok
         }
         match payload["op"].as_u64() {
             Some(10) => {
-                let every = payload["d"]["heartbeat_interval"].as_u64().unwrap_or(41_250);
-                heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_millis(every), Duration::from_millis(every));
+                let every = payload["d"]["heartbeat_interval"]
+                    .as_u64()
+                    .unwrap_or(41_250);
+                heartbeat = tokio::time::interval_at(
+                    tokio::time::Instant::now() + Duration::from_millis(every),
+                    Duration::from_millis(every),
+                );
                 let identify = json!({"op": 2, "d": {"token": token, "intents": INTENTS, "properties": {"os": std::env::consts::OS, "browser": "Pantheon", "device": "Pantheon"}}});
-                socket.send(Message::text(identify.to_string())).await.map_err(|e| e.to_string())?;
+                socket
+                    .send(Message::text(identify.to_string()))
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
-            Some(1) => socket.send(Message::text(json!({"op": 1, "d": sequence}).to_string())).await.map_err(|e| e.to_string())?,
+            Some(1) => socket
+                .send(Message::text(json!({"op": 1, "d": sequence}).to_string()))
+                .await
+                .map_err(|e| e.to_string())?,
             // Reconnect or invalid session: start a fresh connection.
             Some(7) | Some(9) => return Ok(()),
             Some(0) => match payload["t"].as_str() {
                 Some("READY") => {
-                    bot_user = payload["d"]["user"]["id"].as_str().unwrap_or_default().to_owned();
-                    update_status(app, &channel.id, &format!("Connected as {}", payload["d"]["user"]["username"].as_str().unwrap_or("bot")));
+                    bot_user = payload["d"]["user"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    update_status(
+                        app,
+                        &channel.id,
+                        &format!(
+                            "Connected as {}",
+                            payload["d"]["user"]["username"].as_str().unwrap_or("bot")
+                        ),
+                    );
                 }
                 Some("MESSAGE_CREATE") => {
-                    let Some((sender, name, thread, text)) = inbound(&payload["d"], &bot_user) else { continue };
-                    let _ = rest(&token, reqwest::Method::POST, &format!("/channels/{thread}/typing"), None).await;
+                    let Some((sender, name, thread, text)) = inbound(&payload["d"], &bot_user)
+                    else {
+                        continue;
+                    };
+                    let _ = rest(
+                        &token,
+                        reqwest::Method::POST,
+                        &format!("/channels/{thread}/typing"),
+                        None,
+                    )
+                    .await;
                     let (app, channel_id) = (app.clone(), channel.id.clone());
-                    tauri::async_runtime::spawn(async move { handle_inbound(&app, &channel_id, &sender, &name, &thread, &text).await });
+                    tauri::async_runtime::spawn(async move {
+                        handle_inbound(&app, &channel_id, &sender, &name, &thread, &text).await
+                    });
                 }
                 _ => {}
             },
@@ -122,10 +194,27 @@ pub(crate) fn invite_url(application_id: &str) -> String {
 /// Checks the token, builds the server invite link, and warns when Message Content is off.
 pub(crate) async fn verify(token: &str) -> Result<super::Identity> {
     let me = rest(token, reqwest::Method::GET, "/users/@me", None).await?;
-    let application = rest(token, reqwest::Method::GET, "/oauth2/applications/@me", None).await?;
-    let id = application["id"].as_str().map(snowflake).transpose()?.ok_or("Discord did not return the application ID.")?;
-    let mut identity = super::Identity { name: me["username"].as_str().unwrap_or("bot").to_owned(), invite: Some(invite_url(id)), ..Default::default() };
-    if application["flags"].as_u64().is_some_and(|flags| flags & MESSAGE_CONTENT_FLAGS == 0) {
+    let application = rest(
+        token,
+        reqwest::Method::GET,
+        "/oauth2/applications/@me",
+        None,
+    )
+    .await?;
+    let id = application["id"]
+        .as_str()
+        .map(snowflake)
+        .transpose()?
+        .ok_or("Discord did not return the application ID.")?;
+    let mut identity = super::Identity {
+        name: me["username"].as_str().unwrap_or("bot").to_owned(),
+        invite: Some(invite_url(id)),
+        ..Default::default()
+    };
+    if application["flags"]
+        .as_u64()
+        .is_some_and(|flags| flags & MESSAGE_CONTENT_FLAGS == 0)
+    {
         identity.warnings.push(format!("Message Content intent is off, so the bot cannot read messages. Turn it on at https://discord.com/developers/applications/{id}/bot under Privileged Gateway Intents."));
     }
     Ok(identity)
@@ -143,13 +232,27 @@ pub(crate) async fn send(channel: &Channel, thread: &str, text: &str) -> Result<
     let token = secrets::get(&channel.id, "token").ok_or("The Discord bot token is missing.")?;
     let target = match thread.strip_prefix("dm:") {
         Some(user) => {
-            let dm = rest(&token, reqwest::Method::POST, "/users/@me/channels", Some(json!({"recipient_id": snowflake(user)?}))).await?;
-            dm["id"].as_str().ok_or("Discord did not open a direct message.")?.to_owned()
+            let dm = rest(
+                &token,
+                reqwest::Method::POST,
+                "/users/@me/channels",
+                Some(json!({"recipient_id": snowflake(user)?})),
+            )
+            .await?;
+            dm["id"]
+                .as_str()
+                .ok_or("Discord did not open a direct message.")?
+                .to_owned()
         }
         None => snowflake(thread)?.to_owned(),
     };
-    rest(&token, reqwest::Method::POST, &format!("/channels/{target}/messages"), Some(json!({"content": text, "allowed_mentions": {"parse": []}})))
-        .await
-        .map(|_| ())
-        .map_err(|e| e.trim_start_matches("auth:").to_owned())
+    rest(
+        &token,
+        reqwest::Method::POST,
+        &format!("/channels/{target}/messages"),
+        Some(json!({"content": text, "allowed_mentions": {"parse": []}})),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| e.trim_start_matches("auth:").to_owned())
 }

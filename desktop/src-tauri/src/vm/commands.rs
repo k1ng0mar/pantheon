@@ -21,11 +21,21 @@ pub struct Status {
 pub fn status(vms: &Vms) -> Result<Status> {
     let supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let installed = supported && tart::binary().is_some();
-    Ok(Status { supported, installed, vms: if installed { vms.list()? } else { Vec::new() }, shown: vms.shown(), images: IMAGES.to_vec() })
+    Ok(Status {
+        supported,
+        installed,
+        vms: if installed { vms.list()? } else { Vec::new() },
+        shown: vms.shown(),
+        images: IMAGES.to_vec(),
+    })
 }
 fn name(value: &str) -> Result<String> {
     // Existing Tart VMs may use any name Tart accepts; reject only what could be an option.
-    if value.is_empty() || value.len() > 128 || value.starts_with('-') || value.chars().any(char::is_control) {
+    if value.is_empty()
+        || value.len() > 128
+        || value.starts_with('-')
+        || value.chars().any(char::is_control)
+    {
         return Err("Unknown VM.".into());
     }
     Ok(value.to_string())
@@ -64,9 +74,16 @@ pub async fn vm_create(app: AppHandle, image: String, name: String) -> Result<St
 
 /// `start` optionally shares a project folder read-only at the guest's `project` mount.
 #[tauri::command]
-pub async fn vm_power(app: AppHandle, name: String, action: String, share: Option<String>) -> Result<Status> {
+pub async fn vm_power(
+    app: AppHandle,
+    name: String,
+    action: String,
+    share: Option<String>,
+) -> Result<Status> {
     let name = self::name(&name)?;
-    let share = share.map(PathBuf::from).filter(|path| path.is_absolute() && path.is_dir());
+    let share = share
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_dir());
     crate::blocking(move || {
         let vms = app.state::<Vms>();
         match action.as_str() {
@@ -90,7 +107,9 @@ pub async fn vm_power(app: AppHandle, name: String, action: String, share: Optio
 pub async fn vm_frame(app: AppHandle, name: String) -> Result<Response> {
     let name = self::name(&name)?;
     crate::blocking(move || {
-        let shot = app.state::<Vms>().with_screen(&name, false, |rfb| screen::screenshot(rfb, 70))?;
+        let shot = app
+            .state::<Vms>()
+            .with_screen(&name, false, |rfb| screen::screenshot(rfb, 70))?;
         Ok(Response::new(shot.jpeg))
     })
     .await
@@ -100,7 +119,11 @@ pub async fn vm_frame(app: AppHandle, name: String) -> Result<Response> {
 pub async fn vm_input(app: AppHandle, name: String, input: Value) -> Result<String> {
     let name = self::name(&name)?;
     let action = super::tools::action(&input)?;
-    crate::blocking(move || app.state::<Vms>().with_screen(&name, true, |rfb| screen::act(rfb, &action))).await
+    crate::blocking(move || {
+        app.state::<Vms>()
+            .with_screen(&name, true, |rfb| screen::act(rfb, &action))
+    })
+    .await
 }
 
 /// Give a console-only Linux VM a light desktop for computer use (a few minutes, ~400 MB).

@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const mod = process.platform === 'darwin' ? '⌘' : 'Ctrl';
+const newTask = (page: Page) => page.getByRole('button', { name: `New task ${mod} N`, exact: true });
+
 const transcript = (page: Page) => page.getByRole('log', { name: 'Conversation', exact: true });
 const review = (page: Page) => page.locator('.change-review-dialog');
 const errors = new WeakMap<Page, string[]>();
@@ -69,7 +72,7 @@ test.describe('turn changes', () => {
       await page.getByRole('button', { name: 'Add to pending', exact: true }).click();
       await page.getByRole('region', { name: 'Task details', exact: true }).getByRole('button', { name: 'Start task', exact: true }).click();
     } else {
-      await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+      await newTask(page).click();
       await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
       await expect(page.locator('#prompt')).toBeEnabled();
       await page.locator('#prompt').fill('Sample change with a saved diff'); await page.locator('#prompt').press('Enter');

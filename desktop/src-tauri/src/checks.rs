@@ -35,11 +35,19 @@ pub(crate) fn plan(root: &Path) -> Option<Plan> {
                     .is_some_and(|script| !script.is_empty())
             });
         if declares_test {
-            return Some(Plan { name: "npm test".into(), program: "npm".into(), args: vec!["test".into(), "--silent".into()] });
+            return Some(Plan {
+                name: "npm test".into(),
+                program: "npm".into(),
+                args: vec!["test".into(), "--silent".into()],
+            });
         }
     }
     if root.join("Cargo.toml").is_file() {
-        return Some(Plan { name: "cargo check".into(), program: "cargo".into(), args: vec!["check".into()] });
+        return Some(Plan {
+            name: "cargo check".into(),
+            program: "cargo".into(),
+            args: vec!["check".into()],
+        });
     }
     None
 }
@@ -133,7 +141,11 @@ mod tests {
     fn the_checkout_manifests_decide_the_check() {
         let temp = Scratch::new("plan");
         let root = temp.path();
-        fs::write(root.join("package.json"), r#"{"scripts":{"test":"vitest run"}}"#).unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"scripts":{"test":"vitest run"}}"#,
+        )
+        .unwrap();
         let found = plan(root).unwrap();
         assert_eq!(found.name, "npm test");
         assert_eq!(found.args, vec!["test", "--silent"]);
@@ -157,7 +169,11 @@ mod tests {
         fs::write(root.join("package.json"), r#"{"scripts":{"test":"noop"}}"#).unwrap();
         let failing = root.join("npm");
         fake(&failing, "echo '  3 tests failed  ' >&2\nexit 1");
-        let plan = Plan { name: "npm test".into(), program: failing.to_str().unwrap().into(), args: vec![] };
+        let plan = Plan {
+            name: "npm test".into(),
+            program: failing.to_str().unwrap().into(),
+            args: vec![],
+        };
         let report = run(root, &plan).unwrap();
         assert_eq!(report["checked"], true);
         assert_eq!(report["ok"], false);
@@ -181,7 +197,11 @@ mod tests {
         assert_eq!(report["checked"], false);
         assert!(report["reason"].as_str().unwrap().contains("no fast check"));
 
-        let plan = Plan { name: "npm test".into(), program: "/nonexistent/pantheon-npm".into(), args: vec![] };
+        let plan = Plan {
+            name: "npm test".into(),
+            program: "/nonexistent/pantheon-npm".into(),
+            args: vec![],
+        };
         let report = run(temp.path(), &plan).unwrap_err();
         assert!(report.contains("Could not start"), "{report}");
     }

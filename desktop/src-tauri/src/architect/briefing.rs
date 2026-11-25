@@ -28,16 +28,27 @@ pub(super) fn fingerprint(rules: &str) -> u64 {
 /// new conversation, which has never seen them.
 pub(super) fn needs_full(previous: Option<&Briefing>, rules: u64, resumed: bool) -> bool {
     match previous {
-        Some(previous) if resumed => previous.rules != rules || previous.since_full + 1 >= FULL_EVERY,
+        Some(previous) if resumed => {
+            previous.rules != rules || previous.since_full + 1 >= FULL_EVERY
+        }
         _ => true,
     }
 }
 
-pub(super) fn next(previous: Option<&Briefing>, rules: u64, message_id: i64, full: bool) -> Briefing {
+pub(super) fn next(
+    previous: Option<&Briefing>,
+    rules: u64,
+    message_id: i64,
+    full: bool,
+) -> Briefing {
     Briefing {
         rules,
         message_id,
-        since_full: if full { 0 } else { previous.map_or(0, |b| b.since_full) + 1 },
+        since_full: if full {
+            0
+        } else {
+            previous.map_or(0, |b| b.since_full) + 1
+        },
     }
 }
 
@@ -50,13 +61,22 @@ mod tests {
         let rules = fingerprint("rules");
         assert!(needs_full(None, rules, true));
         let first = next(None, rules, 0, true);
-        assert!(needs_full(Some(&first), rules, false), "a new harness conversation");
-        assert!(needs_full(Some(&first), fingerprint("changed"), true), "changed rules");
+        assert!(
+            needs_full(Some(&first), rules, false),
+            "a new harness conversation"
+        );
+        assert!(
+            needs_full(Some(&first), fingerprint("changed"), true),
+            "changed rules"
+        );
         let mut briefing = first;
         for _ in 1..FULL_EVERY {
             assert!(!needs_full(Some(&briefing), rules, true));
             briefing = next(Some(&briefing), rules, 0, false);
         }
-        assert!(needs_full(Some(&briefing), rules, true), "periodic reminder");
+        assert!(
+            needs_full(Some(&briefing), rules, true),
+            "periodic reminder"
+        );
     }
 }

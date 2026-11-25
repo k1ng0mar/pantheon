@@ -22,6 +22,7 @@ const TIMEOUT: Duration = Duration::from_secs(12);
 const INVALID_RESPONSE: &str = "Jev returned an invalid decision. No recommendation was applied.";
 static CALLS: Semaphore = Semaphore::const_new(2);
 
+#[cfg(test)]
 pub(crate) fn is_busy() -> bool {
     CALLS.available_permits() != 2
 }

@@ -164,25 +164,6 @@ test('command center usage distinguishes unavailable values and renders untruste
   expect(await actions(page)).toEqual([]);
 });
 
-test('command center import selects exact items and preserves selection through filtering and failures', async ({ page }) => {
-  await setup(page, 'panel', { kind: 'imports', items: [
-    { id: 'migration-a', title: 'Repository instructions', description: 'README rules', source: 'Claude Code' },
-    { id: 'migration-b', title: 'Project skills', description: 'Local skills', source: 'Kimi Code' },
-  ] });
-  const commit = dialog(page).getByRole('button', { name: 'Import selected' });
-  await expect(commit).toBeDisabled();
-  await dialog(page).getByRole('checkbox', { name: 'Repository instructions README rules Claude Code' }).check();
-  await dialog(page).getByRole('searchbox').fill('skills');
-  await expect(dialog(page).getByRole('checkbox')).toHaveCount(1);
-  await page.evaluate(() => { (window as any).__command.executeError = 'Import unavailable'; });
-  await commit.click();
-  expect(await actions(page)).toEqual([{ action: 'import', payload: { ids: ['migration-a'] } }]);
-  await expect(dialog(page).getByRole('alert')).toHaveText('Import unavailable');
-  await dialog(page).getByRole('searchbox').fill('');
-  await expect(dialog(page).getByRole('checkbox', { name: 'Repository instructions README rules Claude Code' })).toBeChecked();
-  await expect(dialog(page).getByRole('checkbox', { name: 'Project skills Local skills Kimi Code' })).not.toBeChecked();
-});
-
 test('command center conversation paging deduplicates items and resumes only the selected task', async ({ page }) => {
   await setup(page, 'panel', { kind: 'conversations', mode: 'resume', cursor: 'page-two', items: [{ id: 'one', title: 'First conversation' }] });
   await dialog(page).getByRole('radio', { name: 'First conversation' }).check();
@@ -194,22 +175,6 @@ test('command center conversation paging deduplicates items and resumes only the
   await dialog(page).getByRole('button', { name: 'Resume conversation' }).click();
   expect(await actions(page)).toEqual([{ action: 'resume', payload: { id: 'two' } }]);
   expect(await page.evaluate(() => (window as any).__command.loads)).toEqual([null, 'page-two']);
-});
-
-test('command center preferences sends changed fields only and retains edits on failure', async ({ page }) => {
-  await setup(page, 'panel', { kind: 'preferences', fields: [
-    { id: 'personality', label: 'Response style', type: 'select', value: 'none', options: [{ value: 'none', label: 'Default' }, { value: 'friendly', label: 'Friendly' }] },
-    { id: 'feature', label: 'Experimental feature', type: 'toggle', value: false },
-    { id: 'managed', label: 'Managed preference', type: 'text', value: 'Required', disabled: true },
-  ] });
-  await expect(dialog(page).getByRole('button', { name: 'Save changes' })).toBeDisabled();
-  await expect(dialog(page).getByRole('textbox', { name: 'Managed preference' })).toBeDisabled();
-  await dialog(page).getByRole('combobox', { name: 'Response style' }).selectOption('friendly');
-  await page.evaluate(() => { (window as any).__command.executeError = 'Preference is managed by your organization'; });
-  await dialog(page).getByRole('button', { name: 'Save changes' }).click();
-  expect(await actions(page)).toEqual([{ action: 'set_preferences', payload: { values: { personality: 'friendly' } } }]);
-  await expect(dialog(page).getByRole('combobox', { name: 'Response style' })).toHaveValue('friendly');
-  await expect(dialog(page).getByRole('alert')).toContainText('managed');
 });
 
 test('command center jobs targets one process and renders result panels', async ({ page }) => {

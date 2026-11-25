@@ -10,7 +10,12 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use super::{http, http::block, sandbox::{Info, Sandbox}, Machine};
+use super::{
+    http,
+    http::block,
+    sandbox::{Info, Sandbox},
+    Machine,
+};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -42,33 +47,67 @@ fn machine(project: &Value) -> Machine {
 
 impl Railway {
     fn connected() -> Result<Self> {
-        let token = super::secret("railway_token").ok_or("Connect Railway in Settings → Cloud first.")?;
-        Ok(Railway { api: API.into(), token, workspace: super::settings().railway_workspace })
+        let token =
+            super::secret("railway_token").ok_or("Connect Railway in Settings → Cloud first.")?;
+        Ok(Railway {
+            api: API.into(),
+            token,
+            workspace: super::settings().railway_workspace,
+        })
     }
 
     async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
         let client = http::client(Duration::from_secs(60))?;
-        let reply = http::send(SERVICE, client.post(&self.api).bearer_auth(&self.token).json(&json!({"query": query, "variables": variables}))).await?;
+        let reply = http::send(
+            SERVICE,
+            client
+                .post(&self.api)
+                .bearer_auth(&self.token)
+                .json(&json!({"query": query, "variables": variables})),
+        )
+        .await?;
         match reply["errors"][0]["message"].as_str() {
-            Some(message) => Err(format!("Railway: {}", message.chars().take(300).collect::<String>())),
+            Some(message) => Err(format!(
+                "Railway: {}",
+                message.chars().take(300).collect::<String>()
+            )),
             None => Ok(reply["data"].clone()),
         }
     }
 
     async fn list(&self) -> Result<Vec<Machine>> {
-        let data = self.graphql("query($w: String) { projects(workspaceId: $w) { edges { node { id name } } } }", json!({"w": self.workspace})).await?;
-        Ok(data["projects"]["edges"].as_array().into_iter().flatten().map(|e| &e["node"]).filter(|p| p["name"].as_str().is_some_and(|n| n.starts_with(PREFIX))).map(machine).collect())
+        let data = self
+            .graphql(
+                "query($w: String) { projects(workspaceId: $w) { edges { node { id name } } } }",
+                json!({"w": self.workspace}),
+            )
+            .await?;
+        Ok(data["projects"]["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| &e["node"])
+            .filter(|p| p["name"].as_str().is_some_and(|n| n.starts_with(PREFIX)))
+            .map(machine)
+            .collect())
     }
 
     async fn create(&self, name: &str) -> Result<Machine> {
         let project = self.graphql("mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { id name environments { edges { node { id } } } } }",
             json!({"input": {"name": format!("{PREFIX}{name}"), "workspaceId": self.workspace}})).await?["projectCreate"].clone();
-        let project_id = project["id"].as_str().ok_or("Railway did not report the new project.")?;
-        let environment = project["environments"]["edges"][0]["node"]["id"].as_str().ok_or("Railway did not report the project's environment.")?;
+        let project_id = project["id"]
+            .as_str()
+            .ok_or("Railway did not report the new project.")?;
+        let environment = project["environments"]["edges"][0]["node"]["id"]
+            .as_str()
+            .ok_or("Railway did not report the project's environment.")?;
         let service = self.graphql("mutation($input: ServiceCreateInput!) { serviceCreate(input: $input) { id } }",
             json!({"input": {"projectId": project_id, "name": "sandbox", "source": {"image": IMAGE}}})).await?;
-        let service = service["serviceCreate"]["id"].as_str().ok_or("Railway did not report the new service.")?;
-        let ids = json!({"s": service, "e": environment, "input": {"startCommand": "sleep infinity"}});
+        let service = service["serviceCreate"]["id"]
+            .as_str()
+            .ok_or("Railway did not report the new service.")?;
+        let ids =
+            json!({"s": service, "e": environment, "input": {"startCommand": "sleep infinity"}});
         self.graphql("mutation($s: String!, $e: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $s, environmentId: $e, input: $input) }", ids).await?;
         self.graphql("mutation($s: String!, $e: String!) { serviceInstanceDeployV2(serviceId: $s, environmentId: $e) }", json!({"s": service, "e": environment})).await?;
         Ok(machine(&project))
@@ -76,7 +115,13 @@ impl Railway {
 
     async fn power(&self, id: &str, action: &str) -> Result<()> {
         match action {
-            "stop" | "delete" => self.graphql("mutation($id: String!) { projectDelete(id: $id) }", json!({"id": id})).await.map(|_| ()),
+            "stop" | "delete" => self
+                .graphql(
+                    "mutation($id: String!) { projectDelete(id: $id) }",
+                    json!({"id": id}),
+                )
+                .await
+                .map(|_| ()),
             _ => Err("Railway machines can only be deleted.".into()),
         }
     }
@@ -84,7 +129,10 @@ impl Railway {
 
 impl Sandbox for Railway {
     fn info(&self) -> Info {
-        Info { persistent: false, max_unattended_minutes: 24 * 60 }
+        Info {
+            persistent: false,
+            max_unattended_minutes: 24 * 60,
+        }
     }
     fn list(&self) -> Result<Vec<Machine>> {
         block(Railway::list(self))
@@ -95,7 +143,12 @@ impl Sandbox for Railway {
     fn power(&self, native: &str, action: &str) -> Result<()> {
         block(Railway::power(self, native, action))
     }
-    fn exec(&self, _native: &str, _command: &str, _timeout: Duration) -> Result<(Option<i32>, String)> {
+    fn exec(
+        &self,
+        _native: &str,
+        _command: &str,
+        _timeout: Duration,
+    ) -> Result<(Option<i32>, String)> {
         Err(NO_EXEC.into())
     }
     /// The container sleeps until deleted.
@@ -130,31 +183,66 @@ mod tests {
             };
             (200, reply)
         });
-        (Railway { api: format!("{base}/graphql/v2"), token: "rw-token".into(), workspace: workspace.map(str::to_string) }, seen)
+        (
+            Railway {
+                api: format!("{base}/graphql/v2"),
+                token: "rw-token".into(),
+                workspace: workspace.map(str::to_string),
+            },
+            seen,
+        )
     }
 
     #[tokio::test]
     async fn lists_creates_and_deletes_pantheon_projects() {
         let (api, seen) = railway(Some("ws-1"));
         let machines = api.list().await.unwrap();
-        assert_eq!(machines.iter().map(|m| (m.id.as_str(), m.name.as_str())).collect::<Vec<_>>(), vec![("railway:p1", "box")]);
+        assert_eq!(
+            machines
+                .iter()
+                .map(|m| (m.id.as_str(), m.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("railway:p1", "box")]
+        );
         assert_eq!(api.create("new").await.unwrap().id, "railway:p3");
         api.power("p3", "delete").await.unwrap();
-        assert_eq!(api.power("gone", "delete").await.unwrap_err(), "Railway: Project not found");
+        assert_eq!(
+            api.power("gone", "delete").await.unwrap_err(),
+            "Railway: Project not found"
+        );
         assert!(api.power("p3", "start").await.is_err());
         let log = seen.lock().unwrap();
-        assert!(log.iter().all(|r| r.authorization.as_deref() == Some("Bearer rw-token")));
-        let bodies: Vec<Value> = log.iter().map(|r| serde_json::from_str(&r.body).unwrap()).collect();
+        assert!(log
+            .iter()
+            .all(|r| r.authorization.as_deref() == Some("Bearer rw-token")));
+        let bodies: Vec<Value> = log
+            .iter()
+            .map(|r| serde_json::from_str(&r.body).unwrap())
+            .collect();
         assert_eq!(bodies[0]["variables"], json!({"w": "ws-1"}));
-        assert_eq!(bodies[1]["variables"]["input"], json!({"name": "pantheon-new", "workspaceId": "ws-1"}));
-        assert_eq!(bodies[2]["variables"]["input"], json!({"projectId": "p3", "name": "sandbox", "source": {"image": IMAGE}}));
-        assert_eq!(bodies[3]["variables"], json!({"s": "s1", "e": "e1", "input": {"startCommand": "sleep infinity"}}));
-        assert!(bodies[4]["query"].as_str().unwrap().contains("serviceInstanceDeployV2"));
+        assert_eq!(
+            bodies[1]["variables"]["input"],
+            json!({"name": "pantheon-new", "workspaceId": "ws-1"})
+        );
+        assert_eq!(
+            bodies[2]["variables"]["input"],
+            json!({"projectId": "p3", "name": "sandbox", "source": {"image": IMAGE}})
+        );
+        assert_eq!(
+            bodies[3]["variables"],
+            json!({"s": "s1", "e": "e1", "input": {"startCommand": "sleep infinity"}})
+        );
+        assert!(bodies[4]["query"]
+            .as_str()
+            .unwrap()
+            .contains("serviceInstanceDeployV2"));
     }
 
     #[test]
     fn exec_explains_why_railway_cannot_run_agents() {
         let (api, _) = railway(None);
-        assert!(Sandbox::exec(&api, "p1", "ls", Duration::from_secs(5)).unwrap_err().contains("railway ssh"));
+        assert!(Sandbox::exec(&api, "p1", "ls", Duration::from_secs(5))
+            .unwrap_err()
+            .contains("railway ssh"));
     }
 }

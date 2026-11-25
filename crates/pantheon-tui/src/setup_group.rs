@@ -20,7 +20,7 @@ pub mod setup {
 
     use crate::config::{Config, FallbackEntry, MemorySection, ModelSection};
     use crate::config_schema::PolicyPreset;
-    use crate::setup_providers::{self, ProviderAnswer, ProviderKind, ProviderMeta};
+    use crate::setup_providers::{self, ProviderAnswer, ProviderMeta};
     use pantheon_api::config::{
         BrowserSection, ComputerUseSection, McpSection, McpServerEntry, ToolGroup, ToolsSection,
         VoiceSection,
@@ -112,9 +112,9 @@ pub mod setup {
         pub mcp_servers: Vec<(String, McpServerEntry)>,
         /// Third-party skill dependencies skipped at install-or-skip time.
         /// Written to `[skill_deps].skipped` so `pantheon doctor` can report
-        /// the gap on later runs. The wizard's screen fills this in; the
-        /// `--yes` path detects everything and records the missing ids
-        /// without prompting or installing.
+        /// the gap on later runs. The wizard's screen fills this in; a piped
+        /// (non-terminal) setup detects everything and records the missing
+        /// ids without prompting or installing.
         pub skill_deps_skipped: Vec<String>,
     }
 
@@ -133,33 +133,31 @@ pub mod setup {
     }
 
     /// Run the wizard. `stdin` is only touched for missing answers.
-    pub fn run_setup(data_dir: &Path, answers: SetupAnswers, assume_defaults: bool) -> Config {
+    ///
+    /// There is no non-interactive "accept defaults" mode: a provider and
+    /// model are the user's choice, so anything not supplied by a flag is
+    /// prompted for. Scripted setup passes `--provider`/`--model` (and any
+    /// other group it wants configured) and never blocks.
+    pub fn run_setup(data_dir: &Path, answers: SetupAnswers) -> Config {
         println!("pantheon setup");
         println!("  data dir: {}", data_dir.display());
         println!();
 
-        // 1. Model + fallback.
-        let provider = answers.provider.clone().unwrap_or_else(|| {
-            if assume_defaults {
-                "local".into()
-            } else {
-                prompt("Default provider", Some("local"))
-            }
-        });
-        let model = answers.model.clone().unwrap_or_else(|| {
-            if assume_defaults {
-                "llama3.2".into()
-            } else {
-                prompt("Default model", Some("llama3.2"))
-            }
-        });
-        let api_key_env = answers.api_key_env.clone().unwrap_or_else(|| {
-            if assume_defaults {
-                String::new()
-            } else {
-                prompt("Env var holding the API key (empty = none)", Some(""))
-            }
-        });
+        // 1. Model + fallback. Pantheon does not pick a provider or model on
+        // the user's behalf: with no flag this prompts, and an empty answer
+        // leaves the section unset rather than guessing at a local runtime.
+        let provider = answers
+            .provider
+            .clone()
+            .unwrap_or_else(|| prompt("Default provider (catalog id, URL, or 'local')", None));
+        let model = answers
+            .model
+            .clone()
+            .unwrap_or_else(|| prompt("Default model", None));
+        let api_key_env = answers
+            .api_key_env
+            .clone()
+            .unwrap_or_else(|| prompt("Env var holding the API key (empty = none)", Some("")));
         // A raw key needs a name to live under. Derive one from the provider
         // using the same convention `pantheon model` uses, so a scripted setup
         // and a wizard run agree on where the key is read from later.
@@ -200,16 +198,12 @@ pub mod setup {
 
         // 2. Execution policy.
         let policy = answers.policy.unwrap_or_else(|| {
-            if assume_defaults {
-                PolicyPreset::Coder
-            } else {
-                println!("Execution policy:");
-                println!("  reader       read-only, nothing executes");
-                println!("  coder        shell + edits allowed (recommended)");
-                println!("  coder_memory coder + memory writes");
-                let a = prompt("Policy", Some("coder"));
-                PolicyPreset::parse(&a).unwrap_or(PolicyPreset::Coder)
-            }
+            println!("Execution policy:");
+            println!("  reader       read-only, nothing executes");
+            println!("  coder        shell + edits allowed (recommended)");
+            println!("  coder_memory coder + memory writes");
+            let a = prompt("Policy", Some("coder"));
+            PolicyPreset::parse(&a).unwrap_or(PolicyPreset::Coder)
         });
 
         // 3. Provider-backed tool groups. One kind-driven flow serves web
@@ -217,9 +211,9 @@ pub mod setup {
         // owning crate's registry, the follow-ups from the provider kind
         // (keyless / cloud key env / self-hosted URL / local detect+install).
         // A pre-set answer (flag, wizard) is validated against the registry;
-        // otherwise the recommended provider resolves, with stdin prompts
-        // unless --yes. A disabled tool group resolves to nothing: the
-        // section is not written and the runtime never registers the tools.
+        // otherwise the recommended provider is offered and stdin confirms.
+        // A disabled tool group resolves to nothing: the section is not
+        // written and the runtime never registers the tools.
         let group_on = |g: ToolGroup| {
             answers
                 .tools
@@ -232,7 +226,6 @@ pub mod setup {
             setup_providers::websearch_providers(),
             answers.websearch.clone(),
             group_on(ToolGroup::WebSearch),
-            assume_defaults,
             data_dir,
             None,
         );
@@ -241,7 +234,6 @@ pub mod setup {
             setup_providers::browser_providers(),
             answers.browser.clone(),
             group_on(ToolGroup::Browser),
-            assume_defaults,
             data_dir,
             None,
         );
@@ -258,7 +250,6 @@ pub mod setup {
                     setup_providers::stt_providers(),
                     answers.stt.clone(),
                     true,
-                    assume_defaults,
                     data_dir,
                     None,
                 )
@@ -271,7 +262,6 @@ pub mod setup {
                     setup_providers::tts_providers(),
                     answers.tts.clone(),
                     true,
-                    assume_defaults,
                     data_dir,
                     None,
                 )
@@ -301,7 +291,6 @@ pub mod setup {
             default_or_prompt(
                 "memory",
                 setup_providers::memory_providers(data_dir),
-                assume_defaults,
                 data_dir,
                 Some("bring your own memory system: `pantheon memory backend scaffold NAME [http|stdio]` lists it here"),
             )
@@ -314,25 +303,23 @@ pub mod setup {
             setup_providers::computer_providers(),
             answers.computer.clone(),
             group_on(ToolGroup::ComputerUse),
-            assume_defaults,
             data_dir,
             None,
         );
 
-        // Skill dependencies: third-party packages the skill library
-        // needs. `--yes` (and the wizard, which already ran the screen)
-        // detects only and records the missing ids - a scripted setup never
-        // installs behind the user's back. The interactive stdin path runs
-        // the full install-or-skip screen.
-        let skill_deps_skipped = if assume_defaults {
-            pantheon_doctor::skill_deps::detect_all_skipped(&crate::setup_providers::detect_binary)
-        } else {
+        // Skill dependencies: third-party packages the skill library needs.
+        // On a terminal the user gets the install-or-skip screen; on a pipe
+        // setup only detects and records the missing ids, so a scripted setup
+        // never installs behind the user's back.
+        let skill_deps_skipped = if std::io::stdin().is_terminal() {
             pantheon_doctor::skill_deps::run_skill_deps_screen(
                 &mut |line: &str| println!("pantheon: {line}"),
                 &mut |q: &str, d: bool| Some(confirm(q, d)),
                 &mut pantheon_doctor::skill_deps::shell_install,
                 &crate::setup_providers::detect_binary,
             )
+        } else {
+            pantheon_doctor::skill_deps::detect_all_skipped(&crate::setup_providers::detect_binary)
         };
 
         let fresh = Config {
@@ -650,20 +637,17 @@ pub mod setup {
 
     /// The non-interactive answer for one provider group: the recommended
     /// row (first row when nothing is marked), with kind defaults under
-    /// `--yes` and stdin follow-ups otherwise.
+    /// Prompts for the choice; the recommended row is only the default
+    /// answer, never an automatic one.
     fn default_or_prompt(
         what: &str,
         metas: Vec<ProviderMeta>,
-        assume_defaults: bool,
         data_dir: &Path,
         hint: Option<&str>,
     ) -> Option<ProviderAnswer> {
         let meta = setup_providers::recommended_provider(&metas)
             .or_else(|| metas.first())?
             .clone();
-        if assume_defaults {
-            return Some(default_answer(&meta));
-        }
         println!("{what} provider:");
         if let Some(hint) = hint {
             println!("  ({hint})");
@@ -730,55 +714,14 @@ pub mod setup {
         }
     }
 
-    /// The `--yes` answer for one provider: kind defaults, no prompts, no
-    /// installs. A missing local binary records `skipped` so `pantheon
-    /// doctor` can report the gap instead of the config pretending the
-    /// provider works.
-    fn default_answer(meta: &ProviderMeta) -> ProviderAnswer {
-        let mut answer = ProviderAnswer {
-            id: meta.id.clone(),
-            ..Default::default()
-        };
-        match &meta.kind {
-            ProviderKind::Keyless => {}
-            ProviderKind::Cloud { env_var } => {
-                answer.key_env = Some(env_var.clone());
-            }
-            ProviderKind::SelfHosted {
-                default_url,
-                key_env,
-                ..
-            } => {
-                answer.url = non_empty(default_url.clone());
-                // --yes is scripted: record the standard name, never prompt.
-                // The value comes from the user's shell (agent doctor
-                // reports the gap when neither is set).
-                answer.key_env = key_env.clone();
-            }
-            ProviderKind::Local { local } => {
-                if !setup_providers::detect_binary(&local.detect_cmd) {
-                    answer.skipped = true;
-                }
-            }
-        }
-        for f in &meta.extra {
-            if !f.default.is_empty() {
-                answer.options.push((f.key.clone(), f.default.clone()));
-            }
-        }
-        answer
-    }
-
     /// Resolve one provider-backed group: a disabled tool group resolves
     /// to nothing (the section is not written); a pre-set answer is
-    /// validated; otherwise the recommended provider resolves.
-    #[allow(clippy::too_many_arguments)]
+    /// validated; otherwise the user picks interactively.
     fn resolve_provider(
         what: &str,
         metas: Vec<ProviderMeta>,
         pre: Option<ProviderAnswer>,
         group_on: bool,
-        assume_defaults: bool,
         data_dir: &Path,
         hint: Option<&str>,
     ) -> Option<ProviderAnswer> {
@@ -787,7 +730,7 @@ pub mod setup {
         }
         match pre {
             Some(a) => Some(validated_answer(what, &metas, a)),
-            None => default_or_prompt(what, metas, assume_defaults, data_dir, hint),
+            None => default_or_prompt(what, metas, data_dir, hint),
         }
     }
 
@@ -888,15 +831,6 @@ pub mod setup {
         options
     }
 
-    fn non_empty(s: String) -> Option<String> {
-        let t = s.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
-    }
-
     /// True when a provider string is a bare endpoint rather than a catalog id.
     fn looks_like_url(provider: &str) -> bool {
         provider.starts_with("http://") || provider.starts_with("https://")
@@ -921,10 +855,7 @@ pub mod setup {
 
     /// `pantheon setup --help`.
     fn setup_help() {
-        eprintln!("usage: pantheon setup [--yes] [options]");
-        eprintln!(
-            "  --yes                  accept defaults for anything without a flag (non-interactive)"
-        );
+        eprintln!("usage: pantheon setup [options]");
         eprintln!(
             "  --provider ID          default model provider (catalog id, URL, or \"local\")"
         );
@@ -984,17 +915,14 @@ pub mod setup {
                 "memory",
                 "computer",
                 "key",
-                "yes",
                 "help",
                 "h",
             ];
-            // Every flag here except --yes/--help takes a value, in `--flag
-            // VALUE` or `--flag=VALUE` form (Args::parse reads both), so a
-            // value token must be skipped, not mistaken for a stray
-            // positional: `setup --provider openai` is legitimate, while a
-            // bare `setup openai` is not. Mirroring Args::parse, a value
-            // flag followed by another `--` flag is a boolean switch, so
-            // the following flag is not eaten as its value.
+            // Every flag here takes a value, in `--flag VALUE` or
+            // `--flag=VALUE` form (Args::parse reads both), so a value token
+            // must be skipped, not mistaken for a stray positional. Mirroring
+            // Args::parse, a value flag followed by another `--` flag is a
+            // boolean switch, so the following flag is not eaten as its value.
             let value_flags = [
                 "provider",
                 "model",
@@ -1049,13 +977,12 @@ pub mod setup {
         // A terminal with no flags is the interactive case, and the TUI
         // wizard is the experience that was built for it: lists, pickers,
         // and a visible flow instead of a stdin prompt loop. The text path
-        // stays for scripts (--yes or explicit flags) and for pipes, where
+        // stays for scripted setup with explicit flags and for pipes, where
         // a full-screen wizard cannot render at all. Without this, the
         // installer's "run `pantheon setup`" advice handed the user the
         // weaker of the two paths.
         if std::io::stdin().is_terminal()
             && std::io::stdout().is_terminal()
-            && !parsed.has("yes")
             && parsed.flag("provider").is_none()
             && parsed.flag("model").is_none()
         {
@@ -1128,8 +1055,10 @@ pub mod setup {
             skill_deps_skipped: Vec::new(),
             mcp_servers: Vec::new(),
         };
-        // --yes: accept defaults for anything without a flag (non-interactive).
-        run_setup(&crate::terminal::data_dir(), answers, parsed.has("yes"));
+        // Prompts for anything without a flag. There is no "accept all
+        // defaults" mode: Pantheon does not choose a provider or model for
+        // the user, so setup always asks.
+        run_setup(&crate::terminal::data_dir(), answers);
     }
 }
 
@@ -1163,7 +1092,7 @@ pub mod setup_wizard {
     //! context window and per-million-token price when known.
     //!
     //! Nothing here writes config directly. Answers are collected, then handed to
-    //! `setup::run_setup`, which is the same code path `pantheon setup --yes`
+    //! `setup::run_setup`, which is the same code path `pantheon setup`
     //! uses and the eval suite covers. A screen that appears without a runtime
     //! consumer behind it is a lie the user finds out about later, so the only
     //! screens offered are ones that write something the runtime reads.
@@ -1767,7 +1696,7 @@ pub mod setup_wizard {
     fn commit(data_dir: &Path, answers: SetupAnswers) {
         let skipped: Vec<&str> = answers.skipped_tools.iter().map(|g| g.key()).collect();
         let deps_skipped = answers.skill_deps_skipped.clone();
-        let cfg = crate::setup::run_setup(data_dir, answers, true);
+        let cfg = crate::setup::run_setup(data_dir, answers);
         println!("pantheon: wrote {}", data_dir.join("config.toml").display());
         // The config is the record. Printing the model makes a first run legible
         // without asking the user to go read a TOML file.

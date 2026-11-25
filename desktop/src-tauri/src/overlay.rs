@@ -55,7 +55,7 @@ impl Default for LaunchContext {
     fn default() -> Self {
         Self {
             project_id: None,
-            provider: "codex".into(),
+            provider: "pantheon".into(),
             model: "default".into(),
             mode: default_launch_mode(),
             reasoning_effort: None,
@@ -147,30 +147,12 @@ fn validate_context(context: &LaunchContext) -> Result<()> {
     Ok(())
 }
 fn validate_selection(selection: &ModelSelection) -> Result<()> {
-    if ![
-        "claude",
-        "codex",
-        "kimi",
-        "opencode",
-        "glm",
-        "antigravity",
-        "grok",
-        "mimo",
-        "pi",
-        "deepseek",
-        "commandcode",
-        "cline",
-        "kilo",
-        "omp",
-        "github-copilot",
-        "muse",
-    ]
-    .contains(&selection.provider.as_str())
+    if selection.provider != "pantheon"
         || selection.model.trim().is_empty()
         || selection.model.len() > 200
         || selection.model.chars().any(char::is_control)
     {
-        return Err("Choose a supported harness and a model ID under 200 bytes.".into());
+        return Err("Choose a Pantheon model ID under 200 bytes.".into());
     }
     crate::providers::validate_reasoning_effort(
         &selection.provider,
@@ -655,7 +637,8 @@ fn summaries(
     // worker remains visible; a saved "running" team after restart does not.
     // SQLite extracts only labels from team JSON, never whole assignments/results.
     let ids = serde_json::to_string(&live.keys().collect::<Vec<_>>()).map_err(|e| e.to_string())?;
-    let conn = store.conn(); let mut stmt = conn.prepare("WITH live(id) AS (SELECT value FROM json_each(?1)),
+    let conn = store.conn();
+    let mut stmt = conn.prepare("WITH live(id) AS (SELECT value FROM json_each(?1)),
       parents(id) AS (SELECT DISTINCT aw.parent_session_id FROM architect_workers aw JOIN live ON live.id=aw.session_id JOIN architect_teams t ON t.session_id=aw.parent_session_id WHERE json_extract(t.content,'$.status') IN ('running','waiting'))
       SELECT s.id,substr(COALESCE((SELECT json_extract(w.value,'$.name') FROM json_each(t.content,'$.workers') w WHERE json_extract(w.value,'$.id')=aw.worker_id LIMIT 1),s.title),1,160),s.project_id,substr(p.name,1,120),s.provider,s.updated_at,aw.parent_session_id,aw.worker_id,substr(parent.title,1,160)
       FROM sessions s JOIN projects p ON p.id=s.project_id
@@ -820,7 +803,8 @@ fn thread_snapshot(
             Some(child) => child,
             None => {
                 let content: Option<String> = store
-                    .conn().query_row(
+                    .conn()
+                    .query_row(
                         "SELECT content FROM subagents WHERE session_id=?1 AND id=?2",
                         rusqlite::params![session_id, id],
                         |row| row.get(0),
@@ -1062,7 +1046,8 @@ fn open_target(
 ) -> Result<OpenTarget> {
     use rusqlite::OptionalExtension;
     let exists: bool = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
             [session_id],
             |row| row.get(0),
@@ -1073,7 +1058,8 @@ fn open_target(
     }
     if let Some(child) = subagent_id {
         let saved: bool = store
-            .conn().query_row(
+            .conn()
+            .query_row(
                 "SELECT EXISTS(SELECT 1 FROM subagents WHERE session_id=?1 AND id=?2)",
                 rusqlite::params![session_id, child],
                 |r| r.get(0),
@@ -1084,7 +1070,8 @@ fn open_target(
         }
     }
     let worker: Option<(String, String)> = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT parent_session_id,worker_id FROM architect_workers WHERE session_id=?1",
             [session_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -1262,13 +1249,14 @@ mod tests {
     }
     fn task(store: &storage::Store, project: &storage::Project) -> storage::Session {
         store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap()
     }
     fn team(store: &storage::Store, parent: &str, worker: &str, status: &str) {
         let content = serde_json::json!({"status":status,"workers":[{"id":"worker-1","sessionId":worker,"name":"Review accessibility","status":"running"}]}).to_string();
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                 rusqlite::params![parent, content],
             )
@@ -1371,14 +1359,33 @@ mod tests {
     fn thread_provider_refreshes_after_a_handoff_without_relabeling_saved_responses() {
         let (store, project) = fixture();
         let task = task(&store, &project);
-        store.message(&task.id, "assistant", "Saved response").unwrap();
+        // Saved by a build that ran another agent; the handoff brings it to Pantheon.
+        store
+            .conn()
+            .execute(
+                "UPDATE sessions SET provider='codex' WHERE id=?1",
+                [&task.id],
+            )
+            .unwrap();
+        store
+            .message(&task.id, "assistant", "Saved response")
+            .unwrap();
         let state = app_state(store);
         let first = thread_snapshot(&state, &task.id, None, None, None).unwrap();
-        state.store.lock().unwrap().configure(&task.id, "kimi", "default", None).unwrap();
-        let updated = thread_snapshot(&state, &task.id, None, None, Some(first.history_version)).unwrap();
-        assert_eq!(updated.provider, "kimi");
+        state
+            .store
+            .lock()
+            .unwrap()
+            .configure(&task.id, "pantheon", "default", None)
+            .unwrap();
+        let updated =
+            thread_snapshot(&state, &task.id, None, None, Some(first.history_version)).unwrap();
+        assert_eq!(updated.provider, "pantheon");
         assert!(!updated.history_unchanged);
-        assert_eq!(updated.messages[0].author_provider.as_deref(), Some(task.provider.as_str()));
+        assert_eq!(
+            updated.messages[0].author_provider.as_deref(),
+            Some(task.provider.as_str())
+        );
         assert_eq!(updated.messages[1].role, "handoff");
     }
 
@@ -1541,7 +1548,8 @@ mod tests {
         let live = task(&store, &project);
         store.status(&stale.id, "running").unwrap();
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                 rusqlite::params![
                     idle.id,
@@ -1663,7 +1671,8 @@ mod tests {
         team(&store, &parent.id, &worker.id, "running");
         // An indexed existence lookup permits a child which settled after it was clicked.
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'child','{}',1)",
                 [&worker.id],
             )
@@ -1687,8 +1696,8 @@ mod tests {
         let preferences = Preferences {
             context: LaunchContext {
                 project_id: Some("project-1".into()),
-                provider: "claude".into(),
-                model: "sonnet".into(),
+                provider: "pantheon".into(),
+                model: "gpt".into(),
                 mode: "plan".into(),
                 reasoning_effort: Some("high".into()),
             },
@@ -1704,7 +1713,7 @@ mod tests {
     fn old_preferences_use_synced_model_until_an_explicit_selection_is_saved() {
         let preferences: Preferences = serde_json::from_value(serde_json::json!({
             "enabled": true, "shortcut": DEFAULT_SHORTCUT,
-            "context": {"projectId":"project", "provider":"kimi", "model":"kimi-latest", "mode":"plan"}
+            "context": {"projectId":"project", "provider":"pantheon", "model":"kimi-latest", "mode":"plan"}
         })).unwrap();
         assert!(preferences.model_selection.is_none());
         assert_eq!(preferences.effective_context(), preferences.context);
@@ -1719,7 +1728,7 @@ mod tests {
         select_model(
             &path,
             &mut preferences,
-            "opencode".into(),
+            "pantheon".into(),
             "openrouter/custom-model".into(),
             None,
         )
@@ -1731,7 +1740,7 @@ mod tests {
             &mut restored,
             LaunchContext {
                 project_id: Some("new-project".into()),
-                provider: "claude".into(),
+                provider: "pantheon".into(),
                 model: "sonnet".into(),
                 mode: "plan".into(),
                 reasoning_effort: Some("high".into()),
@@ -1740,7 +1749,7 @@ mod tests {
         .unwrap();
         let restored: Preferences = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         let context = restored.effective_context();
-        assert_eq!(context.provider, "opencode");
+        assert_eq!(context.provider, "pantheon");
         assert_eq!(context.model, "openrouter/custom-model");
         assert_eq!(context.project_id.as_deref(), Some("new-project"));
         assert_eq!(context.mode, "plan");
@@ -1754,22 +1763,9 @@ mod tests {
         let store = storage::Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         for provider in [
-            "claude",
-            "codex",
-            "kimi",
-            "glm",
-            "opencode",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
+            "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
+            "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
+            "pantheon", "pantheon",
         ] {
             for mode in [None, Some("ask"), Some("auto"), Some("plan"), Some("full")] {
                 let mut saved = serde_json::json!({"provider":provider,"model":"default"});
@@ -1802,7 +1798,7 @@ mod tests {
         assert!(select_model(
             &path,
             &mut preferences,
-            "claude".into(),
+            "pantheon".into(),
             "sonnet".into(),
             None
         )
@@ -1821,7 +1817,7 @@ mod tests {
         let changed = select_model(
             &path,
             &mut preferences,
-            "claude".into(),
+            "pantheon".into(),
             "sonnet".into(),
             Some("ultra".into()),
         )
@@ -1830,7 +1826,7 @@ mod tests {
         let changed = select_model(
             &path,
             &mut preferences,
-            "claude".into(),
+            "pantheon".into(),
             "sonnet".into(),
             Some("high".into()),
         )
@@ -1839,7 +1835,7 @@ mod tests {
         let changed = select_model(
             &path,
             &mut preferences,
-            "claude".into(),
+            "pantheon".into(),
             "sonnet".into(),
             None,
         )
@@ -1854,9 +1850,9 @@ mod tests {
         let mut preferences = Preferences::default();
         for (provider, model) in [
             ("unknown", "default"),
-            ("codex", ""),
-            ("codex", "injected\nmodel"),
-            ("codex", &"m".repeat(201)),
+            ("pantheon", ""),
+            ("pantheon", "injected\nmodel"),
+            ("pantheon", &"m".repeat(201)),
         ] {
             assert!(
                 select_model(&path, &mut preferences, provider.into(), model.into(), None).is_err()
@@ -1874,8 +1870,8 @@ mod tests {
             &store,
             &project.id,
             &LaunchContext {
-                provider: "kimi".into(),
-                reasoning_effort: Some("high".into()),
+                provider: "pantheon".into(),
+                reasoning_effort: Some("high effort".into()),
                 ..LaunchContext::default()
             },
             true,
@@ -1889,11 +1885,25 @@ mod tests {
     fn launcher_prompt_titles_remain_automatic_while_named_board_titles_do_not() {
         let (store, project) = fixture();
         let prompt = "Build a provider usage panel";
-        let task = create_launch_task(&store, &project.id, &LaunchContext::default(), false, prompt, prompt).unwrap();
+        let task = create_launch_task(
+            &store,
+            &project.id,
+            &LaunchContext::default(),
+            false,
+            prompt,
+            prompt,
+        )
+        .unwrap();
         assert!(crate::session_titles::automatic(&store, &task.id).unwrap());
         let id = store.begin_task_turn(&task.id, prompt).unwrap();
-        assert!(crate::session_titles::TitleRun::prepare(&store, &task.id, id).unwrap().is_some());
-        let board = store.create_board_task(&project.id, "claude", "sonnet", "full", prompt, prompt).unwrap();
+        assert!(
+            crate::session_titles::TitleRun::prepare(&store, &task.id, id)
+                .unwrap()
+                .is_some()
+        );
+        let board = store
+            .create_board_task(&project.id, "pantheon", "sonnet", "full", prompt, prompt)
+            .unwrap();
         assert!(!crate::session_titles::automatic(&store, &board.id).unwrap());
     }
 
@@ -1904,7 +1914,7 @@ mod tests {
         let store = storage::Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let original = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         let state = AppState {
             store: Arc::new(Mutex::new(store)),
@@ -1922,7 +1932,7 @@ mod tests {
                 workers: vec![WorkerProfile {
                     id: "worker".into(),
                     name: "Worker".into(),
-                    provider: "codex".into(),
+                    provider: "pantheon".into(),
                     model: "default".into(),
                     reasoning_effort: None,
                 }],
@@ -1934,7 +1944,7 @@ mod tests {
                 lead_guidance: None,
             }),
             Some(ModelSelection {
-                provider: "claude".into(),
+                provider: "pantheon".into(),
                 model: "sonnet".into(),
                 reasoning_effort: Some("medium".into()),
             }),
@@ -1952,14 +1962,14 @@ mod tests {
         };
         let (preview, count) = launch_preview(&store, &preferences).unwrap();
         assert_eq!(count, 1);
-        assert_eq!(preview.provider, "claude");
+        assert_eq!(preview.provider, "pantheon");
         assert_eq!(preview.model, "sonnet");
         assert_eq!(preview.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(preview.project_id.as_deref(), Some(project.id.as_str()));
         let team_task = architect::profiles::create_user_task(
             &store,
             &project.id,
-            "codex",
+            "pantheon",
             "default",
             Some("ask"),
             None,
@@ -1967,7 +1977,7 @@ mod tests {
         .unwrap();
         apply_context_effort(&store, &team_task.id, Some("xhigh")).unwrap();
         let team_task = store.session(&team_task.id).unwrap();
-        assert_eq!(team_task.provider, "claude");
+        assert_eq!(team_task.provider, "pantheon");
         assert_eq!(team_task.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(preview.model, team_task.model);
         let library_before =
@@ -1976,7 +1986,7 @@ mod tests {
             &store,
             &project.id,
             &LaunchContext {
-                provider: "opencode".into(),
+                provider: "pantheon".into(),
                 model: "openrouter/custom-model".into(),
                 ..LaunchContext::default()
             },
@@ -1985,7 +1995,7 @@ mod tests {
             "Build with the chosen architect",
         )
         .unwrap();
-        assert_eq!(selected.provider, "opencode");
+        assert_eq!(selected.provider, "pantheon");
         assert_eq!(selected.model, "openrouter/custom-model");
         assert_eq!(selected.reasoning_effort, None);
         let explicit_preferences = Preferences {
@@ -2004,7 +2014,7 @@ mod tests {
                 .config
                 .workers[0]
                 .provider,
-            "codex"
+            "pantheon"
         );
         assert_eq!(
             serde_json::to_value(architect::profiles::read(&store).unwrap()).unwrap(),
@@ -2018,7 +2028,7 @@ mod tests {
         assert_eq!(count, 0);
         assert_eq!(preview, explicit_preferences.effective_context());
         let solo = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         apply_context_effort(&store, &solo.id, Some("xhigh")).unwrap();
         assert_eq!(

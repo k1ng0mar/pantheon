@@ -26,9 +26,18 @@ pub(crate) fn start(app: tauri::AppHandle) {
 
 async fn attach_all(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let ids = state.store.lock().ok().and_then(|store| super::active_runs(&store).ok()).unwrap_or_default();
+    let ids = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| super::active_runs(&store).ok())
+        .unwrap_or_default();
     for id in ids {
-        if state.agents.lock().map_or(true, |agents| agents.contains_key(&id)) {
+        if state
+            .agents
+            .lock()
+            .map_or(true, |agents| agents.contains_key(&id))
+        {
             continue;
         }
         transport::attach_next(&id, true);

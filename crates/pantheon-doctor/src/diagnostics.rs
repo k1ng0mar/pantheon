@@ -15,7 +15,7 @@ pub mod checks {
     use crate::probe::{detect_binary, run_capture, tcp_probe, userns_refused, DETECT_TIMEOUT};
     use crate::registry::{CheckDef, DoctorCtx};
     use pantheon_api::config::Config;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// All built-in checks, in canonical subsystem order.
     pub fn all_checks() -> Vec<CheckDef> {
@@ -51,6 +51,12 @@ pub mod checks {
                 subsystem: Subsystem::Runtime,
                 title: "nightly pass state",
                 run: check_nightly_state,
+            },
+            CheckDef {
+                id: "runtime.disk_headroom",
+                subsystem: Subsystem::Runtime,
+                title: "free space for the data dir",
+                run: check_disk_headroom,
             },
             CheckDef {
                 id: "runtime.gateway_channels",
@@ -135,10 +141,50 @@ pub mod checks {
                 run: check_dotenv_permissions,
             },
             CheckDef {
+                id: "security.data_dir_permissions",
+                subsystem: Subsystem::Security,
+                title: "data dir and ledger permissions",
+                run: check_data_dir_permissions,
+            },
+            CheckDef {
                 id: "security.exec_sandbox",
                 subsystem: Subsystem::Security,
                 title: "exec sandbox (bwrap)",
                 run: check_exec_sandbox,
+            },
+            // -- coding ---------------------------------------------------
+            // These inspect the workspace checkout rather than the Pantheon
+            // install. Each reports not-applicable outside a workspace, so a
+            // doctor run with no checkout behaves exactly as before.
+            CheckDef {
+                id: "coding.git_identity",
+                subsystem: Subsystem::Config,
+                title: "git identity configured",
+                run: check_git_identity,
+            },
+            CheckDef {
+                id: "coding.git_dirty_tree",
+                subsystem: Subsystem::Runtime,
+                title: "workspace has uncommitted changes",
+                run: check_git_dirty_tree,
+            },
+            CheckDef {
+                id: "coding.instruction_file",
+                subsystem: Subsystem::Config,
+                title: "project instruction file present",
+                run: check_instruction_file,
+            },
+            CheckDef {
+                id: "coding.language_servers",
+                subsystem: Subsystem::Tools,
+                title: "language servers for this workspace",
+                run: check_language_servers,
+            },
+            CheckDef {
+                id: "coding.codegraph_freshness",
+                subsystem: Subsystem::Tools,
+                title: "codegraph index freshness",
+                run: check_codegraph_freshness,
             },
         ]
     }
@@ -378,6 +424,84 @@ pub mod checks {
             Some(n) => pantheon_api::config::nightly_enabled_with_legacy(n, legacy),
             None => legacy,
         }
+    }
+
+    /// Free space on the volume holding the data dir.
+    ///
+    /// Nothing watched disk usage: the ledger, transcripts, memory, uploads and
+    /// backups all grow in one directory, and a full disk turns every write into
+    /// a mid-run failure whose error names SQLite, not the cause. This is the one
+    /// place an operator can act before that happens. `df` is used rather than a
+    /// syscall so the check needs no platform binding; a missing `df` or an
+    /// unexpected output shape is "not applicable", never a failure.
+    fn check_disk_headroom(ctx: &DoctorCtx) -> Vec<Finding> {
+        const WARN_BELOW_MIB: u64 = 2048;
+        const FAIL_BELOW_MIB: u64 = 512;
+        if !ctx.data_dir.exists() {
+            return vec![Finding::not_applicable(
+                "runtime.disk_headroom",
+                Subsystem::Runtime,
+                "data dir does not exist yet",
+            )];
+        }
+        // Single-quote for the shell; `'` itself becomes `'\''`. The path is
+        // local and operator-controlled, but the check must not be a way to run
+        // a command through a crafted data dir.
+        let path = ctx.data_dir.to_string_lossy().replace('\'', "'\\''");
+        // -P: POSIX one-line output (no wrapped device names); -k: 1024-byte blocks.
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("df -Pk '{path}' 2>/dev/null"))
+            .output();
+        let stdout = match out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+            _ => {
+                return vec![Finding::not_applicable(
+                    "runtime.disk_headroom",
+                    Subsystem::Runtime,
+                    "df is not available on this host",
+                )]
+            }
+        };
+        // Second line: `filesystem blocks used available capacity mount`.
+        let available_mib = stdout
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split_whitespace().nth(3))
+            .and_then(|kib| kib.parse::<u64>().ok())
+            .map(|kib| kib / 1024);
+        let Some(available_mib) = available_mib else {
+            return vec![Finding::not_applicable(
+                "runtime.disk_headroom",
+                Subsystem::Runtime,
+                "df output was not in the expected format",
+            )];
+        };
+        if available_mib < FAIL_BELOW_MIB {
+            return vec![Finding::failed(
+                "runtime.disk_headroom",
+                Subsystem::Runtime,
+                Severity::Error,
+                format!("only {available_mib} MiB free on the data dir volume"),
+                "runs will start failing mid-turn when SQLite cannot write, and backups cannot be taken",
+                "free space, or move the data dir (PANTHEON_DATA_DIR) to a larger volume",
+            )];
+        }
+        if available_mib < WARN_BELOW_MIB {
+            return vec![Finding::failed(
+                "runtime.disk_headroom",
+                Subsystem::Runtime,
+                Severity::Warning,
+                format!("{available_mib} MiB free on the data dir volume"),
+                "unbounded growth (ledger, transcripts, uploads, backups) can fill it",
+                "free space, prune old runs/uploads, or enable retention in config.toml",
+            )];
+        }
+        vec![Finding::passed(
+            "runtime.disk_headroom",
+            Subsystem::Runtime,
+            format!("{available_mib} MiB free"),
+        )]
     }
 
     fn check_nightly_state(ctx: &DoctorCtx) -> Vec<Finding> {
@@ -1266,7 +1390,99 @@ pub mod checks {
         }
     }
 
+    /// Data dir and ledger permissions.
+    ///
+    /// Everything else in the data dir is derived from this mode: SQLite
+    /// creates the databases with the process umask, so a `0755` dir used to
+    /// mean `0644` ledgers - full transcripts and memory readable by every
+    /// local user (audit F2). Startup now tightens both; this check exists to
+    /// catch an install that predates the fix, or a chmod that failed on an
+    /// unusual mount.
+    fn check_data_dir_permissions(ctx: &DoctorCtx) -> Vec<Finding> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &std::path::Path| -> Option<u32> {
+                std::fs::metadata(p)
+                    .ok()
+                    .map(|m| m.permissions().mode() & 0o777)
+            };
+            let mut loose: Vec<String> = Vec::new();
+            if let Some(dir_mode) = mode(&ctx.data_dir) {
+                if dir_mode & 0o077 != 0 {
+                    loose.push(format!("{} is {:o}", ctx.data_dir.display(), dir_mode));
+                }
+            }
+            for name in ["ledger.db", "memory.db", "ideas.db"] {
+                let path = ctx.data_dir.join(name);
+                if let Some(file_mode) = mode(&path) {
+                    if file_mode & 0o077 != 0 {
+                        loose.push(format!("{} is {:o}", path.display(), file_mode));
+                    }
+                }
+            }
+            if loose.is_empty() {
+                let dir_mode = mode(&ctx.data_dir).unwrap_or(0o700);
+                return vec![Finding::passed(
+                    "security.data_dir_permissions",
+                    Subsystem::Security,
+                    format!("data dir owner-only (mode {dir_mode:o})"),
+                )];
+            }
+            vec![Finding::failed(
+                "security.data_dir_permissions",
+                Subsystem::Security,
+                Severity::Warning,
+                format!(
+                    "on-disk state is readable beyond the owner: {}",
+                    loose.join("; ")
+                ),
+                "transcripts, tool results and memory can be read by other local users",
+                format!(
+                    "chmod 700 {} (and 600 the *.db files inside it), or re-run Pantheon \
+                     once so startup tightens them",
+                    ctx.data_dir.display()
+                ),
+            )
+            .with_details(loose.join("\n"))]
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = ctx;
+            vec![Finding::not_applicable(
+                "security.data_dir_permissions",
+                Subsystem::Security,
+                "permission check is unix-only",
+            )]
+        }
+    }
+
     fn check_exec_sandbox(_ctx: &DoctorCtx) -> Vec<Finding> {
+        // No namespace backend exists outside Linux: `unshare`/`bwrap` are
+        // Linux mechanisms. Before this the check said "install bubblewrap"
+        // on macOS and Windows, where that either does not exist or does not
+        // provide the boundary. Say the true thing instead (audit F3).
+        if !cfg!(target_os = "linux") {
+            return vec![Finding::failed(
+                "security.exec_sandbox",
+                Subsystem::Security,
+                Severity::Warning,
+                format!(
+                    "no sandbox backend on {} - High-sandbox exec fails closed",
+                    std::env::consts::OS
+                ),
+                "model-run shell and skill commands are refused (SANDBOX_UNAVAILABLE) \
+                 rather than run unisolated under High",
+                "accept the fail-closed default, run Pantheon on Linux or in a VM/container, \
+                 or set PANTHEON_SANDBOX_FALLBACK=allow to run directly on the host with a \
+                 scrubbed environment and rlimits (no filesystem/network isolation)",
+            )
+            .with_details(format!(
+                "platform: {}; the High boundary needs bubblewrap/user namespaces, \
+                 which are Linux-only",
+                std::env::consts::OS
+            ))];
+        }
         // The shell tool's default SandboxLevel::High runs through a
         // Container boundary (bwrap). Without bwrap the runner fails closed
         // (SANDBOX_UNAVAILABLE), so a missing binary is a warning with the
@@ -1309,6 +1525,312 @@ pub mod checks {
         )]
     }
 
+    // -- coding ------------------------------------------------------------
+    //
+    // The coding checks answer "can an agent actually work productively in
+    // this checkout?" - which is a different question from "is Pantheon
+    // installed correctly". Each is not-applicable when no workspace is set,
+    // so the default `doctor` run is unchanged.
+
+    /// Helper: the workspace, or a not-applicable finding.
+    fn workspace_of<'a>(ctx: &'a DoctorCtx, id: &'static str, subsystem: Subsystem) -> Result<&'a Path, Vec<Finding>> {
+        match ctx.workspace.as_deref() {
+            Some(ws) if ws.is_dir() => Ok(ws),
+            _ => Err(vec![Finding::not_applicable(
+                id,
+                subsystem,
+                "no workspace selected (run doctor from a checkout or pass a workspace)",
+            )]),
+        }
+    }
+
+    /// Is `dir` (or an ancestor) a git work tree? Used to keep the git
+    /// checks from reporting a non-checkout as broken.
+    fn in_git_worktree(dir: &Path) -> bool {
+        let mut cur = Some(dir);
+        while let Some(d) = cur {
+            if d.join(".git").exists() {
+                return true;
+            }
+            cur = d.parent();
+        }
+        false
+    }
+
+    /// A coding session that cannot commit (no `user.name`/`user.email`) hits
+    /// the failure only after it has done the work.
+    fn check_git_identity(ctx: &DoctorCtx) -> Vec<Finding> {
+        const ID: &str = "coding.git_identity";
+        let ws = match workspace_of(ctx, ID, Subsystem::Config) {
+            Ok(ws) => ws,
+            Err(f) => return f,
+        };
+        if !in_git_worktree(ws) {
+            return vec![Finding::not_applicable(
+                ID,
+                Subsystem::Config,
+                "workspace is not a git working tree",
+            )];
+        }
+        let missing: Vec<&str> = ["user.name", "user.email"]
+            .into_iter()
+            .filter(|key| {
+                !run_capture(
+                    &format!("git config --get {key}"),
+                    std::time::Duration::from_secs(5),
+                )
+                .map(|(ok, out)| ok && !out.trim().is_empty())
+                .unwrap_or(false)
+            })
+            .collect();
+        if missing.is_empty() {
+            return vec![Finding::passed(
+                ID,
+                Subsystem::Config,
+                "git user.name and user.email are set",
+            )];
+        }
+        vec![Finding::failed(
+            ID,
+            Subsystem::Config,
+            Severity::Warning,
+            format!("git identity incomplete: missing {}", missing.join(", ")),
+            "commits made by the agent (or by you through it) will fail at `git commit` \
+             after the work is done",
+            "set them once: `git config --global user.name \"Your Name\"` and \
+             `git config --global user.email you@example.com`",
+        )
+        .with_details(format!("workspace: {}", ws.display()))]
+    }
+
+    /// A dirty tree is worth surfacing before an agent starts editing: the
+    /// diff you see afterwards will mix its changes with yours.
+    fn check_git_dirty_tree(ctx: &DoctorCtx) -> Vec<Finding> {
+        const ID: &str = "coding.git_dirty_tree";
+        let ws = match workspace_of(ctx, ID, Subsystem::Runtime) {
+            Ok(ws) => ws,
+            Err(f) => return f,
+        };
+        if !in_git_worktree(ws) {
+            return vec![Finding::not_applicable(
+                ID,
+                Subsystem::Runtime,
+                "workspace is not a git working tree",
+            )];
+        }
+        let Some((ok, out)) = run_capture(
+            &format!("git -C {} status --porcelain", shell_quote(ws)),
+            std::time::Duration::from_secs(10),
+        ) else {
+            return vec![Finding::skipped(
+                ID,
+                Subsystem::Runtime,
+                "git status did not complete",
+            )];
+        };
+        if !ok {
+            return vec![Finding::skipped(
+                ID,
+                Subsystem::Runtime,
+                "git status failed (not a repo, or git unavailable)",
+            )];
+        }
+        let changed = out.lines().filter(|l| !l.trim().is_empty()).count();
+        if changed == 0 {
+            return vec![Finding::passed(
+                ID,
+                Subsystem::Runtime,
+                "working tree is clean",
+            )
+            .with_details(format!("workspace: {}", ws.display()))];
+        }
+        vec![Finding::failed(
+            ID,
+            Subsystem::Runtime,
+            Severity::Info,
+            format!("{changed} uncommitted path(s) in the workspace"),
+            "an agent's changes will be mixed with the ones already here, and a rollback \
+             is harder to reason about",
+            "commit or stash them first (`git stash`), so the agent's diff stands alone",
+        )
+        .with_details(format!("workspace: {}", ws.display()))]
+    }
+
+    /// An instruction file is optional, but its absence is the single biggest
+    /// reason an agent picks the wrong build/test command.
+    fn check_instruction_file(ctx: &DoctorCtx) -> Vec<Finding> {
+        const ID: &str = "coding.instruction_file";
+        let ws = match workspace_of(ctx, ID, Subsystem::Config) {
+            Ok(ws) => ws,
+            Err(f) => return f,
+        };
+        match pantheon_runtime::project_instructions::find_in(ws) {
+            Some(path) => vec![Finding::passed(
+                ID,
+                Subsystem::Config,
+                format!("found {}", path.display()),
+            )
+            .with_details("the file is injected into the system prompt each turn".to_string())],
+            None => vec![Finding::failed(
+                ID,
+                Subsystem::Config,
+                Severity::Info,
+                "no AGENTS.md or CLAUDE.md in this workspace",
+                "the agent guesses the build/test/style conventions instead of reading them",
+                "add an AGENTS.md (or CLAUDE.md) at the repo root with build, test, and \
+                 convention notes; Pantheon reads it on every turn",
+            )
+            .with_details(format!("workspace: {}", ws.display()))],
+        }
+    }
+
+    /// Language servers power go-to-definition, references, and hover. Which
+    /// ones this workspace needs is derived from the languages present.
+    fn check_language_servers(ctx: &DoctorCtx) -> Vec<Finding> {
+        const ID: &str = "coding.language_servers";
+        let ws = match workspace_of(ctx, ID, Subsystem::Tools) {
+            Ok(ws) => ws,
+            Err(f) => return f,
+        };
+        let needed = languages_in(ws);
+        if needed.is_empty() {
+            return vec![Finding::not_applicable(
+                ID,
+                Subsystem::Tools,
+                "no supported source files found in the workspace",
+            )];
+        }
+        let mut found: Vec<&str> = Vec::new();
+        let mut missing: Vec<&str> = Vec::new();
+        for lang in &needed {
+            let Some((bin, _)) = pantheon_exec::lsp::server_for(lang) else {
+                continue;
+            };
+            let bin_name = bin.split_whitespace().next().unwrap_or(&bin);
+            if detect_binary(&format!("command -v {bin_name}"), DETECT_TIMEOUT) {
+                found.push(lang);
+            } else {
+                missing.push(lang);
+            }
+        }
+        if missing.is_empty() {
+            return vec![Finding::passed(
+                ID,
+                Subsystem::Tools,
+                format!("language servers present for: {}", found.join(", ")),
+            )];
+        }
+        vec![Finding::failed(
+            ID,
+            Subsystem::Tools,
+            Severity::Info,
+            format!("no language server installed for: {}", missing.join(", ")),
+            "lsp.definition / lsp.references / lsp.hover / lsp.symbols will fail \
+             (LSP_NO_SERVER) for those languages; grep and the codegraph still work",
+            "install the server (e.g. rust-analyzer, pyright-langserver, \
+             typescript-language-server, gopls); see `pantheon doctor -v` for the binaries tried",
+        )
+        .with_details(format!(
+            "workspace: {}; servers present for: {}{}",
+            ws.display(),
+            if found.is_empty() { "none".to_string() } else { found.join(", ") },
+            if missing.is_empty() { String::new() } else { format!("; missing for: {}", missing.join(", ")) },
+        ))]
+    }
+
+    /// The languages present in a workspace, capped so a giant tree does not
+    /// turn a doctor run into a full walk.
+    fn languages_in(root: &Path) -> Vec<&'static str> {
+        let mut seen: Vec<&'static str> = Vec::new();
+        let mut stack = vec![(root.to_path_buf(), 0usize)];
+        while let Some((dir, depth)) = stack.pop() {
+            if depth > 6 || seen.len() >= 8 {
+                break;
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.')
+                    || matches!(
+                        name.as_str(),
+                        "target" | "node_modules" | "vendor" | "dist" | "build" | "__pycache__"
+                    )
+                {
+                    continue;
+                }
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_dir() {
+                    stack.push((entry.path(), depth + 1));
+                } else if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                    if let Some(lang) = pantheon_exec::lsp::language_for(ext) {
+                        if !seen.contains(&lang) {
+                            seen.push(lang);
+                        }
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// The codegraph index is what `codebase` queries answer from. A stale
+    /// one silently answers with last week's symbols.
+    fn check_codegraph_freshness(ctx: &DoctorCtx) -> Vec<Finding> {
+        const ID: &str = "coding.codegraph_freshness";
+        let ws = match workspace_of(ctx, ID, Subsystem::Tools) {
+            Ok(ws) => ws,
+            Err(f) => return f,
+        };
+        let path = pantheon_exec::codegraph::CodeGraph::cache_path_for(&ctx.data_dir, ws);
+        if !path.exists() {
+            return vec![Finding::not_applicable(
+                ID,
+                Subsystem::Tools,
+                "no codegraph index yet (built on first `codebase` query)",
+            )];
+        }
+        match pantheon_exec::codegraph::CodeGraph::load(&path) {
+            Some(graph) if graph.is_current_for(ws) => vec![Finding::passed(
+                ID,
+                Subsystem::Tools,
+                "codegraph index is current",
+            )
+            .with_details(format!("index: {} ({} files)", path.display(), graph.files))],
+            Some(graph) => vec![Finding::failed(
+                ID,
+                Subsystem::Tools,
+                Severity::Info,
+                "codegraph index is stale for the current source tree",
+                format!(
+                    "the index was built over {} files and no longer matches the tree; \
+                     `codebase` queries answer from the old symbols until it is rebuilt",
+                    graph.files
+                ),
+                "a fresh `codebase` query rebuilds it; or delete the index file to force a rebuild",
+            )
+            .with_details(format!("index: {}", path.display()))],
+            None => vec![Finding::failed(
+                ID,
+                Subsystem::Tools,
+                Severity::Warning,
+                "codegraph index file exists but does not parse",
+                "every `codebase` query will rebuild from scratch, which is slow",
+                "delete the index file; it is a cache, not data",
+            )
+            .with_details(format!("index: {}", path.display()))],
+        }
+    }
+
+    /// Quote a path for the tiny subset of shells the probes run under.
+    fn shell_quote(p: &Path) -> String {
+        let s = p.to_string_lossy();
+        if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)) {
+            s.into_owned()
+        } else {
+            format!("'{}'", s.replace('\'', r"'\''"))
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -1319,6 +1841,96 @@ pub mod checks {
 
         fn ctx_in(dir: &Path) -> DoctorCtx {
             DoctorCtx::new(dir.to_path_buf(), dir.join("extensions"))
+        }
+
+        /// The coding checks are not-applicable when no workspace is set: a
+        /// doctor run outside a checkout must behave exactly as it did before
+        /// the checks existed.
+        #[test]
+        fn coding_checks_are_not_applicable_without_a_workspace() {
+            let dir = temp_dir("doctor-coding-none");
+            let ctx = ctx_in(&dir);
+            for findings in [
+                check_git_identity(&ctx),
+                check_git_dirty_tree(&ctx),
+                check_instruction_file(&ctx),
+                check_language_servers(&ctx),
+                check_codegraph_freshness(&ctx),
+            ] {
+                assert_eq!(findings.len(), 1);
+                assert_eq!(
+                    findings[0].status,
+                    CheckStatus::NotApplicable,
+                    "got: {:?}",
+                    findings[0]
+                );
+            }
+        }
+
+        /// An instruction file is found and reported as a pass.
+        #[test]
+        fn instruction_file_present_passes() {
+            let dir = temp_dir("doctor-coding-instructions");
+            std::fs::write(dir.join("AGENTS.md"), "build: cargo test\n").expect("write");
+            let ctx = ctx_in(&dir).with_workspace(dir.clone());
+            let findings = check_instruction_file(&ctx);
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].status, CheckStatus::Passed, "got: {:?}", findings[0]);
+        }
+
+        /// Its absence is informational, with a remediation - not a hard
+        /// failure.
+        #[test]
+        fn missing_instruction_file_is_informational() {
+            let dir = temp_dir("doctor-coding-no-instructions");
+            let ctx = ctx_in(&dir).with_workspace(dir.clone());
+            let findings = check_instruction_file(&ctx);
+            assert_eq!(findings[0].status, CheckStatus::Failed);
+            assert_eq!(findings[0].severity, Severity::Info);
+            assert!(!findings[0].remediation.is_empty());
+        }
+
+        /// A non-checkout workspace is not called broken.
+        #[test]
+        fn git_checks_are_not_applicable_outside_a_repo() {
+            let dir = temp_dir("doctor-coding-not-a-repo");
+            let ctx = ctx_in(&dir).with_workspace(dir.clone());
+            assert_eq!(
+                check_git_identity(&ctx)[0].status,
+                CheckStatus::NotApplicable
+            );
+            assert_eq!(
+                check_git_dirty_tree(&ctx)[0].status,
+                CheckStatus::NotApplicable
+            );
+        }
+
+        /// `languages_in` recognizes supported source files and skips build
+        /// directories, so the language-server check picks the right set.
+        #[test]
+        fn languages_in_finds_supported_sources() {
+            let dir = temp_dir("doctor-coding-langs");
+            std::fs::create_dir_all(dir.join("src")).expect("mkdir");
+            std::fs::create_dir_all(dir.join("node_modules/pkg")).expect("mkdir");
+            std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").expect("write");
+            std::fs::write(dir.join("src/app.py"), "x = 1\n").expect("write");
+            std::fs::write(dir.join("node_modules/pkg/index.js"), "var x\n").expect("write");
+            let langs = languages_in(&dir);
+            assert!(langs.contains(&"rust"), "got: {langs:?}");
+            assert!(langs.contains(&"python"), "got: {langs:?}");
+            assert!(!langs.contains(&"javascript"), "node_modules must be skipped: {langs:?}");
+        }
+
+        /// A missing codegraph index is not-applicable, not a failure: it is
+        /// built lazily.
+        #[test]
+        fn absent_codegraph_index_is_not_applicable() {
+            let dir = temp_dir("doctor-coding-no-index");
+            let ctx = ctx_in(&dir).with_workspace(dir.clone());
+            assert_eq!(
+                check_codegraph_freshness(&ctx)[0].status,
+                CheckStatus::NotApplicable
+            );
         }
 
         fn write_config(dir: &Path, body: &str) {
@@ -1466,7 +2078,7 @@ pub mod checks {
                     def.id
                 );
             }
-            assert_eq!(seen.len(), 19);
+            assert_eq!(seen.len(), 26);
         }
 
         // -- previously untested checks -------------------------------------
@@ -1648,6 +2260,31 @@ pub mod checks {
         /// The sandbox check reads the host, not the data dir, so the test
         /// asserts the invariant that matters: it always returns exactly one
         /// finding under the stable id, whatever the host has installed.
+        /// A loose data dir is reported, and a tightened one passes: the check
+        /// has to distinguish a pre-fix install from a chmod that worked.
+        #[cfg(unix)]
+        #[test]
+        fn data_dir_permissions_reports_a_loose_mode_and_passes_a_tight_one() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = temp_dir("data-dir-perms");
+            let db = dir.join("ledger.db");
+            std::fs::write(&db, b"x").unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+            let f = check_data_dir_permissions(&ctx_in(&dir));
+            assert_eq!(f.len(), 1);
+            assert_eq!(f[0].id, "security.data_dir_permissions");
+            assert!(matches!(f[0].status, CheckStatus::Failed));
+            assert!(f[0].summary.contains("ledger.db"), "{}", f[0].summary);
+
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let f = check_data_dir_permissions(&ctx_in(&dir));
+            assert!(matches!(f[0].status, CheckStatus::Passed));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         #[test]
         fn exec_sandbox_reports_exactly_one_finding_with_a_stable_id() {
             let dir = temp_dir("sandbox");
@@ -2767,6 +3404,11 @@ pub mod registry {
         /// it to stderr so `--json` stdout stays machine-readable; the HTTP
         /// path leaves it unset.
         pub progress: Option<ProgressSink>,
+        /// Workspace root the coding checks inspect (git identity, dirty
+        /// tree, instruction files, language servers). `None` = the coding
+        /// checks report not-applicable, so a doctor run outside a checkout
+        /// is unchanged. Set by the CLI from the process cwd or `--workspace`.
+        pub workspace: Option<PathBuf>,
     }
 
     impl DoctorCtx {
@@ -2776,7 +3418,14 @@ pub mod registry {
                 ext_dir,
                 ping_provider: false,
                 progress: None,
+                workspace: None,
             }
+        }
+
+        /// Point the coding checks at a workspace.
+        pub fn with_workspace(mut self, workspace: PathBuf) -> Self {
+            self.workspace = Some(workspace);
+            self
         }
 
         fn progress(&self, msg: &str) {
@@ -3402,8 +4051,7 @@ pub mod skill_deps {
     }
 
     /// Detect every dependency and return the ids that are missing AND
-    /// skipped by the user. The scripted (`--yes`) path passes
-    /// `offer_install = None`-shaped logic here: detect only, record the
+    /// skipped by the non-interactive flow: detect only, record the
     /// missing ids as skipped, never install behind the user's back.
     pub fn detect_all_skipped(detect: &dyn Fn(&str) -> bool) -> Vec<String> {
         skill_deps()

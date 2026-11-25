@@ -10,8 +10,8 @@
 //! - recommended provider ids always resolve from the owning registries
 //!   via `recommended_provider` - never hardcoded, so a registry change
 //!   updates the expectations here instead of silently testing stale ids;
-//! - the `--yes` default for a local provider (missing binary) records
-//!   `skipped` and never runs an installer; installs are interactive-only.
+//! - a local provider with a missing binary records `skipped` and never
+//!   runs an installer; installs are interactive-only.
 
 use pantheon_api::config::ToolGroup;
 use pantheon_tui::setup::{run_setup, SetupAnswers};
@@ -35,7 +35,7 @@ fn recommended_row(metas: &[ProviderMeta]) -> ProviderMeta {
         .clone()
 }
 
-/// Mirror of the private `--yes` default inside `pantheon_tui::setup`:
+/// Mirror of the non-interactive default answer for each provider kind:
 /// kind-driven defaults, no prompts, and - critically - no installs.
 /// Detection shells out read-only (`sh -c <detect_cmd>`); the install
 /// path (`offer_install`) is only reachable from the interactive flow
@@ -180,7 +180,7 @@ fn expect_recommended_setup(value: &toml::Value) {
 fn recommended_setup_writes_recommended_providers_and_no_voice_sections() {
     let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempdir().unwrap();
-    let cfg = run_setup(dir.path(), recommended_answers(), true);
+    let cfg = run_setup(dir.path(), recommended_answers());
 
     let model = cfg.model.as_ref().expect("[model] written");
     assert_eq!(model.provider, "nous");
@@ -204,7 +204,7 @@ fn full_mode_still_writes_stt_and_tts() {
     answers.tools = Some(ToolGroup::all().to_vec());
     answers.stt = Some(stt);
     answers.tts = Some(tts);
-    run_setup(dir.path(), answers, true);
+    run_setup(dir.path(), answers);
 
     let value = read_config(dir.path());
     assert_eq!(
@@ -262,7 +262,7 @@ fn assume_defaults_resolves_recommended_without_installs() {
     answers.browser = None;
     answers.memory = None;
     answers.computer = None;
-    run_setup(dir.path(), answers, true);
+    run_setup(dir.path(), answers);
 
     match old_path {
         Some(p) => std::env::set_var("PATH", p),

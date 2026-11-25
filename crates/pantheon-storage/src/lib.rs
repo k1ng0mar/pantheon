@@ -26,6 +26,16 @@ use std::time::Duration;
 /// (e.g. [`ledger::Ledger::prune_events_before_active_safe`]); nothing in this crate wires
 /// automatic pruning into open paths.
 pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), PantheonError> {
+    // Before anything else touches the file: the SQLite file inherits the
+    // process umask, so a default 022 umask leaves `ledger.db` at 0644 and the
+    // data dir at 0755 - every transcript and memory row readable by any local
+    // user, while the secret stores beside them are 0600 (audit F2). This is
+    // the one open path every file-backed store in the workspace shares, so it
+    // is the chokepoint that covers ledgers, memory, ideas, claims and backups
+    // without touching each caller.
+    if let Some(path) = conn.path() {
+        crate::privacy::tighten_database(std::path::Path::new(path));
+    }
     let err = |suffix: &str, cause: String| {
         PantheonError::new(
             format!("{code}_{suffix}"),
@@ -76,6 +86,7 @@ pub(crate) fn add_column_once(conn: &Connection, sql: &str) -> Result<(), rusqli
 
 mod core_group;
 mod misc_group;
+mod privacy;
 pub use audit::{audit_line, export_jsonl};
 pub use claims::ClaimStore;
 pub use collaboration::{
@@ -97,5 +108,6 @@ pub use misc_group::collaboration;
 pub use misc_group::ideas;
 pub use misc_group::search;
 pub use operations::{Operation, OperationConflict, OperationStatus, OperationStore};
+pub use privacy::tighten_database;
 pub use search::{recreate_search_index, search_index_health};
 pub use search::{SearchHit, SessionChunk, SessionSearch};

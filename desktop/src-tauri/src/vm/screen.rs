@@ -31,10 +31,22 @@ pub fn screenshot(rfb: &mut Rfb, quality: u8) -> Result<Shot, String> {
     let (screen_width, screen_height) = (frame.width(), frame.height());
     let (width, height, _) = scaled(screen_width, screen_height);
     let image = DynamicImage::ImageRgba8(frame);
-    let image = if width == screen_width { image } else { image.resize_exact(width, height, FilterType::Triangle) };
+    let image = if width == screen_width {
+        image
+    } else {
+        image.resize_exact(width, height, FilterType::Triangle)
+    };
     let mut jpeg = Vec::new();
-    JpegEncoder::new_with_quality(&mut jpeg, quality).encode_image(&image.to_rgb8()).map_err(|e| e.to_string())?;
-    Ok(Shot { jpeg, width, height, screen_width, screen_height })
+    JpegEncoder::new_with_quality(&mut jpeg, quality)
+        .encode_image(&image.to_rgb8())
+        .map_err(|e| e.to_string())?;
+    Ok(Shot {
+        jpeg,
+        width,
+        height,
+        screen_width,
+        screen_height,
+    })
 }
 
 /// The X11 keysym for a typed character.
@@ -75,7 +87,11 @@ fn named(key: &str) -> Option<u32> {
         "alt" | "option" | "opt" => 0xffe9,
         "cmd" | "command" | "super" | "win" | "meta" => 0xffeb,
         _ => {
-            let number = key.strip_prefix('f')?.parse::<u32>().ok().filter(|n| (1..=12).contains(n))?;
+            let number = key
+                .strip_prefix('f')?
+                .parse::<u32>()
+                .ok()
+                .filter(|n| (1..=12).contains(n))?;
             0xffbe + number - 1
         }
     })
@@ -90,27 +106,57 @@ pub fn combo(text: &str) -> Result<Vec<u32>, String> {
         .iter()
         .zip(text.split('+'))
         .map(|(part, original)| {
-            named(part).or_else(|| {
-                let mut chars = original.trim().chars();
-                let ch = chars.next()?;
-                chars.next().is_none().then(|| keysym(ch.to_ascii_lowercase()))
-            }).ok_or_else(|| format!("Unknown key {original:?}."))
+            named(part)
+                .or_else(|| {
+                    let mut chars = original.trim().chars();
+                    let ch = chars.next()?;
+                    chars
+                        .next()
+                        .is_none()
+                        .then(|| keysym(ch.to_ascii_lowercase()))
+                })
+                .ok_or_else(|| format!("Unknown key {original:?}."))
         })
         .collect()
 }
 
 #[derive(Debug)]
 pub enum Action {
-    Click { x: f64, y: f64, button: u8, count: u8 },
-    Move { x: f64, y: f64 },
-    Drag { x: f64, y: f64, end_x: f64, end_y: f64 },
-    Scroll { x: f64, y: f64, direction: String, amount: u32 },
-    Type { text: String },
-    Key { keys: String },
+    Click {
+        x: f64,
+        y: f64,
+        button: u8,
+        count: u8,
+    },
+    Move {
+        x: f64,
+        y: f64,
+    },
+    Drag {
+        x: f64,
+        y: f64,
+        end_x: f64,
+        end_y: f64,
+    },
+    Scroll {
+        x: f64,
+        y: f64,
+        direction: String,
+        amount: u32,
+    },
+    Type {
+        text: String,
+    },
+    Key {
+        keys: String,
+    },
 }
 
 fn point(x: f64, y: f64, factor: f64) -> (u16, u16) {
-    ((x * factor).round().clamp(0.0, u16::MAX as f64) as u16, (y * factor).round().clamp(0.0, u16::MAX as f64) as u16)
+    (
+        (x * factor).round().clamp(0.0, u16::MAX as f64) as u16,
+        (y * factor).round().clamp(0.0, u16::MAX as f64) as u16,
+    )
 }
 
 /// Perform one action at screenshot coordinates (see `scaled`).
@@ -118,9 +164,18 @@ pub fn act(rfb: &mut Rfb, action: &Action) -> Result<String, String> {
     let (width, height) = rfb.size();
     let factor = scaled(width as u32, height as u32).2;
     match action {
-        Action::Click { x, y, button, count } => {
+        Action::Click {
+            x,
+            y,
+            button,
+            count,
+        } => {
             let (px, py) = point(*x, *y, factor);
-            let mask = match button { 2 => 2, 3 => 4, _ => 1 };
+            let mask = match button {
+                2 => 2,
+                3 => 4,
+                _ => 1,
+            };
             rfb.pointer(px, py, 0)?;
             for _ in 0..*count {
                 rfb.pointer(px, py, mask)?;
@@ -148,9 +203,20 @@ pub fn act(rfb: &mut Rfb, action: &Action) -> Result<String, String> {
             rfb.pointer(end.0, end.1, 0)?;
             Ok(format!("Dragged from ({x}, {y}) to ({end_x}, {end_y})."))
         }
-        Action::Scroll { x, y, direction, amount } => {
+        Action::Scroll {
+            x,
+            y,
+            direction,
+            amount,
+        } => {
             let (px, py) = point(*x, *y, factor);
-            let mask = match direction.as_str() { "up" => 8, "down" => 16, "left" => 32, "right" => 64, _ => return Err("Scroll direction is up, down, left or right.".into()) };
+            let mask = match direction.as_str() {
+                "up" => 8,
+                "down" => 16,
+                "left" => 32,
+                "right" => 64,
+                _ => return Err("Scroll direction is up, down, left or right.".into()),
+            };
             rfb.pointer(px, py, 0)?;
             for _ in 0..(*amount).clamp(1, 30) {
                 rfb.pointer(px, py, mask)?;
@@ -165,10 +231,14 @@ pub fn act(rfb: &mut Rfb, action: &Action) -> Result<String, String> {
             }
             for ch in text.chars() {
                 let shift = shifted(ch);
-                if shift { rfb.key(SHIFT, true)?; }
+                if shift {
+                    rfb.key(SHIFT, true)?;
+                }
                 rfb.key(keysym(ch), true)?;
                 rfb.key(keysym(ch), false)?;
-                if shift { rfb.key(SHIFT, false)?; }
+                if shift {
+                    rfb.key(SHIFT, false)?;
+                }
                 thread::sleep(Duration::from_millis(4));
             }
             Ok(format!("Typed {} characters.", text.chars().count()))
@@ -223,19 +293,62 @@ mod live {
     #[test]
     #[ignore]
     fn opens_a_terminal_and_types_a_command() {
-        let (password, address) = crate::vm::parse_vnc_url(&std::env::var("PANTHEON_VNC").unwrap()).unwrap();
+        let (password, address) =
+            crate::vm::parse_vnc_url(&std::env::var("PANTHEON_VNC").unwrap()).unwrap();
         let name = std::env::var("PANTHEON_VM").unwrap();
         let mut rfb = Rfb::connect(address, password.as_deref(), Duration::from_secs(5)).unwrap();
-        crate::vm::tart::exec(&name, false, "rm -f /tmp/pantheon-cu", Duration::from_secs(20)).unwrap();
+        crate::vm::tart::exec(
+            &name,
+            false,
+            "rm -f /tmp/pantheon-cu",
+            Duration::from_secs(20),
+        )
+        .unwrap();
         // Xfce's dock: the terminal launcher.
-        act(&mut rfb, &Action::Click { x: 439.0, y: 743.0, button: 1, count: 1 }).unwrap();
+        act(
+            &mut rfb,
+            &Action::Click {
+                x: 439.0,
+                y: 743.0,
+                button: 1,
+                count: 1,
+            },
+        )
+        .unwrap();
         thread::sleep(Duration::from_secs(2));
-        act(&mut rfb, &Action::Type { text: "echo \"Hi Pantheon: 6*7=$((6*7))!\" > /tmp/pantheon-cu".into() }).unwrap();
-        act(&mut rfb, &Action::Key { keys: "Return".into() }).unwrap();
+        act(
+            &mut rfb,
+            &Action::Type {
+                text: "echo \"Hi Pantheon: 6*7=$((6*7))!\" > /tmp/pantheon-cu".into(),
+            },
+        )
+        .unwrap();
+        act(
+            &mut rfb,
+            &Action::Key {
+                keys: "Return".into(),
+            },
+        )
+        .unwrap();
         thread::sleep(Duration::from_millis(800));
-        screenshot(&mut rfb, 80).map(|s| std::fs::write(std::env::temp_dir().join("pantheon-vm-cu.jpg"), s.jpeg)).unwrap().unwrap();
-        let out = crate::vm::tart::exec(&name, false, "cat /tmp/pantheon-cu", Duration::from_secs(20)).unwrap();
+        screenshot(&mut rfb, 80)
+            .map(|s| std::fs::write(std::env::temp_dir().join("pantheon-vm-cu.jpg"), s.jpeg))
+            .unwrap()
+            .unwrap();
+        let out = crate::vm::tart::exec(
+            &name,
+            false,
+            "cat /tmp/pantheon-cu",
+            Duration::from_secs(20),
+        )
+        .unwrap();
         assert_eq!(out.stdout, "Hi Pantheon: 6*7=42!\n");
-        act(&mut rfb, &Action::Key { keys: "ctrl+d".into() }).unwrap();
+        act(
+            &mut rfb,
+            &Action::Key {
+                keys: "ctrl+d".into(),
+            },
+        )
+        .unwrap();
     }
 }

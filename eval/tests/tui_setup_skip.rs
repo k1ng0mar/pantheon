@@ -38,7 +38,7 @@ fn recommended_row(metas: &[ProviderMeta]) -> ProviderMeta {
         .clone()
 }
 
-/// Mirror of the private `--yes` default inside `pantheon_tui::setup`:
+/// Mirror of the non-interactive default answer for each provider kind:
 /// kind-driven defaults, no prompts, no installs.
 fn default_answer(meta: &ProviderMeta) -> ProviderAnswer {
     let mut answer = ProviderAnswer {
@@ -146,7 +146,7 @@ fn skipped_browser_screen_removes_group_and_section() {
     answers.tools = Some(tools);
     answers.skipped_tools = skipped;
     answers.browser = browser;
-    let cfg = run_setup(dir.path(), answers, true);
+    let cfg = run_setup(dir.path(), answers);
 
     let value = read_config(dir.path());
     assert!(
@@ -204,7 +204,7 @@ fn skipped_voice_screens_turn_voice_off() {
     answers.tts = voice.tts;
     answers.skipped_stt = voice.skipped_stt;
     answers.skipped_tts = voice.skipped_tts;
-    let cfg = run_setup(dir.path(), answers, true);
+    let cfg = run_setup(dir.path(), answers);
 
     let value = read_config(dir.path());
     assert!(value.get("stt").is_none(), "voice off: no [stt]");
@@ -245,7 +245,7 @@ fn skipped_stt_keeps_tts() {
     answers.tts = voice.tts;
     answers.skipped_stt = voice.skipped_stt;
     answers.skipped_tts = voice.skipped_tts;
-    let cfg = run_setup(dir.path(), answers, true);
+    let cfg = run_setup(dir.path(), answers);
 
     let value = read_config(dir.path());
     assert!(value.get("stt").is_none(), "skipped STT: no [stt] section");

@@ -124,10 +124,20 @@ pub(super) fn context(
     seen: i64,
     full: bool,
 ) -> Result<(String, i64)> {
-    let inbox = mailbox(store, &team.session_id, actor.id(), if full { 0 } else { seen }, 6, true)?;
+    let inbox = mailbox(
+        store,
+        &team.session_id,
+        actor.id(),
+        if full { 0 } else { seen },
+        6,
+        true,
+    )?;
     let newest = inbox["nextCursor"].as_i64().unwrap_or(0).max(seen);
     if !full {
-        if inbox["messages"].as_array().is_none_or(|messages| messages.is_empty()) {
+        if inbox["messages"]
+            .as_array()
+            .is_none_or(|messages| messages.is_empty())
+        {
             return Ok((String::new(), newest));
         }
         let inbox = serde_json::to_string(&inbox).map_err(|e| e.to_string())?;
@@ -158,7 +168,8 @@ pub async fn architect_team_messages(
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     load(&store, &session_id)?.ok_or("Team unavailable.")?;
-    let conn = store.conn(); let mut query = conn.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e|e.to_string())?;
+    let conn = store.conn();
+    let mut query = conn.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e|e.to_string())?;
     let mut messages = query
         .query_map(params![session_id, after, (limit + 1) as i64], |r| {
             Ok(Message {

@@ -8,14 +8,14 @@ use crate::workspace::run_process;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageFormat, ImageReader, Limits};
 use serde::Serialize;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 use std::{
     fs::File,
     io::{Cursor, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-#[cfg(target_os = "macos")]
-use std::process::Command;
 
 const MAX_IMAGE_SOURCE: usize = 24 * 1024 * 1024;
 /// What `providers::attachments::load` accepts per image.
@@ -78,7 +78,9 @@ fn file_name(path: &Path, fallback: &str) -> String {
 
 fn checked_file(path: &Path, max: u64, what: &str) -> Result<(File, u64), String> {
     if !path.is_absolute() {
-        return Err(format!("Choose the {what} with the picker or drop it onto the message."));
+        return Err(format!(
+            "Choose the {what} with the picker or drop it onto the message."
+        ));
     }
     let file = File::open(path).map_err(|_| format!("Could not open this {what}."))?;
     let metadata = file
@@ -88,7 +90,10 @@ fn checked_file(path: &Path, max: u64, what: &str) -> Result<(File, u64), String
         return Err(format!("This is not a {what} file."));
     }
     if metadata.len() > max {
-        return Err(format!("This {what} is larger than {} MB.", max / 1024 / 1024));
+        return Err(format!(
+            "This {what} is larger than {} MB.",
+            max / 1024 / 1024
+        ));
     }
     Ok((file, metadata.len()))
 }
@@ -111,7 +116,9 @@ fn decode(bytes: &[u8]) -> Result<(DynamicImage, ImageFormat), String> {
         format,
         ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
     ) {
-        return Err("Choose a PNG, JPEG or WebP image. HEIC, GIF and SVG are not supported yet.".into());
+        return Err(
+            "Choose a PNG, JPEG or WebP image. HEIC, GIF and SVG are not supported yet.".into(),
+        );
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
@@ -163,7 +170,10 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
     let (name, bytes) = match source {
         ImageSource::Path(path) => {
             let (file, _) = checked_file(&path, MAX_IMAGE_SOURCE as u64, "image")?;
-            (file_name(&path, "Image.png"), read_bounded(file, MAX_IMAGE_SOURCE)?)
+            (
+                file_name(&path, "Image.png"),
+                read_bounded(file, MAX_IMAGE_SOURCE)?,
+            )
         }
         ImageSource::Data { name, data_url } => {
             if data_url.len() > MAX_IMAGE_SOURCE * 4 / 3 + 128 {
@@ -178,7 +188,8 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
             }
             let bytes = STANDARD.decode(data).map_err(|_| "Invalid image data.")?;
             let name = name.trim();
-            let name = if name.is_empty() || name.len() > 200 || name.chars().any(char::is_control) {
+            let name = if name.is_empty() || name.len() > 200 || name.chars().any(char::is_control)
+            {
                 "Image.png".to_owned()
             } else {
                 name.to_owned()
@@ -202,7 +213,9 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
             png = encode_png(&image, edge)?;
         }
         if png.len() > MAX_IMAGE_PNG {
-            return Err("This image is too detailed to attach. Export it smaller and try again.".into());
+            return Err(
+                "This image is too detailed to attach. Export it smaller and try again.".into(),
+            );
         }
         png
     };
@@ -339,7 +352,10 @@ fn extract_with(tool: &str, args: &[&str], path: &Path) -> Result<String, String
 
 #[cfg(not(target_os = "macos"))]
 fn extract_with(_tool: &str, _args: &[&str], _path: &Path) -> Result<String, String> {
-    Err("Reading PDF and Office documents is available on macOS. Attach a text export instead.".into())
+    Err(
+        "Reading PDF and Office documents is available on macOS. Attach a text export instead."
+            .into(),
+    )
 }
 
 /// Reduce a document to bounded text. Plain text is read directly; Office and
@@ -375,7 +391,9 @@ pub fn read_document(path: &Path) -> Result<DocumentText, String> {
     };
     let text = text.trim().to_owned();
     if text.is_empty() {
-        return Err("No readable text was found in this document. It may be scanned images only.".into());
+        return Err(
+            "No readable text was found in this document. It may be scanned images only.".into(),
+        );
     }
     let (text, truncated) = truncate_text(text, MAX_TEXT);
     Ok(DocumentText {
@@ -511,10 +529,16 @@ mod tests {
         let dir = temp_dir("images");
         let imported = import_image(
             &dir.join("captures"),
-            ImageSource::Data { name: "Mockup.png".into(), data_url: format!("data:image/png;base64,{PNG}") },
+            ImageSource::Data {
+                name: "Mockup.png".into(),
+                data_url: format!("data:image/png;base64,{PNG}"),
+            },
         )
         .unwrap();
-        assert_eq!((imported.width, imported.height, imported.name.as_str()), (1, 1, "Mockup.png"));
+        assert_eq!(
+            (imported.width, imported.height, imported.name.as_str()),
+            (1, 1, "Mockup.png")
+        );
         assert!(imported.thumbnail.starts_with("data:image/jpeg;base64,"));
         let stored = dir.join("captures").join(format!("{}.png", imported.id));
         assert!(std::fs::read(&stored).unwrap().starts_with(b"\x89PNG"));
@@ -523,16 +547,24 @@ mod tests {
         // A JPEG on disk is re-encoded as PNG so every harness receives the same format.
         let mut jpeg = Vec::new();
         JpegEncoder::new_with_quality(&mut jpeg, 80)
-            .encode_image(&image::RgbImage::from_pixel(3000, 40, image::Rgb([200, 30, 30])))
+            .encode_image(&image::RgbImage::from_pixel(
+                3000,
+                40,
+                image::Rgb([200, 30, 30]),
+            ))
             .unwrap();
         let photo = dir.join("photo.jpg");
         std::fs::write(&photo, jpeg).unwrap();
         let imported = import_image(&dir.join("captures"), ImageSource::Path(photo)).unwrap();
         assert_eq!((imported.width, imported.height), (3000, 40));
-        let bytes = std::fs::read(dir.join("captures").join(format!("{}.png", imported.id))).unwrap();
+        let bytes =
+            std::fs::read(dir.join("captures").join(format!("{}.png", imported.id))).unwrap();
         let (decoded, format) = decode(&bytes).unwrap();
         assert_eq!(format, ImageFormat::Png);
-        assert!(decoded.width() <= MAX_IMAGE_EDGE, "large sources are scaled to the pipeline's edge");
+        assert!(
+            decoded.width() <= MAX_IMAGE_EDGE,
+            "large sources are scaled to the pipeline's edge"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -542,15 +574,27 @@ mod tests {
         assert!(import_image(&dir, ImageSource::Path(PathBuf::from("relative.png"))).is_err());
         let text = dir.join("notes.png");
         std::fs::write(&text, b"not an image").unwrap();
-        assert!(import_image(&dir, ImageSource::Path(text)).unwrap_err().contains("PNG, JPEG or WebP"));
-        assert!(import_image(&dir, ImageSource::Data { name: "x".into(), data_url: "data:image/svg+xml;base64,PHN2Zy8+".into() }).is_err());
+        assert!(import_image(&dir, ImageSource::Path(text))
+            .unwrap_err()
+            .contains("PNG, JPEG or WebP"));
+        assert!(import_image(
+            &dir,
+            ImageSource::Data {
+                name: "x".into(),
+                data_url: "data:image/svg+xml;base64,PHN2Zy8+".into()
+            }
+        )
+        .is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn decodes_spotlight_string_literals() {
         let dump = "{\n    kMDItemContentType = \"com.adobe.pdf\";\n    kMDItemTextContent = \"Hello \\\"quoted\\\" caf\\U00e9 \\U2014 \\U2713\\nTab\\there \\\\ done \\Ud83d\\Ude00!\";\n    kMDItemTitle = \"x\";\n}";
-        assert_eq!(spotlight_text(dump).unwrap(), "Hello \"quoted\" café — ✓\nTab\there \\ done 😀!");
+        assert_eq!(
+            spotlight_text(dump).unwrap(),
+            "Hello \"quoted\" café — ✓\nTab\there \\ done 😀!"
+        );
         assert_eq!(spotlight_text("{ kMDItemTitle = \"x\"; }"), None);
         assert_eq!(spotlight_text("kMDItemTextContent = \"unterminated"), None);
     }
@@ -584,20 +628,31 @@ mod tests {
         std::fs::write(&rtf, "{\\rtf1\\ansi Bold {\\b brief} text.}").unwrap();
         let document = read_document(&rtf).unwrap();
         assert_eq!(document.method, "textutil");
-        assert!(document.text.contains("Bold brief text."), "{}", document.text);
+        assert!(
+            document.text.contains("Bold brief text."),
+            "{}",
+            document.text
+        );
 
         // A minimal PDF goes through Spotlight's PDF importer.
         let pdf = dir.join("brief.pdf");
         std::fs::write(&pdf, b"%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n4 0 obj << /Length 44 >> stream\nBT /F1 24 Tf 20 60 Td (Hello Pantheon) Tj ET\nendstream endobj\n5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n").unwrap();
         let document = read_document(&pdf).unwrap();
         assert_eq!(document.method, "spotlight");
-        assert!(document.text.contains("Hello Pantheon"), "{}", document.text);
+        assert!(
+            document.text.contains("Hello Pantheon"),
+            "{}",
+            document.text
+        );
 
         // Binary data with no importer is refused rather than pasted as garbage.
         let blob = dir.join("page.unknownext");
         std::fs::write(&blob, b"\x00\x01binary prefix").unwrap();
         let error = read_document(&blob).unwrap_err();
-        assert!(error.contains("No readable text") || error.contains("Could not read"), "{error}");
+        assert!(
+            error.contains("No readable text") || error.contains("Could not read"),
+            "{error}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -618,7 +673,10 @@ mod tests {
             "src/\n  components/\n    deep/\n    Button.tsx\n  main.ts\nREADME.md"
         );
         assert_eq!((summary.files, summary.folders), (3, 3));
-        assert!(summary.truncated, "a folder below the depth limit marks the listing partial");
+        assert!(
+            summary.truncated,
+            "a folder below the depth limit marks the listing partial"
+        );
         assert!(!summary.listing.contains("node_modules") && !summary.listing.contains(".git"));
         assert!(describe_folder(&dir.join("README.md")).is_err());
         assert!(describe_folder(Path::new("relative")).is_err());
@@ -634,8 +692,17 @@ mod tests {
         let summary = describe_folder(&dir).unwrap();
         assert!(summary.truncated);
         assert_eq!(summary.listing.lines().count(), LISTING_LINES);
-        assert!(summary.listing.lines().last().unwrap().starts_with("… 21 more"));
-        assert_eq!(summary.files, LISTING_LINES + 20, "counts continue past the printed lines");
+        assert!(summary
+            .listing
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with("… 21 more"));
+        assert_eq!(
+            summary.files,
+            LISTING_LINES + 20,
+            "counts continue past the printed lines"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

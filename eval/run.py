@@ -70,7 +70,39 @@ def skip_reason(case, bin_path, py3):
         return "python3 not found"
     if why == "python3" and py3 is not None:
         return None
+    if why == "cargo" and shutil.which("cargo") is None:
+        return "cargo not found (these cases run a Rust integration test)"
+    if why == "cargo" and shutil.which("cargo") is not None:
+        return None
     return why  # None means run; any other string means skip for that reason
+
+
+def run_cargo_test(spec: str) -> tuple[int, str, str]:
+    """Run a Rust test as an eval case.
+
+    Spec is `<crate>:<filter>`, e.g. `pantheon-tools:lsp_tools::tests` or
+    `pantheon-eval:tools_coding_surface`. Some of the coding tools are pure
+    functions over a temp workspace; the tests beside them assert things a
+    stdout check cannot (that a denied edit left the file byte-identical), so
+    the case runs that test rather than a CLI invocation it would not
+    meaningfully exercise.
+    """
+    crate, _, filter_expr = spec.partition(":")
+    argv = ["cargo", "test", "-p", crate]
+    if filter_expr:
+        argv.append(filter_expr)
+    argv += ["--", "--nocapture"]
+    try:
+        p = subprocess.run(
+            argv, cwd=ROOT, capture_output=True, text=True, timeout=900
+        )
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "cargo test timed out after 900s"
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+
+
 
 
 def fnv1a_hex(data: bytes) -> str:
@@ -197,7 +229,16 @@ def run_case(case, bin_path, py3):
         failures = []
 
         for i, cmd in enumerate(case.get("commands", [])):
-            if cmd and cmd[0] == "_compact":
+            if cmd and cmd[0] == "_cargo_test":
+                code, stdout, stderr = run_cargo_test(cmd[1])
+                # cargo's own summary line is the useful signal, not the whole
+                # build log; keep the tail so a failure names the test.
+                stdout = "\n".join(
+                    l
+                    for l in stdout.splitlines()
+                    if l.startswith("test result:") or l.startswith("test ") and "FAILED" in l
+                )
+            elif cmd and cmd[0] == "_compact":
                 path = Path(resolve(cmd[1], sandbox))
                 out = compact_output(path.read_text())
                 code, stdout, stderr = 0, out, ""
@@ -287,7 +328,11 @@ def check_verbs(cases: list) -> list:
     # "Legacy top-level spellings (mcp, worktree, runs, ...)" sentence, so a
     # help-derived set reported working legacy verbs (`send`, `audit`,
     # `reset`, `hook`, `swarm`, `plugins`) as removed.
-    surface = ROOT / "crates" / "pantheon-tui" / "src" / "cli_surface.rs"
+    surface = ROOT / "crates" / "pantheon-tui" / "src" / "cli_group.rs"
+    if not surface.exists():
+        # Pre-merge layout: the verb table lived in its own module. Checked
+        # as a fallback so a checkout on either side of the merge resolves.
+        surface = ROOT / "crates" / "pantheon-tui" / "src" / "cli_surface.rs"
     if surface.exists():
         text = surface.read_text(encoding="utf-8")
         for const in ("ALL_VERBS", "PUBLIC_VERBS", "LEGACY_VERBS"):

@@ -45,7 +45,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
         transaction
             .execute(
                 "UPDATE sessions SET title=?2,worktree_path=?3,reasoning_effort=?4,codex_settings=?5,task_stage='in_progress',worktree_branch=?6 WHERE id=?1",
-                params![target_id, title, source.worktree_path, source.reasoning_effort, source.codex_settings.map(|v| v.to_string()), source.worktree_branch],
+                params![target_id, title, source.worktree_path, source.reasoning_effort, source.task_settings.map(|v| v.to_string()), source.worktree_branch],
             )
             .map_err(|e| e.to_string())?;
         {
@@ -56,21 +56,27 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
                 "SELECT id,role,content,created_at FROM messages WHERE session_id=?1 AND id<=?2 AND role NOT IN ('internal','changes') ORDER BY id",
             ).map_err(|e| e.to_string())?;
             let rows = query
-                .query_map(params![source_id, message_id - i64::from(exclusive)], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })
+                .query_map(
+                    params![source_id, message_id - i64::from(exclusive)],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
                 .map_err(|e| e.to_string())?;
             for row in rows {
                 let (id, mut role, mut content, created_at) = row.map_err(|e| e.to_string())?;
                 if role == "user" {
-                    if let Some(kind) =
-                        crate::architect::internal_turns::legacy_kind_in_db(&transaction, source_id, id, &content)?
-                    {
+                    if let Some(kind) = crate::architect::internal_turns::legacy_kind_in_db(
+                        &transaction,
+                        source_id,
+                        id,
+                        &content,
+                    )? {
                         content = crate::architect::internal_turns::encode(kind, &content)?;
                         role = "coordination".into();
                     }

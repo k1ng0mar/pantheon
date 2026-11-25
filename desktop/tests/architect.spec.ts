@@ -15,8 +15,8 @@ const calls = (page: Page, command: string) => page.evaluate(command => (window 
 
 const config = (): TeamConfig => ({
   workers: [
-    { id: 'builder', name: 'Builder', provider: 'codex', model: 'gpt-6-astra', reasoningEffort: 'high' },
-    { id: 'reviewer', name: 'Reviewer', provider: 'claude', model: 'sonnet', reasoningEffort: 'medium' },
+    { id: 'builder', name: 'Builder', provider: 'pantheon', model: 'openai/gpt-6.1-sol', reasoningEffort: 'high' },
+    { id: 'reviewer', name: 'Reviewer', provider: 'pantheon', model: 'openai/gpt-6.1-mini', reasoningEffort: 'medium' },
   ],
   maxParallel: 2, maxRounds: 4, maxAssignments: 8, workspace: 'shared', summaryLimit: 1800,
 });
@@ -360,7 +360,7 @@ test.describe('architect teams', () => {
     const tip = page.getByRole('tooltip');
     await expect(tip).toContainText('your selected model becomes the lead');
     await expect(tip).toContainText('picks a model for each worker on its own');
-    await expect(tip).toContainText('use Sonnet 5.5 workers');
+    await expect(tip).toContainText('use one model for the workers');
     await expect(trigger(page)).toHaveAttribute('aria-description', /picks a model for each worker/);
     await saveDefaultTeam(page);
     await expect(setup(page)).toHaveCount(0);
@@ -497,8 +497,8 @@ test.describe('architect teams', () => {
       expect(Math.round((await builder.boundingBox())!.height)).toBeLessThanOrEqual(32);
       await expect(builder).toContainText('Search indexing'); await expect(builder).toContainText('Builder');
       // The harness is the logo; the text names role and model once each.
-      await expect(builder.locator('.provider-logo[data-provider="codex"]')).toBeAttached(); await expect(builder).toContainText(/working/i);
-      await expect(builder.locator('small')).toHaveText('Builder · GPT-6-Astra');
+      await expect(builder.locator('.provider-logo[data-provider="pantheon"]')).toBeAttached(); await expect(builder).toContainText(/working/i);
+      await expect(builder.locator('small')).toHaveText('Builder · GPT-6.1 Sol');
       // A working worker shows a spinning ring in place of the separator dot.
       await expect(builder.locator('.team-progress-spinner')).toBeVisible();
       expect(await builder.locator('.team-progress-spinner').evaluate(el => getComputedStyle(el).animationName)).toBe('team-progress-spin');
@@ -509,7 +509,7 @@ test.describe('architect teams', () => {
         return Boolean(slot) && Boolean(previous?.textContent?.includes('Implementation and review are delegated to the workers.'));
       })).toBe(true);
       await expect(reviewer).toContainText('Accessibility audit'); await expect(reviewer).toContainText('Reviewer');
-      await expect(reviewer.locator('.provider-logo[data-provider="claude"]')).toBeAttached(); await expect(reviewer).toContainText(/working/i);
+      await expect(reviewer.locator('.provider-logo[data-provider="pantheon"]')).toBeAttached(); await expect(reviewer).toContainText(/working/i);
       await expect(transcript(page).getByText('No files changed', { exact: true })).toBeHidden();
       await expect(transcript(page).locator('.turn-changes:visible')).toHaveCount(1);
       await expect(transcript(page).locator('.turn-changes:visible')).toContainText('README.md');

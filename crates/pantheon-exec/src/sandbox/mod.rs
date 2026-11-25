@@ -86,7 +86,23 @@ pub const SENSITIVE_HOME_PATHS: &[&str] = &[
     ".config/gcloud",
     ".config/hub",
     ".config/op",
+    // Secrets managers and IaC credentials: a plaintext token file each.
+    ".vault-token",
+    ".config/sops",
+    ".config/age",
+    ".terraform.d",
+    ".password-store",
+    // Browser profiles. The cookie/login databases are the highest-value
+    // files on most desktops and Firefox's are not encrypted at rest on
+    // Linux, so a shell that can read the home tree must not see them
+    // (audit F12).
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".config/microsoft-edge",
+    ".config/BraveSoftware",
     ".local/share/keyrings",
+    ".config/kwalletd",
     ".netrc",
     ".npmrc",
     ".pypirc",

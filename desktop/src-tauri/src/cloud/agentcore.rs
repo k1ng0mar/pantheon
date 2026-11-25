@@ -38,23 +38,50 @@ pub struct Signer<'a> {
 
 /// The SigV4 Authorization header for one request. `headers` are lowercase name/value
 /// pairs to sign, including `host`.
-pub fn sign(method: &str, path: &str, headers: &[(String, String)], body: &[u8], signer: &Signer) -> String {
-    let Signer { region, service, credentials, amz_date } = *signer;
+pub fn sign(
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    signer: &Signer,
+) -> String {
+    let Signer {
+        region,
+        service,
+        credentials,
+        amz_date,
+    } = *signer;
     let mut headers: Vec<(String, String)> = headers.to_vec();
     headers.push(("x-amz-date".into(), amz_date.into()));
     if let Some(token) = &credentials.session_token {
         headers.push(("x-amz-security-token".into(), token.clone()));
     }
     headers.sort();
-    let canonical_headers: String = headers.iter().map(|(n, v)| format!("{n}:{}\n", v.trim())).collect();
+    let canonical_headers: String = headers
+        .iter()
+        .map(|(n, v)| format!("{n}:{}\n", v.trim()))
+        .collect();
     let signed: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
     let signed = signed.join(";");
-    let canonical = format!("{method}\n{path}\n\n{canonical_headers}\n{signed}\n{}", hex(&Sha256::digest(body)));
+    let canonical = format!(
+        "{method}\n{path}\n\n{canonical_headers}\n{signed}\n{}",
+        hex(&Sha256::digest(body))
+    );
     let date = &amz_date[..8];
     let scope = format!("{date}/{region}/{service}/aws4_request");
-    let to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}", hex(&Sha256::digest(canonical.as_bytes())));
-    let key = [region, service, "aws4_request"].iter().fold(hmac(format!("AWS4{}", credentials.secret_key).as_bytes(), date), |key, part| hmac(&key, part));
-    format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={}", credentials.access_key, hex(&hmac(&key, &to_sign)))
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        hex(&Sha256::digest(canonical.as_bytes()))
+    );
+    let key = [region, service, "aws4_request"].iter().fold(
+        hmac(format!("AWS4{}", credentials.secret_key).as_bytes(), date),
+        |key, part| hmac(&key, part),
+    );
+    format!(
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={}",
+        credentials.access_key,
+        hex(&hmac(&key, &to_sign))
+    )
 }
 
 /// Messages of an AWS event stream as (headers, payload). CRCs are not rechecked; TLS
@@ -77,13 +104,22 @@ pub fn events(mut bytes: &[u8]) -> Result<Vec<Event>, String> {
             cursor = &cursor[2 + name_length..];
             // Only string headers (type 7) matter here; others are skipped by their size.
             let (value, used) = match kind {
-                7 => { let length = u16::from_be_bytes([cursor[0], cursor[1]]) as usize; (String::from_utf8_lossy(&cursor[2..2 + length]).into_owned(), 2 + length) }
+                7 => {
+                    let length = u16::from_be_bytes([cursor[0], cursor[1]]) as usize;
+                    (
+                        String::from_utf8_lossy(&cursor[2..2 + length]).into_owned(),
+                        2 + length,
+                    )
+                }
                 0 | 1 => (String::new(), 0),
                 2 => (String::new(), 1),
                 3 => (String::new(), 2),
                 4 => (String::new(), 4),
                 5 | 8 => (String::new(), 8),
-                6 => { let length = u16::from_be_bytes([cursor[0], cursor[1]]) as usize; (String::new(), 2 + length) }
+                6 => {
+                    let length = u16::from_be_bytes([cursor[0], cursor[1]]) as usize;
+                    (String::new(), 2 + length)
+                }
                 9 => (String::new(), 16),
                 _ => return Err("AgentCore sent an unknown event header.".into()),
             };
@@ -98,63 +134,183 @@ pub fn events(mut bytes: &[u8]) -> Result<Vec<Event>, String> {
 
 impl Aws {
     pub fn credentials(&self) -> Result<Credentials, String> {
-        let exported = self.call(&["configure", "export-credentials", "--format", "process"], QUICK)?;
+        let exported = self.call(
+            &["configure", "export-credentials", "--format", "process"],
+            QUICK,
+        )?;
         Ok(Credentials {
-            access_key: exported["AccessKeyId"].as_str().ok_or("The AWS CLI exported no credentials.")?.to_string(),
-            secret_key: exported["SecretAccessKey"].as_str().ok_or("The AWS CLI exported no credentials.")?.to_string(),
+            access_key: exported["AccessKeyId"]
+                .as_str()
+                .ok_or("The AWS CLI exported no credentials.")?
+                .to_string(),
+            secret_key: exported["SecretAccessKey"]
+                .as_str()
+                .ok_or("The AWS CLI exported no credentials.")?
+                .to_string(),
             session_token: exported["SessionToken"].as_str().map(str::to_string),
         })
     }
     pub fn interpreter_list(&self) -> Result<Vec<Machine>, String> {
-        let found = self.call(&["bedrock-agentcore", "list-code-interpreter-sessions", "--code-interpreter-identifier", INTERPRETER, "--status", "READY"], QUICK)?;
-        Ok(found["items"].as_array().into_iter().flatten().map(|s| Machine {
-            id: format!("agentcore:{}", s["sessionId"].as_str().unwrap_or_default()),
+        let found = self.call(
+            &[
+                "bedrock-agentcore",
+                "list-code-interpreter-sessions",
+                "--code-interpreter-identifier",
+                INTERPRETER,
+                "--status",
+                "READY",
+            ],
+            QUICK,
+        )?;
+        Ok(found["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| Machine {
+                id: format!("agentcore:{}", s["sessionId"].as_str().unwrap_or_default()),
+                provider: "agentcore".into(),
+                name: s["name"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("AgentCore session")
+                    .to_string(),
+                state: "running".into(),
+                os: "linux".into(),
+                desktop: false,
+                detail: "AWS AgentCore code interpreter · commands only · ends after an hour"
+                    .into(),
+            })
+            .collect())
+    }
+    pub fn interpreter_start(&self, name: &str) -> Result<Machine, String> {
+        let started = self.call(
+            &[
+                "bedrock-agentcore",
+                "start-code-interpreter-session",
+                "--code-interpreter-identifier",
+                INTERPRETER,
+                "--name",
+                name,
+                "--session-timeout-seconds",
+                SESSION_SECONDS,
+            ],
+            QUICK,
+        )?;
+        let id = started["sessionId"]
+            .as_str()
+            .ok_or("AgentCore did not start a session.")?;
+        Ok(Machine {
+            id: format!("agentcore:{id}"),
             provider: "agentcore".into(),
-            name: s["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("AgentCore session").to_string(),
+            name: name.into(),
             state: "running".into(),
             os: "linux".into(),
             desktop: false,
             detail: "AWS AgentCore code interpreter · commands only · ends after an hour".into(),
-        }).collect())
-    }
-    pub fn interpreter_start(&self, name: &str) -> Result<Machine, String> {
-        let started = self.call(&["bedrock-agentcore", "start-code-interpreter-session", "--code-interpreter-identifier", INTERPRETER, "--name", name, "--session-timeout-seconds", SESSION_SECONDS], QUICK)?;
-        let id = started["sessionId"].as_str().ok_or("AgentCore did not start a session.")?;
-        Ok(Machine { id: format!("agentcore:{id}"), provider: "agentcore".into(), name: name.into(), state: "running".into(), os: "linux".into(), desktop: false, detail: "AWS AgentCore code interpreter · commands only · ends after an hour".into() })
+        })
     }
     pub fn interpreter_stop(&self, session: &str) -> Result<(), String> {
-        self.call(&["bedrock-agentcore", "stop-code-interpreter-session", "--code-interpreter-identifier", INTERPRETER, "--session-id", session], QUICK).map(|_| ())
+        self.call(
+            &[
+                "bedrock-agentcore",
+                "stop-code-interpreter-session",
+                "--code-interpreter-identifier",
+                INTERPRETER,
+                "--session-id",
+                session,
+            ],
+            QUICK,
+        )
+        .map(|_| ())
     }
     /// Run a shell command in a code interpreter session.
-    pub async fn interpreter_exec(&self, session: &str, command: &str, credentials: &Credentials, endpoint: Option<&str>) -> Result<(Option<i32>, String), String> {
+    pub async fn interpreter_exec(
+        &self,
+        session: &str,
+        command: &str,
+        credentials: &Credentials,
+        endpoint: Option<&str>,
+    ) -> Result<(Option<i32>, String), String> {
         let host = format!("bedrock-agentcore.{}.amazonaws.com", self.region);
         let path = format!("/code-interpreters/{INTERPRETER}/tools/invoke");
-        let body = serde_json::to_vec(&json!({"name": "executeCommand", "arguments": {"command": command}})).map_err(|e| e.to_string())?;
+        let body = serde_json::to_vec(
+            &json!({"name": "executeCommand", "arguments": {"command": command}}),
+        )
+        .map_err(|e| e.to_string())?;
         let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-        let signed = vec![("content-type".to_string(), "application/json".to_string()), ("host".to_string(), host.clone()), ("x-amzn-code-interpreter-session-id".to_string(), session.to_string())];
-        let authorization = sign("POST", &path, &signed, &body, &Signer { region: &self.region, service: "bedrock-agentcore", credentials, amz_date: &amz_date });
+        let signed = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("host".to_string(), host.clone()),
+            (
+                "x-amzn-code-interpreter-session-id".to_string(),
+                session.to_string(),
+            ),
+        ];
+        let authorization = sign(
+            "POST",
+            &path,
+            &signed,
+            &body,
+            &Signer {
+                region: &self.region,
+                service: "bedrock-agentcore",
+                credentials,
+                amz_date: &amz_date,
+            },
+        );
         let client = http::client(Duration::from_secs(600))?;
-        let mut request = client.post(format!("{}{path}", endpoint.map_or_else(|| format!("https://{host}"), str::to_string)))
-            .header("content-type", "application/json").header("x-amz-date", &amz_date)
-            .header("x-amzn-code-interpreter-session-id", session).header("authorization", authorization).body(body);
+        let mut request = client
+            .post(format!(
+                "{}{path}",
+                endpoint.map_or_else(|| format!("https://{host}"), str::to_string)
+            ))
+            .header("content-type", "application/json")
+            .header("x-amz-date", &amz_date)
+            .header("x-amzn-code-interpreter-session-id", session)
+            .header("authorization", authorization)
+            .body(body);
         if let Some(token) = &credentials.session_token {
             request = request.header("x-amz-security-token", token);
         }
-        let response = request.send().await.map_err(|_| "Could not reach AgentCore.".to_string())?;
+        let response = request
+            .send()
+            .await
+            .map_err(|_| "Could not reach AgentCore.".to_string())?;
         let status = response.status().as_u16();
-        let bytes = response.bytes().await.map_err(|_| "AgentCore's response was cut off.".to_string())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|_| "AgentCore's response was cut off.".to_string())?;
         if !(200..300).contains(&status) {
-            return Err(http::error_message("AgentCore", status, &String::from_utf8_lossy(&bytes)));
+            return Err(http::error_message(
+                "AgentCore",
+                status,
+                &String::from_utf8_lossy(&bytes),
+            ));
         }
         let mut output = String::new();
         let mut code = None;
         for (headers, payload) in events(&bytes)? {
-            let header = |name: &str| headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str());
+            let header = |name: &str| {
+                headers
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.as_str())
+            };
             let message: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
             if header(":message-type") == Some("exception") {
-                return Err(format!("AgentCore: {}", message["message"].as_str().unwrap_or(header(":exception-type").unwrap_or("request failed"))));
+                return Err(format!(
+                    "AgentCore: {}",
+                    message["message"]
+                        .as_str()
+                        .unwrap_or(header(":exception-type").unwrap_or("request failed"))
+                ));
             }
-            let result = if message["result"].is_object() { &message["result"] } else { &message };
+            let result = if message["result"].is_object() {
+                &message["result"]
+            } else {
+                &message
+            };
             let structured = &result["structuredContent"];
             if structured.is_object() {
                 output.push_str(structured["stdout"].as_str().unwrap_or_default());
@@ -180,8 +336,23 @@ mod tests {
     /// AWS's published SigV4 test case `get-vanilla`.
     #[test]
     fn signs_like_the_aws_test_suite() {
-        let credentials = Credentials { access_key: "AKIDEXAMPLE".into(), secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(), session_token: None };
-        let authorization = sign("GET", "/", &[("host".into(), "example.amazonaws.com".into())], b"", &Signer { region: "us-east-1", service: "service", credentials: &credentials, amz_date: "20150830T123600Z" });
+        let credentials = Credentials {
+            access_key: "AKIDEXAMPLE".into(),
+            secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".into(),
+            session_token: None,
+        };
+        let authorization = sign(
+            "GET",
+            "/",
+            &[("host".into(), "example.amazonaws.com".into())],
+            b"",
+            &Signer {
+                region: "us-east-1",
+                service: "service",
+                credentials: &credentials,
+                amz_date: "20150830T123600Z",
+            },
+        );
         assert_eq!(authorization, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31");
     }
 
@@ -207,27 +378,66 @@ mod tests {
 
     #[test]
     fn reads_event_stream_frames() {
-        let mut bytes = frame(&[(":event-type", "result"), (":message-type", "event")], r#"{"x":1}"#);
-        bytes.extend(frame(&[(":message-type", "exception")], r#"{"message":"no"}"#));
+        let mut bytes = frame(
+            &[(":event-type", "result"), (":message-type", "event")],
+            r#"{"x":1}"#,
+        );
+        bytes.extend(frame(
+            &[(":message-type", "exception")],
+            r#"{"message":"no"}"#,
+        ));
         let parsed = events(&bytes).unwrap();
         assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].0[0], (":event-type".to_string(), "result".to_string()));
+        assert_eq!(
+            parsed[0].0[0],
+            (":event-type".to_string(), "result".to_string())
+        );
         assert_eq!(parsed[1].1, br#"{"message":"no"}"#);
         assert!(events(&bytes[..20]).is_err());
     }
 
     #[tokio::test]
     async fn runs_a_command_with_a_signed_request() {
-        let reply = frame(&[(":event-type", "result"), (":message-type", "event")], r#"{"structuredContent":{"stdout":"hi\n","stderr":"","exitCode":0}}"#);
+        let reply = frame(
+            &[(":event-type", "result"), (":message-type", "event")],
+            r#"{"structuredContent":{"stdout":"hi\n","stderr":"","exitCode":0}}"#,
+        );
         let (base, seen) = mock::serve(move |_, _| (200, reply.clone()));
-        let aws = Aws { profile: None, region: "us-west-2".into() };
-        let credentials = Credentials { access_key: "AKID".into(), secret_key: "secret".into(), session_token: Some("token".into()) };
-        assert_eq!(aws.interpreter_exec("sess-1", "echo hi", &credentials, Some(&base)).await.unwrap(), (Some(0), "hi\n".into()));
+        let aws = Aws {
+            profile: None,
+            region: "us-west-2".into(),
+        };
+        let credentials = Credentials {
+            access_key: "AKID".into(),
+            secret_key: "secret".into(),
+            session_token: Some("token".into()),
+        };
+        assert_eq!(
+            aws.interpreter_exec("sess-1", "echo hi", &credentials, Some(&base))
+                .await
+                .unwrap(),
+            (Some(0), "hi\n".into())
+        );
         let request = seen.lock().unwrap()[0].clone();
-        assert_eq!(request.path, "/code-interpreters/aws.codeinterpreter.v1/tools/invoke");
-        assert!(request.authorization.unwrap().starts_with("AWS4-HMAC-SHA256 Credential=AKID/"));
-        assert!(request.headers.iter().any(|(n, v)| n == "x-amz-security-token" && v == "token"));
-        assert!(request.headers.iter().any(|(n, v)| n == "x-amzn-code-interpreter-session-id" && v == "sess-1"));
-        assert_eq!(serde_json::from_str::<Value>(&request.body).unwrap(), json!({"name":"executeCommand","arguments":{"command":"echo hi"}}));
+        assert_eq!(
+            request.path,
+            "/code-interpreters/aws.codeinterpreter.v1/tools/invoke"
+        );
+        assert!(request
+            .authorization
+            .unwrap()
+            .starts_with("AWS4-HMAC-SHA256 Credential=AKID/"));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(n, v)| n == "x-amz-security-token" && v == "token"));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(n, v)| n == "x-amzn-code-interpreter-session-id" && v == "sess-1"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&request.body).unwrap(),
+            json!({"name":"executeCommand","arguments":{"command":"echo hi"}})
+        );
     }
 }

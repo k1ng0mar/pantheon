@@ -4,7 +4,7 @@ Five workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Jobs |
 | --- | --- | --- |
-| `ci.yml` | push to `main`/`master`, every PR | `check`, `build`, `cross-platform`, `eval`, `desktop`, `desktop-rust`, `desktop-ui`, `install-smoke` |
+| `ci.yml` | push to `main`/`master`, every PR | `check`, `audit`, `sandbox-root`, `build`, `cross-platform`, `cross-platform-expiry`, `eval`, `desktop`, `desktop-rust`, `desktop-ui`, `install-smoke` |
 | `release.yml` | `v*` tag push | 5-target build matrix, packaging, optional minisign, smoke unpack |
 | `desktop-release.yml` | `desktop-v*` tag push | `prepare`, `build`, `sbom`, `publish`, `npm` |
 | `pages.yml` | docs changes | documentation site |
@@ -35,20 +35,26 @@ predates the job.
 
 **Flip `continue-on-error` to `false` once this job has been green for a
 full week.** Until then it reports failures without blocking merges, so
-check its result when touching platform code.
+check its result when touching platform code. There is no separate tracking
+issue. The deadline is enforced by `cross-platform-expiry` below; this doc is
+the pointer.
+
+**`cross-platform-expiry`** — fails the workflow on or after 2026-12-31 if
+`cross-platform` is still `continue-on-error`. A comment is not a deadline;
+this job is what makes the advisory state actually expire.
 
 **`eval`** — builds the CLI (debug) and runs `python3 eval/run.py` with
 `PANTHEON_BIN=target/debug/pantheon`. The harness is a stdlib-only
-regression suite over the real binary: 22 cases covering the run lifecycle,
+regression suite over the real binary: 31 cases covering the run lifecycle,
 audit export, memory round-trip, plugin discovery, setup/config, swarm
 spawn refusal, and the send/gateway path. Fifteen of those cases carry
 `skip: "needs binary"`, so without the build step they never ran anywhere by
 default.
 
 **`desktop`** — typecheck, `npm run build`, and the desktop unit tests.
-`desktop/` is excluded from the Cargo workspace and its own workflow file is
-inert in a monorepo (GitHub only reads `.github/workflows` at the repo root),
-so this job is the only thing that typechecks the desktop TypeScript.
+`desktop/` is excluded from the Cargo workspace. GitHub only reads workflow
+files at the repository root, so this job is the only thing that typechecks
+the desktop TypeScript.
 
 **`desktop-rust`** — `cargo test --lib` and a strict `clippy` over
 `desktop/src-tauri`. It sets `RUSTFLAGS: ""` because the workflow-level
@@ -78,26 +84,25 @@ so a green build must not ship an installer that cannot install.
 
 ## Playwright UI coverage
 
-`desktop/playwright.config.ts` is the full local suite: 74 spec files, 829
-tests. `desktop/playwright.ci.config.ts` imports it and subtracts the specs in
+`desktop/playwright.config.ts` is the full local suite: 69 spec files.
+`desktop/playwright.ci.config.ts` imports it and subtracts the specs in
 its `testIgnore`. CI runs 42 files, 330 tests.
 
-The 32 excluded specs are not deleted. They stay in the local suite so the work
+The 27 excluded specs are not deleted. They stay in the local suite so the work
 to repair them stays visible, and each one is listed in `testIgnore` with the
 cause. Three causes:
 
 - **stale** — the spec asserts a provider list, a settings shape, or UI text
   from before the rebrand. It fails deterministically against the current app,
   so it reports red for behaviour that is correct. `provider-settings`,
-  `settings`, `agent-usage`, `agent-updates`, `opencode-models`, `architect`,
+  `settings`, `remote`, `team-profiles`, `simulator`, `architect`,
   `ui`, `attachments`, `bots`, `colors`, `compact-menus`,
-  `conversation-import`, `design-canvas`, `generative-ui`,
-  `message-actions`, `remote`, `simulator`, `skills-library`,
-  `slash-commands`, `steering`, `team-profiles`, `wallpaper-settings`.
+  `design-canvas`, `generative-ui`, `message-actions`,
+  `skills-library`, `slash-commands`, `steering`, `wallpaper-settings`.
 - **hangs** — the spec waits on a control that never becomes actionable, so it
-  burns the per-test timeout. Raising the timeout does not help: `grok` still
-  fails on `locator.click` at 60s. `agent-teams`, `browser`, `cloud-agents`,
-  `external-links`, `grok`, `layout-preferences`, `sketch`, `streaming`, `vm`.
+  burns the per-test timeout. Raising the timeout does not help. `agent-teams`,
+  `browser`, `cloud-agents`, `external-links`, `layout-preferences`, `sketch`,
+  `streaming`, `vm`.
 - **flaky** — the spec depends on wall-clock timing or a module URL that moves
   between runs. Two runs of the same file gave different failures. `overlay`.
 

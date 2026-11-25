@@ -20,7 +20,10 @@ const DEADLINE: Duration = Duration::from_secs(5);
 /// A new search in a folder supersedes the one still walking it; the UI only shows the latest query.
 fn generations() -> std::sync::MutexGuard<'static, HashMap<PathBuf, u64>> {
     static LATEST: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
-    LATEST.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LATEST
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Debug, Serialize)]
@@ -53,7 +56,11 @@ pub fn search_text(
     if query.is_empty() || query.len() > 512 || query.contains('\0') {
         return Err("Search text must be 1 to 512 bytes and contain no null characters.".into());
     }
-    let pattern = if regex { query.to_owned() } else { regex::escape(query) };
+    let pattern = if regex {
+        query.to_owned()
+    } else {
+        regex::escape(query)
+    };
     let pattern = if !whole_word {
         pattern
     } else if regex {
@@ -61,8 +68,16 @@ pub fn search_text(
     } else {
         // Like VS Code, a literal edge that is not a word character needs no boundary (`@foo`, `foo()`).
         let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-        let before = if word(query.chars().next()) { r"\b" } else { "" };
-        let after = if word(query.chars().next_back()) { r"\b" } else { "" };
+        let before = if word(query.chars().next()) {
+            r"\b"
+        } else {
+            ""
+        };
+        let after = if word(query.chars().next_back()) {
+            r"\b"
+        } else {
+            ""
+        };
         format!("{before}{pattern}{after}")
     };
     let matcher = regex::RegexBuilder::new(&pattern)
@@ -80,7 +95,10 @@ pub fn search_text(
         .require_git(in_repo)
         .max_depth(Some(48))
         .filter_entry(|entry| {
-            !super::file_search::excluded(entry.file_name(), entry.file_type().is_some_and(|t| t.is_dir()))
+            !super::file_search::excluded(
+                entry.file_name(),
+                entry.file_type().is_some_and(|t| t.is_dir()),
+            )
         })
         .build();
     let generation = {
@@ -90,7 +108,8 @@ pub fn search_text(
         next
     };
     let started = Instant::now();
-    let (mut files, mut total, mut scanned, mut entries, mut bytes_read) = (Vec::<TextFileMatches>::new(), 0, 0, 0usize, 0u64);
+    let (mut files, mut total, mut scanned, mut entries, mut bytes_read) =
+        (Vec::<TextFileMatches>::new(), 0, 0, 0usize, 0u64);
     for entry in walker.flatten() {
         // Directories count too, so a huge tree of empty folders still stops.
         if generations().get(&root) != Some(&generation) {
@@ -99,7 +118,10 @@ pub fn search_text(
         entries += 1;
         if entries > MAX_ENTRIES || started.elapsed() > DEADLINE {
             files.sort_by(|a, b| a.path.cmp(&b.path));
-            return Ok(TextSearchResult { files, truncated: true });
+            return Ok(TextSearchResult {
+                files,
+                truncated: true,
+            });
         }
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
@@ -107,15 +129,22 @@ pub fn search_text(
         scanned += 1;
         if scanned > MAX_FILES || bytes_read >= MAX_TOTAL_BYTES {
             files.sort_by(|a, b| a.path.cmp(&b.path));
-            return Ok(TextSearchResult { files, truncated: true });
+            return Ok(TextSearchResult {
+                files,
+                truncated: true,
+            });
         }
-        let Some(bytes) = read_inside(&root, entry.path()) else { continue };
+        let Some(bytes) = read_inside(&root, entry.path()) else {
+            continue;
+        };
         bytes_read += bytes.len() as u64;
         // Binary and non-UTF-8 files are skipped, as in VS Code's default search.
         if bytes[..bytes.len().min(8192)].contains(&0) {
             continue;
         }
-        let Ok(content) = String::from_utf8(bytes) else { continue };
+        let Ok(content) = String::from_utf8(bytes) else {
+            continue;
+        };
         let mut matches = Vec::new();
         for (index, line) in content.split('\n').enumerate() {
             let line = line.strip_suffix('\r').unwrap_or(line);
@@ -139,23 +168,36 @@ pub fn search_text(
         if let (false, Some(path)) = (matches.is_empty(), path) {
             #[cfg(windows)]
             let path = path.replace('\\', "/");
-            files.push(TextFileMatches { path: path.to_owned(), matches });
+            files.push(TextFileMatches {
+                path: path.to_owned(),
+                matches,
+            });
         }
         if total >= MAX_MATCHES {
             files.sort_by(|a, b| a.path.cmp(&b.path));
-            return Ok(TextSearchResult { files, truncated: true });
+            return Ok(TextSearchResult {
+                files,
+                truncated: true,
+            });
         }
     }
     // The walk is unsorted (sorting would buffer whole directories); order the bounded result.
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(TextSearchResult { files, truncated: false })
+    Ok(TextSearchResult {
+        files,
+        truncated: false,
+    })
 }
 
 /// Reads a regular file through one opened handle, refusing it if the path is (or became) a
 /// symlink, resolves outside `root`, or is no longer the file that was opened.
 fn read_inside(root: &Path, path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
-    if std::fs::symlink_metadata(path).ok()?.file_type().is_symlink() {
+    if std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
         return None;
     }
     let file = std::fs::File::open(path).ok()?;
@@ -189,14 +231,21 @@ fn preview(line: &str, number: usize, spans: &[(usize, usize)]) -> TextMatch {
             start -= line[..start].chars().next_back().map_or(0, char::len_utf8);
         }
     }
-    let end = line[start..].char_indices().nth(PREVIEW_CHARS).map_or(line.len(), |(i, _)| start + i);
+    let end = line[start..]
+        .char_indices()
+        .nth(PREVIEW_CHARS)
+        .map_or(line.len(), |(i, _)| start + i);
     let utf16 = |to: usize| line[start..to].encode_utf16().count();
     let ranges = spans
         .iter()
         .filter(|(s, _)| *s >= start && *s < end)
         .map(|&(s, e)| [utf16(s), utf16(e.min(end))])
         .collect();
-    TextMatch { line: number, text: line[start..end].to_owned(), ranges }
+    TextMatch {
+        line: number,
+        text: line[start..end].to_owned(),
+        ranges,
+    }
 }
 
 #[cfg(test)]
@@ -207,7 +256,8 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!("pantheon-text-search-{}", uuid::Uuid::new_v4()));
+            let root =
+                std::env::temp_dir().join(format!("pantheon-text-search-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&root).unwrap();
             Self(root.canonicalize().unwrap())
         }
@@ -226,16 +276,26 @@ mod tests {
         }
     }
     fn hits(result: &TextSearchResult) -> Vec<(String, usize)> {
-        result.files.iter().flat_map(|f| f.matches.iter().map(|m| (f.path.clone(), m.line))).collect()
+        result
+            .files
+            .iter()
+            .flat_map(|f| f.matches.iter().map(|m| (f.path.clone(), m.line)))
+            .collect()
     }
 
     #[test]
     fn finds_lines_with_trimmed_previews_and_utf16_ranges() {
         let f = Fixture::new();
-        f.write("src/app.ts", "const a = 1;\r\n    // héllo useState here\nuseState(useState)\n");
+        f.write(
+            "src/app.ts",
+            "const a = 1;\r\n    // héllo useState here\nuseState(useState)\n",
+        );
         let result = f.search("usestate", false, false, false);
         assert!(!result.truncated);
-        assert_eq!(hits(&result), [("src/app.ts".to_owned(), 2), ("src/app.ts".to_owned(), 3)]);
+        assert_eq!(
+            hits(&result),
+            [("src/app.ts".to_owned(), 2), ("src/app.ts".to_owned(), 3)]
+        );
         let first = &result.files[0].matches[0];
         assert_eq!(first.text, "// héllo useState here");
         assert_eq!(first.ranges, [[9, 17]]);
@@ -247,8 +307,20 @@ mod tests {
         let f = Fixture::new();
         f.write("a.txt", "Token\ntoken\ntokens\n");
         assert_eq!(hits(&f.search("token", false, false, false)).len(), 3);
-        assert_eq!(hits(&f.search("token", true, false, false)).iter().map(|h| h.1).collect::<Vec<_>>(), [2, 3]);
-        assert_eq!(hits(&f.search("token", false, true, false)).iter().map(|h| h.1).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(
+            hits(&f.search("token", true, false, false))
+                .iter()
+                .map(|h| h.1)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(
+            hits(&f.search("token", false, true, false))
+                .iter()
+                .map(|h| h.1)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
         assert_eq!(hits(&f.search("tok.ns?$", false, false, true)).len(), 3);
         // Without regex mode the pattern is literal.
         assert!(hits(&f.search("tok.ns", false, false, false)).is_empty());
@@ -262,10 +334,18 @@ mod tests {
         f.write("node_modules/pkg/index.js", "needle");
         f.write(".git/config", "needle");
         f.write("image.bin", b"needle\0\x01");
-        f.write("big.txt", format!("needle{}", "x".repeat(MAX_FILE_BYTES as usize)));
+        f.write(
+            "big.txt",
+            format!("needle{}", "x".repeat(MAX_FILE_BYTES as usize)),
+        );
         f.write(".env.example", "needle");
         f.write("keep.md", "needle");
-        let found: Vec<_> = f.search("needle", false, false, false).files.into_iter().map(|f| f.path).collect();
+        let found: Vec<_> = f
+            .search("needle", false, false, false)
+            .files
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         assert_eq!(found, [".env.example", "keep.md"]);
     }
 
@@ -281,7 +361,10 @@ mod tests {
     #[test]
     fn long_lines_keep_context_before_the_match() {
         let f = Fixture::new();
-        f.write("long.txt", format!("{}needle{}", "é".repeat(500), "z".repeat(500)));
+        f.write(
+            "long.txt",
+            format!("{}needle{}", "é".repeat(500), "z".repeat(500)),
+        );
         let m = &f.search("needle", false, false, false).files[0].matches[0];
         assert_eq!(m.ranges, [[CONTEXT_BEFORE, CONTEXT_BEFORE + 6]]);
         assert_eq!(m.text.chars().count(), PREVIEW_CHARS);
@@ -292,16 +375,31 @@ mod tests {
         let f = Fixture::new();
         f.write("indent.txt", "    foo\n   \n");
         let result = f.search(r"\s+", false, false, true);
-        let lines: Vec<_> = result.files[0].matches.iter().map(|m| (m.line, m.text.as_str(), m.ranges.clone())).collect();
-        assert_eq!(lines, [(1, "    foo", vec![[0, 4]]), (2, "   ", vec![[0, 3]])]);
-        assert_eq!(f.search("  ", false, false, false).files[0].matches[0].ranges, [[0, 2], [2, 4]]);
+        let lines: Vec<_> = result.files[0]
+            .matches
+            .iter()
+            .map(|m| (m.line, m.text.as_str(), m.ranges.clone()))
+            .collect();
+        assert_eq!(
+            lines,
+            [(1, "    foo", vec![[0, 4]]), (2, "   ", vec![[0, 3]])]
+        );
+        assert_eq!(
+            f.search("  ", false, false, false).files[0].matches[0].ranges,
+            [[0, 2], [2, 4]]
+        );
     }
 
     #[test]
     fn whole_word_only_bounds_literal_edges_that_are_word_characters() {
         let f = Fixture::new();
         f.write("calls.ts", "call foo()\nfoo(); x@foo y\n");
-        let lines = |query| hits(&f.search(query, false, true, false)).iter().map(|h| h.1).collect::<Vec<_>>();
+        let lines = |query| {
+            hits(&f.search(query, false, true, false))
+                .iter()
+                .map(|h| h.1)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(lines("foo()"), [1, 2]);
         assert_eq!(lines("@foo"), [2]);
         assert!(lines("fo").is_empty());
@@ -349,7 +447,12 @@ mod tests {
         for name in ["c.txt", "a/z.txt", "b.txt", "a/a.txt"] {
             f.write(name, "needle");
         }
-        let paths: Vec<_> = f.search("needle", false, false, false).files.into_iter().map(|f| f.path).collect();
+        let paths: Vec<_> = f
+            .search("needle", false, false, false)
+            .files
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         assert_eq!(paths, ["a/a.txt", "a/z.txt", "b.txt", "c.txt"]);
     }
 

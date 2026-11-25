@@ -44,10 +44,6 @@ impl TextStreams {
         message
     }
 
-    pub fn remember_phase(&mut self, id: &str, phase: Option<&str>) {
-        self.message(id, phase);
-    }
-
     pub fn delta(&mut self, id: &str, phase: Option<&str>, text: &str) -> Option<Update> {
         if text.is_empty() {
             return None;
@@ -66,6 +62,7 @@ impl TextStreams {
         })
     }
 
+    #[cfg(test)]
     pub fn snapshot(&mut self, id: &str, phase: Option<&str>, text: &str) -> Option<Update> {
         if text.is_empty() {
             return None;
@@ -87,28 +84,6 @@ impl TextStreams {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn suffix_reconciliation_is_independent_of_chunk_boundaries_and_utf8() {
-        let mut streams = TextStreams::default();
-        streams.remember_phase("message", Some("commentary"));
-        assert_eq!(
-            streams.delta("message", None, "Hello ").unwrap().boundary,
-            Some(("message".into(), Some("commentary".into())))
-        );
-        assert!(streams
-            .delta("message", None, "🦀")
-            .unwrap()
-            .boundary
-            .is_none());
-        let tail = streams.snapshot("message", None, "Hello 🦀!\n").unwrap();
-        assert_eq!(tail.text, "!\n");
-        assert!(tail.boundary.is_none());
-        assert!(streams.snapshot("message", None, "Hello 🦀!\n").is_none());
-        assert!(streams
-            .snapshot("message", None, "Unrelated final text")
-            .is_none());
-    }
 
     #[test]
     fn empty_updates_do_not_open_messages_and_tracking_stays_bounded() {

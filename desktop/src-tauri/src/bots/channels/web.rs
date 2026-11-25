@@ -33,7 +33,12 @@ struct Outbox {
 
 fn outbox() -> &'static Mutex<Outbox> {
     static OUTBOX_STATE: std::sync::OnceLock<Mutex<Outbox>> = std::sync::OnceLock::new();
-    OUTBOX_STATE.get_or_init(|| Mutex::new(Outbox { next: 1, items: VecDeque::new() }))
+    OUTBOX_STATE.get_or_init(|| {
+        Mutex::new(Outbox {
+            next: 1,
+            items: VecDeque::new(),
+        })
+    })
 }
 
 fn wake() -> &'static tokio::sync::Notify {
@@ -42,14 +47,24 @@ fn wake() -> &'static tokio::sync::Notify {
 }
 
 pub(crate) fn new_token() -> String {
-    format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 pub(crate) fn send(channel: &Channel, thread: &str, text: &str) -> crate::Result<()> {
     let mut state = outbox().lock().map_err(|e| e.to_string())?;
     let id = state.next;
     state.next += 1;
-    state.items.push_back(Outgoing { id, channel_id: channel.id.clone(), thread: thread.to_owned(), text: text.to_owned(), at: crate::storage::now() });
+    state.items.push_back(Outgoing {
+        id,
+        channel_id: channel.id.clone(),
+        thread: thread.to_owned(),
+        text: text.to_owned(),
+        at: crate::storage::now(),
+    });
     while state.items.len() > OUTBOX {
         state.items.pop_front();
     }
@@ -63,12 +78,25 @@ fn cursor() -> u64 {
 }
 
 fn pending_after(channel_id: &str, after: u64) -> Vec<Outgoing> {
-    outbox().lock().map(|state| state.items.iter().filter(|item| item.channel_id == channel_id && item.id > after).cloned().collect()).unwrap_or_default()
+    outbox()
+        .lock()
+        .map(|state| {
+            state
+                .items
+                .iter()
+                .filter(|item| item.channel_id == channel_id && item.id > after)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn allow_post(channel_id: &str) -> bool {
-    static POSTS: std::sync::OnceLock<Mutex<HashMap<String, VecDeque<i64>>>> = std::sync::OnceLock::new();
-    let Ok(mut map) = POSTS.get_or_init(Default::default).lock() else { return false };
+    static POSTS: std::sync::OnceLock<Mutex<HashMap<String, VecDeque<i64>>>> =
+        std::sync::OnceLock::new();
+    let Ok(mut map) = POSTS.get_or_init(Default::default).lock() else {
+        return false;
+    };
     let now = crate::storage::now();
     let times = map.entry(channel_id.to_owned()).or_default();
     while times.front().is_some_and(|at| now - at > 60_000) {
@@ -83,21 +111,36 @@ fn allow_post(channel_id: &str) -> bool {
 
 /// Strips context blocks (the bot brief, attachments) that the desktop app folds.
 pub(crate) fn visible(text: &str) -> String {
-    let cut = ["\n\nBot brief:", "\n\nDocument context:", "\n\nFolder context:"].iter().filter_map(|marker| text.find(marker)).min().unwrap_or(text.len());
+    let cut = [
+        "\n\nBot brief:",
+        "\n\nDocument context:",
+        "\n\nFolder context:",
+    ]
+    .iter()
+    .filter_map(|marker| text.find(marker))
+    .min()
+    .unwrap_or(text.len());
     text[..cut].trim().to_owned()
 }
 
 fn authorized(app: &tauri::AppHandle, channel_id: &str, request: &Request) -> Option<Channel> {
     let state = app.state::<AppState>();
     let store = state.store.lock().ok()?;
-    let channel = super::get(&store, channel_id).ok().filter(|c| c.kind == "web" && c.enabled)?;
+    let channel = super::get(&store, channel_id)
+        .ok()
+        .filter(|c| c.kind == "web" && c.enabled)?;
     let token = super::web_token(&store, &channel.id)?;
-    request.bearer().is_some_and(|given| same(given, &token)).then_some(channel)
+    request
+        .bearer()
+        .is_some_and(|given| same(given, &token))
+        .then_some(channel)
 }
 
 fn history(app: &tauri::AppHandle, channel: &Channel) -> Value {
     let state = app.state::<AppState>();
-    let Ok(store) = state.store.lock() else { return json!({"messages": [], "busy": false}) };
+    let Ok(store) = state.store.lock() else {
+        return json!({"messages": [], "busy": false});
+    };
     let bot = crate::bots::get(&store, &channel.bot_id).ok();
     let session: Option<String> = store
         .conn().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
@@ -110,7 +153,13 @@ fn history(app: &tauri::AppHandle, channel: &Channel) -> Value {
             Some(rows.flatten().map(|(role, content, at)| json!({"role": role, "text": if role == "user" { visible(&content) } else { content }, "at": at})).collect())
         })
         .unwrap_or_default();
-    let busy = session.as_deref().is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(session)).unwrap_or(false));
+    let busy = session.as_deref().is_some_and(|session| {
+        state
+            .agents
+            .lock()
+            .map(|agents| agents.contains_key(session))
+            .unwrap_or(false)
+    });
     json!({
         "bot": bot.map(|bot| json!({"name": bot.name, "role": bot.role, "avatar": bot.avatar, "paused": bot.paused})),
         "messages": messages,
@@ -126,7 +175,13 @@ fn busy(app: &tauri::AppHandle, channel: &Channel) -> bool {
             .conn().query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
             .ok()
     });
-    session.is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false))
+    session.is_some_and(|session| {
+        state
+            .agents
+            .lock()
+            .map(|agents| agents.contains_key(&session))
+            .unwrap_or(false)
+    })
 }
 
 async fn events(app: &tauri::AppHandle, channel: &Channel, after: u64) -> Value {
@@ -145,30 +200,59 @@ async fn events(app: &tauri::AppHandle, channel: &Channel, after: u64) -> Value 
             });
         }
         // Wake on a new reply, or every few seconds to notice the run starting or ending.
-        let wait = Duration::from_secs(3).min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        let wait = Duration::from_secs(3)
+            .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
         let _ = tokio::time::timeout(wait, notified).await;
     }
 }
 
-pub(crate) async fn api(app: &tauri::AppHandle, channel_id: &str, action: &str, request: &Request) -> Response {
-    let Some(channel) = authorized(app, channel_id, request) else { return Response::json(401, &json!({"error": "This link is no longer valid. Copy a fresh one from Pantheon."})) };
+pub(crate) async fn api(
+    app: &tauri::AppHandle,
+    channel_id: &str,
+    action: &str,
+    request: &Request,
+) -> Response {
+    let Some(channel) = authorized(app, channel_id, request) else {
+        return Response::json(
+            401,
+            &json!({"error": "This link is no longer valid. Copy a fresh one from Pantheon."}),
+        );
+    };
     // Other host names mean a tunnel or a rebound domain; allow them only when the owner turned on remote access.
     if !request.loopback_host() && channel.config["remote"].as_bool() != Some(true) {
-        return Response::json(403, &json!({"error": "Use from other devices is off for this bot. Turn it on in Pantheon (Bots → Channels → Web chat)."}));
+        return Response::json(
+            403,
+            &json!({"error": "Use from other devices is off for this bot. Turn it on in Pantheon (Bots → Channels → Web chat)."}),
+        );
     }
     match (request.method.as_str(), action) {
         ("GET", "history") => Response::json(200, &history(app, &channel)),
         ("GET", "events") => {
-            let after = request.query.get("after").and_then(|value| value.parse().ok()).unwrap_or(0);
+            let after = request
+                .query
+                .get("after")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
             Response::json(200, &events(app, &channel, after).await)
         }
         ("POST", "messages") => {
             if !allow_post(&channel.id) {
-                return Response::json(429, &json!({"error": "Too many messages. Wait a minute and try again."}));
+                return Response::json(
+                    429,
+                    &json!({"error": "Too many messages. Wait a minute and try again."}),
+                );
             }
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
             let text = body["text"].as_str().unwrap_or_default().to_owned();
-            let inbound = gateway::Inbound { bot_id: channel.bot_id.clone(), channel_id: channel.id.clone(), thread: THREAD.into(), sender_id: "web".into(), sender_name: "You (web)".into(), text, trusted: true };
+            let inbound = gateway::Inbound {
+                bot_id: channel.bot_id.clone(),
+                channel_id: channel.id.clone(),
+                thread: THREAD.into(),
+                sender_id: "web".into(),
+                sender_name: "You (web)".into(),
+                text,
+                trusted: true,
+            };
             match gateway::deliver(app, inbound).await {
                 Ok(_) => Response::json(200, &json!({"ok": true, "busy": busy(app, &channel)})),
                 Err(error) => Response::json(400, &json!({"error": error})),
@@ -179,7 +263,11 @@ pub(crate) async fn api(app: &tauri::AppHandle, channel_id: &str, action: &str, 
 }
 
 pub(crate) fn page(channel_id: &str) -> Response {
-    if !channel_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || channel_id.len() > 64 {
+    if !channel_id
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() || c == '-')
+        || channel_id.len() > 64
+    {
         return Response::text(404, "Not found.");
     }
     Response::html(PAGE.replace("__CHANNEL__", channel_id))

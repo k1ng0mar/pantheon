@@ -99,7 +99,6 @@ pub struct Terminal {
     #[cfg(windows)]
     _job: Option<crate::providers::windows_job::Job>,
     closed: Arc<AtomicBool>,
-    harness_session: Option<String>,
     run_script: bool,
 }
 impl Drop for Terminal {
@@ -157,7 +156,7 @@ pub fn start(
         &|name| std::env::var_os(name),
         &crate::providers::executable,
     );
-    start_command(app, terms, root, size(cols, rows), cmd, None, false)
+    start_command(app, terms, root, size(cols, rows), cmd, false)
 }
 
 pub fn start_script(
@@ -168,7 +167,7 @@ pub fn start_script(
     rows: u16,
 ) -> Result<String, String> {
     let cmd = crate::run_script::command(root)?;
-    start_command(app, terms, root, size(cols, rows), cmd, None, true)
+    start_command(app, terms, root, size(cols, rows), cmd, true)
 }
 
 fn shell_command(
@@ -207,286 +206,6 @@ fn shell_command(
     );
     cmd.arg("-l");
     cmd
-}
-
-pub struct HarnessContext<'a> {
-    pub session_id: &'a str,
-    pub provider: &'a str,
-    pub resume_id: Option<&'a str>,
-    pub model: Option<&'a str>,
-    pub reasoning_effort: Option<&'a str>,
-    pub mode: &'a str,
-}
-
-pub fn start_harness(
-    app: AppHandle,
-    terms: Terminals,
-    root: &Path,
-    context: HarnessContext<'_>,
-    cols: u16,
-    rows: u16,
-) -> Result<String, String> {
-    let cmd = harness_command(&context)?;
-    start_command(
-        app,
-        terms,
-        root,
-        size(cols, rows),
-        cmd,
-        Some(context.session_id.into()),
-        false,
-    )
-}
-
-fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, String> {
-    let args = harness_arguments(context)?;
-    let executable = crate::providers::executable(context.provider)
-        .ok_or("Install this harness before opening its console.")?;
-    let mut cmd = crate::providers::pty_command(&executable)?;
-    for name in crate::providers::claude_auth::removed_environment(context.provider) {
-        cmd.env_remove(name);
-    }
-    cmd.args(args);
-    if matches!(context.provider, "claude" | "glm" | "mimo") {
-        cmd.env_remove("CLAUDECODE");
-    }
-    if matches!(context.provider, "glm" | "mimo") {
-        let (arguments, environment) = if context.provider == "glm" {
-            (
-                crate::providers::glm_arguments(),
-                crate::providers::glm_environment()?,
-            )
-        } else {
-            (
-                crate::providers::mimo_arguments()?,
-                crate::providers::mimo_environment()?,
-            )
-        };
-        cmd.args(arguments);
-        for name in [
-            "ANTHROPIC_API_KEY",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            "ZAI_API_KEY",
-            "MIMO_API_KEY",
-            "CLAUDE_CODE_USE_BEDROCK",
-            "CLAUDE_CODE_USE_VERTEX",
-            "CLAUDE_CODE_USE_FOUNDRY",
-        ] {
-            cmd.env_remove(name);
-        }
-        for (key, value) in environment {
-            cmd.env(key, value);
-        }
-    }
-    if context.provider == "opencode" {
-        cmd.env(
-            "OPENCODE_CONFIG_CONTENT",
-            crate::providers::opencode_configuration(context.mode),
-        );
-    }
-    Ok(cmd)
-}
-
-fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String> {
-    let provider = context.provider;
-    let resume_id = context.resume_id;
-    if provider == "antigravity" {
-        return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
-    }
-    if !matches!(
-        provider,
-        "codex"
-            | "claude"
-            | "kimi"
-            | "glm"
-            | "opencode"
-            | "grok"
-            | "mimo"
-            | "pi"
-            | "omp"
-            | "github-copilot"
-            | "muse"
-    ) {
-        return Err("Choose a supported coding harness.".into());
-    }
-    if provider == "github-copilot" {
-        if resume_id.is_some() {
-            return Err("Copilot CLI's interactive console cannot resume an ACP task. Continue the task in Pantheon instead.".into());
-        }
-        if context.mode != "ask" {
-            return Err("Copilot CLI's interactive console cannot enforce this task's approval mode. Use task chat instead.".into());
-        }
-        if context.reasoning_effort.is_some() {
-            return Err(
-                "Copilot CLI's interactive console does not accept Pantheon reasoning overrides."
-                    .into(),
-            );
-        }
-        let mut args = vec!["--no-auto-update".into()];
-        if let Some(model) = context
-            .model
-            .filter(|model| !model.is_empty() && *model != "default")
-        {
-            if model.len() > 200 || model.chars().any(char::is_control) {
-                return Err("Invalid harness model.".into());
-            }
-            args.push(format!("--model={model}"));
-        }
-        return Ok(args);
-    }
-    if resume_id.is_some_and(|id| {
-        id.is_empty()
-            || id.len() > 160
-            || !id.as_bytes()[0].is_ascii_alphanumeric()
-            || !id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
-    }) {
-        return Err("This harness session cannot be resumed in a console.".into());
-    }
-    let mut args = Vec::new();
-    if let Some(id) = resume_id {
-        args.push(
-            match provider {
-                "codex" | "muse" => "resume",
-                "claude" | "glm" | "mimo" | "grok" => "--resume",
-                _ => "--session",
-            }
-            .into(),
-        );
-        args.push(id.into());
-    }
-    if !crate::storage::valid_permission_mode(context.mode) {
-        return Err("Choose a supported permission mode.".into());
-    }
-    match provider {
-        "pi" | "omp" => {
-            if context.mode != "full" {
-                return Err(
-                    "Pi console requires Full access. Use task chat for approval modes.".into(),
-                );
-            }
-        }
-        "codex" => {
-            let (sandbox, approval) = match context.mode {
-                "plan" => ("read-only", "never"),
-                "full" => ("danger-full-access", "never"),
-                _ => ("workspace-write", "on-request"),
-            };
-            args.extend([
-                "--sandbox".into(),
-                sandbox.into(),
-                "--ask-for-approval".into(),
-                approval.into(),
-            ]);
-            if context.mode == "auto" {
-                args.push("--approve-for-me".into());
-            }
-        }
-        "claude" | "glm" | "mimo" => {
-            let mode = match context.mode {
-                "plan" => "plan",
-                "full" => "bypassPermissions",
-                "auto" => "acceptEdits",
-                "review" => "auto",
-                _ => "default",
-            };
-            args.extend(["--permission-mode".into(), mode.into()]);
-            if context.mode == "full" {
-                args.push("--allow-dangerously-skip-permissions".into());
-            }
-        }
-        "muse" => {
-            // The TUI's flags: approval policy plus the same sandbox posture as task runs.
-            let approval = match context.mode {
-                "auto" => "on-request",
-                "full" => "never",
-                _ => "untrusted",
-            };
-            args.extend(["--approval-mode".into(), approval.into()]);
-            if context.mode == "full" {
-                args.push("--disable-approval".into());
-            }
-            args.extend(
-                crate::providers::muse_sandbox_args(context.mode)
-                    .iter()
-                    .map(|arg| (*arg).into()),
-            );
-        }
-        "opencode" => {
-            args.extend([
-                "--agent".into(),
-                if context.mode == "plan" {
-                    "plan"
-                } else {
-                    "build"
-                }
-                .into(),
-            ]);
-        }
-        "grok" => {
-            // The TUI has a native plan mode; ACP turns approximate it instead.
-            let mode = if context.mode == "plan" {
-                "plan"
-            } else {
-                crate::providers::grok_permission_mode(context.mode)
-            };
-            args.extend([
-                "--no-auto-update".into(),
-                "--permission-mode".into(),
-                mode.into(),
-            ]);
-        }
-        _ => {
-            match context.mode {
-                "plan" => args.push("--plan".into()),
-                // Kimi's names differ: YOLO uses automatic review; auto bypasses it.
-                "auto" => args.push("--yolo".into()),
-                "full" => args.push("--auto".into()),
-                _ => {}
-            }
-        }
-    }
-    if let Some(model) = context
-        .model
-        .filter(|model| !model.is_empty() && *model != "default")
-    {
-        if model.len() > 200 || model.chars().any(char::is_control) {
-            return Err("Invalid harness model.".into());
-        }
-        args.extend(["--model".into(), model.into()]);
-    } else if provider == "glm" {
-        args.extend(["--model".into(), "glm-5.3".into()]);
-    } else if provider == "mimo" {
-        args.extend(["--model".into(), "mimo-v2.6-pro".into()]);
-    }
-    if let Some(effort) = context.reasoning_effort {
-        crate::providers::validate_reasoning_effort(provider, Some(effort))?;
-        match provider {
-            "codex" => args.extend([
-                "--config".into(),
-                format!("model_reasoning_effort=\"{effort}\""),
-            ]),
-            "claude" | "glm" | "mimo" => args.extend(["--effort".into(), effort.into()]),
-            "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
-            "pi" | "omp" => args.extend(["--thinking".into(), effort.into()]),
-            "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
-            _ => {} // The Kimi TUI restores its persisted thinking setting.
-        }
-    }
-    // Never pass a slash command as a positional prompt, invoke a shell, or alter
-    // the harness's approval policy. TUI input is supplied by the user after launch.
-    Ok(args)
-}
-
-pub fn harness_running(terms: &Terminals, session_id: &str) -> Result<bool, String> {
-    let terms = terms
-        .lock()
-        .map_err(|_| "Terminal registry is unavailable")?;
-    Ok(terms.values().any(|terminal| {
-        terminal.harness_session.as_deref() == Some(session_id)
-            && !terminal.closed.load(Ordering::SeqCst)
-    }))
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -530,7 +249,7 @@ pub fn activity(terms: &Terminals, id: &str) -> Result<TerminalActivity, String>
         (
             terminal.shell_pid,
             terminal.shell_name.clone(),
-            terminal.harness_session.is_some() || terminal.run_script,
+            terminal.run_script,
             terminal.closed.clone(),
         )
     };
@@ -707,39 +426,17 @@ fn process_snapshot() -> Result<Vec<TerminalProcess>, String> {
     Err("Process inspection is unavailable".into())
 }
 
-// Shell tabs are created on demand per task; only duplicate harness sessions are blocked.
-fn check_start<'a>(
-    terminals: impl Iterator<Item = (Option<&'a str>, bool)>,
-    harness_session: Option<&str>,
-) -> Result<(), String> {
-    for (session, closed) in terminals {
-        if harness_session.is_some() && session == harness_session && !closed {
-            return Err("This task already has an open harness console.".into());
-        }
-    }
-    Ok(())
-}
-
+// Shell tabs are created on demand per task; nothing limits how many a task has.
 fn start_command(
     app: AppHandle,
     terms: Terminals,
     root: &Path,
     pty_size: PtySize,
     mut cmd: CommandBuilder,
-    harness_session: Option<String>,
     run_script: bool,
 ) -> Result<String, String> {
     crate::child_env::sanitize(&mut cmd);
     let mut registry = terms.lock().map_err(|e| e.to_string())?;
-    check_start(
-        registry.values().map(|terminal| {
-            (
-                terminal.harness_session.as_deref(),
-                terminal.closed.load(Ordering::SeqCst),
-            )
-        }),
-        harness_session.as_deref(),
-    )?;
     let pty = native_pty_system()
         .openpty(pty_size)
         .map_err(|e| e.to_string())?;
@@ -801,7 +498,6 @@ fn start_command(
             #[cfg(windows)]
             _job: job,
             closed,
-            harness_session,
             run_script,
         },
     );
@@ -946,273 +642,6 @@ mod tests {
     use super::*;
     use std::{sync::mpsc, time::Duration};
 
-    #[test]
-    fn harness_console_uses_literal_resume_arguments_and_never_a_prompt() {
-        for (provider, flag) in [
-            ("codex", "resume"),
-            ("claude", "--resume"),
-            ("kimi", "--session"),
-            ("glm", "--resume"),
-            ("opencode", "--session"),
-        ] {
-            let context = HarnessContext {
-                session_id: "task",
-                provider,
-                resume_id: Some("session_123"),
-                model: Some("example-model"),
-                reasoning_effort: None,
-                mode: "ask",
-            };
-            let args = harness_arguments(&context).unwrap();
-            assert_eq!(&args[..2], &[flag, "session_123"]);
-            assert!(!args
-                .iter()
-                .any(|arg| arg == "-p" || arg == "--prompt" || arg.starts_with('/')));
-            assert!(args
-                .windows(2)
-                .any(|args| args == ["--model", "example-model"]));
-        }
-        for id in ["--last", "id\n/prompt", "id; echo bad", "../rollout"] {
-            let context = HarnessContext {
-                session_id: "task",
-                provider: "codex",
-                resume_id: Some(id),
-                model: None,
-                reasoning_effort: None,
-                mode: "ask",
-            };
-            assert!(harness_arguments(&context).is_err());
-        }
-    }
-    #[test]
-    fn pi_console_requires_full_access_and_takes_thinking_and_resume() {
-        let context = HarnessContext {
-            session_id: "task",
-            provider: "pi",
-            resume_id: Some("01a15ba3-9096-76db-bd69-35168c0ecfa9"),
-            model: Some("anthropic/sonnet"),
-            reasoning_effort: Some("xhigh"),
-            mode: "full",
-        };
-        let args = harness_arguments(&context).unwrap();
-        // The TUI may offer to fork a session from another folder, so it takes `--session`.
-        assert_eq!(
-            &args[..2],
-            &["--session", "01a15ba3-9096-76db-bd69-35168c0ecfa9"]
-        );
-        assert!(args
-            .windows(2)
-            .any(|args| args == ["--model", "anthropic/sonnet"]));
-        assert!(args.windows(2).any(|args| args == ["--thinking", "xhigh"]));
-        for mode in ["ask", "auto", "plan"] {
-            assert!(harness_arguments(&HarnessContext { mode, ..context })
-                .unwrap_err()
-                .contains("Full access"));
-        }
-        assert!(harness_arguments(&HarnessContext {
-            reasoning_effort: Some("max"),
-            ..context
-        })
-        .is_err());
-    }
-
-    #[test]
-    fn muse_console_resumes_with_the_task_mode_model_and_effort() {
-        let context = HarnessContext {
-            session_id: "task",
-            provider: "muse",
-            resume_id: Some("01a16681-4036-7383-ab96-9dd8865524d8"),
-            model: Some("muse-spark-1.3"),
-            reasoning_effort: Some("low"),
-            mode: "plan",
-        };
-        let args = harness_arguments(&context).unwrap();
-        assert_eq!(
-            &args[..2],
-            &["resume", "01a16681-4036-7383-ab96-9dd8865524d8"]
-        );
-        for pair in [
-            ["--approval-mode", "untrusted"],
-            ["--model", "muse-spark-1.3"],
-            ["--reasoning-effort", "low"],
-        ] {
-            assert!(args.windows(2).any(|args| args == pair), "{args:?}");
-        }
-        assert!(
-            args.contains(&"--disable-write".to_owned())
-                && args.contains(&"--disable-shell".to_owned())
-        );
-        let full = harness_arguments(&HarnessContext {
-            mode: "full",
-            resume_id: None,
-            ..context
-        })
-        .unwrap();
-        assert!(
-            full.contains(&"--disable-approval".to_owned())
-                && full.contains(&"--disable-sandbox".to_owned())
-        );
-    }
-
-    #[test]
-    fn copilot_console_uses_the_direct_cli_only_when_task_controls_are_not_needed() {
-        let context = HarnessContext {
-            session_id: "task",
-            provider: "github-copilot",
-            resume_id: None,
-            model: Some("default"),
-            reasoning_effort: None,
-            mode: "ask",
-        };
-        assert_eq!(harness_arguments(&context).unwrap(), ["--no-auto-update"]);
-        let selected_model = harness_arguments(&HarnessContext {
-            model: Some("claude-sonnet-4.5"),
-            ..context
-        })
-        .unwrap();
-        assert_eq!(
-            selected_model,
-            ["--no-auto-update", "--model=claude-sonnet-4.5"]
-        );
-        for mode in ["auto", "plan", "full"] {
-            assert!(harness_arguments(&HarnessContext { mode, ..context })
-                .unwrap_err()
-                .contains("cannot enforce"));
-        }
-        assert!(harness_arguments(&HarnessContext {
-            resume_id: Some("copilot-session"),
-            ..context
-        })
-        .unwrap_err()
-        .contains("cannot resume"));
-    }
-
-    #[test]
-    fn harness_console_explicitly_preserves_restricted_permissions() {
-        let context = HarnessContext {
-            session_id: "task",
-            provider: "codex",
-            resume_id: None,
-            model: None,
-            reasoning_effort: Some("high"),
-            mode: "plan",
-        };
-        let args = harness_arguments(&context).unwrap();
-        assert!(args
-            .windows(2)
-            .any(|args| args == ["--sandbox", "read-only"]));
-        assert!(args
-            .windows(2)
-            .any(|args| args == ["--ask-for-approval", "never"]));
-        assert!(!args.iter().any(|arg| arg.contains("danger")));
-        let context = HarnessContext {
-            provider: "claude",
-            mode: "ask",
-            reasoning_effort: None,
-            ..context
-        };
-        let args = harness_arguments(&context).unwrap();
-        assert!(args
-            .windows(2)
-            .any(|args| args == ["--permission-mode", "default"]));
-        assert!(!args.iter().any(|arg| arg.contains("danger")));
-    }
-
-    #[test]
-    fn new_harness_consoles_preserve_modes_and_reject_acp_only_binary() {
-        let context = HarnessContext {
-            session_id: "task",
-            provider: "opencode",
-            resume_id: None,
-            model: Some("provider/model"),
-            reasoning_effort: None,
-            mode: "plan",
-        };
-        let args = harness_arguments(&context).unwrap();
-        assert!(args.windows(2).any(|args| args == ["--agent", "plan"]));
-        assert!(!args.iter().any(|arg| arg == "--auto"));
-        let args = harness_arguments(&HarnessContext {
-            provider: "glm",
-            mode: "ask",
-            ..context
-        })
-        .unwrap();
-        assert!(args
-            .windows(2)
-            .any(|args| args == ["--permission-mode", "default"]));
-        assert!(harness_arguments(&HarnessContext {
-            provider: "antigravity",
-            ..context
-        })
-        .unwrap_err()
-        .contains("ACP server"));
-        // Grok Build's TUI resumes by ID and takes its native permission modes.
-        let args = harness_arguments(&HarnessContext {
-            provider: "grok",
-            resume_id: Some("01a0c6e4-07e8-7751-a18f-902b23e7446c"),
-            model: Some("grok-4.7"),
-            reasoning_effort: Some("low"),
-            mode: "plan",
-            ..context
-        })
-        .unwrap();
-        assert_eq!(
-            args,
-            [
-                "--resume",
-                "01a0c6e4-07e8-7751-a18f-902b23e7446c",
-                "--no-auto-update",
-                "--permission-mode",
-                "plan",
-                "--model",
-                "grok-4.7",
-                "--reasoning-effort",
-                "low"
-            ]
-        );
-        let full = harness_arguments(&HarnessContext {
-            provider: "grok",
-            mode: "full",
-            ..context
-        })
-        .unwrap();
-        assert!(full
-            .windows(2)
-            .any(|args| args == ["--permission-mode", "bypassPermissions"]));
-        // MiMo is Claude Code underneath: Claude flags, MiMo default model.
-        let mimo = harness_arguments(&HarnessContext {
-            provider: "mimo",
-            model: None,
-            mode: "auto",
-            ..context
-        })
-        .unwrap();
-        assert_eq!(
-            mimo,
-            [
-                "--permission-mode",
-                "acceptEdits",
-                "--model",
-                "mimo-v2.6-pro"
-            ]
-        );
-        // Approve for me is Claude Code's auto mode, as in task runs.
-        for provider in ["claude", "glm", "mimo"] {
-            let review = harness_arguments(&HarnessContext {
-                provider,
-                mode: "review",
-                ..context
-            })
-            .unwrap();
-            assert!(
-                review
-                    .windows(2)
-                    .any(|args| args == ["--permission-mode", "auto"]),
-                "{provider}"
-            );
-        }
-    }
-
     struct TestShell {
         terms: Terminals,
         id: String,
@@ -1280,7 +709,6 @@ mod tests {
                 shell_pid: Some(pid),
                 shell_name: "sh".into(),
                 closed,
-                harness_session: None,
                 run_script: false,
             },
         )])));
@@ -1322,23 +750,6 @@ mod tests {
             let result = activity(&shell.terms, &shell.id).unwrap();
             assert!(!result.running && !result.uncertain);
         }
-    }
-
-    #[test]
-    fn terminal_activity_treats_an_open_harness_console_as_busy() {
-        let shell = shell("printf ready; read line");
-        shell
-            .terms
-            .lock()
-            .unwrap()
-            .get_mut(&shell.id)
-            .unwrap()
-            .harness_session = Some("task".into());
-        let result = activity(&shell.terms, &shell.id).unwrap();
-        assert!(result.running);
-        assert!(!result.uncertain);
-        close(&shell.terms, &shell.id).unwrap();
-        shell.exited.recv_timeout(Duration::from_secs(3)).unwrap();
     }
 
     #[test]
@@ -1391,41 +802,6 @@ mod tests {
             shell.exited.recv_timeout(Duration::from_secs(2)).is_ok(),
             "Shell ignoring SIGHUP survived terminal close"
         );
-    }
-
-    #[test]
-    fn task_deletion_requires_harness_to_close_but_preserves_ordinary_shells() {
-        let shell = shell("printf ready; exec sleep 30");
-        let (mut state, project) = crate::concurrent_task_tests::test_state();
-        let sid = state
-            .store
-            .lock()
-            .unwrap()
-            .create_session(&project, "codex", "default", "ask")
-            .unwrap()
-            .id;
-        Arc::get_mut(&mut state).unwrap().terminals = shell.terms.clone();
-        shell
-            .terms
-            .lock()
-            .unwrap()
-            .get_mut(&shell.id)
-            .unwrap()
-            .harness_session = Some(sid.clone());
-        assert!(crate::task_deletion::delete_state(&state, &sid)
-            .unwrap_err()
-            .contains("harness"));
-        shell
-            .terms
-            .lock()
-            .unwrap()
-            .get_mut(&shell.id)
-            .unwrap()
-            .harness_session = None;
-        assert!(crate::task_deletion::delete_state(&state, &sid).is_ok());
-        assert!(shell.terms.lock().unwrap().contains_key(&shell.id));
-        close(&shell.terms, &shell.id).unwrap();
-        shell.exited.recv_timeout(Duration::from_secs(3)).unwrap();
     }
 
     #[test]
@@ -1534,27 +910,6 @@ mod platform_tests {
             serde_json::to_value(activity).unwrap()["processNames"][0],
             "node.exe"
         );
-    }
-
-    #[test]
-    fn terminals_have_no_global_cap_but_reject_duplicate_harness_sessions() {
-        let sessions = (0..12)
-            .map(|index| format!("task-{index}"))
-            .collect::<Vec<_>>();
-        let consoles = sessions
-            .iter()
-            .map(|session| (Some(session.as_str()), false))
-            .collect::<Vec<_>>();
-        assert!(super::check_start(consoles.iter().copied(), Some("next-task")).is_ok());
-        assert!(super::check_start(consoles.iter().copied(), None).is_ok());
-        assert!(super::check_start(consoles.iter().copied(), Some("task-0")).is_err());
-        let full = consoles
-            .iter()
-            .copied()
-            .chain(std::iter::repeat_n((None, false), 32));
-        assert!(super::check_start(full.clone(), Some("next-task")).is_ok());
-        assert!(super::check_start(full, None).is_ok());
-        assert!(super::check_start([(Some("task-0"), true)].into_iter(), Some("task-0")).is_ok());
     }
 
     #[test]

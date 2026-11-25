@@ -17,11 +17,21 @@ pub(crate) struct Build {
 }
 
 fn setting(name: &str, built: Option<&'static str>) -> Option<String> {
-    std::env::var(name).ok().or(built.map(str::to_owned)).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+    std::env::var(name)
+        .ok()
+        .or(built.map(str::to_owned))
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
 }
 
 pub(crate) fn build() -> Option<Build> {
-    parse_build(setting("PANTHEON_RELAY_URL", option_env!("PANTHEON_RELAY_URL")), setting("PANTHEON_GITHUB_CLIENT_ID", option_env!("PANTHEON_GITHUB_CLIENT_ID")))
+    parse_build(
+        setting("PANTHEON_RELAY_URL", option_env!("PANTHEON_RELAY_URL")),
+        setting(
+            "PANTHEON_GITHUB_CLIENT_ID",
+            option_env!("PANTHEON_GITHUB_CLIENT_ID"),
+        ),
+    )
 }
 
 pub(crate) fn parse_build(relay: Option<String>, client_id: Option<String>) -> Option<Build> {
@@ -29,7 +39,12 @@ pub(crate) fn parse_build(relay: Option<String>, client_id: Option<String>) -> O
     let client_id = client_id?;
     // Only HTTPS relays: the token rides every request.
     let host = relay.strip_prefix("https://")?;
-    if host.is_empty() || host.contains(char::is_whitespace) || !client_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+    if host.is_empty()
+        || host.contains(char::is_whitespace)
+        || !client_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
         return None;
     }
     Some(Build { relay, client_id })
@@ -86,14 +101,19 @@ pub(crate) struct PairedHost {
 impl Settings {
     /// Trusted only while the pinned key is still the device's current key.
     pub(crate) fn is_trusted(&self, device_id: &str, current_key: &str) -> bool {
-        self.trusted.get(device_id).is_some_and(|pinned| !pinned.is_empty() && pinned == current_key)
+        self.trusted
+            .get(device_id)
+            .is_some_and(|pinned| !pinned.is_empty() && pinned == current_key)
     }
 }
 
 /// Reads the settings, creating the device id once.
 pub(crate) fn load(dir: &Path) -> Settings {
     let path = dir.join(FILE);
-    let mut settings: Settings = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    let mut settings: Settings = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
     if uuid::Uuid::parse_str(&settings.device_id).is_err() {
         settings.device_id = uuid::Uuid::new_v4().to_string();
         if let Err(error) = save(dir, &settings) {
@@ -106,11 +126,16 @@ pub(crate) fn load(dir: &Path) -> Settings {
 pub(crate) fn save(dir: &Path, settings: &Settings) -> crate::Result<()> {
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     let temp = dir.join(format!("{FILE}.tmp"));
-    std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, dir.join(FILE))).map_err(|e| format!("Could not save remote access settings: {e}"))
+    std::fs::write(&temp, text)
+        .and_then(|_| std::fs::rename(&temp, dir.join(FILE)))
+        .map_err(|e| format!("Could not save remote access settings: {e}"))
 }
 
 /// The stored key, or a new one written once when none (or an unreadable value) is stored.
-pub(crate) fn load_or_create_key(stored: Option<String>, write: impl FnOnce(&str) -> crate::Result<()>) -> crate::Result<x25519_dalek::StaticSecret> {
+pub(crate) fn load_or_create_key(
+    stored: Option<String>,
+    write: impl FnOnce(&str) -> crate::Result<()>,
+) -> crate::Result<x25519_dalek::StaticSecret> {
     if let Some(secret) = stored.and_then(|text| super::crypto::decode_secret(&text)) {
         return Ok(secret);
     }
@@ -155,8 +180,18 @@ pub(crate) fn device_name() -> String {
     #[cfg(not(unix))]
     let name = std::env::var("COMPUTERNAME").ok();
     let name = name.unwrap_or_default();
-    let name = name.trim().trim_end_matches(".local").chars().filter(|c| !c.is_control()).take(64).collect::<String>();
-    if name.is_empty() { "This computer".into() } else { name }
+    let name = name
+        .trim()
+        .trim_end_matches(".local")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect::<String>();
+    if name.is_empty() {
+        "This computer".into()
+    } else {
+        name
+    }
 }
 
 #[cfg(test)]
@@ -171,19 +206,42 @@ mod tests {
     #[test]
     fn tokens_parse_and_expire() {
         let good = token(r#"{"acct":"gh:1","dev":"d1","iat":100,"exp":200}"#);
-        assert_eq!(parse_token(&good), Some(Claims { acct: "gh:1".into(), dev: "d1".into(), iat: 100, exp: 200 }));
+        assert_eq!(
+            parse_token(&good),
+            Some(Claims {
+                acct: "gh:1".into(),
+                dev: "d1".into(),
+                iat: 100,
+                exp: 200
+            })
+        );
         assert!(token_valid(&good, 150));
         assert!(!token_valid(&good, 200));
         assert_eq!(parse_token("nodot"), None);
-        assert_eq!(parse_token(&format!("{}.", token(r#"{"acct":"a","dev":"d","iat":1,"exp":2}"#).split('.').next().unwrap())), None);
-        assert_eq!(parse_token(&token(r#"{"acct":"","dev":"d","iat":1,"exp":2}"#)), None);
+        assert_eq!(
+            parse_token(&format!(
+                "{}.",
+                token(r#"{"acct":"a","dev":"d","iat":1,"exp":2}"#)
+                    .split('.')
+                    .next()
+                    .unwrap()
+            )),
+            None
+        );
+        assert_eq!(
+            parse_token(&token(r#"{"acct":"","dev":"d","iat":1,"exp":2}"#)),
+            None
+        );
         assert_eq!(parse_token(&token("not json")), None);
     }
 
     #[test]
     fn tokens_refresh_in_their_last_week() {
         let day = 24 * 3600;
-        let t = token(&format!(r#"{{"acct":"gh:1","dev":"d1","iat":0,"exp":{}}}"#, 30 * day));
+        let t = token(&format!(
+            r#"{{"acct":"gh:1","dev":"d1","iat":0,"exp":{}}}"#,
+            30 * day
+        ));
         assert!(!needs_refresh(&t, 0));
         assert!(!needs_refresh(&t, 23 * day));
         assert!(needs_refresh(&t, 23 * day + 1));
@@ -198,7 +256,8 @@ mod tests {
             Ok(())
         };
         let existing = super::super::crypto::generate();
-        let kept = load_or_create_key(Some(super::super::crypto::encode_secret(&existing)), write).unwrap();
+        let kept = load_or_create_key(Some(super::super::crypto::encode_secret(&existing)), write)
+            .unwrap();
         assert_eq!(kept.to_bytes(), existing.to_bytes());
         assert!(!written.get());
         load_or_create_key(None, write).unwrap();
@@ -208,11 +267,23 @@ mod tests {
     #[test]
     fn build_config_needs_https_and_a_client_id() {
         let some = |s: &str| Some(s.to_owned());
-        assert_eq!(parse_build(some("https://relay.example/"), some("Iv1.abc")), Some(Build { relay: "https://relay.example".into(), client_id: "Iv1.abc".into() }));
-        assert_eq!(parse_build(some("http://relay.example"), some("Iv1.abc")), None);
+        assert_eq!(
+            parse_build(some("https://relay.example/"), some("Iv1.abc")),
+            Some(Build {
+                relay: "https://relay.example".into(),
+                client_id: "Iv1.abc".into()
+            })
+        );
+        assert_eq!(
+            parse_build(some("http://relay.example"), some("Iv1.abc")),
+            None
+        );
         assert_eq!(parse_build(some("https://relay.example"), None), None);
         assert_eq!(parse_build(None, some("x")), None);
-        assert_eq!(parse_build(some("https://relay.example"), some("bad id")), None);
+        assert_eq!(
+            parse_build(some("https://relay.example"), some("bad id")),
+            None
+        );
     }
 
     #[test]
@@ -233,15 +304,27 @@ mod tests {
 
     #[test]
     fn direct_settings_round_trip() {
-        let dir = std::env::temp_dir().join(format!("pantheon-remote-direct-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-remote-direct-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut settings = load(&dir);
         settings.direct.port = 7447;
-        settings.direct.hosts.push(PairedHost { address: "192.168.1.5:7447".into(), device_id: "dev-1".into(), name: "Studio".into() });
+        settings.direct.hosts.push(PairedHost {
+            address: "192.168.1.5:7447".into(),
+            device_id: "dev-1".into(),
+            name: "Studio".into(),
+        });
         save(&dir, &settings).unwrap();
         let loaded = load(&dir);
         assert_eq!(loaded.direct.port, 7447);
-        assert_eq!(loaded.direct.hosts, vec![PairedHost { address: "192.168.1.5:7447".into(), device_id: "dev-1".into(), name: "Studio".into() }]);
+        assert_eq!(
+            loaded.direct.hosts,
+            vec![PairedHost {
+                address: "192.168.1.5:7447".into(),
+                device_id: "dev-1".into(),
+                name: "Studio".into()
+            }]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

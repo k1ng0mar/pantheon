@@ -32,7 +32,7 @@ export type SkillsLibraryHost = {
   projects?(): { id: string; name: string }[];
 };
 
-const HARNESS_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', glm: 'GLM', mimo: 'MiMo', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'OMP', pi: 'Pi', muse: 'Muse Code' };
+const HARNESS_NAMES: Record<string, string> = { pantheon: 'Pantheon' };
 const harnessName = (id: string) => HARNESS_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
 const FINDING_LABELS: Record<SkillFinding['rule'], string> = { secret: 'Secret-shaped value', approvals: 'Turns off approvals or the sandbox', 'pipe-to-shell': 'Download piped into a shell' };
 const STATUS_LABELS: Record<SkillCell['status'], string> = { active: 'Active', outdated: 'Older version', drifted: 'Edited on disk', missing: 'Missing on disk', prompt: 'Via prompt', off: '—' };
@@ -69,9 +69,9 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     if (!disposed) await refresh();
   }
 
-  /** Harnesses with toggles: the file-based ones, plus any already used through the prompt. */
+  /** Pantheon is the only agent, so there is one column of toggles. */
   const harnesses = () => {
-    const ids = new Set(['claude', 'codex', ...matrix.harnesses.map(row => row.harness)]);
+    const ids = new Set(['pantheon', ...matrix.harnesses.map(row => row.harness)]);
     return [...ids].map(id => matrix.harnesses.find(row => row.harness === id) ?? { harness: id, installed: false, prompt: false, cells: [], unmanaged: [] });
   };
   const scopes = (): SkillScope[] => projectId ? ['user', 'project'] : ['user'];

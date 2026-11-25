@@ -24,7 +24,7 @@ impl Drop for Disk {
 fn task(store: &Store) -> Session {
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     store
-        .create_session(&project.id, "codex", "gpt-test", "ask")
+        .create_session(&project.id, "pantheon", "gpt-test", "ask")
         .unwrap()
 }
 

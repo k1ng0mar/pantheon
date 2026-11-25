@@ -980,6 +980,11 @@ pub mod lsp {
         /// handshake's `initialize` response. Cleared by `request` after
         /// delivery. A `None` here means "no response yet".
         pub pending_response: Option<Result<Value, String>>,
+        /// Text version the server was told about, per URI. Navigation
+        /// queries need the document open, but re-opening it on every query
+        /// resets the server's state (and emits a fresh diagnostics batch),
+        /// so this tracks what the server already has.
+        pub open_docs: HashMap<String, i32>,
     }
 
     /// A running language-server connection plus its reader thread.
@@ -1252,6 +1257,18 @@ pub mod lsp {
             text: &str,
         ) -> Result<(), PantheonError> {
             let uri = path_uri(path);
+            // The server already has this exact text: re-opening resets its
+            // analysis and emits another empty diagnostics batch, which is
+            // pure latency for a navigation-only caller.
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .open_docs
+                .contains_key(&uri)
+            {
+                return Ok(());
+            }
             let msg = serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "textDocument/didOpen",
@@ -1265,6 +1282,11 @@ pub mod lsp {
                 }
             });
             self.send(&msg)?;
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .open_docs
+                .insert(uri, 1);
             Ok(())
         }
 
@@ -1323,6 +1345,56 @@ pub mod lsp {
             v
         }
 
+        /// A read-only navigation request (`textDocument/definition`,
+        /// `references`, `hover`, `documentSymbol`), issued against an
+        /// already-open document.
+        ///
+        /// Navigation is only meaningful on text the server has seen, so the
+        /// caller opens the document first; this method deliberately does not
+        /// open it, because re-opening on every query resets the server's
+        /// state for self-modifying edits.
+        ///
+        /// `position` is a 0-based UTF-16 line/character pair, the LSP
+        /// convention. The raw server response is returned: the shape differs
+        /// per method (Location, Location[], Hover, SymbolInformation[]), and
+        /// reshaping it here would drop fields a given server populates.
+        pub fn navigate(
+            &self,
+            method: &str,
+            uri: &str,
+            position: Option<(u32, u32)>,
+            extra: Value,
+            timeout: Duration,
+        ) -> Result<Value, PantheonError> {
+            let mut params = serde_json::json!({
+                "textDocument": { "uri": uri },
+            });
+            if let Some((line, character)) = position {
+                params["position"] = serde_json::json!({
+                    "line": line,
+                    "character": character,
+                });
+            }
+            if let Some(obj) = extra.as_object() {
+                for (k, v) in obj {
+                    params[k] = v.clone();
+                }
+            }
+            self.request(method, params, timeout)
+        }
+
+        /// Open a document if it is not already open. Navigation queries need
+        /// the server to know the file; `open_document` is idempotent on its
+        /// own side (it tracks open URIs), so this is a thin convenience.
+        pub fn ensure_open(
+            &self,
+            path: &Path,
+            language_id: &str,
+            text: &str,
+        ) -> Result<(), PantheonError> {
+            self.open_document(path, language_id, text)
+        }
+
         /// Shut the server down cleanly.
         pub fn shutdown(&self) {
             let _ = self.request("shutdown", Value::Null, Duration::from_secs(3));
@@ -1335,6 +1407,13 @@ pub mod lsp {
             }
             self.server_alive
                 .store(false, std::sync::atomic::Ordering::Release);
+            // The server is gone, so the text it knew is gone too: a later
+            // client must be told about the document again.
+            self.state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .open_docs
+                .clear();
             // `reader` is a Mutex<Option<JoinHandle>> so `shutdown` can take it
             // out through `&self` (it is reachable through an `Arc`).
             if let Some(h) = self.reader.lock().unwrap_or_else(|p| p.into_inner()).take() {
@@ -1607,6 +1686,209 @@ pub mod codegraph {
         pub edge: CodeEdge,
     }
 
+    /// Source languages the lexical codegraph extractor understands. Rust
+    /// has its own `syn`-based collector; these use a shared regex grammar.
+    /// The extension list is deliberately closed: an unknown extension is
+    /// skipped rather than parsed as if its syntax matched one of these.
+    pub fn language_for_extension(ext: &str) -> Option<&'static str> {
+        match ext {
+            "rs" => Some("rust"),
+            "py" | "pyi" => Some("python"),
+            "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
+            "ts" | "tsx" => Some("typescript"),
+            "go" => Some("go"),
+            "c" | "h" => Some("c"),
+            "cc" | "cpp" | "cxx" | "hpp" | "hh" => Some("cpp"),
+            "java" => Some("java"),
+            "rb" => Some("ruby"),
+            "php" => Some("php"),
+            "cs" => Some("csharp"),
+            "swift" => Some("swift"),
+            "kt" | "kts" => Some("kotlin"),
+            "scala" => Some("scala"),
+            "sh" | "bash" => Some("shell"),
+            "sql" => Some("sql"),
+            _ => None,
+        }
+    }
+
+    /// A lexical symbol/call extractor for non-Rust sources.
+    ///
+    /// This is an *index*, not a parser: it finds declaration-looking lines
+    /// and call-looking tokens with line numbers. It cannot resolve scopes or
+    /// types, and deliberately does not try. `lsp.definition` is the precise
+    /// answer; this is the fast, language-server-free overview that works in
+    /// a checkout with no toolchain installed.
+    struct LexicalCollector {
+        file: String,
+        lang: &'static str,
+        nodes: Vec<CodeNode>,
+        edges: Vec<CodeEdge>,
+        seq: usize,
+    }
+
+    impl LexicalCollector {
+        fn new(file: String, lang: &'static str) -> Self {
+            Self {
+                file,
+                lang,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                seq: 0,
+            }
+        }
+
+        fn module(&self) -> Vec<String> {
+            // Mirror Rust's `module_from_file` for paths under src/, so a
+            // `src/foo/bar.ts` symbol is qualified as `foo::bar::name` rather
+            // than colliding with every other file's `name`.
+            let mut parts: Vec<String> = self
+                .file
+                .split('/')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if let Some(pos) = parts.iter().position(|p| p == "src") {
+                parts.drain(..=pos);
+            }
+            if matches!(
+                parts.last().map(String::as_str),
+                Some("index") | Some("main") | Some("mod") | Some("lib")
+            ) {
+                parts.pop();
+            }
+            parts
+        }
+
+        fn qualified(&self, name: &str) -> String {
+            let mut parts = self.module();
+            parts.push(name.to_string());
+            parts.join("::")
+        }
+
+        /// Declaration patterns by language family. Each regex has one
+        /// capture group, the declared name. Anchored after optional
+        /// indentation and modifiers so an ordinary `if (cond)` is not
+        /// mistaken for a function.
+        fn decls(&self) -> Vec<(regex::Regex, &'static str)> {
+            let python = [
+                (r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
+                (r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+            ];
+            let c_like = [
+                (r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(", "function"),
+                (r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", "class"),
+                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(", "function"),
+                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=", "variable"),
+                (r"^\s*(?:pub\s+)?(?:struct|enum|interface|trait)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+            ];
+            let go = [
+                (r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
+                (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+            ];
+            let c_cpp = [
+                (r"^[A-Za-z_][A-Za-z0-9_:<>,*\s&]*\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{", "function"),
+                (r"^\s*(?:struct|class|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+            ];
+            let java_like = [
+                (r"^\s*(?:public|private|protected|static|final|abstract|async|open|override|internal)\s+(?:[\w<>\[\],\s]+\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
+                (r"^\s*(?:public|private|protected|internal|open|final|abstract|sealed)?\s*(?:class|struct|interface|enum|data class)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+            ];
+            let ruby = [
+                (r"^\s*def\s+([A-Za-z_][A-Za-z0-9_?!]*)\b", "function"),
+                (r"^\s*class\s+([A-Za-z_:][A-Za-z0-9_:]*)\b", "class"),
+            ];
+            let shell = [(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{", "function")];
+            let sql = [(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "function")];
+            let patterns: &[(&str, &'static str)] = match self.lang {
+                "python" => &python,
+                "javascript" | "typescript" => &c_like,
+                "go" => &go,
+                "c" | "cpp" => &c_cpp,
+                "java" | "csharp" | "kotlin" | "scala" | "swift" => &java_like,
+                "ruby" => &ruby,
+                "shell" => &shell,
+                "sql" => &sql,
+                _ => &[],
+            };
+            patterns
+                .iter()
+                .filter_map(|(pat, kind)| regex::Regex::new(pat).ok().map(|r| (r, *kind)))
+                .collect()
+        }
+
+        fn collect(&mut self, src: &str) {
+            let decls = self.decls();
+            // Call sites are `name(` anywhere outside a declaration line.
+            // This is intentionally loose, mirroring `grep`: false positives
+            // are cheaper in an overview than missed candidates, and LSP is
+            // the precise path when it matters.
+            let call_re = regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").expect("static call regex");
+            // (name, line, kind, node id). IDs are assigned here so an edge
+            // can name its source node exactly as `add_node` does; `callers`
+            // resolves edges by that ID.
+            let mut declared: Vec<(String, usize, &'static str, String)> = Vec::new();
+            for (i, raw) in src.lines().enumerate() {
+                let line = raw.trim_end();
+                let trimmed = line.trim_start();
+                if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+                    continue;
+                }
+                let mut matched = false;
+                for (re, kind) in &decls {
+                    if let Some(caps) = re.captures(line) {
+                        if let Some(name) = caps.get(1) {
+                            let name = name.as_str().to_string();
+                            let qualified = self.qualified(&name);
+                            self.seq += 1;
+                            let id = format!("{}:{}:{}:{}", self.file, i + 1, self.seq, qualified);
+                            self.nodes.push(CodeNode {
+                                id: id.clone(),
+                                name: name.clone(),
+                                qualified,
+                                kind: kind.to_string(),
+                                file: self.file.clone(),
+                                line: i + 1,
+                            });
+                            declared.push((name, i + 1, kind, id));
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+                if matched {
+                    continue;
+                }
+                let Some((from_name, _, _, from_id)) = declared.last() else {
+                    continue;
+                };
+                for caps in call_re.captures_iter(line) {
+                    let Some(name) = caps.get(1) else { continue };
+                    let callee = name.as_str();
+                    if callee == from_name || is_keyword(callee) {
+                        continue;
+                    }
+                    self.edges.push(CodeEdge {
+                        from: from_id.clone(),
+                        from_name: from_name.clone(),
+                        to_name: callee.to_string(),
+                        file: self.file.clone(),
+                        line: i + 1,
+                    });
+                }
+            }
+        }
+    }
+
+    fn is_keyword(name: &str) -> bool {
+        matches!(
+            name,
+            "if" | "for" | "while" | "switch" | "match" | "return" | "catch"
+                | "except" | "with" | "do" | "elif" | "else" | "foreach" | "when"
+                | "println" | "print" | "await" | "new" | "super" | "self" | "this"
+        )
+    }
+
     #[derive(Debug, Clone, Serialize)]
     pub struct Overview {
         pub root: String,
@@ -1619,9 +1901,10 @@ pub mod codegraph {
     }
 
     impl CodeGraph {
-        /// Parse every Rust file under `root` (canonicalized). Unreadable or
-        /// unparseable files are counted, not fatal: a graph over a partially
-        /// generated tree is still useful.
+        /// Parse every supported source file under `root` (canonicalized).
+        /// Rust uses the full `syn` visitor; other languages use the lexical
+        /// extractor above. Unreadable or unparseable files are counted, not
+        /// fatal: a graph over a partially generated tree is still useful.
         pub fn build(root: impl AsRef<Path>) -> Result<Self, PantheonError> {
             let root = std::fs::canonicalize(root.as_ref()).map_err(|e| {
                 err(
@@ -1655,17 +1938,29 @@ pub mod codegraph {
                         continue;
                     }
                 };
-                let ast = match syn::parse_file(&src) {
-                    Ok(a) => a,
-                    Err(_) => {
-                        graph.parse_errors += 1;
-                        continue;
-                    }
+                let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let lang = match language_for_extension(ext) {
+                    Some(lang) => lang,
+                    None => continue,
                 };
-                let mut c = Collector::new(rel);
-                c.visit_file(&ast);
-                graph.nodes.extend(c.nodes);
-                graph.edges.extend(c.edges);
+                if lang == "rust" {
+                    let ast = match syn::parse_file(&src) {
+                        Ok(a) => a,
+                        Err(_) => {
+                            graph.parse_errors += 1;
+                            continue;
+                        }
+                    };
+                    let mut c = Collector::new(rel);
+                    c.visit_file(&ast);
+                    graph.nodes.extend(c.nodes);
+                    graph.edges.extend(c.edges);
+                } else {
+                    let mut c = LexicalCollector::new(rel, lang);
+                    c.collect(&src);
+                    graph.nodes.extend(c.nodes);
+                    graph.edges.extend(c.edges);
+                }
             }
             // Stable, duplicate-free output. Two identical call edges in one
             // function (e.g. two `log()` calls) collapse to one lexical edge;
@@ -1895,7 +2190,11 @@ pub mod codegraph {
                 }
                 walk(&path, out, depth + 1)?;
             } else if file_type.is_file()
-                && path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(language_for_extension)
+                    .is_some()
                 && std::fs::metadata(&path)
                     .map(|m| m.len() <= 2 * 1024 * 1024)
                     .unwrap_or(false)
@@ -2174,6 +2473,76 @@ impl Thing {
                 pa.parent().and_then(|p| p.file_name()),
                 Some(std::ffi::OsStr::new("codegraph"))
             );
+        }
+
+        /// Non-Rust languages go through the lexical extractor: symbols and
+        /// calls, with line numbers, in one graph alongside Rust.
+        #[test]
+        fn lexical_extractor_indexes_python_and_typescript() {
+            let tmp = tempfile::tempdir().unwrap();
+            write(
+                tmp.path(),
+                "src/app.py",
+                "class Client:\n    pass\n\n\ndef fetch(url):\n    parse(url)\n    return Client()\n",
+            );
+            write(
+                tmp.path(),
+                "src/web/api.ts",
+                "export function handle(req) {\n  respond(req);\n}\n\nexport class Router {}\n",
+            );
+            let g = CodeGraph::build(tmp.path()).unwrap();
+            assert!(g
+                .nodes
+                .iter()
+                .any(|n| n.name == "fetch" && n.kind == "function"));
+            assert!(g
+                .nodes
+                .iter()
+                .any(|n| n.name == "Client" && n.kind == "class"));
+            assert!(g
+                .nodes
+                .iter()
+                .any(|n| n.name == "handle" && n.kind == "function"));
+            assert!(g
+                .nodes
+                .iter()
+                .any(|n| n.name == "Router" && n.kind == "class"));
+
+            let callers = g.callers("parse", 10);
+            assert!(
+                callers.iter().any(|h| h.node.name == "fetch"),
+                "python call edge missing: {callers:?}"
+            );
+            let callers = g.callers("respond", 10);
+            assert!(
+                callers.iter().any(|h| h.node.name == "handle"),
+                "typescript call edge missing: {callers:?}"
+            );
+        }
+
+        /// Declaration line numbers are real, so a search result is
+        /// navigable.
+        #[test]
+        fn lexical_nodes_carry_source_lines() {
+            let tmp = tempfile::tempdir().unwrap();
+            write(tmp.path(), "src/go_mod.go", "package x\n\nfunc Run() {\n\tgo2()\n}\n");
+            let g = CodeGraph::build(tmp.path()).unwrap();
+            let run = g
+                .nodes
+                .iter()
+                .find(|n| n.name == "Run")
+                .expect("Run indexed");
+            assert_eq!(run.line, 3, "declaration line: {run:?}");
+        }
+
+        /// An unrecognized extension is skipped, never guessed at.
+        #[test]
+        fn unknown_extensions_are_not_indexed() {
+            let tmp = tempfile::tempdir().unwrap();
+            write(tmp.path(), "src/notes.txt", "def not_python(x):\n    pass\n");
+            let g = CodeGraph::build(tmp.path()).unwrap();
+            assert_eq!(g.files, 0);
+            assert!(g.nodes.is_empty());
         }
     }
 }

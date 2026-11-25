@@ -137,8 +137,13 @@ fn ranked(
         }
         // Revalidate matches even on a cache hit: files can be deleted or ancestors
         // replaced with symlinks between keystrokes. Never offer an outside path.
-        let live = super::resolve_scoped_path(root, &file.path)
-            .is_ok_and(|path| if directories { path.is_dir() } else { path.is_file() });
+        let live = super::resolve_scoped_path(root, &file.path).is_ok_and(|path| {
+            if directories {
+                path.is_dir()
+            } else {
+                path.is_file()
+            }
+        });
         if !live {
             continue;
         }
@@ -325,8 +330,14 @@ mod tests {
         // A path query finds the file inside and, after it, the folder itself.
         let inside = search_files(&f.0, "src/components/".into(), None).unwrap();
         assert_eq!(
-            inside.iter().map(|e| (e.path.as_str(), e.is_dir)).collect::<Vec<_>>(),
-            [("src/components/Welcome Card.tsx", false), ("src/components", true)]
+            inside
+                .iter()
+                .map(|e| (e.path.as_str(), e.is_dir))
+                .collect::<Vec<_>>(),
+            [
+                ("src/components/Welcome Card.tsx", false),
+                ("src/components", true)
+            ]
         );
         assert_eq!(
             search_files(&f.0, "author's notes".into(), None).unwrap()[0].path,
@@ -342,7 +353,10 @@ mod tests {
         f.write("src/components.test.ts");
         f.write("node_modules/components/index.js");
         let entries = search_files(&f.0, "components".into(), None).unwrap();
-        let listed: Vec<_> = entries.iter().map(|e| (e.path.as_str(), e.is_dir)).collect();
+        let listed: Vec<_> = entries
+            .iter()
+            .map(|e| (e.path.as_str(), e.is_dir))
+            .collect();
         // Exact folder name first, then prefix and path matches; build output never appears.
         assert_eq!(
             listed,
@@ -355,11 +369,20 @@ mod tests {
         );
         assert_eq!(entries[0].name, "components");
         // A trailing slash still finds the folder; an empty query lists files only.
-        assert!(search_files(&f.0, "components/".into(), None).unwrap().iter().any(|e| e.is_dir));
-        assert!(search_files(&f.0, "".into(), None).unwrap().iter().all(|e| !e.is_dir));
+        assert!(search_files(&f.0, "components/".into(), None)
+            .unwrap()
+            .iter()
+            .any(|e| e.is_dir));
+        assert!(search_files(&f.0, "".into(), None)
+            .unwrap()
+            .iter()
+            .all(|e| !e.is_dir));
         // A removed folder disappears from a cached index before the next rescan.
         fs::remove_dir_all(f.0.join("src/components")).unwrap();
-        assert!(search_files(&f.0, "components".into(), None).unwrap().iter().all(|e| !e.is_dir));
+        assert!(search_files(&f.0, "components".into(), None)
+            .unwrap()
+            .iter()
+            .all(|e| !e.is_dir));
     }
 
     #[cfg(unix)]
@@ -542,7 +565,9 @@ mod tests {
             .unwrap();
         fs::write(f.0.join(".gitignore"), format!("*\n!{wanted}\n")).unwrap();
         assert!(
-            scan_with_budget(&f.0, 100, 2, Instant::now() + Duration::from_secs(1)).files.is_empty(),
+            scan_with_budget(&f.0, 100, 2, Instant::now() + Duration::from_secs(1))
+                .files
+                .is_empty(),
             "ignored entries must consume the raw directory entry budget too"
         );
     }
@@ -611,9 +636,11 @@ mod tests {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&f.0).unwrap();
         let source = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
-        let task = store.create_worktree_session_on(&source, &checkout.0, None).unwrap();
+        let task = store
+            .create_worktree_session_on(&source, &checkout.0, None)
+            .unwrap();
         let root = store.workspace_root(&project.id, Some(&task.id)).unwrap();
         assert_eq!(
             search_files(&root, "only".into(), None).unwrap().len(),

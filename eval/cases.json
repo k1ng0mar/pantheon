@@ -13,7 +13,8 @@
           "--id",
           "eval-run-1",
           "--say",
-          "hello from eval"
+          "hello from eval",
+          "--synthetic"
         ]
       ],
       "expect": {
@@ -73,7 +74,8 @@
           "--id",
           "eval-run-fail",
           "--fail",
-          "EVAL_CAP_DENIED"
+          "EVAL_CAP_DENIED",
+          "--synthetic"
         ]
       ],
       "expect": {
@@ -105,14 +107,16 @@
           "--id",
           "eval-run-twice",
           "--say",
-          "first pass"
+          "first pass",
+          "--synthetic"
         ],
         [
           "run",
           "--id",
           "eval-run-twice",
           "--say",
-          "second pass"
+          "second pass",
+          "--synthetic"
         ]
       ],
       "expect": {
@@ -306,7 +310,8 @@
           "--id",
           "eval-audit-run",
           "--say",
-          "audit me"
+          "audit me",
+          "--synthetic"
         ]
       ],
       "expect": {
@@ -376,12 +381,11 @@
     },
     {
       "id": "setup-writes-complete-config",
-      "title": "pantheon setup --yes writes a config.toml that doctor parses",
+      "title": "pantheon setup with explicit flags writes a config.toml that doctor parses",
       "origin": "phase10: onboarding",
       "commands": [
         [
           "setup",
-          "--yes",
           "--policy",
           "coder",
           "--provider",
@@ -424,7 +428,6 @@
       "commands": [
         [
           "setup",
-          "--yes",
           "--provider",
           "local",
           "--model",
@@ -435,7 +438,8 @@
           "--id",
           "eval-reset-run",
           "--say",
-          "state maker"
+          "state maker",
+          "--synthetic"
         ],
         [
           "reset",
@@ -469,7 +473,6 @@
       "commands": [
         [
           "setup",
-          "--yes",
           "--provider",
           "local",
           "--model",
@@ -623,7 +626,8 @@
           "--id",
           "harness-eval-single",
           "--say",
-          "edit one file and run tests"
+          "edit one file and run tests",
+          "--synthetic"
         ]
       ],
       "expect": {
@@ -650,7 +654,8 @@
           "--id",
           "harness-eval-reset",
           "--say",
-          "restore prior context and continue"
+          "restore prior context and continue",
+          "--synthetic"
         ]
       ],
       "expect": {
@@ -665,6 +670,125 @@
           "contains:started"
         ]
       ]
+    },
+    {
+      "id": "coding-tools-gated-and-confined",
+      "title": "grep/glob/edit_file work under coder and are refused under read-only",
+      "origin": "coding surface: native search, structured edit, capability gate",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-eval:tools_coding_surface"
+        ]
+      ],
+      "expect": {
+        "coding-tools-gated-and-confined": [
+          "ANY"
+        ]
+      }
+    },
+    {
+      "id": "project-instructions-discovered",
+      "title": "AGENTS.md in the workspace is discovered and injected with a provenance envelope",
+      "origin": "coding surface: project instruction files, trust boundary",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-runtime:project_instructions"
+        ]
+      ],
+      "expect": {
+        "project-instructions-discovered": [
+          "ANY"
+        ]
+      }
+    },
+    {
+      "id": "codegraph-multilanguage",
+      "title": "codegraph indexes Python and TypeScript alongside Rust",
+      "origin": "coding surface: language-agnostic symbol graph",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-exec:codegraph"
+        ]
+      ],
+      "expect": {
+        "codegraph-multilanguage": [
+          "ANY"
+        ]
+      }
+    },
+    {
+      "id": "lsp-navigation-formatters",
+      "title": "LSP definition/reference/hover/symbol responses render as navigable output",
+      "origin": "coding surface: go-to-definition, references, outline",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-tools:lsp_tools::tests"
+        ]
+      ],
+      "expect": {
+        "lsp-navigation-formatters": [
+          "ANY"
+        ]
+      }
+    },
+    {
+      "id": "run-headless-flag-surface",
+      "title": "pantheon run --say is a real turn; --print and --output-format parse; synthetic flags select the ledger writer",
+      "origin": "coding surface: headless UX",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-tui:terminal::tests"
+        ]
+      ],
+      "expect": {
+        "run-headless-flag-surface": [
+          "ANY"
+        ]
+      }
+    },
+    {
+      "id": "coding-doctor-checks",
+      "title": "Doctor registers git/instruction/language-server/index checks that degrade to not-applicable",
+      "origin": "coding surface: doctor preflight for a coding workspace",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-doctor:coding_checks_are_not_applicable_without_a_workspace"
+        ]
+      ],
+      "expect": {
+        "coding-doctor-checks": [
+          "ANY"
+        ]
+      }
+    },
+    {
+      "id": "worktree-isolated-swarm",
+      "title": "Swarm worktree flags parse and safe branch names are derived from role text",
+      "origin": "coding surface: isolated swarms",
+      "skip": "cargo",
+      "commands": [
+        [
+          "_cargo_test",
+          "pantheon-tui:remote_group::swarm::tests"
+        ]
+      ],
+      "expect": {
+        "worktree-isolated-swarm": [
+          "ANY"
+        ]
+      }
     }
   ]
 }

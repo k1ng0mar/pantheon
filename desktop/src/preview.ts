@@ -12,9 +12,7 @@ import { invokeBots } from './preview-bots';
 import { invokeRemote } from './preview-remote';
 import { createPreviewDesign } from './preview-design';
 import { createPreviewSkills } from './preview-skills';
-import { previewCapabilities } from './preview-capabilities';
 import { recipesCommand } from './preview-recipes';
-import { openCodePreviewKey, openCodePreviewModels, previewOpenCodeChoices, previewOpenCodeSelection } from './preview-opencode';
 const turnChanges = createPreviewTurnChanges();
 const now = Date.now();
 const sampleReadme = '<div align="center">\n\n<img src="docs/banner.png" alt="Orbit banner" width="100%" onerror="alert(1)"/>\n\n[![Build](https://img.shields.io/badge/build-passing-green)](https://example.com/ci)\n\n<script>alert(1)</script>\n\n<a href="https://example.com/x" download class="toast">Get</a>\n\n</div>\n\n# Orbit\n\nA tiny search index for the browser preview.\n\n## Usage\n\n- Build the index with `createSearchIndex`.\n- Call `search(query)`.\n\n> Results are case-insensitive.\n';
@@ -24,12 +22,12 @@ const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters resu
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pantheon', path: '/Users/you/Projects/pantheon' }];
 let sessions: Session[] = [
-  { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'pantheon', model: 'default', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
+  { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'pantheon', model: 'openai/gpt-6.1-sol', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
   { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'pantheon', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'pantheon', model: '', mode: 'ask', status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'pantheon', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
 ];
-if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'pantheon', model: 'default', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'pantheon', model: 'openai/gpt-6.1-sol', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pantheon.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -71,7 +69,6 @@ loadThreadOrder();
 // One sample task already tracks a GitHub issue so chips have something to show.
 sessions[2].issue = { kind: 'issue', number: 131, url: 'https://github.com/orbit-labs/orbit/issues/131', title: 'Keyboard shortcut cheat sheet', state: 'open', checkedAt: now };
 let id = 10;
-let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
 const traceRoot = '/Users/you/Projects/orbit';
 const traceIndex = `${traceRoot}/src/lib/search-index.ts`;
 const traceJson = (value: unknown) => JSON.stringify(value, null, 2);
@@ -109,16 +106,9 @@ const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': tra
 const providers: Provider[] = [
   { id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample provider', models: ['default'].map(id => fallbackModel('pantheon', id)) },
 ];
-// Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
-const previewMimoEndpoints = [
-  { id: 'token-plan-cn', url: 'https://token-plan-cn.xiaomimimo.com/anthropic', label: 'Token Plan · China cluster' },
-  { id: 'token-plan-sgp', url: 'https://token-plan-sgp.xiaomimimo.com/anthropic', label: 'Token Plan · Singapore cluster' },
-  { id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' },
-  { id: 'api', url: 'https://api.xiaomimimo.com/anthropic', label: 'Pay-as-you-go API' },
-];
-let previewMimoEndpoint: string | null = null;
 /** Named connections; secret values are dropped, only their names are kept, as on the native side. */
 let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {} };
+let previewExecutable: string | null = null;
 function previewSaveConnection(input: { id?: string | null; provider: ProviderId; name: string; executable?: string | null; args?: string[]; env?: { name: string; value: string | null; secret: boolean }[]; configDir?: string | null }): import('./connections').ConnectionSnapshot {
   const name = String(input.name ?? '').trim();
   if (!name || name.length > 60) throw new Error('Give the connection a name of up to 60 characters.');
@@ -138,8 +128,21 @@ function remoteCatalog(id: ProviderId): ProviderModel[] {
   if (id === 'pantheon') return catalogs.pantheon.map(m => ({ ...m }));
   return [];
 }
+// The ids Pantheon's own catalog reports: `provider/model`, the same shape
+// `session/set_model` accepts.
+const efforts = [
+  { id: 'low', name: 'Low', description: 'Fewer tokens spent thinking; fastest.' },
+  { id: 'medium', name: 'Medium', description: 'Balanced thinking time.' },
+  { id: 'high', name: 'High', description: 'Thinks longest before acting.' },
+];
 const catalogs: Record<ProviderId, ProviderModel[]> = {
-  pantheon: [{ id: 'default', name: 'Default', description: 'Use the model configured in the CLI' }],
+  pantheon: [
+    { id: 'default', name: 'Default', description: 'Use the model configured in the CLI' },
+    { id: 'openai/gpt-6.1-sol', name: 'GPT-6.1 Sol', description: 'Balanced reasoning for everyday work.', reasoningEfforts: efforts, defaultReasoningEffort: 'medium', contextWindow: 400_000 },
+    { id: 'openai/gpt-6.1-mini', name: 'GPT-6.1 Mini', description: 'Fast and inexpensive for small edits.', reasoningEfforts: efforts, defaultReasoningEffort: 'low', contextWindow: 200_000 },
+    { id: 'google/gemini-3-pro', name: 'Gemini 3 Pro', description: 'Long context and strong at reading code.', reasoningEfforts: efforts, defaultReasoningEffort: 'medium', contextWindow: 1_000_000 },
+    { id: 'anthropic/opus-5', name: 'Opus 5', description: 'Careful on large refactors.', reasoningEfforts: efforts, defaultReasoningEffort: 'high', contextWindow: 200_000 },
+  ],
 };
 let git: GitStatus = { branch: 'feat/instant-search', isRepo: true, files: [{ path: 'src/components/search.ts', index: ' ', working: 'M' }, { path: 'src/lib/search-index.ts', index: '?', working: '?' }, { path: 'src/components/search.test.ts', index: ' ', working: 'M' }] };
 const worktreeGit = new Map<string, GitStatus>();
@@ -156,7 +159,7 @@ function previewWorktree(source: Session, args: Record<string, any>): { path: st
   const parent = projects.find(p => p.id === source.projectId)!;
   const name = String(args.branch ?? '').trim();
   if (!name || name.length > 120 || name.includes('..') || !/^[A-Za-z0-9_/-]+$/.test(name)) throw new Error('Use a branch name with letters, numbers, hyphens, underscores, and slashes');
-  const branch = /^(codex|pantheon)\//.test(name) ? name : 'pantheon/' + name;
+  const branch = name.startsWith('pantheon/') ? name : 'pantheon/' + name;
   const exists = previewBranches.has(branch);
   if (args.existing && !exists) throw new Error(`Branch ${branch} does not exist yet. Create it instead.`);
   if (!args.existing && exists) throw new Error(`Branch ${branch} already exists. Use the existing branch or choose another name.`);
@@ -382,18 +385,17 @@ function finishTiming(sessionId: string): void {
   agent({ sessionId, kind: 'turn_changes', text: '', data: { messageId: marker.id, turnChanges: marker.turnChanges } });
 }
 function finish(sessionId: string, content: string) { const time = Date.now(); messages[sessionId].push({ id: ++id, sessionId, role: 'assistant', content, createdAt: time }); finishTiming(sessionId); const s = session(sessionId); if (content.trim()) s.lastResponseAt = time; s.status = 'idle'; s.taskStage = 'review'; s.updatedAt = time; timers.delete(sessionId); activeTools.delete(sessionId); agent({ sessionId, kind: 'done', text: '' }); }
-const codexPreferences: Record<string, string | boolean> = { personality: 'none', memory: false };
-const previewImports = [{ id: 'preview-instructions', title: 'Project instructions', description: 'Sample project instructions from Claude Code.', source: 'Claude Code' }, { id: 'preview-skills', title: 'Project skills', description: 'Sample coding skills.', source: 'Kimi Code' }];
+const previewImports = [{ id: 'preview-instructions', title: 'Project instructions', description: 'Sample project instructions.', source: 'Pantheon' }, { id: 'preview-skills', title: 'Project skills', description: 'Sample coding skills.', source: 'Pantheon' }];
 const importedPreviewItems = new Set<string>();
-function codexTask(value: unknown): Session {
-  const task = session(value); if (task.provider !== 'pantheon') throw new Error('Use the Codex harness for this command.'); return task;
+function pantheonTask(value: unknown): Session {
+  const task = session(value); if (task.provider !== 'pantheon') throw new Error('Use a Pantheon task for this command.'); return task;
 }
 function emitGoal(task: Session): void { agent({ sessionId: task.id, kind: 'goal', text: '', data: structuredClone(task.goalState ?? null) }); }
 function runPreviewGoal(task: Session): void {
   window.clearTimeout(timers.get(task.id));
   task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
   agent({ sessionId: task.id, kind: 'status', text: 'Working toward goal (browser preview)' });
-  const text = 'This is a sample goal in the browser preview. The native app keeps Codex running across turns and reports its actual goal progress.';
+  const text = 'This is a sample goal in the browser preview. The native app keeps the goal across turns and reports its actual progress.';
   let cursor = 0;
   const turnStartedAt = Date.now();
   const tick = () => {
@@ -422,9 +424,9 @@ function runPreviewGoal(task: Session): void {
   };
   timers.set(task.id, window.setTimeout(tick, 150));
 }
-/** Sample estimated API cost for the Agent usage window: a year of Claude Code and Codex days at 14:00 local. */
-const sampleModels = [{ provider: 'claude', name: 'claude-opus-5-5', priced: true }, { provider: 'codex', name: 'gpt-6-astra', priced: true }, { provider: 'codex', name: 'codex-auto-review', priced: false }] as const;
-const i2p = (model: number) => sampleModels[model]?.provider ?? 'claude';
+/** Sample estimated API cost for the Agent usage window: a year of Pantheon days at 14:00 local. */
+const sampleModels = [{ provider: 'pantheon', name: 'gpt-6.1-sol', priced: true }, { provider: 'pantheon', name: 'gpt-6.1-mini', priced: true }, { provider: 'pantheon', name: 'gpt-6.1-nano', priced: false }] as const;
+const i2p = (model: number) => sampleModels[model]?.provider ?? 'pantheon';
 function sampleUsageLedger() {
   const today = new Date(); let seed = 11;
   const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -444,7 +446,7 @@ function sampleUsageLedger() {
       if (index < 2) sessions.push({ provider: model.provider, first: hour, last: hour });
     });
   }
-  return { scannedAt: Date.now(), pricing: { source: 'bundled', fetchedAt: null }, sources: [{ provider: 'claude', files: 40 }, { provider: 'codex', files: 180 }], models: sampleModels, rows, sessions };
+  return { scannedAt: Date.now(), pricing: { source: 'bundled', fetchedAt: null }, sources: [{ provider: 'pantheon', files: 220 }], models: sampleModels, rows, sessions };
 }
 /** A deterministic year of sample activity: quieter weekends, occasional gaps, today at 3,420 tokens. */
 function sampleDailyTokens(): { date: string; tokens: number }[] {
@@ -464,35 +466,19 @@ function previewQueue(): PreviewQueued[] {
   try { return (JSON.parse(localStorage.getItem('pantheon.preview.queue') ?? '[]') as PreviewQueued[]).filter(e => sessions.some(task => task.id === e.sessionId)).sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.position - b.position); } catch { return []; }
 }
 function savePreviewQueue(queue: PreviewQueued[]): void { try { localStorage.setItem('pantheon.preview.queue', JSON.stringify(queue)); } catch { /* preview only */ } }
-/** Sample conversations from the Claude Code and Codex CLIs for the Import conversations window. */
-const previewImportables: Record<string, Array<{ id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }>> = {
-  pantheon: [],
-};
 /** Mirrors native storage: a New task draft is published by its first saved prompt. */
 function settleDraft(task: Session): Session {
   if (task.draft && (messages[task.id] ?? []).some(message => message.role === 'user' && message.content.trim())) { task.draft = false; task.createdAt = Date.now(); }
   return task;
 }
 function commandPanel(task: Session, request: Record<string, any>): CommandPanel {
-  const notes = ['Browser preview · sample data. No harness or account operation is executed.'];
+  const notes = ['Browser preview · sample data. No model turn or disk operation is executed.'];
   switch (request.action) {
-    case 'usage': return { kind: 'usage', accountLabel: 'Preview account', plan: 'Sample plan', windows: [{ id: 'primary', label: '5-hour limit', usedPercent: 28, resetsAt: Math.floor(Date.now() / 1000) + 7200 }, { id: 'secondary', label: 'Weekly limit', usedPercent: 41 }], stats: [{ label: 'Recorded tokens', value: '83,420' }], daily: sampleDailyTokens(), notes };
-    case 'hooks': return { kind: 'hooks', items: [{ id: 'preview-hook', title: 'After editing', description: 'A sample configured lifecycle hook.', source: 'Project', enabled: true }], notes };
-    case 'plugins': return { kind: 'plugins', items: [{ id: 'preview-plugin', title: 'Project docs', description: 'Sample documentation integration.', source: 'Project', status: 'Enabled' }], notes };
-    case 'preferences': return { kind: 'preferences', fields: [{ id: 'personality', label: 'Response style', type: 'select', value: codexPreferences.personality, options: [{ value: 'none', label: 'Default' }, { value: 'friendly', label: 'Friendly' }, { value: 'pragmatic', label: 'Pragmatic' }] }, { id: 'memory', label: 'Memories', type: 'toggle', value: codexPreferences.memory, description: 'Sample preference for future tasks.' }], notes };
-    case 'setPreference': {
-      if (request.id === 'personality' && ['none', 'friendly', 'pragmatic'].includes(request.value) || request.id === 'memory' && typeof request.value === 'boolean') codexPreferences[request.id] = request.value;
-      else throw new Error('Unknown or invalid Codex preference.');
-      return commandPanel(task, { action: 'preferences' });
-    }
-    case 'imports': return { kind: 'imports', items: previewImports.filter(item => !importedPreviewItems.has(item.id)), notes };
-    case 'importSelected': {
-      if (!Array.isArray(request.ids) || !request.ids.length || request.ids.some((id: unknown) => !previewImports.some(item => item.id === id))) throw new Error('Select available import items.');
-      request.ids.forEach((id: string) => importedPreviewItems.add(id));
-      return { kind: 'result', title: 'Sample import complete', description: `${request.ids.length} selected item${request.ids.length === 1 ? '' : 's'} marked imported in this preview.`, notes };
-    }
-    case 'conversations': return { kind: 'conversations', mode: 'resume', items: [...sessions.filter(s => s.provider === 'pantheon' && s.projectId === task.projectId && s.resumeId && s.id !== task.id).map(s => ({ id: s.resumeId!, title: s.title, source: 'Codex', updatedAt: s.updatedAt })), { id: 'preview-remote-conversation', title: 'Review project architecture', description: 'Sample Codex conversation in this project.', source: 'Codex' }], cursor: null, notes };
-    default: throw new Error('Unknown Codex command operation.');
+    case 'usage': return { kind: 'usage', accountLabel: 'Pantheon ledger', plan: 'Preview window', windows: [], stats: [{ label: 'Calls', value: '18' }, { label: 'Input tokens', value: '62,140' }, { label: 'Output tokens', value: '21,280' }, { label: 'Total tokens', value: '83,420' }, { label: 'Spend', value: '$4.12' }], daily: sampleDailyTokens(), models: [{ id: 'openai/gpt-6.1-sol', title: 'openai/gpt-6.1-sol', description: '12 calls · 58,900 tokens · $3.10', source: 'ledger' }], notes };
+    case 'hooks': return { kind: 'hooks', items: [{ id: 'after_turn', title: 'after_turn', description: 'pantheon doctor', source: 'config.toml', enabled: true }], notes };
+    case 'plugins': return { kind: 'plugins', items: [{ id: 'planning-with-files', title: 'planning-with-files', description: 'Bundled planning skill.', status: 'enabled' }], notes };
+    case 'conversations': return { kind: 'conversations', mode: 'resume', items: sessions.filter(other => other.id !== task.id && other.projectId === task.projectId).map(other => ({ id: other.id, title: other.title, description: other.taskDescription, updatedAt: other.updatedAt })), cursor: null, notes };
+    default: throw new Error('Unknown command panel.');
   }
 }
 function slashCatalog(provider: ProviderId) {
@@ -514,8 +500,8 @@ function slashCatalog(provider: ProviderId) {
     ['pwd', 'Show the working directory', 'pwd'],
     ['console', 'Open the harness console', 'console'],
   ];
-  const codex = [
-    ['goal', 'Manage the task goal and token budget', 'goal'], ['usage', 'Inspect Codex account usage', 'usage'],
+  const extras = [
+    ['goal', 'Manage the task goal and token budget', 'goal'], ['usage', 'Inspect token and spend history', 'usage'],
     ['hooks', 'Inspect lifecycle hooks', 'hooks'], ['import', 'Choose setup to import', 'imports'],
     ['plugins', 'Inspect installed plugins', 'plugins'], ['fork', 'Continue in a separate task', 'fork'],
     ['side', 'Continue in a separate task', 'fork'], ['btw', 'Continue in a separate task', 'fork'],
@@ -530,7 +516,7 @@ function slashCatalog(provider: ProviderId) {
     ['stop', 'Choose jobs to stop', 'jobs'], ['clean', 'Choose jobs to stop', 'jobs'],
   ];
   const accepts = new Set(['rename', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
-  const commands = [...local, ...(provider === 'pantheon' ? codex : [])].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
+  const commands = [...local, ...(provider === 'pantheon' ? extras : [])].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
   const native = provider === 'pantheon' ? ['review', 'compact', 'project-guide'] : provider === 'pantheon' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
   const terminal = provider === 'pantheon' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'pantheon' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "btw", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
@@ -568,17 +554,16 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
   const now = Date.now(), minutes = (m: number) => now - m * 60_000, hours = (h: number) => new Date(now + h * 3_600_000).toISOString();
   return {
     running: [
-      { id: 'tray-running-1', title: 'Polish the new onboarding flow and keyboard navigation', project: 'Pantheon', provider: 'claude', at: minutes(4) },
-      { id: 'tray-running-2', title: 'Build search indexing', project: 'website', provider: 'codex', at: minutes(27) },
+      { id: 'tray-running-1', title: 'Polish the new onboarding flow and keyboard navigation', project: 'Pantheon', provider: 'pantheon', at: minutes(4) },
+      { id: 'tray-running-2', title: 'Build search indexing', project: 'website', provider: 'pantheon', at: minutes(27) },
     ],
-    waiting: [{ id: 'tray-waiting', title: 'Run the database migration', project: 'api', provider: 'opencode', at: minutes(12) }],
+    waiting: [{ id: 'tray-waiting', title: 'Run the database migration', project: 'api', provider: 'pantheon', at: minutes(12) }],
     finished: [
-      { id: 'tray-done', title: 'Review the API changes', project: 'api', provider: 'kimi', at: minutes(8) },
-      { id: 'tray-failed', title: 'Fix flaky login test', project: 'Pantheon', provider: 'codex', at: minutes(65), failed: true },
+      { id: 'tray-done', title: 'Review the API changes', project: 'api', provider: 'pantheon', at: minutes(8) },
+      { id: 'tray-failed', title: 'Fix flaky login test', project: 'Pantheon', provider: 'pantheon', at: minutes(65), failed: true },
     ],
     usage: [
-      { provider: 'claude', status: 'ready', plan: 'Max', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
-      { provider: 'codex', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 97, resetsAt: hours(0.6) }] },
+      { provider: 'pantheon', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
     ],
     checking: false,
   };
@@ -610,7 +595,6 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   }
   if (command.startsWith('remote_')) return invokeRemote<T>(command, args, emit);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
-  if (command === 'cloud_agent_set_claude_token') { if (!String(args.token ?? '').trim()) throw new Error('Paste the token from claude setup-token.'); return null as T; }
   if (command === 'cloud_agent_start') {
     // The agent runs on a cloud machine; here the machine is prepared on a timer, then the prompt is sent.
     const target = previewCloud.agentTargets().find(item => item.provider === args.provider && item.ready);
@@ -639,15 +623,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     else if (args.action !== 'open') throw new Error('Unknown cloud action.');
     return null as T;
   }
-  if (command === 'capabilities_inventory' || command === 'cache_alignment') return previewCapabilities(command) as T;
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
-    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
-      const version = provider.version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-      return { provider: provider.id, name: provider.name, providers: provider.id === 'pantheon' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
-    }); break;
-    case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
     case 'jev_doctor': result = { ready: false, pythonVersion: '', jevVersion: '', chromePath: '', issues: ['Jev runs in the desktop app. This browser preview does not launch browsers or contact model APIs.'] }; break;
     case 'jev_list_runs': case 'jev_assist_list': result = []; break;
@@ -660,9 +638,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'jev_assist_run': case 'jev_assist_save_rules': throw new Error('Jev assistance is an optional desktop add-on. This preview does not call model APIs.');
     case 'jev_save_configuration': case 'jev_install_runtime': case 'jev_start': case 'jev_cancel': case 'jev_read_run': throw new Error('Jev browser testing is available in the desktop app.');
-    case 'provider_set_claude_connection_mode': {
-      if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
-      previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
+    case 'provider_executable': result = previewExecutable; break;
+    case 'provider_save_executable': {
+      const typed = typeof args.path === 'string' && args.path.trim() ? String(args.path).trim() : null;
+      const path = typed ? typed.replace(/\/{2,}/g, '/').replace(/\/\.\//g, '/') : null;
+      if (path) {
+        if (!path.startsWith('/')) throw new Error('Choose an existing executable file (an absolute path).');
+        if (!path.endsWith('/pantheon') && !path.endsWith('\\pantheon.exe')) throw new Error('That file is not executable.');
+      }
+      previewExecutable = path; result = path; break;
     }
     case 'connections_list': result = previewConnections; break;
     case 'connection_save': result = previewSaveConnection(args.connection); break;
@@ -675,27 +659,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const { [args.sessionId]: _previous, ...tasks } = previewConnections.tasks;
       previewConnections = { ...previewConnections, tasks: args.connectionId ? { ...tasks, [args.sessionId]: args.connectionId } : tasks }; result = previewConnections; break;
     }
-    case 'provider_claude_status': result = {mode: previewClaudeMode, source: 'Saved Claude login', environmentVariables: [], endpoint: null, savedLogin: 'signedIn', conflict: false}; break;
-    case 'usage_ledger': result = sampleUsageLedger(); break;
     case 'prompt_activity': result = sampleUsageLedger().rows.filter((_, i) => i % 3 === 0).map(row => [row[0], i2p(row[1]), 1 + (row[0] % 7)]); break;
-    case 'agent_usage': {
-      const provider = String(args.provider);
-      const supported = ['claude', 'codex', 'kimi', 'glm', 'opencode'].includes(provider);
-      result = { provider, status: supported ? 'ready' : 'unsupported', checkedAt: Date.now(), stale: false,
-        plan: provider === 'pantheon' ? 'Pro' : provider === 'pantheon' ? 'Go' : null,
-        windows: supported ? [
-          { label: provider === 'pantheon' ? 'Go rolling window' : '5-hour window', usedPercent: provider === 'pantheon' ? 38 : 22, resetsAt: new Date(Date.now() + 7200000).toISOString() },
-          { label: provider === 'pantheon' ? 'Go weekly' : 'Weekly', usedPercent: 64, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() },
-        ] : [], source: 'Sample limits for the browser preview. No provider request was made.',
-        message: supported ? null : 'This harness does not expose account limits. Check its account dashboard.' };
-      break;
-    }
-    case 'provider_configuration': result = { executablePaths: {}, claudeConnectionMode: previewClaudeMode, glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false }; break;
-    case 'provider_set_mimo_endpoint':
-      if (!previewMimoEndpoints.some(entry => entry.id === args.endpoint)) throw new Error('Choose one of the MiMo endpoints listed in Settings.');
-      previewMimoEndpoint = args.endpoint;
-      result = { executablePaths: {}, claudeConnectionMode: previewClaudeMode, glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false }; break;
-    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
     case 'turn_change_summary': {
       session(args.sessionId);
       const summary = (messages[String(args.sessionId)] ?? []).find(m => m.turnChanges?.id === args.changeId)?.turnChanges;
@@ -714,7 +678,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'architect_worker_messages': result = architect.workerMessages(args.sessionId, args.workerId, args.beforeId); break;
     case 'architect_team_messages': result = architect.teamMessages(args.sessionId, args.afterId, args.limit); break;
     case 'task_goal': {
-      const task = codexTask(args.sessionId); const request = args.request ?? {};
+      const task = pantheonTask(args.sessionId); const request = args.request ?? {};
       if (request.action === 'get') { result = task.goalState ?? null; break; }
       if (architect.get(task.id)) throw new Error('Goals and architect teams need separate tasks.');
       if (task.archived || task.taskStage === 'completed') throw new Error('Reopen this task before changing its goal.');
@@ -739,16 +703,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       }
       task.updatedAt = Date.now(); result = task.goalState; break;
     }
-    case 'codex_command': result = commandPanel(codexTask(args.sessionId), args.request ?? {}); break;
-    case 'codex_jobs': codexTask(args.sessionId); if (args.stopId) throw new Error('This sample task has no background jobs.'); result = { kind: 'jobs', jobs: [], notes: ['Browser preview · no commands are running.'] }; break;
-    case 'set_task_preference': {
-      const task = codexTask(args.sessionId), request = args.request ?? {};
-      if (!['plan', 'fast'].includes(request.action) || typeof request.enabled !== 'boolean') throw new Error('Choose a valid task preference.');
-      task.codexSettings ??= {};
-      if (request.action === 'plan') task.codexSettings.collaborationMode = { mode: request.enabled ? 'plan' : 'default' };
-      else task.codexSettings.serviceTier = request.enabled ? 'fast' : null;
-      task.updatedAt = Date.now(); result = task; break;
-    }
+    case 'command_panel': result = commandPanel(pantheonTask(args.sessionId), args.request ?? {}); break;
+    case 'command_jobs': pantheonTask(args.sessionId); if (args.stopId) throw new Error('This sample task has no background jobs.'); result = { kind: 'jobs', jobs: [], notes: ['Browser preview · no commands are running.'] }; break;
     case 'get_message_content': {
       const task = session(args.sessionId);
       const message = messages[task.id]?.find(message => message.id === args.messageId && ['user', 'assistant'].includes(message.role));
@@ -779,8 +735,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       created.taskDescription = copied.find(message => message.role === 'user')?.content ?? '';
       sessions.unshift(created); messages[created.id] = copied; result = created; break;
     }
-    case 'fork_codex_task': {
-      const source = codexTask(args.sessionId); assertIdle(source);
+    case 'fork_task': {
+      const source = pantheonTask(args.sessionId); assertIdle(source);
       if (args.remoteId) {
         const previous = sessions.find(s => s.provider === 'pantheon' && s.projectId === source.projectId && s.resumeId === args.remoteId);
         if (previous) { result = previous; break; }
@@ -789,7 +745,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: args.remoteId ? 'Review project architecture' : source.title + ' (fork)', resumeId: args.remoteId ?? crypto.randomUUID(), status: 'idle', archived: false, goalState: null, taskStage: 'in_progress', createdAt: Date.now(), updatedAt: Date.now() };
       sessions.unshift(created); messages[created.id] = args.remoteId ? [{ id: ++id, sessionId: created.id, role: 'assistant', content: 'This is a sample imported conversation. No remote data was read.', createdAt: Date.now() }] : (messages[source.id] ?? []).map(message => ({ ...message, id: ++id, sessionId: created.id })); result = created; break;
     }
-    case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
+    case 'archive_task': { const task = pantheonTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
     case 'export_task': { const task = session(args.sessionId); result = `# ${task.title}\n\n` + (messages[task.id] ?? []).map(message => `## ${message.role}\n\n${message.content}\n\n`).join(''); break; }
     case 'list_subagents': return [] as T;
     case 'list_local_servers': result = [{ port: 3000, process: 'node', url: 'http://localhost:3000' }, { port: 5173, process: 'vite', url: 'http://localhost:5173' }]; break;
@@ -849,9 +805,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'steer_task': {
       const s = session(args.sessionId);
       if (!timers.has(s.id) && s.status !== 'running') throw new Error('The agent is not running; the message stays queued.');
-      // Claude-family, Codex, Pi and Muse take it live; others hold it for the next turn of the same run.
+      // Pantheon steers live while a turn is open and holds the rest for the next turn.
       const text = String(args.text).trim(), steerId = `steer-${++id}`;
-      const mode = ['claude', 'glm', 'mimo', 'codex', 'pi', 'muse'].includes(s.provider) ? 'live' : 'next-turn';
+      const mode = 'live';
       const report = (status: string) => agent({ sessionId: s.id, kind: 'steer' as AgentEvent['kind'], text, data: { id: steerId, status, mode } });
       window.setTimeout(() => report('pending'));
       window.setTimeout(() => {
@@ -861,33 +817,6 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         report('delivered');
       }, mode === 'live' ? 900 : 1500);
       result = { steered: true, id: steerId, mode }; break;
-    }
-    case 'list_importable_conversations': {
-      const query = String(args.search ?? '').toLowerCase();
-      const source = 'pantheon' as const;
-      const imported = (id: string) => sessions.find(task => task.provider === source && task.resumeId === id)?.id ?? null;
-      const items = ((previewImportables as any)[source] || []).filter((item: any) => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
-        .map((item: any) => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
-      result = { items, cursor: null, note: items.length ? null : `No Pantheon conversations were found on this computer.` }; break;
-    }
-    case 'import_conversations': {
-      const source = 'pantheon' as const;
-      const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
-      for (const conversationId of args.ids as string[]) {
-        const found = previewImportables[source].find(item => item.id === conversationId);
-        const already = sessions.find(task => task.provider === source && task.resumeId === conversationId);
-        if (already) { existing.push(already.id); continue; }
-        if (!found || found.folder.startsWith('/missing')) { failed.push({ id: conversationId, message: 'Its folder no longer exists on this computer.' }); continue; }
-        let project = projects.find(p => p.path === found.folder);
-        if (!project) { project = { id: crypto.randomUUID(), name: found.folder.split('/').pop()!, path: found.folder }; projects.push(project); }
-        const created = await invoke<Session>('create_session', { projectId: project.id, provider: source, model: found.model ?? args.model, mode: 'full' });
-        const task = session(created.id);
-        Object.assign(task, { resumeId: conversationId, title: found.title, taskStage: 'in_progress', createdAt: found.updatedAt - 600000, updatedAt: found.updatedAt, lastPromptAt: found.updatedAt - 600000, lastResponseAt: found.updatedAt });
-        messages[task.id] = [{ id: ++id, sessionId: task.id, role: 'user', content: `Imported: ${found.title}`, createdAt: found.updatedAt - 600000 }, { id: ++id, sessionId: task.id, role: 'assistant', content: 'This conversation was imported into Pantheon.', createdAt: found.updatedAt }];
-        imported.push(taskSummary(task));
-      }
-      if (imported.length) emit('sessions-changed', undefined);
-      result = { imported, existing, failed }; break;
     }
     case 'discard_draft': {
       const task = sessions.find(item => item.id === args.sessionId);
@@ -918,7 +847,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
     case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
-    case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
+    case 'provider_check_connection':
+      if ((window as any).__failCheck) throw new Error('ACP server exited before it answered the handshake.');
+      result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
+    case 'capabilities_inventory': result = { entries: [
+      { harness: 'pantheon', kind: 'mcp server', name: 'Preview documentation', source: 'User config' },
+      { harness: 'pantheon', kind: 'mcp server', name: 'Project tracker', source: 'Project config' },
+    ] }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
     case 'list_agent_integrations': result = { servers: [{ name: 'Preview documentation', description: 'Sample MCP integration', status: 'ready', authStatus: 'not required', tools: [{ name: 'search_docs', description: 'Search sample documentation.' }] }], skills: [{ name: 'Project guidelines', description: 'Sample skill', status: 'enabled' }], apps: [], warnings: [] }; break;
@@ -931,16 +866,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'local_sign_app': break;
     case 'support_details': result = { version: 'Preview', platform: 'Browser preview', architecture: 'Not reported' }; break;
     case 'browser_inspect': result = args.action === 'read' ? { url: browserState.url, title: browserState.title, text: 'Browser preview sample page', elements: [] } : { dispatched: true }; break;
-    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'pantheon' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
-    case 'list_opencode_models': result = {models: openCodePreviewModels, selectedModelIds: previewOpenCodeSelection(), error: null}; break;
-    case 'save_opencode_models': {
-      if (!Array.isArray(args.modelIds) || args.modelIds.length > 100 || args.modelIds.some((id: unknown) => typeof id !== 'string' || !id.includes('/') || id.length > 200)) throw new Error('Choose valid OpenCode models.');
-      result = [...new Set(args.modelIds)];
-      localStorage.setItem(openCodePreviewKey, JSON.stringify(result));
-      emit('provider-models-changed', {provider:'opencode'});
-      window.dispatchEvent(new Event('pantheon-preview-models-changed'));
-      break;
-    }
+    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : catalogs[args.provider as ProviderId] ?? []; break;
     case 'add_project': { const p = { id: crypto.randomUUID(), name: args.path.split('/').pop() || 'Project', path: args.path }; projects.push(p); result = p; break; }
     case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
     case 'delete_session': {
@@ -1021,7 +947,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (args.provider !== s.provider || (args.model || 'default') !== (s.model || 'default')) { s.reasoningEffort = null; s.contextUsage = null; }
       if (args.provider !== s.provider) {
         if (s.resumeId || messages[s.id]?.some(message => ['user', 'assistant', 'coordination'].includes(message.role))) (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'handoff', content: JSON.stringify({ fromProvider: s.provider, toProvider: args.provider, summary: 'Switched harness. The next message includes up to 200 recent conversation entries (64 KiB). Files and project stay in place. Older text may be shortened; private reasoning, native tool state, and image contents are not transferred. Reattach images if needed.' }), createdAt: Date.now() });
-        s.resumeId = null; s.goalState = null; s.codexSettings = null;
+        s.resumeId = null; s.goalState = null;
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
     }
@@ -1054,7 +980,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       messages[s.id].push(toolMessage);
       activeTools.set(s.id, { activity: tool, message: toolMessage });
       agent({ sessionId: s.id, kind: 'tool', text: 'Bash', tool: { ...tool } });
-      const output = 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native Pantheon app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
+      const output = 'This is the browser preview. Your task and conversation are saved in this preview session, but no model turn or shell is running here.\n\nOpen the native Pantheon app to work with your files through the Pantheon runtime.';
       let cursor = 0;
       const tick = () => {
         const next = output.slice(cursor, cursor + 13); cursor += 13;

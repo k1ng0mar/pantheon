@@ -35,7 +35,7 @@ pub(crate) fn test_state() -> (Arc<AppState>, String) {
 
 #[test]
 fn recovery_admission_sends_previous_code_before_saving_the_new_request() {
-    for provider in ["codex", "claude", "kimi"] {
+    for provider in ["pantheon", "pantheon", "pantheon"] {
         let (state, project_id) = test_state();
         let code = "#include <iostream>\nint main() { std::cout << \"Hello, world!\"; }";
         let task = {
@@ -94,7 +94,7 @@ fn recovery_admission_keeps_ordinary_native_resume_prompt_unchanged() {
     let task = {
         let store = state.store.lock().unwrap();
         let task = store
-            .create_session(&project_id, "codex", "default", "ask")
+            .create_session(&project_id, "pantheon", "default", "ask")
             .unwrap();
         store.message(&task.id, "user", "Earlier request").unwrap();
         store
@@ -140,7 +140,7 @@ fn recovery_admission_blocks_native_commands_without_claiming_or_recording_a_tur
         let (task, cwd) = {
             let store = state.store.lock().unwrap();
             let task = store
-                .create_session(&project_id, "codex", "default", "ask")
+                .create_session(&project_id, "pantheon", "default", "ask")
                 .unwrap();
             store
                 .message(&task.id, "assistant", "The original code")
@@ -161,7 +161,7 @@ fn recovery_admission_blocks_native_commands_without_claiming_or_recording_a_tur
             Arc::new(AtomicBool::new(false)),
             RunAdmission {
                 command: Some(PreparedCommand {
-                    provider: "codex".into(),
+                    provider: "pantheon".into(),
                     cwd,
                     original: name.into(),
                     resolution: slash_commands::Resolution {
@@ -186,132 +186,13 @@ fn recovery_admission_blocks_native_commands_without_claiming_or_recording_a_tur
 }
 
 #[test]
-fn recovery_admission_blocks_starting_or_resuming_goals_without_saving_a_request() {
-    for goal in [
-        goal_state::GoalRequest::Set {
-            objective: "Finish the task".into(),
-            token_budget: None,
-        },
-        goal_state::GoalRequest::Resume,
-    ] {
-        let (state, project_id) = test_state();
-        let task = {
-            let store = state.store.lock().unwrap();
-            let task = store
-                .create_session(&project_id, "codex", "default", "ask")
-                .unwrap();
-            store
-                .message(&task.id, "assistant", "Previous context")
-                .unwrap();
-            context_recovery::queue(&store, &task.id).unwrap();
-            store.resume(&task.id, "replacement-thread").unwrap();
-            task
-        };
-        let (tx, _rx) = unbounded_channel();
-        let result = prepare_task_run_in_project(
-            &state,
-            task.id.clone(),
-            Some("Finish the task".into()),
-            Vec::new(),
-            tx,
-            Arc::new(AtomicBool::new(false)),
-            RunAdmission {
-                goal: Some(goal),
-                ..Default::default()
-            },
-        );
-        assert!(matches!(result, Err(error) if error == context_recovery::RECOVERY_REQUIRED));
-        assert!(state.agents.lock().unwrap().is_empty());
-        let store = state.store.lock().unwrap();
-        assert_eq!(store.session(&task.id).unwrap().status, "idle");
-        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
-        assert!(context_recovery::pending(&store, &store.session(&task.id).unwrap()).unwrap());
-    }
-}
-
-#[test]
-fn recovery_admission_goal_inspection_pause_and_clear_never_acknowledge_history() {
-    for goal in [
-        goal_state::GoalRequest::Get,
-        goal_state::GoalRequest::Pause,
-        goal_state::GoalRequest::Clear,
-    ] {
-        let (state, project_id) = test_state();
-        let task = {
-            let store = state.store.lock().unwrap();
-            let task = store
-                .create_session(&project_id, "codex", "default", "ask")
-                .unwrap();
-            store
-                .message(&task.id, "assistant", "Previous context")
-                .unwrap();
-            context_recovery::queue(&store, &task.id).unwrap();
-            store.resume(&task.id, "replacement-thread").unwrap();
-            task
-        };
-        let (tx, _rx) = unbounded_channel();
-        let prepared = prepare_task_run_in_project(
-            &state,
-            task.id.clone(),
-            Some("Goal control".into()),
-            Vec::new(),
-            tx,
-            Arc::new(AtomicBool::new(false)),
-            RunAdmission {
-                goal: Some(goal),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(prepared.context_handoff.is_none());
-        assert_eq!(prepared.turn_message_id, 0);
-        assert_eq!(prepared.config.prompt, "Goal control");
-        assert!(prepared.config.goal.is_some());
-        let store = state.store.lock().unwrap();
-        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
-        assert!(context_recovery::pending(&store, &store.session(&task.id).unwrap()).unwrap());
-    }
-}
-
-#[test]
-fn recovery_admission_insert_failure_keeps_history_pending_without_claiming_the_agent() {
-    let (state, project_id) = test_state();
-    let task = {
-        let store = state.store.lock().unwrap();
-        let task = store
-            .create_session(&project_id, "codex", "default", "ask")
-            .unwrap();
-        store
-            .message(&task.id, "assistant", "Must remain available")
-            .unwrap();
-        store.conn().execute_batch("CREATE TRIGGER reject_recovery_prompt BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
-        task
-    };
-    let (tx, _rx) = unbounded_channel();
-    assert!(prepare_task_run(
-        &state,
-        task.id.clone(),
-        Some("Continue".into()),
-        Vec::new(),
-        tx,
-        Arc::new(AtomicBool::new(false)),
-    )
-    .is_err());
-    assert!(state.agents.lock().unwrap().is_empty());
-    let store = state.store.lock().unwrap();
-    assert_eq!(store.session(&task.id).unwrap().status, "idle");
-    assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
-    assert!(context_recovery::pending(&store, &store.session(&task.id).unwrap()).unwrap());
-}
-
-#[test]
 fn app_tool_start_rechecks_project_before_claiming_or_saving_a_prompt() {
     let (state, project_id) = test_state();
     let task = state
         .store
         .lock()
         .unwrap()
-        .create_session(&project_id, "codex", "default", "ask")
+        .create_session(&project_id, "pantheon", "default", "ask")
         .unwrap();
     let (tx, _rx) = unbounded_channel();
     let result = prepare_task_run_in_project(
@@ -346,7 +227,7 @@ fn simultaneous_starts_admit_all_distinct_tasks_without_duplicate_prompts_or_sha
                 .store
                 .lock()
                 .unwrap()
-                .create_session(&project_id, "codex", "default", "ask")
+                .create_session(&project_id, "pantheon", "default", "ask")
                 .unwrap()
         })
         .collect::<Vec<_>>();
@@ -412,7 +293,7 @@ fn failed_start_releases_admission_and_shutdown_does_not_enqueue_a_prompt() {
         .store
         .lock()
         .unwrap()
-        .create_session(&project_id, "codex", "default", "ask")
+        .create_session(&project_id, "pantheon", "default", "ask")
         .unwrap();
     state.store.lock().unwrap().conn().execute_batch("CREATE TRIGGER reject_prompt BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
     let (tx, _rx) = unbounded_channel();
@@ -472,7 +353,7 @@ fn approval_cancellation_and_reused_provider_ids_are_isolated_to_their_run() {
                 .store
                 .lock()
                 .unwrap()
-                .create_session(&project_id, "claude", "sonnet", "ask")
+                .create_session(&project_id, "pantheon", "sonnet", "ask")
                 .unwrap()
         })
         .collect::<Vec<_>>();
@@ -545,7 +426,7 @@ fn approval_replies_keep_other_requests_waiting_and_reject_old_or_foreign_reques
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
-        .create_session(&project.id, "codex", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     store.begin_task_turn(&task.id, "Build something").unwrap();
     store.status(&task.id, "waiting").unwrap();
@@ -597,7 +478,7 @@ fn four_concurrent_task_streams_persist_independent_responses_and_tool_results()
     let tasks = (0..4)
         .map(|_| {
             store
-                .create_session(&project.id, "codex", "default", "ask")
+                .create_session(&project.id, "pantheon", "default", "ask")
                 .unwrap()
         })
         .collect::<Vec<_>>();
@@ -628,7 +509,7 @@ fn four_concurrent_task_streams_persist_independent_responses_and_tool_results()
                             status: if update == 19 { "completed" } else { "running" }.into(),
                             input: sid.clone(),
                             output: format!("{sid}:{}", "output ".repeat(512)),
-                write_paths: None,
+                            write_paths: None,
                         });
                         let start = Instant::now();
                         save_agent_activity(
@@ -706,7 +587,7 @@ fn slash_commands_are_validated_before_claiming_or_saving() {
         .store
         .lock()
         .unwrap()
-        .create_session(&project_id, "codex", "default", "ask")
+        .create_session(&project_id, "pantheon", "default", "ask")
         .unwrap();
     let (tx, _rx) = unbounded_channel();
     let result = prepare_task_run(
@@ -751,7 +632,7 @@ fn a_discovered_skill_preserves_user_text_and_uses_the_bound_skill_path() {
         .store
         .lock()
         .unwrap()
-        .create_session(&project_id, "codex", "default", "ask")
+        .create_session(&project_id, "pantheon", "default", "ask")
         .unwrap();
     let cwd = state
         .store
@@ -761,7 +642,7 @@ fn a_discovered_skill_preserves_user_text_and_uses_the_bound_skill_path() {
         .unwrap();
     let skill_path = cwd.join("skill/SKILL.md");
     let mut command = resolved_command(
-        "codex",
+        "pantheon",
         cwd,
         "/project-guide retain  arguments",
         "$project-guide retain  arguments",
@@ -807,7 +688,7 @@ fn stale_slash_resolution_cannot_follow_a_changed_harness_checkout_or_descriptio
             .store
             .lock()
             .unwrap()
-            .create_session(&project_id, "codex", "default", "ask")
+            .create_session(&project_id, "pantheon", "default", "ask")
             .unwrap();
         let cwd = state
             .store
@@ -815,9 +696,9 @@ fn stale_slash_resolution_cannot_follow_a_changed_harness_checkout_or_descriptio
             .unwrap()
             .workspace_root(&project_id, Some(&task.id))
             .unwrap();
-        let mut command = resolved_command("codex", cwd, "/review", "/review");
+        let mut command = resolved_command("pantheon", cwd, "/review", "/review");
         match mismatch {
-            "provider" => command.provider = "claude".into(),
+            "provider" => command.provider = "codex".into(),
             "cwd" => command.cwd = command.cwd.join("other-checkout"),
             _ => command.original = "/compact".into(),
         }
@@ -854,7 +735,7 @@ fn context_commands_restore_the_board_stage_and_reject_unsupported_images() {
             .store
             .lock()
             .unwrap()
-            .create_session(&project_id, "codex", "default", "ask")
+            .create_session(&project_id, "pantheon", "default", "ask")
             .unwrap();
         let cwd = state
             .store
@@ -862,7 +743,7 @@ fn context_commands_restore_the_board_stage_and_reject_unsupported_images() {
             .unwrap()
             .workspace_root(&project_id, Some(&task.id))
             .unwrap();
-        let mut command = resolved_command("codex", cwd, "/compact", "/compact");
+        let mut command = resolved_command("pantheon", cwd, "/compact", "/compact");
         command.resolution.maintenance = true;
         command.resolution.accepts_attachments = false;
         let (tx, _rx) = unbounded_channel();
@@ -896,7 +777,7 @@ fn context_commands_restore_the_board_stage_and_reject_unsupported_images() {
         .store
         .lock()
         .unwrap()
-        .create_session(&project_id, "kimi", "default", "ask")
+        .create_session(&project_id, "pantheon", "default", "ask")
         .unwrap();
     let cwd = state
         .store
@@ -904,7 +785,7 @@ fn context_commands_restore_the_board_stage_and_reject_unsupported_images() {
         .unwrap()
         .workspace_root(&project_id, Some(&task.id))
         .unwrap();
-    let mut command = resolved_command("kimi", cwd, "/skill:review", "/skill:review");
+    let mut command = resolved_command("pantheon", cwd, "/skill:review", "/skill:review");
     command.resolution.accepts_attachments = false;
     let (tx, _rx) = unbounded_channel();
     assert!(prepare_task_run_in_project(

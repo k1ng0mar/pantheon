@@ -1,6 +1,9 @@
 # WebGL inside the drawing
 
-How to put a shader effect (fire, water, light, glow) inside an isometric figure so it reads as part of the same object, seen through the same camera. Two shipped examples do this: `examples/raptor-engine/` (a plume, shock, splash and steam under a rocket engine) and `examples/ripple-tank/` (caustics, shadows and a rippled water surface). Read their `live.js` next to this page.
+> Examples named in this page live in the [anatomy-community gallery](https://github.com/octo-cat/anatomy-community), not inside this skill. Run the commands from that example's own directory.
+
+
+How to put a shader effect (fire, water, light, glow) inside an isometric figure so it reads as part of the same object, seen through the same camera. Two shipped examples do this: the Raptor example in the gallery (a plume, shock, splash and steam under a rocket engine) and the ripple-tank example in the gallery (caustics, shadows and a rippled water surface). Read their `live.js` next to this page.
 
 The user loved the first shader figure, but noticed that the colour changed instantly between its phases, as if the effect had been cut. So the bar is: **nothing pops, nothing is cut, and everything sits in the drawing's perspective.** Every rule below came from a bug that broke that bar.
 
@@ -281,7 +284,7 @@ Jump straight to a representative steady state (the Raptor jumps to main stage, 
 
 Light is the shipping theme. A page that is light gets shaders designed for paper, not dark-plate glows converted at the end. Seven figures on the isometrics site were built on a dark plate and then converted: a pool reactor, a foundry pour, an afterburner, a glory hole, a tokamak, a plasma cutter and a forge. Each conversion took three review rounds, and every rule in this section is one of their findings.
 
-The Raptor's light plume (`inkOf` in `examples/raptor-engine/live.js`) shows what not to do. It multiplies every hue by a fixed dark red, `vec3(.62,.34,.3)`, and sets alpha to brightness, so the hottest gas comes out darkest and most opaque. Reviewers called it "red ink smoke". Don't copy it. The ripple tank's grey ink (`uPale`) is still a good model for light that isn't a glow: a tone curve `1 − uExpo.x/(1 + (e/uExpo.y)^uExpo.z)` takes the crests to near paper-white and the troughs to the kit's greys, and its water writes only the change from flat water.
+The Raptor's light plume (`inkOf` in the Raptor `live.js` in the gallery) shows what not to do. It multiplies every hue by a fixed dark red, `vec3(.62,.34,.3)`, and sets alpha to brightness, so the hottest gas comes out darkest and most opaque. Reviewers called it "red ink smoke". Don't copy it. The ripple tank's grey ink (`uPale`) is still a good model for light that isn't a glow: a tone curve `1 − uExpo.x/(1 + (e/uExpo.y)^uExpo.z)` takes the crests to near paper-white and the troughs to the kit's greys, and its water writes only the change from flat water.
 
 ### 8.1 Ink on paper
 Over white, the canvas is normal-blended, premultiplied, and never `screen`, because screen over white is white. No pixel can be brighter than the paper, so light has to read through **saturation and local contrast**:

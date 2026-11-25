@@ -128,8 +128,8 @@ async function loadActivity(context: PanelContext, older: boolean): Promise<void
 /** Library skills and configured MCP servers, read once per settings visit. Names only, never definitions. */
 let capabilities: { skills: { id: string; name: string; description: string }[]; mcp: { harness: string; name: string; source: string }[] } | null = null;
 let capabilitiesLoad: Promise<void> | null = null;
-/** Harnesses that read skill folders; the rest get skills in the bot's brief. */
-const SKILL_FOLDERS = ['claude', 'codex'];
+/** Pantheon reads skill folders directly. */
+const SKILL_FOLDERS = ['pantheon'];
 
 function loadCapabilities(context: PanelContext): void {
   capabilitiesLoad ??= (async () => {

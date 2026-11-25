@@ -24,4 +24,5 @@ as possible.
 This policy covers the Pantheon Desktop application and its relay. Security
 issues in the coding agents that Pantheon launches or connects to — report those
 to their vendors. Actions performed by an agent run with your system privileges;
-Pantheon's approval modes and sandbox are documented in the README.
+Pantheon's approval modes, what each harness enforces, and what Pantheon adds on
+top are documented in the README ("Permissions and sandbox").

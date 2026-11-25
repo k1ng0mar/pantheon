@@ -923,6 +923,28 @@ impl<T: ChatTransport> ProviderChain<T> {
         opts: &TurnOptions,
         sink: &dyn ModelEventSink,
     ) -> Result<TurnOutcome, PantheonError> {
+        // No provider was ever chosen. Pantheon does not pick one for the
+        // user, so an unconfigured install can land here with an empty
+        // provider/model pair. Fail before any attempt with the one command
+        // that fixes it, instead of a misleading "no API key for provider
+        // " error about a provider nobody configured.
+        if self.policy.default.provider.trim().is_empty()
+            && self
+                .policy
+                .fallbacks
+                .fallbacks
+                .iter()
+                .all(|f| f.provider.trim().is_empty())
+        {
+            return Err(PantheonError::new(
+                "PROVIDER_NOT_CONFIGURED",
+                Layer::Provider,
+                false,
+                "no provider or model is configured for this session",
+                "run `pantheon setup` to choose a provider and model (built-in catalog or a custom endpoint)",
+                "",
+            ));
+        }
         // Vision gate (provider/chain layer, resolved from the catalog
         // never the UI): image parts need a vision-capable model. A
         // non-vision model would 400 mid-turn or silently ignore the
@@ -1289,6 +1311,39 @@ mod output_limit_tests {
             vec![],
             pantheon_secrets::SecretValue::new("test-key"),
         )
+    }
+
+    /// An unconfigured install fails with one clear instruction, not a
+    /// misleading "no API key for provider \"\"" about a provider nobody
+    /// chose. Pantheon does not pick a default provider or model.
+    #[test]
+    fn empty_provider_is_reported_as_not_configured() {
+        let policy = ModelPolicy {
+            default: DefaultModel {
+                provider: String::new(),
+                model: String::new(),
+                key_env: None,
+            },
+            fallbacks: FallbackChain { fallbacks: vec![] },
+            auxiliaries: vec![],
+            reasoning: ReasoningLevel::Low,
+            reasoning_budget: None,
+        };
+        let chain = ProviderChain::new(
+            policy,
+            LengthTransport { content: "unused" },
+            vec![],
+            pantheon_secrets::SecretValue::new(""),
+        );
+        let err = chain
+            .turn_stream(&[Message::user("hi")], &NoopModelSink)
+            .expect_err("unconfigured chain must fail loudly");
+        assert_eq!(err.code, "PROVIDER_NOT_CONFIGURED");
+        assert!(
+            err.remediation.contains("pantheon setup"),
+            "remediation must name setup: {}",
+            err.remediation
+        );
     }
 
     #[test]

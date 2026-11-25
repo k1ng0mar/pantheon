@@ -814,7 +814,9 @@ pub fn run(cfg: DashboardConfig) -> ! {
     if bind_all {
         eprintln!(
             "WARNING: dashboard is bound to a non-loopback address. The token is the only \
-             protection. Put a reverse proxy with real auth in front, or keep it on 127.0.0.1."
+             protection, and it crosses the network in cleartext (the session cookie included) \
+             because this is plain HTTP. Put a TLS-terminating reverse proxy with real auth in \
+             front, or keep it on 127.0.0.1."
         );
     } else {
         eprintln!("keep this token private: it is the dashboard's password.");

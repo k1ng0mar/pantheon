@@ -2,7 +2,7 @@
 //! memory, schedules it can set for itself, and proactive messages to the user.
 //! They only exist in tasks that belong to a bot, and only touch that bot.
 
-use super::{gateway, schedule, owner_of};
+use super::{gateway, owner_of, schedule};
 use crate::agent_tools::{spec, validate_spec};
 use crate::providers::ToolHost;
 use crate::{AppState, Result};
@@ -25,34 +25,58 @@ pub(crate) fn catalog() -> Vec<Value> {
     ]
 }
 
-/// Bot tools act only on the bot that owns the task, so harnesses need not ask before using them.
-pub(crate) fn self_scoped(name: &str) -> bool {
-    name.starts_with("pantheon_bot_") && names().iter().any(|known| known == name)
+/// A bot tool acts only on the bot that owns the task, so it needs no approval
+/// and no base host. Anything else is delegated or refused.
+pub(super) fn self_scoped(name: &str) -> bool {
+    names().iter().any(|tool| tool == name)
 }
 
 fn names() -> Vec<String> {
-    catalog().iter().filter_map(|tool| tool["name"].as_str().map(str::to_owned)).collect()
+    catalog()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect()
 }
 
 /// Adds bot tools when the task belongs to a bot; otherwise returns the host unchanged.
-pub(crate) fn with_bot(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String, stopped: Arc<AtomicBool>) -> Option<ToolHost> {
-    let owned = app.state::<AppState>().store.lock().ok().and_then(|store| owner_of(&store, &session_id).ok().flatten()).is_some();
+pub(crate) fn with_bot(
+    base: Option<ToolHost>,
+    app: tauri::AppHandle,
+    session_id: String,
+    stopped: Arc<AtomicBool>,
+) -> Option<ToolHost> {
+    let owned = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| owner_of(&store, &session_id).ok().flatten())
+        .is_some();
     if !owned {
         return base;
     }
-    let mut tools = base.as_ref().map_or_else(Vec::new, |host| host.tools.clone());
-    let approval_tools = base.as_ref().map_or_else(Default::default, |host| host.approval_tools.clone());
+    let mut tools = base
+        .as_ref()
+        .map_or_else(Vec::new, |host| host.tools.clone());
+    let approval_tools = base
+        .as_ref()
+        .map_or_else(Default::default, |host| host.approval_tools.clone());
     tools.extend(catalog());
     Some(ToolHost {
         tools,
         approval_tools,
         handler: Arc::new(move |name, args| {
-            let (base, app, session_id, stopped) = (base.clone(), app.clone(), session_id.clone(), stopped.clone());
+            let (base, app, session_id, stopped) = (
+                base.clone(),
+                app.clone(),
+                session_id.clone(),
+                stopped.clone(),
+            );
             Box::pin(async move {
                 if stopped.load(Ordering::SeqCst) {
                     return Err("Task has stopped.".into());
                 }
-                if !names().contains(&name) {
+                if !self_scoped(&name) {
                     return match base {
                         Some(base) => (base.handler)(name, args).await,
                         None => Err("Unknown Pantheon tool.".into()),
@@ -65,9 +89,15 @@ pub(crate) fn with_bot(base: Option<ToolHost>, app: tauri::AppHandle, session_id
     })
 }
 
-pub(crate) async fn dispatch(app: &tauri::AppHandle, session_id: &str, name: &str, args: &Value) -> Result<Value> {
+pub(crate) async fn dispatch(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    name: &str,
+    args: &Value,
+) -> Result<Value> {
     let state = app.state::<AppState>();
-    let (bot, _) = owner_of(&*state.store.lock().map_err(|e| e.to_string())?, session_id)?.ok_or("This task no longer belongs to a bot.")?;
+    let (bot, _) = owner_of(&*state.store.lock().map_err(|e| e.to_string())?, session_id)?
+        .ok_or("This task no longer belongs to a bot.")?;
     let string = |key: &str| args[key].as_str().unwrap_or_default().to_owned();
     let result = match name {
         "pantheon_bot_notify" => {
@@ -99,11 +129,15 @@ pub(crate) async fn dispatch(app: &tauri::AppHandle, session_id: &str, name: &st
                         kind: string("kind"),
                         interval_minutes: args["intervalMinutes"].as_i64(),
                         time_of_day: args["timeOfDay"].as_str().map(str::to_owned),
-                        run_at: args["inMinutes"].as_i64().map(|minutes| now + minutes.clamp(1, 366 * 24 * 60) * 60_000),
+                        run_at: args["inMinutes"]
+                            .as_i64()
+                            .map(|minutes| now + minutes.clamp(1, 366 * 24 * 60) * 60_000),
                     };
                     json!({"scheduled": schedule::create(&store, &bot.id, &input, "bot", now)?})
                 }
-                "pantheon_bot_list_schedules" => json!({"schedules": schedule::list(&store, &bot.id)?}),
+                "pantheon_bot_list_schedules" => {
+                    json!({"schedules": schedule::list(&store, &bot.id)?})
+                }
                 "pantheon_bot_cancel_schedule" => {
                     schedule::delete(&store, &bot.id, &string("scheduleId"))?;
                     json!({"deleted": true})

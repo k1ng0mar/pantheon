@@ -15,6 +15,9 @@ serde_yaml.workspace = true
 # nodes real source lines (syn does not carry them by default).
 syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# Non-Rust codegraph languages use a lexical extractor: a full parser per
+# language is too much surface for an index that only needs symbols/calls.
+regex = "1"
 toml.workspace = true
 sha2.workspace = true
 ureq = { workspace = true, features = ["json"] }

@@ -83,7 +83,8 @@ fn artifact_state(store: &Store, session: &Session) -> (Vec<String>, Vec<String>
     };
     let (mut done, mut pending) = (Vec::new(), Vec::new());
     if !root.is_empty() {
-        if let Ok(text) = std::fs::read_to_string(std::path::Path::new(&root).join("feature_list.json"))
+        if let Ok(text) =
+            std::fs::read_to_string(std::path::Path::new(&root).join("feature_list.json"))
         {
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(features) = value.get("features").and_then(|v| v.as_array()) {
@@ -121,7 +122,8 @@ pub(crate) fn prepare(
     // intervening failed requests too, so a later “try again” keeps its referent.
     queue(store, &session.id)?;
     let through: Option<i64> = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT through_message_id FROM context_recovery WHERE session_id=?1",
             [&session.id],
             |r| r.get(0),
@@ -132,7 +134,8 @@ pub(crate) fn prepare(
         return Ok((original.into(), None));
     };
     // Fetch newest entries first without materializing an unbounded transcript.
-    let conn = store.conn(); let mut  stmt = conn.prepare("SELECT role,CASE WHEN role='coordination' THEN substr(content,1,786432) ELSE substr(content,1,65536) END,length(CAST(content AS BLOB)) FROM messages WHERE session_id=?1 AND id<=?2 AND role IN ('user','assistant','coordination') AND content<>'' ORDER BY id DESC LIMIT 201").map_err(|e| e.to_string())?;
+    let conn = store.conn();
+    let mut  stmt = conn.prepare("SELECT role,CASE WHEN role='coordination' THEN substr(content,1,786432) ELSE substr(content,1,65536) END,length(CAST(content AS BLOB)) FROM messages WHERE session_id=?1 AND id<=?2 AND role IN ('user','assistant','coordination') AND content<>'' ORDER BY id DESC LIMIT 201").map_err(|e| e.to_string())?;
     let mut rows = stmt
         .query_map(params![session.id, through], |r| {
             Ok((
@@ -216,7 +219,8 @@ pub(crate) fn prepare(
 /// A failed startup, cancelled turn, or failed persistence must leave recovery pending.
 pub(crate) fn acknowledge(store: &Store, sid: &str, through: i64) -> Result<()> {
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "DELETE FROM context_recovery WHERE session_id=?1 AND through_message_id=?2",
             params![sid, through],
         )

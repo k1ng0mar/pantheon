@@ -25,10 +25,6 @@ const EVIDENCE_LIMIT: usize = 16;
 const REPORT_BYTES: usize = 128 * 1024;
 const ADVISORY: &str = "Advisory assessment of the evidence shown, not proof of correctness. No task state, files, permissions, or model selections were changed.";
 
-pub fn is_busy() -> bool {
-    api::is_busy()
-}
-
 fn in_flight() -> &'static Mutex<BTreeMap<String, usize>> {
     static TASKS: OnceLock<Mutex<BTreeMap<String, usize>>> = OnceLock::new();
     TASKS.get_or_init(Default::default)
@@ -39,15 +35,6 @@ pub(crate) fn active_for_tasks(ids: &[String]) -> Result<bool> {
         .lock()
         .map_err(|_| "Jev assessments are unavailable.")?;
     Ok(ids.iter().any(|sid| tasks.contains_key(sid)))
-}
-
-pub(crate) fn active_for_store(store: &Store) -> Result<bool> {
-    let tasks = in_flight().lock().map_err(|_| "Jev assessments are unavailable.")?;
-    for sid in tasks.keys() {
-        let exists: bool = store.conn().query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [sid], |r| r.get(0)).map_err(|e| e.to_string())?;
-        if exists { return Ok(true); }
-    }
-    Ok(false)
 }
 
 struct AssessmentGuard(String);
@@ -254,7 +241,8 @@ fn evidence(
 
 fn saved_rules(store: &Store, project_id: &str) -> Result<Vec<String>> {
     let content: Option<String> = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT rules FROM jev_project_rules WHERE project_id=?1",
             [project_id],
             |row| row.get(0),
@@ -280,7 +268,8 @@ fn save_rules(store: &Store, sid: &str, rules: &[String]) -> Result<Vec<String>>
 
 fn transcript(store: &Store, sid: &str, count: usize) -> Result<(Vec<Evidence>, bool)> {
     let rows = {
-        let conn = store.conn(); let mut query = conn.prepare("SELECT id,role,substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND content<>'' ORDER BY id DESC LIMIT ?2").map_err(|e| e.to_string())?;
+        let conn = store.conn();
+        let mut query = conn.prepare("SELECT id,role,substr(content,1,4097),length(content) FROM messages WHERE session_id=?1 AND role IN ('user','assistant') AND content<>'' ORDER BY id DESC LIMIT ?2").map_err(|e| e.to_string())?;
         let rows = query
             .query_map(params![sid, (count + 1) as i64], |row| {
                 Ok((
@@ -330,7 +319,8 @@ fn transcript(store: &Store, sid: &str, count: usize) -> Result<(Vec<Evidence>, 
 }
 
 fn tool_evidence(store: &Store, sid: &str) -> Result<Vec<Evidence>> {
-    let conn = store.conn(); let mut query = conn.prepare("SELECT id,substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'Tool') ELSE 'Tool' END,1,200),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.status'),'unknown') ELSE 'unknown' END,1,40),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.input'),'') ELSE '' END,1,501),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END,1,2401),length(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END) FROM messages WHERE session_id=?1 AND role IN ('tool','error') AND (CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'') ELSE '' END) NOT LIKE '%jev_%' ORDER BY id DESC LIMIT 3").map_err(|e|e.to_string())?;
+    let conn = store.conn();
+    let mut query = conn.prepare("SELECT id,substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'Tool') ELSE 'Tool' END,1,200),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.status'),'unknown') ELSE 'unknown' END,1,40),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.input'),'') ELSE '' END,1,501),substr(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END,1,2401),length(CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.output'),'') ELSE content END) FROM messages WHERE session_id=?1 AND role IN ('tool','error') AND (CASE WHEN json_valid(content) THEN COALESCE(json_extract(content,'$.name'),'') ELSE '' END) NOT LIKE '%jev_%' ORDER BY id DESC LIMIT 3").map_err(|e|e.to_string())?;
     let rows = query
         .query_map([sid], |row| {
             Ok((
@@ -376,7 +366,8 @@ fn saved_diff(
     let mut result = vec![evidence("saved_changes", "Saved change summary", format!("{count} changed files. Shared checkout includes overlapping tasks: {concurrent}. This is an immutable saved diff, not a live workspace scan."), 800)];
     result[0].change_id = Some(id.clone());
     let files = {
-        let conn = store.conn(); let mut query = conn.prepare("SELECT json_extract(f.value,'$.path'),COALESCE(json_extract(f.value,'$.binary'),0),COALESCE(json_extract(f.value,'$.truncated'),0) FROM turn_changes t,json_each(t.summary,'$.files') f WHERE t.id=?1 AND t.session_id=?2 LIMIT 8").map_err(|e|e.to_string())?;
+        let conn = store.conn();
+        let mut query = conn.prepare("SELECT json_extract(f.value,'$.path'),COALESCE(json_extract(f.value,'$.binary'),0),COALESCE(json_extract(f.value,'$.truncated'),0) FROM turn_changes t,json_each(t.summary,'$.files') f WHERE t.id=?1 AND t.session_id=?2 LIMIT 8").map_err(|e|e.to_string())?;
         let files = query
             .query_map(params![id, sid], |r| {
                 Ok((
@@ -830,8 +821,8 @@ fn persist(store: &Store, report: &Report) -> Result<()> {
     if content.len() > REPORT_BYTES {
         return Err("The Jev report exceeds its local storage limit.".into());
     }
-    let conn = store.conn(); let transaction = conn.unchecked_transaction()
-        .map_err(|e| e.to_string())?;
+    let conn = store.conn();
+    let transaction = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     transaction
         .execute(
             "INSERT INTO jev_assessments(id,session_id,created_at,report) VALUES(?1,?2,?3,?4)",
@@ -844,7 +835,8 @@ fn persist(store: &Store, report: &Report) -> Result<()> {
 }
 fn list(store: &Store, sid: &str) -> Result<Vec<Report>> {
     store.session(sid)?;
-    let conn = store.conn(); let mut query = conn.prepare("SELECT report FROM jev_assessments WHERE session_id=?1 AND length(CAST(report AS BLOB))<=?2 ORDER BY created_at DESC,id DESC LIMIT 20").map_err(|e|e.to_string())?;
+    let conn = store.conn();
+    let mut query = conn.prepare("SELECT report FROM jev_assessments WHERE session_id=?1 AND length(CAST(report AS BLOB))<=?2 ORDER BY created_at DESC,id DESC LIMIT 20").map_err(|e|e.to_string())?;
     let rows = query
         .query_map(params![sid, REPORT_BYTES as i64], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
@@ -949,9 +941,7 @@ pub async fn run_for_task(
     if stopped.load(Ordering::Acquire) {
         return Err("Jev decision cancelled.".into());
     }
-    if state.shutdown.load(Ordering::SeqCst) != 0
-        || !crate::jev::decisions_enabled()
-    {
+    if state.shutdown.load(Ordering::SeqCst) != 0 || !crate::jev::decisions_enabled() {
         return Err(
             "Jev assistance was disabled or Pantheon is closing. No report was applied.".into(),
         );
@@ -1023,34 +1013,16 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn task_deletion_waits_for_all_assessments_and_rejects_stale_admission() {
-        let (state, project) = crate::concurrent_task_tests::test_state();
-        let (sid, other) = {
-            let store = state.store.lock().unwrap();
-            (store.create_session(&project, "codex", "default", "ask").unwrap().id,
-             store.create_session(&project, "codex", "default", "ask").unwrap().id)
-        };
-        assert!(AssessmentGuard::begin(&state, &sid, "different-project").is_err());
-        assert!(!active_for_tasks(std::slice::from_ref(&sid)).unwrap());
-        let first = AssessmentGuard::begin(&state, &sid, &project).unwrap();
-        let second = AssessmentGuard::begin(&state, &sid, &project).unwrap();
-        assert!(crate::agent_updates::reserve_install(&state).err().unwrap().contains("Jev"));
-        assert!(crate::task_deletion::delete_state(&state, &sid).unwrap_err().contains("Jev"));
-        assert!(crate::task_deletion::delete_state(&state, &other).is_ok());
-        drop(first);
-        assert!(crate::task_deletion::delete_state(&state, &sid).is_err());
-        drop(second);
-        assert!(!active_for_tasks(std::slice::from_ref(&sid)).unwrap());
-        assert!(crate::task_deletion::delete_state(&state, &sid).is_ok());
-        assert!(AssessmentGuard::begin(&state, &sid, &project).is_err());
-    }
-
-    #[test]
     fn task_deletion_and_assessment_admission_are_atomic() {
         for _ in 0..12 {
             let (state, project) = crate::concurrent_task_tests::test_state();
-            let sid = state.store.lock().unwrap()
-                .create_session(&project, "codex", "default", "ask").unwrap().id;
+            let sid = state
+                .store
+                .lock()
+                .unwrap()
+                .create_session(&project, "pantheon", "default", "ask")
+                .unwrap()
+                .id;
             let barrier = std::sync::Barrier::new(2);
             let (deleted, assessment) = std::thread::scope(|scope| {
                 let deletion = scope.spawn(|| {
@@ -1064,7 +1036,10 @@ mod tests {
                 (deletion.join().unwrap(), admission.join().unwrap())
             });
             assert_ne!(deleted.is_ok(), assessment.is_ok());
-            assert_eq!(state.store.lock().unwrap().session(&sid).is_ok(), assessment.is_ok());
+            assert_eq!(
+                state.store.lock().unwrap().session(&sid).is_ok(),
+                assessment.is_ok()
+            );
         }
     }
 
@@ -1072,7 +1047,7 @@ mod tests {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "codex", "test-model", "full")
+            .create_session(&project.id, "pantheon", "test-model", "full")
             .unwrap();
         (store, task)
     }
@@ -1158,7 +1133,7 @@ mod tests {
             workers: vec![architect::WorkerProfile {
                 id: "worker-profile-a".into(),
                 name: "UI builder".into(),
-                provider: "claude".into(),
+                provider: "pantheon".into(),
                 model: "test-claude".into(),
                 reasoning_effort: None,
             }],
@@ -1171,7 +1146,8 @@ mod tests {
         };
         let team = architect::new_team(task.id.clone(), config);
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
                 params![task.id, serde_json::to_string(&team).unwrap()],
             )
@@ -1182,7 +1158,7 @@ mod tests {
     fn inputs_and_project_rules_are_bounded_and_project_scoped() {
         let (store, task) = fixture();
         let second = store
-            .create_session(&task.project_id, "claude", "test", "ask")
+            .create_session(&task.project_id, "pantheon", "test", "ask")
             .unwrap();
         assert!(validate_rules(&vec!["a".into(); 9]).is_err());
         assert!(validate_rules(&["a".repeat(501)]).is_err());
@@ -1261,7 +1237,7 @@ mod tests {
                 && item.path.as_deref() == Some("src/file0.ts")
                 && item.text.contains("+const keyboard = true;")));
         let other = store
-            .create_session(&task.project_id, "codex", "test", "ask")
+            .create_session(&task.project_id, "pantheon", "test", "ask")
             .unwrap();
         assert!(preparation(
             &store,
@@ -1362,11 +1338,12 @@ mod tests {
         configure_workers(&store, &task);
         let mut team = architect::load(&store, &task.id).unwrap().unwrap();
         for index in 0..4 {
-            let worker:architect::Worker = serde_json::from_value(json!({"id":format!("worker-{index}"),"sessionId":format!("session-{index}"),"name":format!("Worker {index}"),"profileId":"worker-profile-a","provider":"claude","model":"test","reasoningEffort":null,"status":if index==0 {"queued"} else {"completed"},"assignment":"Keyboard navigation","summary":"Checkpoint","error":null,"dependsOn":[],"files":[],"attempt":1,"createdAt":0,"updatedAt":0})).unwrap();
+            let worker:architect::Worker = serde_json::from_value(json!({"id":format!("worker-{index}"),"sessionId":format!("session-{index}"),"name":format!("Worker {index}"),"profileId":"worker-profile-a","provider":"pantheon","model":"test","reasoningEffort":null,"status":if index==0 {"queued"} else {"completed"},"assignment":"Keyboard navigation","summary":"Checkpoint","error":null,"dependsOn":[],"files":[],"attempt":1,"createdAt":0,"updatedAt":0})).unwrap();
             team.workers.push(worker);
         }
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE architect_teams SET content=?2 WHERE session_id=?1",
                 params![task.id, serde_json::to_string(&team).unwrap()],
             )
@@ -1467,7 +1444,7 @@ mod tests {
         store.conn().execute("UPDATE architect_teams SET content=json_set(content,'$.config.workers[0].id','replacement-id') WHERE session_id=?1",[&task.id]).unwrap();
         assert_ne!(old, prepared(&store, &task, "route").preview.fingerprint);
         let other = store
-            .create_session(&task.project_id, "codex", "test", "ask")
+            .create_session(&task.project_id, "pantheon", "test", "ask")
             .unwrap();
         configure_workers(&store, &other);
         assert_ne!(
@@ -1512,7 +1489,7 @@ mod tests {
                 task.id.clone()
             } else {
                 store
-                    .create_session(&task.project_id, "codex", "test", "ask")
+                    .create_session(&task.project_id, "pantheon", "test", "ask")
                     .unwrap()
                     .id
             };
@@ -1527,7 +1504,8 @@ mod tests {
         }
         assert_eq!(
             store
-                .conn().query_row("SELECT COUNT(*) FROM jev_assessments", [], |row| row
+                .conn()
+                .query_row("SELECT COUNT(*) FROM jev_assessments", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
             200
@@ -1552,7 +1530,7 @@ mod tests {
             let store = Store::open(&path).unwrap();
             let project = store.add_project(&directory).unwrap();
             let task = store
-                .create_session(&project.id, "codex", "test", "ask")
+                .create_session(&project.id, "pantheon", "test", "ask")
                 .unwrap();
             sid = task.id;
             store
@@ -1579,12 +1557,14 @@ mod tests {
             let scored = evaluation(&prepared, 0.9);
             persist(&store, &build_report(&sid, prepared, scored)).unwrap();
             store
-                .conn().execute("DELETE FROM projects WHERE id=?1", [task.project_id])
+                .conn()
+                .execute("DELETE FROM projects WHERE id=?1", [task.project_id])
                 .unwrap();
             for table in ["jev_assessments", "jev_project_rules"] {
                 assert_eq!(
                     store
-                        .conn().query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                        .conn()
+                        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
                             .get::<_, i64>(0))
                         .unwrap(),
                     0

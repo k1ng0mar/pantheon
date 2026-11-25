@@ -11,8 +11,8 @@ const providerCalls = (page: Page) => page.evaluate(() => (window as any).__sett
 
 test('settings organization keeps long default model names clear of labels', async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem('pantheon.defaultProvider', 'claude');
-    localStorage.setItem('pantheon.defaultModel.claude', 'custom-provider/model-' + 'x'.repeat(160));
+    localStorage.setItem('pantheon.defaultProvider', 'pantheon');
+    localStorage.setItem('pantheon.defaultModel.pantheon', 'custom-provider/model-' + 'x'.repeat(160));
   });
   await open(page);
   await settings(page);
@@ -28,39 +28,36 @@ test('settings organization keeps long default model names clear of labels', asy
   }
 });
 
-test('settings organization selects the default provider and model without changing the current task', async ({ page }) => {
+test('settings organization keeps the Pantheon default model out of the open task', async ({ page }) => {
   await open(page);
   const selected = await page.locator('.task-item.selected').getAttribute('data-id');
   const currentModel = await page.locator('#model-picker-trigger').textContent();
   await prompt(page).fill('Keep this draft while selecting defaults.');
   await settings(page);
   await tab(page, 'Agents').click();
-  await page.getByRole('button', { name: 'Default agent for new tasks', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio', { name: 'Claude Code', exact: true }).click();
+  const agent = page.getByRole('button', { name: 'Default agent for new tasks', exact: true });
+  await agent.click();
+  const agents = page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio');
+  await expect(agents).toHaveCount(1);
+  await expect(agents.first()).toHaveText('Pantheon');
+  await agents.first().click();
   const model = page.getByRole('button', { name: 'Default model for new tasks', exact: true });
   await model.click();
-  await page.locator('.model-menu-option[data-provider="claude"][data-model="opus"]').click();
-  await expect(model).toContainText('Opus');
+  await page.locator('.model-menu-option[data-provider="pantheon"][data-model="anthropic/opus-5"]').click();
+  await expect(model).toContainText('Opus 5');
   await back(page).click();
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', selected!);
   await expect(page.locator('#model-picker-trigger')).toHaveText(currentModel!);
   await expect(prompt(page)).toHaveValue('Keep this draft while selecting defaults.');
   await page.locator('.new-task-button').click();
-  await expect(page.locator('#model-picker-trigger')).toContainText('Opus');
-  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="claude"]')).toBeVisible();
-  await page.locator('#model-picker-trigger').click();
-  await page.locator('.model-menu-option[data-provider="codex"][data-model="default"]').click();
-  await page.locator('.new-task-button').click();
-  await expect(page.locator('#model-picker-trigger')).toContainText('Opus');
-  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="claude"]')).toBeVisible();
+  await expect(page.locator('#model-picker-trigger')).toContainText('Opus 5');
+  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="pantheon"]')).toBeVisible();
   await page.reload();
   await expect(prompt(page)).toBeEnabled();
   await settings(page);
   await tab(page, 'Agents').click();
-  await expect(model).toContainText('Opus');
-  await page.getByRole('button', { name: 'Default agent for new tasks', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
-  await expect(model).not.toContainText('Opus');
+  await expect(model).toContainText('Opus 5');
+  expect(await page.evaluate(() => localStorage.getItem('pantheon.model.pantheon'))).toBe('anthropic/opus-5');
 });
 
 test('settings organization recovers a failed default model catalog and permits a custom model', async ({ page }) => {
@@ -69,7 +66,7 @@ test('settings organization recovers a failed default model catalog and permits 
     const response = await route.fetch();
     const source = await response.text();
     await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
-      if (command === 'list_provider_models' && args.provider === 'claude' && !window.__allowDefaultModels) throw new Error('Catalog unavailable');
+      if (command === 'list_provider_models' && args.provider === 'pantheon' && !window.__allowDefaultModels) throw new Error('Catalog unavailable');
       switch (command) {
     `) });
   });
@@ -80,13 +77,13 @@ test('settings organization recovers a failed default model catalog and permits 
   const model = page.getByRole('button', { name: 'Default model for new tasks', exact: true });
   await model.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await expect(picker.getByRole('status').filter({ hasText: 'Could not load models for Claude Code' })).toBeVisible();
+  await expect(picker.locator('.model-menu-catalog-error')).toBeVisible();
   await picker.getByRole('searchbox').fill('custom-default-model');
-  await picker.getByRole('button', { name: 'Use "custom-default-model" with Claude Code', exact: true }).click();
+  await picker.getByRole('button', { name: 'Use "custom-default-model" with Pantheon', exact: true }).click();
   await expect(model).toHaveText('custom-default-model');
   await page.evaluate(() => { (window as any).__allowDefaultModels = true; });
   await model.click();
-  await expect(picker.locator('.model-menu-option[data-provider="claude"][data-model="opus"]')).toBeVisible();
+  await expect(picker.locator('.model-menu-option[data-provider="pantheon"][data-model="anthropic/opus-5"]')).toBeVisible();
   await expect(picker.locator('.model-menu-catalog-error')).toBeHidden();
 });
 
@@ -171,8 +168,8 @@ async function settings(page: Page): Promise<void> {
 for (const pending of [false, true]) {
   test(`settings organization refreshes models for an unchanged executable with ${pending ? 'an older request still pending' : 'a cached catalog'}`, async ({ page }) => {
     await page.addInitScript(() => {
-      localStorage.setItem('pantheon.provider', 'antigravity');
-      localStorage.setItem('pantheon.model.antigravity', 'model-a');
+      localStorage.setItem('pantheon.provider', 'pantheon');
+      localStorage.setItem('pantheon.model.pantheon', 'model-a');
     });
     await page.route('**/src/preview.ts*', async route => {
       const response = await route.fetch();
@@ -184,11 +181,11 @@ for (const pending of [false, true]) {
         const refreshModels = window.__refreshModels;
         if (command === 'list_providers') {
           refreshModels.discoveries.push(Boolean(args.force));
-          return structuredClone(providers.map(provider => provider.id === 'antigravity'
-            ? {...provider, installed:true, path:'/sample/bin/agy_acp_server.par', version:'ACP', models:[]}
+          return structuredClone(providers.map(provider => provider.id === 'pantheon'
+            ? {...provider, installed:true, path:'/sample/bin/pantheon', version:'Sample 2', models:[]}
             : provider));
         }
-        if (command === 'list_provider_models' && args.provider === 'antigravity') {
+        if (command === 'list_provider_models' && args.provider === 'pantheon') {
           const first = ++refreshModels.calls === 1;
           const models = [{id:'model-a', name:first ? 'Old model name' : 'Fresh model name', description:''}];
           if (first && ${pending}) await new Promise(resolve => refreshModels.releaseFirst = resolve);
@@ -219,7 +216,7 @@ for (const pending of [false, true]) {
     await trigger.click();
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
     await expect.poll(calls).toBe(2);
-    await expect(picker.getByRole('button', { name: 'Antigravity · Fresh model name', exact: true })).toBeVisible();
+    await expect(picker.getByRole('button', { name: 'Pantheon · Fresh model name', exact: true })).toBeVisible();
     if (pending) {
       await page.evaluate(() => (window as any).__refreshModels.releaseFirst());
       await expect.poll(() => page.evaluate(() => (window as any).__refreshModels.firstFinished)).toBe(true);
@@ -228,8 +225,8 @@ for (const pending of [false, true]) {
     await expect(trigger).toContainText('Fresh model name');
     await page.keyboard.press('Escape');
     await trigger.click();
-    await expect(picker.getByRole('button', { name: 'Antigravity · Fresh model name', exact: true })).toBeVisible();
-    await expect(picker.getByRole('button', { name: 'Antigravity · Old model name', exact: true })).toHaveCount(0);
+    await expect(picker.getByRole('button', { name: 'Pantheon · Fresh model name', exact: true })).toBeVisible();
+    await expect(picker.getByRole('button', { name: 'Pantheon · Old model name', exact: true })).toHaveCount(0);
     expect(await calls()).toBe(2);
   });
 }
@@ -278,29 +275,32 @@ test('settings organization keeps agent diagnostics collapsed and retains the de
   await settings(page);
   await tab(page, 'Agents').click();
   await expect(page.getByRole('button', { name: 'Refresh agents', exact: true })).toBeEnabled();
-  for (const [id, name] of [['claude', 'Claude Code'], ['codex', 'Codex'], ['kimi', 'Kimi Code']]) {
-    const row = dialog(page).locator('.provider-diagnostic').filter({ has: page.locator(`.provider-logo[data-provider="${id}"]`) });
-    await expect(row).toBeVisible();
-    await expect(row.locator('summary')).toContainText(name);
-    await expect(row.locator('code')).toBeHidden();
-    await row.locator('summary').click();
-    await expect(row.locator('code')).toContainText(`/sample/bin/${id}`);
-    await expect(row.locator('code')).toBeVisible();
-    await row.locator('summary').click();
-    await expect(row.locator('code')).toBeHidden();
-  }
+  const row = dialog(page).locator('.provider-diagnostic');
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('.provider-logo[data-provider="pantheon"]')).toBeVisible();
+  await expect(row.locator('summary')).toContainText('Pantheon');
+  await expect(row.locator('code')).toBeHidden();
+  await row.locator('summary').click();
+  await expect(row.locator('code')).toContainText('/sample/bin/pantheon');
+  await expect(row.locator('code')).toBeVisible();
+  await row.locator('summary').click();
+  await expect(row.locator('code')).toBeHidden();
   const defaultAgent = page.getByRole('button', { name: 'Default agent for new tasks', exact: true });
   await defaultAgent.click();
-  await page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
-  await expect(defaultAgent).toHaveText('Kimi Code');
-  await expect.poll(() => page.evaluate(() => localStorage.getItem('pantheon.provider'))).toBe('kimi');
+  const agents = page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio');
+  await expect(agents).toHaveCount(1);
+  await expect(agents.first()).toHaveText('Pantheon');
+  await expect(agents.first()).toHaveAttribute('aria-checked', 'true');
+  await agents.first().click();
+  await expect(defaultAgent).toHaveText('Pantheon');
+  expect(await page.evaluate(() => localStorage.getItem('pantheon.provider'))).toBe('pantheon');
   await back(page).click();
   await expect(dialog(page)).toBeHidden();
   await page.reload();
   await expect(prompt(page)).toBeEnabled();
   await settings(page);
   await tab(page, 'Agents').click();
-  await expect(defaultAgent).toHaveText('Kimi Code');
+  await expect(defaultAgent).toHaveText('Pantheon');
 });
 
 test('settings organization does not let a late provider refresh replace wallpaper controls or the draft', async ({ page }) => {
@@ -421,7 +421,7 @@ for (const layout of [{ width: 860, scale: 1.4 }, { width: 540, scale: 1.6 }]) {
   });
 }
 
-test('Antigravity installation and connection readiness are distinct with explicit retry', async ({ page }) => {
+test('installation and connection readiness are distinct with explicit retry', async ({ page }) => {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     await route.fulfill({response, body: (await response.text()).replace(/switch\s*\(command\)\s*\{/, `
@@ -438,7 +438,7 @@ test('Antigravity installation and connection readiness are distinct with explic
   await page.goto('/');
   await page.getByRole('button', {name:'Settings',exact:true}).click();
   await tab(page, 'Agents').click();
-  const row = page.locator('.provider-diagnostic[data-provider="antigravity"]');
+  const row = page.locator('.provider-diagnostic[data-provider="pantheon"]');
   await row.locator('summary').click();
   const check = row.locator('.provider-readiness');
   await expect(check.getByRole('status')).toHaveText('Connection not checked');

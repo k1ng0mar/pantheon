@@ -227,8 +227,8 @@ Windows Authenticode signing is not wired up yet. Contributions are welcome.
 ## Sources
 
 When this guide and the implementation disagree, trust the code:
-[release workflow](../.github/workflows/release.yml),
-[CI workflow](../.github/workflows/ci.yml),
+[release workflow](../../.github/workflows/release.yml),
+[CI workflow](../../.github/workflows/ci.yml),
 [version setter](../scripts/release/set-version.mjs),
 [build script](../scripts/release/build.mjs),
 [shared targets](../scripts/release/common.mjs).

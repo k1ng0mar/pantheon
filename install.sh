@@ -15,6 +15,9 @@
 #   PANTHEON_NO_VERIFY    =1 to skip the verify stage
 #   PANTHEON_NO_PYTHON_DEPS =1 to skip optional Python plugin dependencies
 #   PANTHEON_ALLOW_UNVERIFIED =1 to install without a checksum (fail-closed otherwise)
+#   PANTHEON_MINISIGN_PUBKEY   base64 minisign public key (`RW...`) to
+#                              authenticate the archive; verified when set
+#   PANTHEON_MINISIGN_PUBKEY_FILE  file containing that key (alternative)
 set -euo pipefail
 
 REPO="${PANTHEON_REPO:-k1ng0mar/pantheon}"
@@ -143,7 +146,46 @@ if curl -fsSL "${URL}.sha256" -o "$TMPDIR/$ASSET.sha256" 2>/dev/null; then
     # which is not provisioned yet - `pantheon update` refuses unsigned
     # releases for that reason.
     run "Integrity only: the checksum is published alongside the archive; it is not a signature."
-    warn "Release signing is not provisioned yet, so \`pantheon update\` refuses releases until the key is pinned. Install updates by hand, or build from source (see docs/release-signing.md)."
+    # Authenticate when the caller pinned a key. The checksum above comes from
+    # the same origin as the archive, so it proves corruption only; the
+    # signature is the one control that proves authorship (audit F7). The
+    # installer used to ignore the .minisig that the release workflow
+    # publishes and tell the user to "install by hand" instead.
+    PUBKEY="${PANTHEON_MINISIGN_PUBKEY:-}"
+    if [ -z "$PUBKEY" ] && [ -n "${PANTHEON_MINISIGN_PUBKEY_FILE:-}" ]; then
+      if [ -r "${PANTHEON_MINISIGN_PUBKEY_FILE}" ]; then
+        # The key file is `untrusted comment: ...` then the base64 key line.
+        PUBKEY="$(grep -E '^RW' "${PANTHEON_MINISIGN_PUBKEY_FILE}" | tail -n 1 || true)"
+      else
+        fail "PANTHEON_MINISIGN_PUBKEY_FILE is not readable: ${PANTHEON_MINISIGN_PUBKEY_FILE}"
+      fi
+    fi
+    if [ -n "$PUBKEY" ]; then
+      command -v minisign >/dev/null 2>&1 \
+        || fail "PANTHEON_MINISIGN_PUBKEY is set but `minisign` is not installed (apt/brew install minisign)"
+      if ! curl -fsSL "${URL}.minisig" -o "$TMPDIR/$ASSET.minisig" 2>/dev/null; then
+        if [ "${PANTHEON_ALLOW_UNVERIFIED:-0}" = "1" ]; then
+          warn "no .minisig published for $ASSET; continuing unauthenticated (PANTHEON_ALLOW_UNVERIFIED=1)"
+        else
+          fail "no signature published for $ASSET - refusing to install unauthenticated (PANTHEON_ALLOW_UNVERIFIED=1 to override)"
+        fi
+      else
+        # minisign's `-p` file is a two-line file: an `untrusted comment:` line
+        # then the base64 key. Accept either the whole file or just the `RW...`
+        # line in the env var, and always write the two-line form.
+        PUBKEY_LINE="$(printf '%s\n' "$PUBKEY" | grep -E '^RW' | tail -n 1 || true)"
+        [ -n "$PUBKEY_LINE" ] \
+          || fail "PANTHEON_MINISIGN_PUBKEY holds no 'RW...' key line"
+        printf 'untrusted comment: pantheon release key\n%s\n' "$PUBKEY_LINE" > "$TMPDIR/minisign.pub"
+        if (cd "$TMPDIR" && minisign -V -p minisign.pub -m "$ASSET" >/dev/null 2>&1); then
+          ok "Signature verified against the pinned key"
+        else
+          fail "signature verification FAILED for $ASSET - the archive is not the one signed by the pinned key (do not install)"
+        fi
+      fi
+    else
+      warn "Release signing is not provisioned yet, so \`pantheon update\` refuses releases until the key is pinned. Install updates by hand, or build from source (see docs/release-signing.md). Set PANTHEON_MINISIGN_PUBKEY to authenticate this install against a key you trust."
+    fi
   else
     code=$?
     if [ "$code" -eq 2 ]; then
@@ -244,18 +286,12 @@ else
   run "Creating $DATA_DIR"
   mkdir -p "$DATA_DIR"
 
-  run "Initializing default configuration"
-  if [ -f "$DATA_DIR/config.toml" ]; then
-    ok "Configuration exists; leaving it alone"
-  elif [ -x "$BIN_DIR/pantheon" ]; then
-    # Non-interactive defaults only. Never prompts, never overwrites,
-    # never writes a key: provider keys are configured with `pantheon setup`.
-    if "$BIN_DIR/pantheon" setup --yes >/dev/null 2>&1; then
-      ok "Default configuration written"
-    else
-      warn "could not write a default config; run \`pantheon setup\` by hand"
-    fi
-  fi
+  run "Deferring model setup to the user"
+  # Pantheon does not pick a provider or model on the user's behalf. No
+  # config.toml is written here: the first launch opens the setup wizard,
+  # where the user chooses from the built-in providers or a custom endpoint.
+  # Documentation and automation can still write a config themselves.
+  ok "Run \`pantheon setup\` to choose a provider and model"
 
   run "Creating default agent profile"
   # The default profile is the [model]/policy written above; per-agent
@@ -269,11 +305,11 @@ else
   mkdir -p "$DATA_DIR/skills" "$DATA_DIR/gateway" "$DATA_DIR/extensions"
   ok "Local storage ready"
 
-  run "Checking provider configuration"
-  if grep -q 'api_key_env' "$DATA_DIR/config.toml" 2>/dev/null; then
-    ok "Provider key configured (env var named in config.toml)"
+  run "Checking first-run setup"
+  if [ -f "$DATA_DIR/config.toml" ]; then
+    ok "Config exists; your provider choice is preserved"
   else
-    warn "no provider key configured yet; run \`pantheon setup\` to add one"
+    ok "No config yet; \`pantheon\` will open setup on first launch"
   fi
 
   ok "Pantheon initialized"

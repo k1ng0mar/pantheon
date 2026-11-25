@@ -11,7 +11,20 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
-pub(crate) const METHODS: [&str; 12] = ["subscribe", "tasks.list", "providers.list", "providers.models", "task.start", "task.messages", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond"];
+pub(crate) const METHODS: [&str; 12] = [
+    "subscribe",
+    "tasks.list",
+    "providers.list",
+    "providers.models",
+    "task.start",
+    "task.messages",
+    "task.send",
+    "task.stop",
+    "task.steer",
+    "task.configure",
+    "approval.respond",
+    "input.respond",
+];
 pub(crate) const OFF: &str = "Remote control is off on this computer";
 pub(crate) const MAX_TEXT: usize = 100 * 1024;
 const SUBSCRIPTION: Duration = Duration::from_secs(10 * 60);
@@ -33,7 +46,7 @@ const PAGE_ROWS: i64 = 400;
 const MAX_BUFFER: usize = 4096;
 const CUT: &str = "\n…[cut on the host to fit a remote page]";
 /// Harness ids `providers.models` accepts (the same list `storage` allows).
-pub(crate) const PROVIDERS: [&str; 16] = ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse"];
+pub(crate) const PROVIDERS: [&str; 1] = ["pantheon"];
 
 pub(crate) fn untrusted(host_name: &str) -> String {
     format!("This computer isn't trusted on {host_name}. Trust it in Settings → Remote access on that computer.")
@@ -57,10 +70,20 @@ pub(crate) struct Replay {
 }
 
 impl Replay {
-    pub(crate) fn check(&mut self, ts: Option<i64>, nonce: Option<&str>, now_ms: i64) -> Result<()> {
+    pub(crate) fn check(
+        &mut self,
+        ts: Option<i64>,
+        nonce: Option<&str>,
+        now_ms: i64,
+    ) -> Result<()> {
         const REFUSED: &str = "This request expired or was already received. Check that both computers' clocks are right.";
-        let (Some(ts), Some(nonce)) = (ts, nonce) else { return Err(REFUSED.into()) };
-        if !(16..=64).contains(&nonce.len()) || !nonce.chars().all(|c| c.is_ascii_graphic()) || (now_ms - ts).abs() > WINDOW_MS {
+        let (Some(ts), Some(nonce)) = (ts, nonce) else {
+            return Err(REFUSED.into());
+        };
+        if !(16..=64).contains(&nonce.len())
+            || !nonce.chars().all(|c| c.is_ascii_graphic())
+            || (now_ms - ts).abs() > WINDOW_MS
+        {
             return Err(REFUSED.into());
         }
         // An accepted nonce only needs remembering while its ts is still inside the window.
@@ -86,22 +109,57 @@ pub(crate) fn valid_id(id: &str) -> Result<()> {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Call {
-    Subscribe { session_ids: Vec<String> },
-    TasksList { limit: usize },
-    Providers { force: bool },
-    Models { provider: String, force: bool },
+    Subscribe {
+        session_ids: Vec<String>,
+    },
+    TasksList {
+        limit: usize,
+    },
+    Providers {
+        force: bool,
+    },
+    Models {
+        provider: String,
+        force: bool,
+    },
     Start(start::Start),
-    Messages { session_id: String, after_id: i64 },
-    Send { session_id: String, text: String },
-    Stop { session_id: String },
-    Steer { session_id: String, text: String },
-    Configure { session_id: String, model: Option<(String, String)>, effort: Option<Option<String>>, mode: Option<String> },
-    Approve { session_id: String, request_id: String, approve: bool },
-    Answer { session_id: String, request_id: String, response: Value },
+    Messages {
+        session_id: String,
+        after_id: i64,
+    },
+    Send {
+        session_id: String,
+        text: String,
+    },
+    Stop {
+        session_id: String,
+    },
+    Steer {
+        session_id: String,
+        text: String,
+    },
+    Configure {
+        session_id: String,
+        model: Option<(String, String)>,
+        effort: Option<Option<String>>,
+        mode: Option<String>,
+    },
+    Approve {
+        session_id: String,
+        request_id: String,
+        approve: bool,
+    },
+    Answer {
+        session_id: String,
+        request_id: String,
+        response: Value,
+    },
 }
 
 pub(crate) fn id_param(params: &Value, key: &str) -> Result<String> {
-    let id = params[key].as_str().ok_or_else(|| format!("Missing {key}."))?;
+    let id = params[key]
+        .as_str()
+        .ok_or_else(|| format!("Missing {key}."))?;
     valid_id(id).map_err(|_| format!("Invalid {key}."))?;
     Ok(id.to_owned())
 }
@@ -119,7 +177,14 @@ pub(crate) fn name_param(params: &Value, key: &str) -> Result<Option<String>> {
     match params.get(key).filter(|v| !v.is_null()) {
         None => Ok(None),
         Some(value) => {
-            let text = value.as_str().filter(|text| !text.is_empty() && text.len() <= 200 && text.chars().all(|c| c.is_ascii_graphic())).ok_or_else(|| format!("Invalid {key}."))?;
+            let text = value
+                .as_str()
+                .filter(|text| {
+                    !text.is_empty()
+                        && text.len() <= 200
+                        && text.chars().all(|c| c.is_ascii_graphic())
+                })
+                .ok_or_else(|| format!("Invalid {key}."))?;
             Ok(Some(text.to_owned()))
         }
     }
@@ -144,13 +209,24 @@ fn task_limit(params: &Value) -> Result<usize> {
 }
 
 fn configure(params: &Value) -> Result<Call> {
-    let model = match (name_param(params, "provider")?, name_param(params, "model")?) {
+    let model = match (
+        name_param(params, "provider")?,
+        name_param(params, "model")?,
+    ) {
         (Some(provider), Some(model)) => Some((provider, model)),
         (None, None) => None,
         _ => return Err("Send a provider with the model.".into()),
     };
-    let effort = params.get("effort").map(|_| name_param(params, "effort")).transpose()?;
-    Ok(Call::Configure { session_id: id_param(params, "sessionId")?, model, effort, mode: name_param(params, "mode")? })
+    let effort = params
+        .get("effort")
+        .map(|_| name_param(params, "effort"))
+        .transpose()?;
+    Ok(Call::Configure {
+        session_id: id_param(params, "sessionId")?,
+        model,
+        effort,
+        mode: name_param(params, "mode")?,
+    })
 }
 
 /// Validates a request. Everything is refused while hosting is off.
@@ -160,37 +236,78 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
     }
     Ok(match method {
         "subscribe" => {
-            let ids = params["sessionIds"].as_array().ok_or("Missing sessionIds.")?;
+            let ids = params["sessionIds"]
+                .as_array()
+                .ok_or("Missing sessionIds.")?;
             if ids.len() > MAX_IDS {
                 return Err(format!("Mirror up to {MAX_IDS} tasks per computer."));
             }
-            let session_ids = ids.iter().map(|id| id.as_str().filter(|id| valid_id(id).is_ok()).map(str::to_owned).ok_or("Invalid sessionIds.")).collect::<std::result::Result<_, _>>()?;
+            let session_ids = ids
+                .iter()
+                .map(|id| {
+                    id.as_str()
+                        .filter(|id| valid_id(id).is_ok())
+                        .map(str::to_owned)
+                        .ok_or("Invalid sessionIds.")
+                })
+                .collect::<std::result::Result<_, _>>()?;
             Call::Subscribe { session_ids }
         }
-        "tasks.list" => Call::TasksList { limit: task_limit(params)? },
-        "providers.list" => Call::Providers { force: force_param(params)? },
+        "tasks.list" => Call::TasksList {
+            limit: task_limit(params)?,
+        },
+        "providers.list" => Call::Providers {
+            force: force_param(params)?,
+        },
         "providers.models" => {
             let provider = name_param(params, "provider")?.ok_or("Missing provider.")?;
             if !PROVIDERS.contains(&provider.as_str()) {
                 return Err("Unknown provider.".into());
             }
-            Call::Models { provider, force: force_param(params)? }
+            Call::Models {
+                provider,
+                force: force_param(params)?,
+            }
         }
         "task.start" => Call::Start(start::parse(params)?),
-        "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, after_id: params["afterId"].as_i64().unwrap_or(0).max(0) },
-        "task.send" => Call::Send { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")? },
-        "task.stop" => Call::Stop { session_id: id_param(params, "sessionId")? },
-        "task.steer" => Call::Steer { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")? },
+        "task.messages" => Call::Messages {
+            session_id: id_param(params, "sessionId")?,
+            after_id: params["afterId"].as_i64().unwrap_or(0).max(0),
+        },
+        "task.send" => Call::Send {
+            session_id: id_param(params, "sessionId")?,
+            text: text_param(params, "text")?,
+        },
+        "task.stop" => Call::Stop {
+            session_id: id_param(params, "sessionId")?,
+        },
+        "task.steer" => Call::Steer {
+            session_id: id_param(params, "sessionId")?,
+            text: text_param(params, "text")?,
+        },
         "task.configure" => configure(params)?,
-        "approval.respond" => Call::Approve { session_id: id_param(params, "sessionId")?, request_id: id_param(params, "requestId")?, approve: params["approve"].as_bool().ok_or("Missing approve.")? },
-        "input.respond" => Call::Answer { session_id: id_param(params, "sessionId")?, request_id: id_param(params, "requestId")?, response: params.get("response").cloned().ok_or("Missing response.")? },
+        "approval.respond" => Call::Approve {
+            session_id: id_param(params, "sessionId")?,
+            request_id: id_param(params, "requestId")?,
+            approve: params["approve"].as_bool().ok_or("Missing approve.")?,
+        },
+        "input.respond" => Call::Answer {
+            session_id: id_param(params, "sessionId")?,
+            request_id: id_param(params, "requestId")?,
+            response: params.get("response").cloned().ok_or("Missing response.")?,
+        },
         _ => return Err("Unknown method.".into()),
     })
 }
 
 /// The response to one request frame, or None when it has no usable id.
 /// `trusted` is true only when the frame opened with the caller's pinned key.
-pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value, trusted: bool) -> Option<Value> {
+pub(crate) async fn handle(
+    app: &tauri::AppHandle,
+    from: &str,
+    message: &Value,
+    trusted: bool,
+) -> Option<Value> {
     let id = message["id"].as_str().filter(|id| valid_id(id).is_ok())?;
     let name = super::config::device_name();
     let admitted = {
@@ -199,9 +316,21 @@ pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value, 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let enabled = inner.settings.host_enabled;
         // Trust first: an untrusted caller never fills the nonce set.
-        gate(enabled, trusted, &name).and_then(|_| inner.replay.check(message["ts"].as_i64(), message["nonce"].as_str(), now_ms)).map(|_| enabled)
+        gate(enabled, trusted, &name)
+            .and_then(|_| {
+                inner
+                    .replay
+                    .check(message["ts"].as_i64(), message["nonce"].as_str(), now_ms)
+            })
+            .map(|_| enabled)
     };
-    let result = match admitted.and_then(|enabled| parse(enabled, message["method"].as_str().unwrap_or_default(), &message["params"])) {
+    let result = match admitted.and_then(|enabled| {
+        parse(
+            enabled,
+            message["method"].as_str().unwrap_or_default(),
+            &message["params"],
+        )
+    }) {
         Ok(call) => run(app, from, call).await,
         Err(error) => Err(error),
     };
@@ -213,7 +342,11 @@ pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value, 
 
 /// The task must exist here; a mirror never forwards a second hop.
 fn local_task(state: &AppState, session_id: &str) -> Result<()> {
-    let task = state.store.lock().map_err(|e| e.to_string())?.session(session_id)?;
+    let task = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .session(session_id)?;
     if task.remote_device.is_some() {
         return Err("That task runs on another computer.".into());
     }
@@ -230,7 +363,9 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             let subscriber = inner.subscribers.entry(from.to_owned()).or_default();
             // Added to, not replaced: a task started a moment ago may not be in the list yet.
             // An expired (or overgrown) subscription starts over.
-            if subscriber.until.is_none_or(|until| until <= Instant::now()) || subscriber.sessions.len() > 4 * MAX_IDS {
+            if subscriber.until.is_none_or(|until| until <= Instant::now())
+                || subscriber.sessions.len() > 4 * MAX_IDS
+            {
                 subscriber.sessions.clear();
             }
             subscriber.until = Some(Instant::now() + SUBSCRIPTION);
@@ -247,19 +382,25 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             .map_err(|e| e.to_string())?
         }
         Call::Providers { force } => {
-            let mut providers = serde_json::to_value(crate::local_providers(force).await).map_err(|e| e.to_string())?;
+            let mut providers = serde_json::to_value(crate::local_providers(force).await)
+                .map_err(|e| e.to_string())?;
             fit_providers(&mut providers);
             Ok(providers)
         }
         Call::Models { provider, force } => {
-            let mut models = serde_json::to_value(crate::local_provider_models(&provider, force).await?).map_err(|e| e.to_string())?;
+            let mut models =
+                serde_json::to_value(crate::local_provider_models(&provider, force).await?)
+                    .map_err(|e| e.to_string())?;
             if let Some(list) = models.as_array_mut() {
                 fit_list(list, PAGE_BUDGET);
             }
             Ok(models)
         }
         Call::Start(request) => start::run(app, from, request).await,
-        Call::Messages { session_id, after_id } => {
+        Call::Messages {
+            session_id,
+            after_id,
+        } => {
             local_task(&state, &session_id)?;
             let store = state.store.lock().map_err(|e| e.to_string())?;
             let conn = store.conn();
@@ -268,12 +409,29 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
         Call::Send { session_id, text } => {
             local_task(&state, &session_id)?;
             // Like Enter in the composer: a running task queues the message.
-            let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
+            let busy = || {
+                state
+                    .agents
+                    .lock()
+                    .map(|agents| agents.contains_key(&session_id))
+                    .map_err(|e| e.to_string())
+            };
             if busy()? {
-                let entry = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!([]))?;
+                let entry = message_queue::add(
+                    &*state.store.lock().map_err(|e| e.to_string())?,
+                    &session_id,
+                    &text,
+                    &json!([]),
+                )?;
                 // If the run ended between the check and the add, nothing would deliver the
                 // entry: take it back (unless a run end already did) and send it now.
-                if busy()? || message_queue::take(&*state.store.lock().map_err(|e| e.to_string())?, &entry.id).is_err() {
+                if busy()?
+                    || message_queue::take(
+                        &*state.store.lock().map_err(|e| e.to_string())?,
+                        &entry.id,
+                    )
+                    .is_err()
+                {
                     let _ = app.emit("queue-changed", json!({"sessionId": session_id}));
                     return Ok(json!({"queued": true}));
                 }
@@ -291,16 +449,38 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             local_task(&state, &session_id)?;
             message_queue::steer_task(app.clone(), state, session_id, text).await
         }
-        Call::Configure { session_id, model, effort, mode } => {
+        Call::Configure {
+            session_id,
+            model,
+            effort,
+            mode,
+        } => {
             local_task(&state, &session_id)?;
             if let Some((provider, _)) = &model {
                 start::require_installed(provider).await?;
             }
             if let Some(mode) = mode {
-                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, Some(mode)).await?;
+                crate::update_session(
+                    app.clone(),
+                    state.clone(),
+                    session_id.clone(),
+                    None,
+                    None,
+                    None,
+                    Some(mode),
+                )
+                .await?;
             }
             if let Some((provider, model)) = model {
-                crate::configure_session(app.clone(), state.clone(), session_id.clone(), provider, model, None).await?;
+                crate::configure_session(
+                    app.clone(),
+                    state.clone(),
+                    session_id.clone(),
+                    provider,
+                    model,
+                    None,
+                )
+                .await?;
             }
             if let Some(effort) = effort {
                 crate::set_reasoning_effort(app.clone(), state, session_id, effort).await?;
@@ -308,15 +488,37 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             let _ = app.emit("sessions-changed", ());
             Ok(json!({}))
         }
-        Call::Approve { session_id, request_id, approve } => {
+        Call::Approve {
+            session_id,
+            request_id,
+            approve,
+        } => {
             local_task(&state, &session_id)?;
-            crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
+            crate::respond_approval(
+                app.clone(),
+                state,
+                session_id.clone(),
+                request_id.clone(),
+                approve,
+            )
+            .await?;
             // Clear the card in this computer's window, as bot approvals do.
-            let event = AgentEvent { session_id, kind: "approval_cancelled".into(), text: String::new(), request_id: Some(request_id), data: None, tool: None };
+            let event = AgentEvent {
+                session_id,
+                kind: "approval_cancelled".into(),
+                text: String::new(),
+                request_id: Some(request_id),
+                data: None,
+                tool: None,
+            };
             let _ = app.emit("agent-event", event);
             Ok(json!({}))
         }
-        Call::Answer { session_id, request_id, response } => {
+        Call::Answer {
+            session_id,
+            request_id,
+            response,
+        } => {
             local_task(&state, &session_id)?;
             crate::respond_user_input(app.clone(), state, session_id, request_id, response).await?;
             Ok(json!({}))
@@ -341,12 +543,21 @@ fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
     };
     let (sessions, project_rows, bot_projects) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        (store.sessions()?, store.projects()?, crate::bots::project_ids(&store)?.into_iter().collect::<HashSet<_>>())
+        (
+            store.sessions()?,
+            store.projects()?,
+            crate::bots::project_ids(&store)?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+        )
     };
 
     let project_chats: HashSet<String> = project_rows
         .iter()
-        .filter(|project| !bot_projects.contains(&project.id) && crate::chats::is_chat_folder(Path::new(&project.path)))
+        .filter(|project| {
+            !bot_projects.contains(&project.id)
+                && crate::chats::is_chat_folder(Path::new(&project.path))
+        })
         .map(|project| project.id.clone())
         .collect();
     let projects: Vec<Value> = project_rows
@@ -359,18 +570,37 @@ fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
         .collect();
     let project_names: HashMap<String, String> = projects
         .iter()
-        .filter_map(|project| Some((project["id"].as_str()?.to_owned(), project["name"].as_str()?.to_owned())))
+        .filter_map(|project| {
+            Some((
+                project["id"].as_str()?.to_owned(),
+                project["name"].as_str()?.to_owned(),
+            ))
+        })
         .collect();
     let mut sessions: Vec<_> = sessions
         .into_iter()
-        .filter(|task| task.remote_device.is_none() && !bot_projects.contains(&task.project_id) && project_names.contains_key(&task.project_id))
+        .filter(|task| {
+            task.remote_device.is_none()
+                && !bot_projects.contains(&task.project_id)
+                && project_names.contains_key(&task.project_id)
+        })
         .collect();
-    sessions.sort_by(|a, b| activity_at(b).cmp(&activity_at(a)).then_with(|| a.id.cmp(&b.id)));
+    sessions.sort_by(|a, b| {
+        activity_at(b)
+            .cmp(&activity_at(a))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     let tasks: Vec<Value> = sessions
         .into_iter()
         .take(limit)
         .map(|task| {
-            let status = if matches!(task.status.as_str(), "running" | "waiting") && !active.contains(&task.id) { "interrupted" } else { task.status.as_str() };
+            let status = if matches!(task.status.as_str(), "running" | "waiting")
+                && !active.contains(&task.id)
+            {
+                "interrupted"
+            } else {
+                task.status.as_str()
+            };
             let mut item = json!({
                 "sessionId": task.id,
                 "title": task.title,
@@ -399,7 +629,11 @@ fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
 }
 
 fn activity_at(task: &crate::storage::Session) -> i64 {
-    task.last_response_at.into_iter().chain(task.last_prompt_at).max().unwrap_or(task.created_at)
+    task.last_response_at
+        .into_iter()
+        .chain(task.last_prompt_at)
+        .max()
+        .unwrap_or(task.created_at)
 }
 
 /// Fits both arrays, including their object envelope, under the relay's reply budget.
@@ -407,7 +641,11 @@ fn fit_task_lists(mut tasks: Vec<Value>, mut projects: Vec<Value>) -> Value {
     fit_list(&mut projects, PAGE_BUDGET);
     let task_budget = PAGE_BUDGET.saturating_sub(json!(projects).to_string().len() + 32);
     fit_list(&mut tasks, task_budget);
-    while json!({"tasks": &tasks, "projects": &projects}).to_string().len() > PAGE_BUDGET {
+    while json!({"tasks": &tasks, "projects": &projects})
+        .to_string()
+        .len()
+        > PAGE_BUDGET
+    {
         if tasks.pop().is_none() && projects.pop().is_none() {
             break;
         }
@@ -436,13 +674,22 @@ fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<Vec<Value>> {
             .conn().query_row("SELECT status,title,(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1) FROM sessions WHERE id=?1 AND remote_device IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some((status, title, last_id)) = row else { continue };
+        let Some((status, title, last_id)) = row else {
+            continue;
+        };
         // Only a registered agent is really running; a stale row reads as interrupted.
-        let status = if active.contains(id) || !matches!(status.as_str(), "running" | "waiting") { status } else { "interrupted".into() };
+        let status = if active.contains(id) || !matches!(status.as_str(), "running" | "waiting") {
+            status
+        } else {
+            "interrupted".into()
+        };
         let pending = pending_by_session.get(id).cloned().unwrap_or_default();
         tasks.push(json!({"sessionId": id, "status": status, "lastId": last_id, "title": title, "pending": pending}));
     }
-    fit_list(&mut tasks, PAGE_BUDGET.saturating_sub(json!({"tasks": []}).to_string().len()));
+    fit_list(
+        &mut tasks,
+        PAGE_BUDGET.saturating_sub(json!({"tasks": []}).to_string().len()),
+    );
     Ok(tasks)
 }
 
@@ -471,8 +718,20 @@ fn pending_items(requests: &HashMap<String, AgentEvent>) -> Vec<Value> {
 
 /// Messages after `after_id`, oldest first, cut to fit one frame. `hasMore` asks the
 /// viewer for the next page after the last id it got.
-pub(crate) fn messages_page(db: &rusqlite::Connection, session_id: &str, after_id: i64) -> Result<Value> {
-    let title: String = db.query_row("SELECT title FROM sessions WHERE id=?1", [session_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Conversation not found.")?;
+pub(crate) fn messages_page(
+    db: &rusqlite::Connection,
+    session_id: &str,
+    after_id: i64,
+) -> Result<Value> {
+    let title: String = db
+        .query_row(
+            "SELECT title FROM sessions WHERE id=?1",
+            [session_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or("Conversation not found.")?;
     let mut statement = db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e| e.to_string())?;
     let rows: Vec<Value> = statement
         .query_map(rusqlite::params![session_id, after_id, PAGE_ROWS], |r| {
@@ -482,7 +741,11 @@ pub(crate) fn messages_page(db: &rusqlite::Connection, session_id: &str, after_i
         .collect::<rusqlite::Result<_>>()
         .map_err(|e| e.to_string())?;
     let fetched = rows.len();
-    let mut room = PAGE_BUDGET.saturating_sub(json!({"messages": [], "hasMore": true, "title": title}).to_string().len());
+    let mut room = PAGE_BUDGET.saturating_sub(
+        json!({"messages": [], "hasMore": true, "title": title})
+            .to_string()
+            .len(),
+    );
     let mut kept = Vec::new();
     for mut message in rows {
         if message.to_string().len() > MAX_MESSAGE {
@@ -503,17 +766,30 @@ pub(crate) fn messages_page(db: &rusqlite::Connection, session_id: &str, after_i
 /// Drops the tail of a list until its JSON fits `budget`.
 pub(crate) fn fit_list(list: &mut Vec<Value>, budget: usize) {
     let mut size = 2;
-    let keep = list.iter().take_while(|item| {
-        size += item.to_string().len() + 1;
-        size <= budget
-    }).count();
+    let keep = list
+        .iter()
+        .take_while(|item| {
+            size += item.to_string().len() + 1;
+            size <= budget
+        })
+        .count();
     list.truncate(keep);
 }
 
 /// Trims the longest model lists until the provider list fits one reply.
 pub(crate) fn fit_providers(providers: &mut Value) {
     while providers.to_string().len() > PAGE_BUDGET {
-        let Some(models) = providers.as_array_mut().and_then(|list| list.iter_mut().filter_map(|p| p["models"].as_array_mut()).max_by_key(|models| models.len())).filter(|models| !models.is_empty()) else { return };
+        let Some(models) = providers
+            .as_array_mut()
+            .and_then(|list| {
+                list.iter_mut()
+                    .filter_map(|p| p["models"].as_array_mut())
+                    .max_by_key(|models| models.len())
+            })
+            .filter(|models| !models.is_empty())
+        else {
+            return;
+        };
         let keep = models.len() / 2;
         models.truncate(keep);
     }
@@ -522,8 +798,17 @@ pub(crate) fn fit_providers(providers: &mut Value) {
 /// Appends an event to a subscriber's buffer, joining consecutive text deltas.
 pub(crate) fn push_event(events: &mut Vec<Value>, event: Value) {
     if event["kind"] == "text" {
-        if let Some(last) = events.last_mut().filter(|last| last["kind"] == "text" && last["sessionId"] == event["sessionId"] && last["data"] == event["data"] && last["requestId"] == event["requestId"]) {
-            let joined = format!("{}{}", last["text"].as_str().unwrap_or_default(), event["text"].as_str().unwrap_or_default());
+        if let Some(last) = events.last_mut().filter(|last| {
+            last["kind"] == "text"
+                && last["sessionId"] == event["sessionId"]
+                && last["data"] == event["data"]
+                && last["requestId"] == event["requestId"]
+        }) {
+            let joined = format!(
+                "{}{}",
+                last["text"].as_str().unwrap_or_default(),
+                event["text"].as_str().unwrap_or_default()
+            );
             last["text"] = json!(joined);
             return;
         }
@@ -568,8 +853,18 @@ pub(crate) fn follow(app: &tauri::AppHandle, device: &str, session_id: &str) {
 
 /// Drops subscribers that expired, left the account or lost trust; true if any remain.
 fn prune_subscribers(inner: &mut super::Inner, now: Instant) -> bool {
-    let super::Inner { subscribers, devices, settings, .. } = inner;
-    subscribers.retain(|id, subscriber| subscriber.until.is_some_and(|until| until > now) && devices.iter().any(|d| &d.id == id && settings.is_trusted(id, &d.public_key)));
+    let super::Inner {
+        subscribers,
+        devices,
+        settings,
+        ..
+    } = inner;
+    subscribers.retain(|id, subscriber| {
+        subscriber.until.is_some_and(|until| until > now)
+            && devices
+                .iter()
+                .any(|d| &d.id == id && settings.is_trusted(id, &d.public_key))
+    });
     !subscribers.is_empty()
 }
 
@@ -584,22 +879,42 @@ pub(crate) fn agent_event(app: &tauri::AppHandle, event: &AgentEvent) {
 }
 
 /// Queues `run.finished` for every device mirroring the task.
-pub(crate) fn run_finished(app: &tauri::AppHandle, session_id: &str, successful: bool, stopped: bool, text: &str) {
-    buffer(app, session_id, |subscriber| subscriber.finished.push(json!({"sessionId": session_id, "successful": successful, "stopped": stopped, "text": text})));
+pub(crate) fn run_finished(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    successful: bool,
+    stopped: bool,
+    text: &str,
+) {
+    buffer(app, session_id, |subscriber| {
+        subscriber.finished.push(json!({"sessionId": session_id, "successful": successful, "stopped": stopped, "text": text}))
+    });
 }
 
 fn buffer(app: &tauri::AppHandle, session_id: &str, mut add: impl FnMut(&mut Subscriber)) {
-    let Some(state) = app.try_state::<super::Remote>() else { return };
+    let Some(state) = app.try_state::<super::Remote>() else {
+        return;
+    };
     let schedule = {
         let mut inner = state.lock();
         let connected = inner.outbox.is_some() || !inner.direct_peers.is_empty();
-        if !inner.settings.host_enabled || !connected || !inner.subscribers.values().any(|s| s.sessions.contains(session_id)) {
+        if !inner.settings.host_enabled
+            || !connected
+            || !inner
+                .subscribers
+                .values()
+                .any(|s| s.sessions.contains(session_id))
+        {
             return;
         }
         if !prune_subscribers(&mut inner, Instant::now()) {
             return;
         }
-        for subscriber in inner.subscribers.values_mut().filter(|s| s.sessions.contains(session_id)) {
+        for subscriber in inner
+            .subscribers
+            .values_mut()
+            .filter(|s| s.sessions.contains(session_id))
+        {
             add(subscriber);
         }
         !std::mem::replace(&mut inner.flushing, true)
@@ -618,14 +933,34 @@ async fn flush(app: tauri::AppHandle) {
         let mut inner = state.lock();
         inner.flushing = false;
         let hosting = inner.settings.host_enabled;
-        inner.subscribers.iter_mut().filter(|_| hosting).map(|(id, s)| (id.clone(), std::mem::take(&mut s.events), std::mem::take(&mut s.finished))).filter(|(_, events, finished)| !events.is_empty() || !finished.is_empty()).collect()
+        inner
+            .subscribers
+            .iter_mut()
+            .filter(|_| hosting)
+            .map(|(id, s)| {
+                (
+                    id.clone(),
+                    std::mem::take(&mut s.events),
+                    std::mem::take(&mut s.finished),
+                )
+            })
+            .filter(|(_, events, finished)| !events.is_empty() || !finished.is_empty())
+            .collect()
     };
     for (device, events, finished) in batches {
         for frame in frames(events) {
-            let _ = socket::send_trusted(&app, &device, &json!({"type": "event", "name": "agent.events", "data": {"events": frame}}));
+            let _ = socket::send_trusted(
+                &app,
+                &device,
+                &json!({"type": "event", "name": "agent.events", "data": {"events": frame}}),
+            );
         }
         for data in finished {
-            let _ = socket::send_trusted(&app, &device, &json!({"type": "event", "name": "run.finished", "data": data}));
+            let _ = socket::send_trusted(
+                &app,
+                &device,
+                &json!({"type": "event", "name": "run.finished", "data": data}),
+            );
         }
     }
 }
@@ -641,8 +976,14 @@ fn head(text: &str, max: usize) -> &str {
 fn longest_string(value: &mut Value) -> Option<&mut String> {
     match value {
         Value::String(text) => Some(text),
-        Value::Array(items) => items.iter_mut().filter_map(longest_string).max_by_key(|text| text.len()),
-        Value::Object(map) => map.values_mut().filter_map(longest_string).max_by_key(|text| text.len()),
+        Value::Array(items) => items
+            .iter_mut()
+            .filter_map(longest_string)
+            .max_by_key(|text| text.len()),
+        Value::Object(map) => map
+            .values_mut()
+            .filter_map(longest_string)
+            .max_by_key(|text| text.len()),
         _ => None,
     }
 }
@@ -650,14 +991,19 @@ fn longest_string(value: &mut Value) -> Option<&mut String> {
 /// Halves the longest string in `value`, marking the cut, until it serializes under `max`.
 fn shrink(value: &mut Value, max: usize) {
     while value.to_string().len() > max {
-        let Some(longest) = longest_string(value).filter(|text| text.len() > 2 * CUT.len()) else { return };
+        let Some(longest) = longest_string(value).filter(|text| text.len() > 2 * CUT.len()) else {
+            return;
+        };
         *longest = format!("{}{CUT}", head(longest, longest.len() / 2));
     }
 }
 
 /// Cuts one oversized message. JSON content (tool calls) is cut inside, so it still parses.
 fn cut(message: &mut Value) {
-    let parsed = message["content"].as_str().and_then(|content| serde_json::from_str::<Value>(content).ok()).filter(Value::is_object);
+    let parsed = message["content"]
+        .as_str()
+        .and_then(|content| serde_json::from_str::<Value>(content).ok())
+        .filter(Value::is_object);
     if let Some(mut content) = parsed {
         shrink(&mut content, MAX_MESSAGE * 3 / 4);
         message["content"] = json!(content.to_string());
@@ -672,35 +1018,157 @@ mod tests {
     #[test]
     fn everything_is_refused_while_hosting_is_off() {
         for method in METHODS {
-            assert_eq!(parse(false, method, &json!({"sessionId": "s", "text": "hi", "requestId": "r", "approve": true})), Err(OFF.to_string()));
+            assert_eq!(
+                parse(
+                    false,
+                    method,
+                    &json!({"sessionId": "s", "text": "hi", "requestId": "r", "approve": true})
+                ),
+                Err(OFF.to_string())
+            );
         }
         assert_eq!(parse(false, "nope", &json!({})), Err(OFF.to_string()));
     }
 
     #[test]
     fn requests_are_validated() {
-        assert_eq!(parse(true, "subscribe", &json!({"sessionIds": ["s1", "s2"]})), Ok(Call::Subscribe { session_ids: vec!["s1".into(), "s2".into()] }));
+        assert_eq!(
+            parse(true, "subscribe", &json!({"sessionIds": ["s1", "s2"]})),
+            Ok(Call::Subscribe {
+                session_ids: vec!["s1".into(), "s2".into()]
+            })
+        );
         assert!(parse(true, "subscribe", &json!({})).is_err());
         assert!(parse(true, "subscribe", &json!({"sessionIds": ["a b"]})).is_err());
-        assert!(parse(true, "subscribe", &json!({"sessionIds": vec!["s"; MAX_IDS + 1]})).is_err());
-        assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": " hi "})), Ok(Call::Send { session_id: "s1".into(), text: "hi".into() }));
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": 7})), Ok(Call::Messages { session_id: "s1".into(), after_id: 7 }));
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": -3})), Ok(Call::Messages { session_id: "s1".into(), after_id: 0 }));
-        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "effort": null})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: Some(None), mode: None }));
-        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "mode": "ask"})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: None, mode: Some("ask".into()) }));
-        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "provider": "codex", "model": "gpt"})), Ok(Call::Configure { session_id: "s1".into(), model: Some(("codex".into(), "gpt".into())), effort: None, mode: None }));
-        assert!(parse(true, "task.configure", &json!({"sessionId": "s1", "model": "gpt"})).is_err());
-        assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "x".repeat(MAX_TEXT + 1)})).is_err());
+        assert!(parse(
+            true,
+            "subscribe",
+            &json!({"sessionIds": vec!["s"; MAX_IDS + 1]})
+        )
+        .is_err());
+        assert_eq!(
+            parse(
+                true,
+                "task.send",
+                &json!({"sessionId": "s1", "text": " hi "})
+            ),
+            Ok(Call::Send {
+                session_id: "s1".into(),
+                text: "hi".into()
+            })
+        );
+        assert_eq!(
+            parse(
+                true,
+                "task.messages",
+                &json!({"sessionId": "s1", "afterId": 7})
+            ),
+            Ok(Call::Messages {
+                session_id: "s1".into(),
+                after_id: 7
+            })
+        );
+        assert_eq!(
+            parse(
+                true,
+                "task.messages",
+                &json!({"sessionId": "s1", "afterId": -3})
+            ),
+            Ok(Call::Messages {
+                session_id: "s1".into(),
+                after_id: 0
+            })
+        );
+        assert_eq!(
+            parse(
+                true,
+                "task.configure",
+                &json!({"sessionId": "s1", "effort": null})
+            ),
+            Ok(Call::Configure {
+                session_id: "s1".into(),
+                model: None,
+                effort: Some(None),
+                mode: None
+            })
+        );
+        assert_eq!(
+            parse(
+                true,
+                "task.configure",
+                &json!({"sessionId": "s1", "mode": "ask"})
+            ),
+            Ok(Call::Configure {
+                session_id: "s1".into(),
+                model: None,
+                effort: None,
+                mode: Some("ask".into())
+            })
+        );
+        assert_eq!(
+            parse(
+                true,
+                "task.configure",
+                &json!({"sessionId": "s1", "provider": "pantheon", "model": "gpt"})
+            ),
+            Ok(Call::Configure {
+                session_id: "s1".into(),
+                model: Some(("pantheon".into(), "gpt".into())),
+                effort: None,
+                mode: None
+            })
+        );
+        assert!(parse(
+            true,
+            "task.configure",
+            &json!({"sessionId": "s1", "model": "gpt"})
+        )
+        .is_err());
+        assert!(parse(
+            true,
+            "task.send",
+            &json!({"sessionId": "s1", "text": "x".repeat(MAX_TEXT + 1)})
+        )
+        .is_err());
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "  "})).is_err());
         assert!(parse(true, "task.messages", &json!({"sessionId": "a\nb"})).is_err());
         assert!(parse(true, "task.stop", &json!({})).is_err());
-        assert!(parse(true, "approval.respond", &json!({"sessionId": "s", "requestId": "r"})).is_err());
-        assert!(parse(true, "input.respond", &json!({"sessionId": "s", "requestId": "r"})).is_err());
-        assert_eq!(parse(true, "tasks.list", &json!({})), Ok(Call::TasksList { limit: TASKS_DEFAULT }));
-        assert_eq!(parse(true, "tasks.list", &json!({"limit": null})), Ok(Call::TasksList { limit: TASKS_DEFAULT }));
-        assert_eq!(parse(true, "tasks.list", &json!({"limit": 500})), Ok(Call::TasksList { limit: 500 }));
-        assert_eq!(parse(true, "tasks.list", &json!({"limit": 1})), Ok(Call::TasksList { limit: 1 }));
-        assert_eq!(parse(true, "tasks.list", &json!({"limit": 0})), Ok(Call::TasksList { limit: 0 }));
+        assert!(parse(
+            true,
+            "approval.respond",
+            &json!({"sessionId": "s", "requestId": "r"})
+        )
+        .is_err());
+        assert!(parse(
+            true,
+            "input.respond",
+            &json!({"sessionId": "s", "requestId": "r"})
+        )
+        .is_err());
+        assert_eq!(
+            parse(true, "tasks.list", &json!({})),
+            Ok(Call::TasksList {
+                limit: TASKS_DEFAULT
+            })
+        );
+        assert_eq!(
+            parse(true, "tasks.list", &json!({"limit": null})),
+            Ok(Call::TasksList {
+                limit: TASKS_DEFAULT
+            })
+        );
+        assert_eq!(
+            parse(true, "tasks.list", &json!({"limit": 500})),
+            Ok(Call::TasksList { limit: 500 })
+        );
+        assert_eq!(
+            parse(true, "tasks.list", &json!({"limit": 1})),
+            Ok(Call::TasksList { limit: 1 })
+        );
+        assert_eq!(
+            parse(true, "tasks.list", &json!({"limit": 0})),
+            Ok(Call::TasksList { limit: 0 })
+        );
         assert!(parse(true, "tasks.list", &json!({"limit": 501})).is_err());
         assert!(parse(true, "tasks.list", &json!({"limit": 1.5})).is_err());
         assert!(parse(true, "tasks.list", &json!({"limit": "20"})).is_err());
@@ -712,12 +1180,32 @@ mod tests {
 
     #[test]
     fn provider_requests_are_validated() {
-        assert_eq!(parse(true, "providers.list", &json!({})), Ok(Call::Providers { force: false }));
-        assert_eq!(parse(true, "providers.list", &json!({"force": true})), Ok(Call::Providers { force: true }));
+        assert_eq!(
+            parse(true, "providers.list", &json!({})),
+            Ok(Call::Providers { force: false })
+        );
+        assert_eq!(
+            parse(true, "providers.list", &json!({"force": true})),
+            Ok(Call::Providers { force: true })
+        );
         assert!(parse(true, "providers.list", &json!({"force": "yes"})).is_err());
-        assert_eq!(parse(true, "providers.models", &json!({"provider": "codex", "force": null})), Ok(Call::Models { provider: "codex".into(), force: false }));
-        assert_eq!(parse(true, "providers.models", &json!({"provider": "omp", "force": true})), Ok(Call::Models { provider: "omp".into(), force: true }));
-        for bad in [json!({}), json!({"provider": "../bin/sh"}), json!({"provider": "gemini"}), json!({"provider": 3})] {
+        assert_eq!(
+            parse(
+                true,
+                "providers.models",
+                &json!({"provider": "pantheon", "force": null})
+            ),
+            Ok(Call::Models {
+                provider: "pantheon".into(),
+                force: false
+            })
+        );
+        for bad in [
+            json!({}),
+            json!({"provider": "../bin/sh"}),
+            json!({"provider": "gemini"}),
+            json!({"provider": 3}),
+        ] {
             assert!(parse(true, "providers.models", &bad).is_err(), "{bad}");
         }
     }
@@ -727,11 +1215,13 @@ mod tests {
         let model = json!({"id": "m", "name": "x".repeat(1000)});
         let mut list = vec![model.clone(); 400];
         fit_list(&mut list, PAGE_BUDGET);
-        assert!(!list.is_empty() && list.len() < 400 && json!(list).to_string().len() <= PAGE_BUDGET);
+        assert!(
+            !list.is_empty() && list.len() < 400 && json!(list).to_string().len() <= PAGE_BUDGET
+        );
         let mut small = vec![model.clone(); 3];
         fit_list(&mut small, PAGE_BUDGET);
         assert_eq!(small.len(), 3);
-        let mut providers = json!([{"id": "opencode", "models": vec![model.clone(); 400]}, {"id": "claude", "models": [model]}]);
+        let mut providers = json!([{"id": "pantheon", "models": vec![model.clone(); 400]}, {"id": "pantheon", "models": [model]}]);
         fit_providers(&mut providers);
         assert!(providers.to_string().len() <= PAGE_BUDGET);
         assert_eq!(providers[1]["models"].as_array().unwrap().len(), 1);
@@ -766,7 +1256,10 @@ mod tests {
         assert_eq!(pending[0]["kind"], "input_request");
         assert_eq!(pending[0]["requestId"], request_id);
         assert_eq!(pending[0]["text"], "Choose one");
-        assert!(pending[0]["data"]["question"].as_str().unwrap().contains("[cut on the host"));
+        assert!(pending[0]["data"]["question"]
+            .as_str()
+            .unwrap()
+            .contains("[cut on the host"));
         assert!(pending[0].get("tool").is_none());
         assert!(json!(pending).to_string().len() <= MAX_MESSAGE);
     }
@@ -784,52 +1277,122 @@ mod tests {
         let now = 1_000_000_000;
         let nonce = "0123456789abcdef0123";
         assert!(replay.check(Some(now - 1000), Some(nonce), now).is_ok());
-        assert!(replay.check(Some(now - 1000), Some(nonce), now + 10).is_err(), "same nonce twice");
-        assert!(replay.check(Some(now - 60_001), Some("fresh-nonce-000001"), now).is_err(), "too old");
-        assert!(replay.check(Some(now + 60_001), Some("fresh-nonce-000002"), now).is_err(), "too new");
+        assert!(
+            replay
+                .check(Some(now - 1000), Some(nonce), now + 10)
+                .is_err(),
+            "same nonce twice"
+        );
+        assert!(
+            replay
+                .check(Some(now - 60_001), Some("fresh-nonce-000001"), now)
+                .is_err(),
+            "too old"
+        );
+        assert!(
+            replay
+                .check(Some(now + 60_001), Some("fresh-nonce-000002"), now)
+                .is_err(),
+            "too new"
+        );
         assert!(replay.check(None, Some("fresh-nonce-000003"), now).is_err());
         assert!(replay.check(Some(now), Some("short"), now).is_err());
         assert!(replay.check(Some(now), None, now).is_err());
         // Seen nonces are pruned once their ts leaves the window.
-        assert!(replay.check(Some(now + 61_500), Some("fresh-nonce-000004"), now + 61_500).is_ok());
+        assert!(replay
+            .check(Some(now + 61_500), Some("fresh-nonce-000004"), now + 61_500)
+            .is_ok());
         assert!(!replay.seen.contains_key(nonce));
     }
 
     fn event(session: &str, kind: &str, text: &str) -> Value {
-        serde_json::to_value(AgentEvent { session_id: session.into(), kind: kind.into(), text: text.into(), request_id: None, data: None, tool: None }).unwrap()
+        serde_json::to_value(AgentEvent {
+            session_id: session.into(),
+            kind: kind.into(),
+            text: text.into(),
+            request_id: None,
+            data: None,
+            tool: None,
+        })
+        .unwrap()
     }
 
     #[test]
     fn consecutive_text_deltas_are_merged() {
         let mut events = Vec::new();
-        for (session, kind, text) in [("a", "text", "Hel"), ("a", "text", "lo"), ("b", "text", "other"), ("a", "text", " there"), ("a", "tool", "ls"), ("a", "text", "!"), ("a", "text", "?")] {
+        for (session, kind, text) in [
+            ("a", "text", "Hel"),
+            ("a", "text", "lo"),
+            ("b", "text", "other"),
+            ("a", "text", " there"),
+            ("a", "tool", "ls"),
+            ("a", "text", "!"),
+            ("a", "text", "?"),
+        ] {
             push_event(&mut events, event(session, kind, text));
         }
-        let texts: Vec<(&str, &str)> = events.iter().map(|e| (e["sessionId"].as_str().unwrap(), e["text"].as_str().unwrap())).collect();
-        assert_eq!(texts, [("a", "Hello"), ("b", "other"), ("a", " there"), ("a", "ls"), ("a", "!?")]);
+        let texts: Vec<(&str, &str)> = events
+            .iter()
+            .map(|e| {
+                (
+                    e["sessionId"].as_str().unwrap(),
+                    e["text"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                ("a", "Hello"),
+                ("b", "other"),
+                ("a", " there"),
+                ("a", "ls"),
+                ("a", "!?")
+            ]
+        );
         // A delta of another message (its data differs) starts a new event.
         let mut tagged = event("a", "text", "new");
         tagged["data"] = json!({"messageId": "m2"});
         push_event(&mut events, tagged);
         assert_eq!(events.len(), 6);
         // A viewer that falls far behind stops buffering; it catches up at the run end.
-        let mut full: Vec<Value> = (0..MAX_BUFFER).map(|i| event("a", "tool", &i.to_string())).collect();
+        let mut full: Vec<Value> = (0..MAX_BUFFER)
+            .map(|i| event("a", "tool", &i.to_string()))
+            .collect();
         push_event(&mut full, event("a", "tool", "late"));
         assert_eq!(full.len(), MAX_BUFFER);
     }
 
     #[test]
     fn events_are_framed_under_the_budget() {
-        let events: Vec<Value> = (0..30).map(|i| event("a", "tool", &format!("{i}{}", "o".repeat(20 * 1024)))).chain([event("a", "text", &"é".repeat(300 * 1024))]).collect();
+        let events: Vec<Value> = (0..30)
+            .map(|i| event("a", "tool", &format!("{i}{}", "o".repeat(20 * 1024))))
+            .chain([event("a", "text", &"é".repeat(300 * 1024))])
+            .collect();
         let framed = frames(events);
         assert!(framed.len() > 1);
-        assert_eq!(framed.iter().map(Vec::len).sum::<usize>(), 31, "nothing is dropped");
+        assert_eq!(
+            framed.iter().map(Vec::len).sum::<usize>(),
+            31,
+            "nothing is dropped"
+        );
         let key = [7u8; 32];
         for frame in &framed {
-            let body = super::super::crypto::seal(&key, "a", "b", json!({"type": "event", "name": "agent.events", "data": {"events": frame}}).to_string().as_bytes()).unwrap();
+            let body = super::super::crypto::seal(
+                &key,
+                "a",
+                "b",
+                json!({"type": "event", "name": "agent.events", "data": {"events": frame}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
             assert!(json!({"to": "b", "body": body}).to_string().len() < 256 * 1024);
         }
-        assert!(framed.last().unwrap()[0]["text"].as_str().unwrap().ends_with(CUT));
+        assert!(framed.last().unwrap()[0]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with(CUT));
         assert!(frames(Vec::new()).is_empty());
     }
 
@@ -841,10 +1404,21 @@ mod tests {
         db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','tool',?1,1),('t','user','elsewhere',2),('s','assistant','done',3)", [&tool]).unwrap();
         let page = messages_page(&db, "s", 0).unwrap();
         let messages = page["messages"].as_array().unwrap();
-        assert_eq!((messages.len(), page["hasMore"].as_bool(), page["title"].as_str()), (2, Some(false), Some("Task")), "only this task's messages");
+        assert_eq!(
+            (
+                messages.len(),
+                page["hasMore"].as_bool(),
+                page["title"].as_str()
+            ),
+            (2, Some(false), Some("Task")),
+            "only this task's messages"
+        );
         assert!(messages[0].to_string().len() <= MAX_MESSAGE);
-        let parsed = serde_json::from_str::<Value>(messages[0]["content"].as_str().unwrap()).expect("tool content still parses");
-        assert!(parsed["output"].as_str().unwrap().ends_with(CUT) && parsed["status"] == "completed");
+        let parsed = serde_json::from_str::<Value>(messages[0]["content"].as_str().unwrap())
+            .expect("tool content still parses");
+        assert!(
+            parsed["output"].as_str().unwrap().ends_with(CUT) && parsed["status"] == "completed"
+        );
         assert_eq!(messages[1]["content"], "done");
         assert!(messages_page(&db, "missing", 0).is_err());
     }

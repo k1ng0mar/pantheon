@@ -138,12 +138,17 @@ mod tests {
             .unwrap();
         f.write("src/ours.txt", "before batch\nour edit\n");
         tracker
-            .report(json!({"action":"complete","captureId":begun["captureId"],"paths":[complete_path]}))
+            .report(
+                json!({"action":"complete","captureId":begun["captureId"],"paths":[complete_path]}),
+            )
             .unwrap();
         let captured = tracker.finish().unwrap();
         assert_eq!(captured.summary.files.len(), 1);
         assert_eq!(captured.summary.files[0].path, "src/ours.txt");
-        assert_eq!((captured.summary.additions, captured.summary.deletions), (1, 0));
+        assert_eq!(
+            (captured.summary.additions, captured.summary.deletions),
+            (1, 0)
+        );
         assert!(!captured.summary.truncated);
         assert!(captured.details[0].patch.contains("+our edit"));
     }
@@ -256,7 +261,14 @@ mod tests {
                 .unwrap()["args"]["hello"],
             true
         );
-        for path in ["../outside", "src/../outside", ".git/config", ".GIT/config", "src//.git/config", "/tmp/absolute"] {
+        for path in [
+            "../outside",
+            "src/../outside",
+            ".git/config",
+            ".GIT/config",
+            "src//.git/config",
+            "/tmp/absolute",
+        ] {
             assert!(
                 (host.handler)(TOOL.into(), json!({"action":"begin","paths":[path]}))
                     .await

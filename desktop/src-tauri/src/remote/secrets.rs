@@ -37,7 +37,10 @@ pub(crate) fn update(dir: &Path, change: impl FnOnce(Secrets) -> Secrets) -> cra
 }
 
 pub(crate) fn set_token(dir: &Path, token: &str) -> crate::Result<()> {
-    update(dir, |s| Secrets { token: Some(token.to_owned()), ..s })
+    update(dir, |s| Secrets {
+        token: Some(token.to_owned()),
+        ..s
+    })
 }
 
 /// Sign-out: drops the token and keeps the device key.
@@ -46,7 +49,10 @@ pub(crate) fn remove_token(dir: &Path) -> crate::Result<()> {
 }
 
 pub(crate) fn set_key(dir: &Path, key: &str) -> crate::Result<()> {
-    update(dir, |s| Secrets { key: Some(key.to_owned()), ..s })
+    update(dir, |s| Secrets {
+        key: Some(key.to_owned()),
+        ..s
+    })
 }
 
 #[cfg(test)]
@@ -54,7 +60,8 @@ mod tests {
     use super::*;
 
     fn temp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pantheon-connect-secrets-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("pantheon-connect-secrets-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -64,9 +71,21 @@ mod tests {
         let dir = temp_dir();
         set_key(&dir, "k").unwrap();
         set_token(&dir, "t").unwrap();
-        assert_eq!(read(&dir), Secrets { token: Some("t".into()), key: Some("k".into()) });
+        assert_eq!(
+            read(&dir),
+            Secrets {
+                token: Some("t".into()),
+                key: Some("k".into())
+            }
+        );
         remove_token(&dir).unwrap();
-        assert_eq!(read(&dir), Secrets { token: None, key: Some("k".into()) });
+        assert_eq!(
+            read(&dir),
+            Secrets {
+                token: None,
+                key: Some("k".into())
+            }
+        );
         // Removing the last field removes the file.
         update(&dir, |_| Secrets::default()).unwrap();
         assert!(!dir.join(FILE).exists());
@@ -82,7 +101,10 @@ mod tests {
         assert_eq!(read(&dir), Secrets::default());
         assert!(set_token(&dir, "t").unwrap_err().contains("corrupt"));
         assert!(update(&dir, |_| Secrets::default()).is_err());
-        assert_eq!(std::fs::read_to_string(dir.join(FILE)).unwrap(), "{not json");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(FILE)).unwrap(),
+            "{not json"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -97,10 +119,15 @@ mod tests {
         if std::fs::read(&path).is_ok() {
             return; // Running as root: permissions do not stop reads.
         }
-        assert!(set_token(&dir, "new").unwrap_err().contains("Could not read"));
+        assert!(set_token(&dir, "new")
+            .unwrap_err()
+            .contains("Could not read"));
         assert!(remove_token(&dir).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"token":"old","key":"k"}"#);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"token":"old","key":"k"}"#
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -109,13 +136,29 @@ mod tests {
         let dir = temp_dir();
         set_token(&dir, "t").unwrap();
         set_key(&dir, "k").unwrap();
-        let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
         names.sort();
-        assert_eq!(names, vec![std::ffi::OsString::from(FILE), std::ffi::OsString::from("connect-secrets.lock")]);
+        assert_eq!(
+            names,
+            vec![
+                std::ffi::OsString::from(FILE),
+                std::ffi::OsString::from("connect-secrets.lock")
+            ]
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(dir.join(FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(dir.join(FILE))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
         }
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -47,10 +47,17 @@ fn ordinary_windows_path(path: &str) -> Option<String> {
         return None;
     }
     for part in ordinary.split('\\').filter(|part| !part.is_empty()) {
-        let name = part.split('.').next().unwrap_or_default().to_ascii_uppercase();
+        let name = part
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
         if part.ends_with([' ', '.'])
             || part.contains(['/', '*', '?'])
-            || matches!(name.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+            || matches!(
+                name.as_str(),
+                "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+            )
             || (name.len() == 4
                 && (name.starts_with("COM") || name.starts_with("LPT"))
                 && matches!(name.as_bytes()[3], b'1'..=b'9'))
@@ -79,41 +86,44 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let package =
-        match name.as_str() {
-            "codex" => "@openai/codex",
-            "claude" => "@anthropic-ai/claude-code",
-            "opencode" => "opencode-ai",
-            "pi" => "@earendil-works/pi-coding-agent",
-            "dsh" => "@deepseek-ai/dsh",
-            "command-code" | "cmdc" | "commandcode" => "command-code",
-            "copilot" => "@github/copilot",
-            "cline" => "cline",
-            "kilo" | "kilocode" => "@kilocode/cli",
-            _ => return Err(
-                "This batch launcher is unsupported. Select the native harness executable instead."
-                    .into(),
-            ),
-        };
     let directory = path
         .parent()
         .ok_or("The npm launcher has no installation folder.")?;
     let modules = if directory.file_name().is_some_and(|name| name == ".bin") {
         directory
             .parent()
-            .ok_or("The npm launcher has no package folder.")?
+            .ok_or("The npm launcher has no package folder")?
             .to_path_buf()
     } else {
         directory.join("node_modules")
     };
-    let script = match modules.join(package).canonicalize() {
-        Ok(package) => declared_entry(&package, &name)?,
-        Err(_) => shim_entry(path, directory, &name)
-            .or_else(|| sibling_launcher(path, directory))
-            .ok_or_else(|| format!("The npm harness package could not be found. Reinstall it with `npm install -g {package}` or select its native executable."))?,
-    };
-    let host = script.file_name().and_then(|name| name.to_str()).unwrap_or("").to_ascii_lowercase();
-    if ["cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe"].contains(&host.as_str()) {
+    let package = discover_package(&modules, &name);
+    // Prefer the package's own declared entry; fall back to what the shim
+    // itself points at, which is how pnpm and per-version installs lay out.
+    let script = package
+        .and_then(|package| package.canonicalize().ok())
+        .map(|package| declared_entry(&package, &name))
+        .transpose()?
+        .or_else(|| shim_entry(path, directory, &name))
+        .or_else(|| sibling_launcher(path, directory))
+        .ok_or_else(|| {
+            format!("The npm launcher behind {name} could not be resolved. Reinstall it, or select the native executable.")
+        })?;
+    let host = script
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if [
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "wscript.exe",
+        "cscript.exe",
+        "mshta.exe",
+    ]
+    .contains(&host.as_str())
+    {
         return Err("The npm harness executable must not be a shell.".into());
     }
     if script
@@ -133,6 +143,55 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
         program: external_path_for(&node, windows),
         args: vec![external_path_for(&script, windows).into_os_string()],
     })
+}
+
+/// Find the installed package that provides a launcher, by asking each package
+/// in `node_modules` whether its own `package.json` declares that bin name.
+/// Nothing here is harness-specific: a package is identified by what it ships.
+fn discover_package(modules: &Path, name: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(modules).ok()?;
+    for entry in entries.take(1024).flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|entry| entry == ".bin") {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|entry| entry.to_str())
+            .is_some_and(|entry| entry.starts_with('@'))
+        {
+            // A scope holds packages one level deeper.
+            if let Ok(scoped) = std::fs::read_dir(&path) {
+                for inner in scoped.take(256).flatten() {
+                    if declares_bin(&inner.path(), name) {
+                        return Some(inner.path());
+                    }
+                }
+            }
+            continue;
+        }
+        if declares_bin(&path, name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn declares_bin(package: &Path, name: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(package.join("package.json")) else {
+        return false;
+    };
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    match &document["bin"] {
+        serde_json::Value::Object(bins) => bins.contains_key(name),
+        serde_json::Value::String(_) => document["name"]
+            .as_str()
+            .and_then(|full| full.rsplit('/').next())
+            .is_some_and(|last| last.eq_ignore_ascii_case(name)),
+        _ => false,
+    }
 }
 
 /// The executable a package declares in `package.json` `bin`, kept inside the package.
@@ -198,7 +257,9 @@ fn sibling_launcher(shim: &Path, directory: &Path) -> Option<PathBuf> {
         let target = shim_target(&directory, &pair[1])?;
         (target.parent() == Some(directory.as_path())
             && target.is_file()
-            && target.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("js")))
+            && target
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("js")))
         .then_some(target)
     })
 }
@@ -211,7 +272,13 @@ fn shim_tokens(shim: &Path) -> Option<Vec<String>> {
         .take(64 * 1024)
         .read_to_string(&mut text)
         .ok()?;
-    Some(text.split('"').skip(1).step_by(2).map(str::to_owned).collect())
+    Some(
+        text.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// A `%~dp0`-relative shim word as a real path, refusing other variables.
@@ -220,7 +287,9 @@ fn shim_target(directory: &Path, token: &str) -> Option<PathBuf> {
     if !prefix.eq_ignore_ascii_case("%~dp0") && !prefix.eq_ignore_ascii_case("%dp0%") {
         return None;
     }
-    let relative = token[5..].trim_start_matches(['\\', '/']).replace('\\', "/");
+    let relative = token[5..]
+        .trim_start_matches(['\\', '/'])
+        .replace('\\', "/");
     if relative.contains(['%', '!']) {
         return None;
     }
@@ -253,14 +322,6 @@ pub(super) fn std_command(path: &Path) -> Result<std::process::Command, String> 
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    Ok(command)
-}
-
-pub(crate) fn pty_command(path: &Path) -> Result<portable_pty::CommandBuilder, String> {
-    let launch = resolve(path, cfg!(windows))?;
-    let mut command = portable_pty::CommandBuilder::new(launch.program);
-    command.args(launch.args);
-    crate::child_env::sanitize(&mut command);
     Ok(command)
 }
 
@@ -350,7 +411,11 @@ fn node_manager_dirs(
     env: &impl Fn(&str) -> Option<OsString>,
     home: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let var = |key: &str| env(key).filter(|value| !value.is_empty()).map(PathBuf::from);
+    let var = |key: &str| {
+        env(key)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
     let under_home = |dir: &str| home.map(|home| home.join(dir));
     let bin = |dir: PathBuf| if windows { dir } else { dir.join("bin") };
     let mut dirs = Vec::new();
@@ -358,7 +423,9 @@ fn node_manager_dirs(
         var("FNM_DIR"),
         under_home(".local/share/fnm"),
         under_home("Library/Application Support/fnm"),
-        windows.then(|| var("APPDATA").map(|data| data.join("fnm"))).flatten(),
+        windows
+            .then(|| var("APPDATA").map(|data| data.join("fnm")))
+            .flatten(),
     ];
     for root in fnm.into_iter().flatten() {
         let default = root.join("aliases/default");
@@ -381,10 +448,19 @@ fn node_manager_dirs(
         dirs.extend(version.map(|dir| dir.join("bin")));
     }
     for (root, installs) in [
-        (var("MISE_DATA_DIR").or_else(|| under_home(".local/share/mise")), "installs/node"),
-        (var("ASDF_DATA_DIR").or_else(|| under_home(".asdf")), "installs/nodejs"),
+        (
+            var("MISE_DATA_DIR").or_else(|| under_home(".local/share/mise")),
+            "installs/node",
+        ),
+        (
+            var("ASDF_DATA_DIR").or_else(|| under_home(".asdf")),
+            "installs/nodejs",
+        ),
     ] {
-        dirs.extend(root.and_then(|root| newest_version(&root.join(installs), "")).map(bin));
+        dirs.extend(
+            root.and_then(|root| newest_version(&root.join(installs), ""))
+                .map(bin),
+        );
     }
     if windows {
         dirs.extend(var("NVM_SYMLINK"));
@@ -438,7 +514,11 @@ fn npm_global_bin(
     };
     let configured = ["NPM_CONFIG_PREFIX", "npm_config_prefix"]
         .iter()
-        .find_map(|key| env(key).filter(|value| !value.is_empty()).map(PathBuf::from))
+        .find_map(|key| {
+            env(key)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
         .or_else(npmrc)
         .filter(|prefix| prefix.is_absolute());
     // Windows' default prefix (%APPDATA%\npm) is already searched and holds the shims itself.
@@ -446,7 +526,9 @@ fn npm_global_bin(
         return configured;
     }
     let prefix = configured.or_else(|| {
-        let node = find_in_directories("node", dirs.to_vec(), false)?.canonicalize().ok()?;
+        let node = find_in_directories("node", dirs.to_vec(), false)?
+            .canonicalize()
+            .ok()?;
         Some(node.parent()?.parent()?.to_path_buf())
     })?;
     Some(prefix.join("bin"))
@@ -521,15 +603,35 @@ mod tests {
     fn windows_external_paths_remove_only_safe_namespace_prefixes() {
         for (extended, ordinary) in [
             (r"\\?\C:\project", r"C:\project"),
-            (r"\\?\D:\npm path & spaces\node_modules\@openai\codex\bin\codex.js", r"D:\npm path & spaces\node_modules\@openai\codex\bin\codex.js"),
+            (
+                r"\\?\D:\npm path & spaces\node_modules\@openai\codex\bin\codex.js",
+                r"D:\npm path & spaces\node_modules\@openai\codex\bin\codex.js",
+            ),
             (r"\\?\UNC\server\share\project", r"\\server\share\project"),
             (r"\\?\C:\", r"C:\"),
         ] {
             assert_eq!(ordinary_windows_path(extended).as_deref(), Some(ordinary));
-            assert_eq!(external_path_for(Path::new(extended), true), Path::new(ordinary));
-            assert_eq!(external_path_for(Path::new(extended), false), Path::new(extended));
+            assert_eq!(
+                external_path_for(Path::new(extended), true),
+                Path::new(ordinary)
+            );
+            assert_eq!(
+                external_path_for(Path::new(extended), false),
+                Path::new(extended)
+            );
         }
-        for path in [r"C:\project", "/tmp/project", r"\\.\pipe\agent", r"\\?\Volume{abc}\project", r"\\?\C:\trailing.", r"\\?\C:\trailing ", r"\\?\C:\NUL.txt", r"\\?\C:\COM1", r"\\?\C:\a\..\b", r"\\?\UNC\server"] {
+        for path in [
+            r"C:\project",
+            "/tmp/project",
+            r"\\.\pipe\agent",
+            r"\\?\Volume{abc}\project",
+            r"\\?\C:\trailing.",
+            r"\\?\C:\trailing ",
+            r"\\?\C:\NUL.txt",
+            r"\\?\C:\COM1",
+            r"\\?\C:\a\..\b",
+            r"\\?\UNC\server",
+        ] {
             assert_eq!(ordinary_windows_path(path), None, "{path}");
             assert_eq!(external_path_for(Path::new(path), true), Path::new(path));
         }
@@ -582,11 +684,17 @@ mod tests {
             "HOME" => Some(home.clone()),
             _ => None,
         };
-        assert_eq!(find_in_directories(cli, search_directories(false, &env), false), Some(dsh));
+        assert_eq!(
+            find_in_directories(cli, search_directories(false, &env), false),
+            Some(dsh)
+        );
         // A prefix set with `npm config set prefix` wins over node's own.
         let configured = executable(&f, &format!("home/.npm-packages/bin/{cli}"));
         f.file("home/.npmrc", "fund=false\nprefix = ~/.npm-packages\n");
-        assert_eq!(find_in_directories(cli, search_directories(false, &env), false), Some(configured));
+        assert_eq!(
+            find_in_directories(cli, search_directories(false, &env), false),
+            Some(configured)
+        );
     }
 
     #[cfg(unix)]
@@ -598,7 +706,11 @@ mod tests {
         let home = f.0.join("home").into_os_string();
         let env = |key: &str| (key == "HOME").then(|| home.clone());
         assert_eq!(
-            find_in_directories("pantheon-fixture-grok", search_directories(false, &env), false),
+            find_in_directories(
+                "pantheon-fixture-grok",
+                search_directories(false, &env),
+                false
+            ),
             Some(grok)
         );
     }
@@ -618,14 +730,20 @@ mod tests {
         );
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
-        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+        assert_eq!(
+            launch.args,
+            [external_path_for(&script, true).into_os_string()]
+        );
     }
 
     #[test]
     fn windows_pnpm_shims_run_only_the_entry_their_package_declares() {
         let f = Fixture::new();
         let package = "pnpm/global/v11/hash/node_modules/opencode-ai";
-        f.file(&format!("{package}/package.json"), r#"{"bin":{"opencode":"./bin/opencode.exe"}}"#);
+        f.file(
+            &format!("{package}/package.json"),
+            r#"{"bin":{"opencode":"./bin/opencode.exe"}}"#,
+        );
         let binary = f.file(&format!("{package}/bin/opencode.exe"), "");
         f.file(&format!("{package}/bin/other.exe"), "");
         let shim = f.file(
@@ -647,7 +765,10 @@ mod tests {
         let f = Fixture::new();
         let node = f.file("pnpm/bin/node.exe", "");
         let package = "pnpm/global/v11/hash/node_modules/@earendil-works/pi-coding-agent";
-        f.file(&format!("{package}/package.json"), r#"{"bin":{"pi":"dist/bundle/cli.js"}}"#);
+        f.file(
+            &format!("{package}/package.json"),
+            r#"{"bin":{"pi":"dist/bundle/cli.js"}}"#,
+        );
         let script = f.file(&format!("{package}/dist/bundle/cli.js"), "");
         let shim = f.file(
             "pnpm/bin/pi.cmd",
@@ -655,34 +776,40 @@ mod tests {
         );
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
-        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+        assert_eq!(
+            launch.args,
+            [external_path_for(&script, true).into_os_string()]
+        );
     }
 
     #[test]
-    fn windows_pi_managed_install_runs_its_sibling_launcher_with_node() {
+    fn a_managed_install_runs_its_sibling_launcher_with_node() {
         let f = Fixture::new();
-        let node = f.file("pi/agent/bin/node.exe", "");
-        f.file("pi/agent/install/managed-install.json", "{}");
-        let launcher = f.file("pi/agent/bin/pi-launcher.js", "");
+        let node = f.file("demo/agent/bin/node.exe", "");
+        f.file("demo/agent/install/managed-install.json", "{}");
+        let launcher = f.file("demo/agent/bin/demo-launcher.js", "");
         let shim = f.file(
-            "pi/agent/bin/pi.cmd",
-            "@ECHO off\r\nSETLOCAL\r\nSET \"node=node\"\r\n\"%node%\" \"%~dp0pi-launcher.js\" %*\r\n",
+            "demo/agent/bin/demo.cmd",
+            "@ECHO off\r\nSETLOCAL\r\nSET \"node=node\"\r\n\"%node%\" \"%~dp0demo-launcher.js\" %*\r\n",
         );
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
-        assert_eq!(launch.args, [external_path_for(&launcher, true).into_os_string()]);
+        assert_eq!(
+            launch.args,
+            [external_path_for(&launcher, true).into_os_string()]
+        );
         // Not node, not beside the shim, or not a script: refused, with the npm hint.
-        f.file("pi/agent/elsewhere.js", "");
-        f.file("pi/agent/bin/pi-launcher.exe", "");
+        f.file("demo/agent/elsewhere.js", "");
+        f.file("demo/agent/bin/demo-launcher.exe", "");
         for body in [
-            "\"%other%\" \"%~dp0pi-launcher.js\" %*",
+            "\"%other%\" \"%~dp0demo-launcher.js\" %*",
             "\"%node%\" \"%~dp0..\\elsewhere.js\" %*",
-            "\"%node%\" \"%~dp0pi-launcher.exe\" %*",
+            "\"%node%\" \"%~dp0demo-launcher.exe\" %*",
             "\"%node%\" \"%~dp0missing.js\" %*",
         ] {
-            f.file("pi/agent/bin/pi.cmd", body);
+            f.file("demo/agent/bin/demo.cmd", body);
             let error = resolve(&shim, true).err().unwrap();
-            assert!(error.contains("npm install -g @earendil-works/pi-coding-agent"), "{body}: {error}");
+            assert!(error.contains("could not be resolved"), "{body}: {error}");
         }
     }
 
@@ -728,7 +855,10 @@ mod tests {
         assert!(at(&dirs[3]) < at(Path::new("/usr/bin")));
         // An fnm default alias wins over the newest version.
         fs::create_dir_all(f.0.join("fnm/aliases/default")).unwrap();
-        assert_eq!(node_manager_dirs(false, &env, None), [f.0.join("fnm/aliases/default/bin")]);
+        assert_eq!(
+            node_manager_dirs(false, &env, None),
+            [f.0.join("fnm/aliases/default/bin")]
+        );
     }
 
     #[test]
@@ -752,7 +882,10 @@ mod tests {
     #[test]
     fn windows_shims_never_launch_a_shell_host() {
         let f = Fixture::new();
-        f.file("npm/node_modules/opencode-ai/package.json", r#"{"bin":{"opencode":"CMD.exe"}}"#);
+        f.file(
+            "npm/node_modules/opencode-ai/package.json",
+            r#"{"bin":{"pantheon":"CMD.exe"}}"#,
+        );
         f.file("npm/node_modules/opencode-ai/CMD.exe", "");
         let shim = f.file("npm/opencode.cmd", "");
         assert!(resolve(&shim, true).is_err());
@@ -766,7 +899,7 @@ mod tests {
         let shim = f.file("codex.cmd", "");
         f.file(
             "node_modules/@openai/codex/package.json",
-            r#"{"bin":{"codex":"../../outside.js"}}"#,
+            r#"{"bin":{"pantheon":"../../outside.js"}}"#,
         );
         assert!(resolve(&shim, true).is_err());
     }
@@ -802,13 +935,10 @@ mod tests {
     fn modern_native_bins_and_local_npm_shims_are_supported() {
         let f = Fixture::new();
         for (name, package) in [
-            ("claude", "@anthropic-ai/claude-code"),
-            ("opencode", "opencode-ai"),
-            ("pi", "@earendil-works/pi-coding-agent"),
-            ("copilot", "@github/copilot"),
-            ("cline", "cline"),
-            ("kilo", "@kilocode/cli"),
-            ("kilocode", "@kilocode/cli"),
+            ("tool-a", "@acme/tool-a"),
+            ("tool-b", "tool-b"),
+            ("tool-c", "@acme/tool-c"),
+            ("tool-d", "@acme/tool-d"),
         ] {
             let shim = f.file(&format!("node_modules/.bin/{name}.cmd"), "@echo off");
             f.file(
@@ -873,11 +1003,26 @@ mod tests {
         };
         let path = executable_path_for(false, &env).unwrap();
         let dirs: Vec<_> = std::env::split_paths(&path).collect();
-        assert_eq!(&dirs[..2], &[PathBuf::from("/custom/bin"), PathBuf::from("/usr/bin")]);
-        for path in ["/Users/Person/.local/bin", "/Users/Person/.volta/bin", "/Users/Person/.bun/bin", "/opt/homebrew/bin", "/usr/local/bin", "/bin"] {
+        assert_eq!(
+            &dirs[..2],
+            &[PathBuf::from("/custom/bin"), PathBuf::from("/usr/bin")]
+        );
+        for path in [
+            "/Users/Person/.local/bin",
+            "/Users/Person/.volta/bin",
+            "/Users/Person/.bun/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/bin",
+        ] {
             assert!(dirs.contains(&PathBuf::from(path)), "missing {path}");
         }
-        assert_eq!(dirs.iter().filter(|path| path.as_path() == Path::new("/custom/bin")).count(), 1);
+        assert_eq!(
+            dirs.iter()
+                .filter(|path| path.as_path() == Path::new("/custom/bin"))
+                .count(),
+            1
+        );
     }
 
     #[cfg(unix)]
@@ -885,7 +1030,10 @@ mod tests {
     fn scripts_find_installed_user_tools_with_a_minimal_gui_path() {
         use std::os::unix::fs::PermissionsExt;
         let f = Fixture::new();
-        let tool = f.file(".local/bin/pantheon-test-tool", "#!/bin/sh\nprintf 'found installed tool'\n");
+        let tool = f.file(
+            ".local/bin/pantheon-test-tool",
+            "#!/bin/sh\nprintf 'found installed tool'\n",
+        );
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
         let script = f.file("script.sh", "#!/bin/sh\npantheon-test-tool\n");
         let env = |name: &str| match name {
@@ -894,8 +1042,17 @@ mod tests {
             _ => None,
         };
         let mut command = std::process::Command::new("/bin/sh");
-        command.arg(script).current_dir(&f.0).env("PATH", executable_path_for(false, &env).unwrap());
-        let output = crate::workspace::run_process(command, "GUI Run Script PATH test", 1024, std::time::Duration::from_secs(3)).unwrap();
+        command
+            .arg(script)
+            .current_dir(&f.0)
+            .env("PATH", executable_path_for(false, &env).unwrap());
+        let output = crate::workspace::run_process(
+            command,
+            "GUI Run Script PATH test",
+            1024,
+            std::time::Duration::from_secs(3),
+        )
+        .unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout.bytes, b"found installed tool");
     }
@@ -903,10 +1060,10 @@ mod tests {
     #[test]
     fn native_executables_win_over_shims_and_missing_directories_do_not_stop_search() {
         let f = Fixture::new();
-        f.file("tools/codex.cmd", "");
-        let exe = f.file("tools/codex.exe", "");
+        f.file("tools/demo.cmd", "");
+        let exe = f.file("tools/demo.exe", "");
         assert_eq!(
-            find_in_directories("codex", vec![f.0.join("missing"), f.0.join("tools")], true),
+            find_in_directories("demo", vec![f.0.join("missing"), f.0.join("tools")], true),
             Some(exe)
         );
     }

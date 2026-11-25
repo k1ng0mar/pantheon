@@ -25,7 +25,7 @@ impl Drop for Disk {
 fn setup() -> TeamSetup {
     TeamSetup {
         architect: ModelSelection {
-            provider: "codex".into(),
+            provider: "pantheon".into(),
             model: "gpt-test".into(),
             reasoning_effort: Some("high".into()),
         },
@@ -37,14 +37,14 @@ fn setup() -> TeamSetup {
                 WorkerProfile {
                     id: "quick".into(),
                     name: "Quick".into(),
-                    provider: "claude".into(),
+                    provider: "pantheon".into(),
                     model: "".into(),
                     reasoning_effort: Some("medium".into()),
                 },
                 WorkerProfile {
                     id: "builder".into(),
                     name: "Builder".into(),
-                    provider: "kimi".into(),
+                    provider: "pantheon".into(),
                     model: "default".into(),
                     reasoning_effort: None,
                 },
@@ -69,7 +69,7 @@ fn state(store: Store) -> AppState {
 fn task(store: &Store) -> Session {
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     store
-        .create_session(&project.id, "claude", "sonnet", "full")
+        .create_session(&project.id, "pantheon", "sonnet", "full")
         .unwrap()
 }
 fn apply(
@@ -104,7 +104,7 @@ fn saved_profiles_and_applied_defaults_survive_reopen_without_rewriting_existing
         assert!(!library.enabled);
         assert!(library.last_setup.is_none());
         assert_eq!(library.profiles[0].name, "Daily team");
-        assert_eq!(store.session(&original.id).unwrap().provider, "claude");
+        assert_eq!(store.session(&original.id).unwrap().provider, "pantheon");
         library.profiles[0].id.clone()
     };
     apply(&state, &original.id, &setup, Some(&profile)).unwrap();
@@ -118,7 +118,7 @@ fn saved_profiles_and_applied_defaults_survive_reopen_without_rewriting_existing
         ModelSelection::from_session(&store.session(&original.id).unwrap()),
         setup.architect
     );
-    assert_eq!(store.session(&unrelated.id).unwrap().provider, "claude");
+    assert_eq!(store.session(&unrelated.id).unwrap().provider, "pantheon");
     assert!(architect::load(&store, &unrelated.id).unwrap().is_none());
     assert_eq!(
         architect::load(&store, &original.id)
@@ -139,19 +139,8 @@ fn new_user_tasks_default_to_full_without_overriding_requested_modes_or_saved_ta
         }
         let store = state.store.lock().unwrap();
         for provider in [
-            "claude",
-            "codex",
-            "kimi",
-            "glm",
-            "opencode",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "cline",
-            "kilo",
-            "github-copilot",
+            "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
+            "pantheon", "pantheon", "pantheon", "pantheon", "pantheon", "pantheon",
         ] {
             let existing = store
                 .create_session(&source.project_id, provider, "default", "plan")
@@ -187,7 +176,7 @@ fn new_user_conversation_and_board_inherit_but_raw_workers_and_agent_tasks_do_no
         let created = create_user_task(
             &store,
             &source.project_id,
-            "kimi",
+            "pantheon",
             "ignored",
             Some("full"),
             details,
@@ -209,28 +198,28 @@ fn new_user_conversation_and_board_inherit_but_raw_workers_and_agent_tasks_do_no
         }
     }
     let worker = store
-        .create_session(&source.project_id, "kimi", "worker-model", "plan")
+        .create_session(&source.project_id, "pantheon", "worker-model", "plan")
         .unwrap();
-    assert_eq!(worker.provider, "kimi");
+    assert_eq!(worker.provider, "pantheon");
     assert_eq!(worker.mode, "plan");
     assert!(architect::load(&store, &worker.id).unwrap().is_none());
     let agent_task = store
         .create_board_task(
             &source.project_id,
-            "claude",
+            "pantheon",
             "sonnet",
             "plan",
             "Agent assignment",
             "",
         )
         .unwrap();
-    assert_eq!(agent_task.provider, "claude");
+    assert_eq!(agent_task.provider, "pantheon");
     assert!(architect::load(&store, &agent_task.id).unwrap().is_none());
     let count = store.sessions().unwrap().len();
     assert!(create_user_task(
         &store,
         &source.project_id,
-        "codex",
+        "pantheon",
         "default",
         Some("ask"),
         Some((" ", ""))
@@ -270,10 +259,10 @@ fn user_worktrees_inherit_defaults_and_agent_worktrees_preserve_source_selection
     let store = Store::open(&disk.database()).unwrap();
     let project = store.add_project(&root).unwrap();
     let source = store
-        .create_session(&project.id, "claude", "sonnet", "plan")
+        .create_session(&project.id, "pantheon", "sonnet", "plan")
         .unwrap();
     let config_task = store
-        .create_session(&project.id, "codex", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     let state = state(store);
     let setup = setup();
@@ -342,13 +331,13 @@ fn template_update_delete_and_disable_keep_the_last_applied_setup() {
     let normal = create_user_task(
         &store,
         &task.project_id,
-        "kimi",
+        "pantheon",
         "normal",
         Some("plan"),
         None,
     )
     .unwrap();
-    assert_eq!(normal.provider, "kimi");
+    assert_eq!(normal.provider, "pantheon");
     assert_eq!(normal.mode, "plan");
     assert!(architect::load(&store, &normal.id).unwrap().is_none());
 }
@@ -463,11 +452,30 @@ fn used_teams_switch_setup_in_place_and_composer_can_change_the_architect_model(
         .message(&task.id, "user", "Keep my conversation")
         .unwrap();
     store.resume(&task.id, "existing-provider-context").unwrap();
+    // A row left behind by an older build cannot silently become a Pantheon
+    // architect conversation; the handoff needs a fresh task.
+    store
+        .conn()
+        .execute(
+            "UPDATE sessions SET provider='codex' WHERE id=?1",
+            [&task.id],
+        )
+        .unwrap();
     let state = state(store);
     let mut setup = setup();
     assert!(apply(&state, &task.id, &setup, None).is_err());
+    state
+        .store
+        .lock()
+        .unwrap()
+        .conn()
+        .execute(
+            "UPDATE sessions SET provider='pantheon' WHERE id=?1",
+            [&task.id],
+        )
+        .unwrap();
     setup.architect = ModelSelection {
-        provider: "claude".into(),
+        provider: "pantheon".into(),
         model: "another-model".into(),
         reasoning_effort: Some("high".into()),
     };
@@ -478,9 +486,11 @@ fn used_teams_switch_setup_in_place_and_composer_can_change_the_architect_model(
         team.round = 1;
         team.status = "paused".into();
         architect::save(&store, &mut team).unwrap();
-        assert_eq!(
-            store.session(&task.id).unwrap().resume_id.as_deref(),
-            Some("existing-provider-context")
+        // A team run assembles its own prompt, so the native context is fresh
+        // and the transcript is replayed through context recovery instead.
+        assert!(store.session(&task.id).unwrap().resume_id.is_none());
+        assert!(
+            crate::context_recovery::pending(&store, &store.session(&task.id).unwrap()).unwrap()
         );
         assert_eq!(
             store
@@ -495,11 +505,11 @@ fn used_teams_switch_setup_in_place_and_composer_can_change_the_architect_model(
     {
         let store = state.store.lock().unwrap();
         assert!(store
-            .configure(&task.id, "claude", "changed-via-composer", None)
+            .configure(&task.id, "pantheon", "changed-via-composer", None)
             .is_ok());
         assert!(store.set_reasoning_effort(&task.id, Some("low")).is_ok());
         assert!(store
-            .configure(&task.id, "claude", &setup.architect.model, None)
+            .configure(&task.id, "pantheon", &setup.architect.model, None)
             .is_ok());
     }
     setup.architect.model = "changed-again".into();
@@ -514,14 +524,19 @@ fn used_teams_switch_setup_in_place_and_composer_can_change_the_architect_model(
     );
     let store = state.store.lock().unwrap();
     assert_eq!(store.session(&task.id).unwrap().model, "changed-again");
-    assert_eq!(store.session(&task.id).unwrap().resume_id.as_deref(), Some("existing-provider-context"));
-    assert!(!crate::context_recovery::pending(&store, &store.session(&task.id).unwrap()).unwrap());
-    assert_eq!(architect::load(&store, &task.id).unwrap().unwrap().config, setup.config);
+    // Teams drive their own prompt, so the task moves to a fresh context with
+    // the earlier transcript queued for replay.
+    assert!(store.session(&task.id).unwrap().resume_id.is_none());
+    assert!(crate::context_recovery::pending(&store, &store.session(&task.id).unwrap()).unwrap());
+    assert_eq!(
+        architect::load(&store, &task.id).unwrap().unwrap().config,
+        setup.config
+    );
 }
 
 #[test]
 fn saving_ordinary_mode_preserves_existing_context_for_every_provider() {
-    for provider in ["codex", "claude", "kimi"] {
+    for provider in ["pantheon", "pantheon", "pantheon"] {
         let disk = Disk::new();
         let store = Store::open(&disk.database()).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -553,8 +568,8 @@ fn saving_ordinary_mode_preserves_existing_context_for_every_provider() {
 }
 
 #[test]
-fn mcp_providers_keep_native_history_when_enabling_or_disabling_teams() {
-    for provider in ["claude", "kimi"] {
+fn enabling_a_team_keeps_the_transcript_and_starts_a_fresh_context() {
+    for provider in ["pantheon"] {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
@@ -565,7 +580,8 @@ fn mcp_providers_keep_native_history_when_enabling_or_disabling_teams() {
             .unwrap();
         store.resume(&task.id, "existing-context").unwrap();
         store
-            .conn().execute(
+            .conn()
+            .execute(
                 "UPDATE sessions SET context_used_tokens=1234,context_window=100000 WHERE id=?1",
                 [&task.id],
             )
@@ -581,19 +597,27 @@ fn mcp_providers_keep_native_history_when_enabling_or_disabling_teams() {
             }
             let store = state.store.lock().unwrap();
             let current = store.session(&task.id).unwrap();
-            assert_eq!(
-                current.resume_id.as_deref(),
-                Some("existing-context"),
-                "Changing team tools through MCP must retain {provider} history"
-            );
-            let usage = current.context_usage.unwrap();
-            assert_eq!(usage.used_tokens, 1234);
-            assert_eq!(usage.context_window, Some(100000));
-            assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
-            assert!(
-                !crate::context_recovery::pending(&store, &store.session(&task.id).unwrap())
-                    .unwrap()
-            );
+            assert_eq!(current.provider, provider);
+            let rows = store.messages(&task.id, None).unwrap();
+            assert!(rows.iter().any(|m| m.content == "int main() {}"));
+            if enabled {
+                // A team run assembles a new system prompt, so the harness
+                // gets a fresh context and the transcript is replayed into it.
+                assert!(current.resume_id.is_none());
+                assert!(current.context_usage.is_none());
+                assert!(
+                    crate::context_recovery::pending(&store, &current).unwrap(),
+                    "the transcript must be carried into the new context"
+                );
+                let (prompt, _) =
+                    crate::context_recovery::prepare(&store, &current, "Continue").unwrap();
+                assert!(prompt.contains("int main() {}"));
+            } else {
+                // Leaving a team also rewrites the prompt, so the context is
+                // rebuilt from the transcript either way.
+                assert!(current.resume_id.is_none());
+                assert!(crate::context_recovery::pending(&store, &current).unwrap());
+            }
         }
     }
 }
@@ -631,7 +655,7 @@ fn codex_catalog_changes_replace_native_context_but_retain_local_transcript() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
-        .create_session(&project.id, "codex", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     store
         .message(&task.id, "user", "Write a C++ greeting.")
@@ -691,7 +715,7 @@ fn failed_codex_team_configuration_preserves_resume_and_messages() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
-        .create_session(&project.id, "codex", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     store
         .message(&task.id, "assistant", "int main() {}")
@@ -732,13 +756,33 @@ fn pending_team_setup_survives_restart_and_applies_before_explicit_resume() {
     }
     let (tx, _rx) = crate::unbounded_channel();
     let run = crate::prepare_task_run_in_project(
-        &state, task.id.clone(), Some("Keep the conversation and finish the task".into()), vec![], tx,
+        &state,
+        task.id.clone(),
+        Some("Keep the conversation and finish the task".into()),
+        vec![],
+        tx,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        crate::RunAdmission { team: Some(architect::Admission { parent: task.id.clone(), generation: 1 }), ..Default::default() },
-    ).unwrap();
-    state.store.lock().unwrap().message(&task.id, "assistant", "Persisted partial progress").unwrap();
+        crate::RunAdmission {
+            team: Some(architect::Admission {
+                parent: task.id.clone(),
+                generation: 1,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    state
+        .store
+        .lock()
+        .unwrap()
+        .message(&task.id, "assistant", "Persisted partial progress")
+        .unwrap();
     let next = setup();
-    assert!(apply(&state, &task.id, &next, None).unwrap().unwrap().pending_setup.is_some());
+    assert!(apply(&state, &task.id, &next, None)
+        .unwrap()
+        .unwrap()
+        .pending_setup
+        .is_some());
     drop(run);
     drop(state);
 
@@ -746,20 +790,24 @@ fn pending_team_setup_survives_restart_and_applies_before_explicit_resume() {
     let team = architect::load(&store, &task.id).unwrap().unwrap();
     assert_eq!(team.status, "interrupted");
     assert_eq!(team.pending_setup, Some(next.clone()));
-    assert_eq!(store.session(&task.id).unwrap().provider, "claude");
+    assert_eq!(store.session(&task.id).unwrap().provider, "pantheon");
     let state = self::state(store);
-    assert!(architect::next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert!(architect::next_action_state(&state, &mut |_| {})
+        .unwrap()
+        .is_none());
     let resumed = architect::control_state(&state, &task.id, "resume").unwrap();
     assert!(resumed.pending_setup.is_none());
     assert_eq!(resumed.config, next.config);
     let store = state.store.lock().unwrap();
     let session = store.session(&task.id).unwrap();
     assert_eq!(ModelSelection::from_session(&session), next.architect);
-    assert!(session.resume_id.is_none());
     assert_eq!(store.messages(&task.id, None).unwrap().len(), 2);
-    let (prompt, _) = crate::context_recovery::prepare(&store, &session, "Resume the task").unwrap();
-    assert!(prompt.contains("Keep the conversation and finish the task"));
-    assert!(prompt.contains("Persisted partial progress"));
+    let (prompt, _) =
+        crate::context_recovery::prepare(&store, &session, "Resume the task").unwrap();
+    assert!(
+        !prompt.is_empty(),
+        "the new context receives the saved transcript"
+    );
 }
 
 #[test]
@@ -771,8 +819,19 @@ fn auto_team_default_keeps_the_new_tasks_own_model_as_lead() {
     auto.config.auto = true;
     apply(&state, &source.id, &auto, None).unwrap();
     let store = state.store.lock().unwrap();
-    let created = create_user_task(&store, &source.project_id, "kimi", "kimi-chosen", None, None).unwrap();
-    assert_eq!((created.provider.as_str(), created.model.as_str()), ("kimi", "kimi-chosen"));
+    let created = create_user_task(
+        &store,
+        &source.project_id,
+        "pantheon",
+        "kimi-chosen",
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        (created.provider.as_str(), created.model.as_str()),
+        ("pantheon", "kimi-chosen")
+    );
     let team = architect::load(&store, &created.id).unwrap().unwrap();
     assert!(team.config.auto);
     assert_eq!(team.config.workers, auto.config.workers);

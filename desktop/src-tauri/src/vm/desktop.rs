@@ -2,7 +2,10 @@
 //! whenever Pantheon starts a Linux VM without one, it installs a light Xfce desktop
 //! with automatic login in the background. The panel streams the console meanwhile and
 //! shows the progress; agents can use commands right away.
-use std::{thread, time::{Duration, Instant}};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 use tauri::{Emitter, Manager};
 
 use super::{tart, Vms};
@@ -40,9 +43,18 @@ pub fn install(vms: &Vms, name: &str) -> Result<String, String> {
     let out = tart::exec(name, false, SCRIPT, Duration::from_secs(30 * 60))?;
     vms.mark_used(name);
     if out.code != Some(0) {
-        return Err(format!("Installing the desktop failed: {}", out.stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error")));
+        return Err(format!(
+            "Installing the desktop failed: {}",
+            out.stderr
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("unknown error")
+        ));
     }
-    Ok(format!("{name} now has an Xfce desktop with automatic login. Take a screenshot in a few seconds."))
+    Ok(format!(
+        "{name} now has an Xfce desktop with automatic login. Take a screenshot in a few seconds."
+    ))
 }
 
 /// After a Linux VM starts: install a desktop if it has none. Runs once per VM at a time.
@@ -54,7 +66,13 @@ pub fn ensure_in_background(app: tauri::AppHandle, name: String) {
     let _ = app.emit("vm-changed", serde_json::json!({}));
     thread::spawn(move || {
         let vms = app.state::<Vms>();
-        let result = has_desktop(&name).and_then(|present| if present { Ok(String::new()) } else { install(&vms, &name) });
+        let result = has_desktop(&name).and_then(|present| {
+            if present {
+                Ok(String::new())
+            } else {
+                install(&vms, &name)
+            }
+        });
         vms.end_desktop(&name, result.err());
         let _ = app.emit("vm-changed", serde_json::json!({}));
     });
@@ -71,7 +89,10 @@ mod tests {
         assert!(!vms.begin_desktop("a"), "already installing");
         assert_eq!(vms.desktop_state("a"), Some(State::Installing));
         vms.end_desktop("a", Some("apt failed".into()));
-        assert_eq!(vms.desktop_state("a"), Some(State::Failed("apt failed".into())));
+        assert_eq!(
+            vms.desktop_state("a"),
+            Some(State::Failed("apt failed".into()))
+        );
         assert!(vms.begin_desktop("a"), "a failed install can be retried");
         vms.end_desktop("a", None);
         assert_eq!(vms.desktop_state("a"), None);
@@ -79,7 +100,9 @@ mod tests {
 
     #[test]
     fn the_check_accepts_any_display_manager() {
-        assert!(HAS_DESKTOP.contains("50-pantheon.conf") && HAS_DESKTOP.contains("display-manager"));
+        assert!(
+            HAS_DESKTOP.contains("50-pantheon.conf") && HAS_DESKTOP.contains("display-manager")
+        );
         assert!(SCRIPT.contains("autologin-user"));
     }
 }
@@ -103,8 +126,14 @@ mod live {
         eprintln!("desktop installed in {:?}", started.elapsed());
         assert!(has_desktop(name).unwrap());
         thread::sleep(Duration::from_secs(8));
-        let shot = vms.with_screen(name, true, |rfb| super::super::screen::screenshot(rfb, 80)).unwrap();
-        std::fs::write(std::env::temp_dir().join("pantheon-desktop-check.jpg"), &shot.jpeg).unwrap();
+        let shot = vms
+            .with_screen(name, true, |rfb| super::super::screen::screenshot(rfb, 80))
+            .unwrap();
+        std::fs::write(
+            std::env::temp_dir().join("pantheon-desktop-check.jpg"),
+            &shot.jpeg,
+        )
+        .unwrap();
         vms.delete(name).unwrap();
     }
 }

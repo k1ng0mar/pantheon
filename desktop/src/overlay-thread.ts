@@ -252,11 +252,13 @@ export class OverlayThreadView {
     }
     const response = node.querySelector<HTMLElement>('.launcher-thread-response')!; response.hidden = !turn.final;
     response.classList.toggle('launcher-thread-live', last);
-    const names: Record<string,string> = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',kilo:'Kilo Code',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'};
+    const names: Record<string,string> = {pantheon:'Pantheon'};
     const heading = response.querySelector('header')!;
     const author = turn.final ? historicalProvider(turn.final, messages, this.task!.provider as ProviderId) : this.task!.provider;
     if (heading.dataset.provider !== author) {
-      heading.innerHTML = `${providerLogo(author as ProviderId)}<span>${escape(names[author] || author)}</span>`;
+      // A response saved by an older build keeps its own label without naming
+      // a harness this app no longer ships.
+      heading.innerHTML = `${providerLogo(author as ProviderId)}<span>${escape(names[author] || 'Earlier agent')}</span>`;
       heading.dataset.provider = author;
     }
     if (turn.final) { response.dataset.messageId = String(turn.final.id); streamMarkdown(response.querySelector('div')!,turn.final.content,this.scroll); this.paintActions(response, turn.final); }

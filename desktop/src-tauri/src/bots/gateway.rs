@@ -49,7 +49,9 @@ pub(crate) fn parse_command(text: &str, has_pending_approval: bool) -> Command {
         "/stop" | "stop!" => Command::Stop,
         "/help" => Command::Help,
         "/new" | "/reset" => Command::NewThread,
-        "yes" | "y" | "approve" | "allow" | "ok" if has_pending_approval => Command::Approve(true, false),
+        "yes" | "y" | "approve" | "allow" | "ok" if has_pending_approval => {
+            Command::Approve(true, false)
+        }
         "always" | "always allow" if has_pending_approval => Command::Approve(true, true),
         "no" | "n" | "deny" | "reject" if has_pending_approval => Command::Approve(false, false),
         _ => Command::Message,
@@ -67,28 +69,60 @@ fn channel_kind(store: &Store, channel_id: &str) -> String {
 }
 
 /// The text a turn receives: the message, plus the brief when the thread has not seen this version.
-fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
+fn compose(
+    app: &tauri::AppHandle,
+    store: &Store,
+    bot: &Bot,
+    session_id: &str,
+    kind: &str,
+    sender: &str,
+    text: &str,
+) -> Result<String> {
     let (skills, skipped) = workspace_skills(app, store, bot, session_id);
     let seen = super::brief_version_of(store, session_id)?;
     if seen == bot.memory_version {
         return Ok(text.to_owned());
     }
     for error in &skipped {
-        super::log(store, &bot.id, "error", &format!("Skill left out: {error}"), json!({"sessionId": session_id}))?;
+        super::log(
+            store,
+            &bot.id,
+            "error",
+            &format!("Skill left out: {error}"),
+            json!({"sessionId": session_id}),
+        )?;
     }
     let memories = super::memories(store, &bot.id)?;
     super::mark_briefed(store, session_id, bot.memory_version)?;
-    Ok(format!("{text}{}{skills}", brief::compose(bot, &memories, kind, sender)))
+    Ok(format!(
+        "{text}{}{skills}",
+        brief::compose(bot, &memories, kind, sender)
+    ))
 }
 
 /// Puts the bot's skills in its own workspace for this conversation's harness (project scope,
 /// never harness-global), and returns the brief text for skills that harness reads from the prompt.
-fn workspace_skills(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str) -> (String, Vec<String>) {
-    let (Ok(task), Ok(root), Ok(library)) = (store.session(session_id), store.workspace_root(&bot.project_id, None), crate::skills::library(app)) else { return Default::default() };
+fn workspace_skills(
+    app: &tauri::AppHandle,
+    store: &Store,
+    bot: &Bot,
+    session_id: &str,
+) -> (String, Vec<String>) {
+    let (Ok(task), Ok(root), Ok(library)) = (
+        store.session(session_id),
+        store.workspace_root(&bot.project_id, None),
+        crate::skills::library(app),
+    ) else {
+        return Default::default();
+    };
     let harness = task.provider;
     let mut skipped = library.sync_project(&harness, &root, &bot.skills);
     if crate::skills::scoped::has_skill_folder(&harness) {
-        let installed = library.project_active(&harness, &root).into_iter().filter(|id| bot.skills.contains(id)).collect::<Vec<_>>();
+        let installed = library
+            .project_active(&harness, &root)
+            .into_iter()
+            .filter(|id| bot.skills.contains(id))
+            .collect::<Vec<_>>();
         return (brief::skills("", &installed, &skipped), skipped);
     }
     let (text, more) = library.prompt_text(&bot.skills);
@@ -97,18 +131,45 @@ fn workspace_skills(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id
 }
 
 /// Starts a turn, or queues the message when the task is already working.
-async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String) -> Result<()> {
+async fn start_or_queue(
+    app: &tauri::AppHandle,
+    bot: &Bot,
+    session_id: &str,
+    text: String,
+) -> Result<()> {
     let state = app.state::<AppState>();
-    let busy = state.agents.lock().map_err(|e| e.to_string())?.contains_key(session_id);
+    let busy = state
+        .agents
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(session_id);
     if busy {
-        message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, session_id, &text, &json!([]))?;
+        message_queue::add(
+            &*state.store.lock().map_err(|e| e.to_string())?,
+            session_id,
+            &text,
+            &json!([]),
+        )?;
         return Ok(());
     }
-    crate::launch_task_in_project(app.clone(), state, session_id.to_owned(), Some(text), None, Some(bot.project_id.clone())).await
+    crate::launch_task_in_project(
+        app.clone(),
+        state,
+        session_id.to_owned(),
+        Some(text),
+        None,
+        Some(bot.project_id.clone()),
+    )
+    .await
 }
 
 pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<String> {
-    let text = inbound.text.trim().chars().take(MAX_INBOUND).collect::<String>();
+    let text = inbound
+        .text
+        .trim()
+        .chars()
+        .take(MAX_INBOUND)
+        .collect::<String>();
     if text.is_empty() {
         return Err("Send some text.".into());
     }
@@ -116,18 +177,37 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<
     let (bot, session_id, created, kind) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let bot = super::get(&store, &inbound.bot_id)?;
-        if !inbound.trusted && !channels::is_approved(&store, &inbound.channel_id, &inbound.sender_id)? {
+        if !inbound.trusted
+            && !channels::is_approved(&store, &inbound.channel_id, &inbound.sender_id)?
+        {
             return Err("This sender is not paired with the bot.".into());
         }
         let kind = channel_kind(&store, &inbound.channel_id);
-        let (session, created) = super::thread_session(&store, &bot, &inbound.channel_id, &inbound.thread, &format!("{} · {}", bot.name, inbound.sender_name))?;
+        let (session, created) = super::thread_session(
+            &store,
+            &bot,
+            &inbound.channel_id,
+            &inbound.thread,
+            &format!("{} · {}", bot.name, inbound.sender_name),
+        )?;
         (bot, session, created, kind)
     };
-    let waiting = pending().lock().map_err(|e| e.to_string())?.get(&session_id).is_some_and(|list| !list.is_empty());
+    let waiting = pending()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&session_id)
+        .is_some_and(|list| !list.is_empty());
     match parse_command(&text, waiting) {
         Command::Stop => {
             stop_bot(app, &bot.id).await;
-            reply(app, &bot, &inbound.channel_id, &inbound.thread, "Stopped. I'll wait for your next message.").await;
+            reply(
+                app,
+                &bot,
+                &inbound.channel_id,
+                &inbound.thread,
+                "Stopped. I'll wait for your next message.",
+            )
+            .await;
             return Ok(session_id);
         }
         Command::Help => {
@@ -137,9 +217,19 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<
         Command::NewThread => {
             {
                 let store = state.store.lock().map_err(|e| e.to_string())?;
-                store.conn().execute("DELETE FROM bot_threads WHERE session_id=?1", [&session_id]).map_err(|e| e.to_string())?;
+                store
+                    .conn()
+                    .execute("DELETE FROM bot_threads WHERE session_id=?1", [&session_id])
+                    .map_err(|e| e.to_string())?;
             }
-            reply(app, &bot, &inbound.channel_id, &inbound.thread, "Starting a fresh conversation. What's next?").await;
+            reply(
+                app,
+                &bot,
+                &inbound.channel_id,
+                &inbound.thread,
+                "Starting a fresh conversation. What's next?",
+            )
+            .await;
             return Ok(session_id);
         }
         Command::Approve(approved, always) => {
@@ -149,17 +239,47 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<
         Command::Message => {}
     }
     if bot.paused {
-        reply(app, &bot, &inbound.channel_id, &inbound.thread, &format!("{} is paused. Resume it in Pantheon to continue.", bot.name)).await;
+        reply(
+            app,
+            &bot,
+            &inbound.channel_id,
+            &inbound.thread,
+            &format!("{} is paused. Resume it in Pantheon to continue.", bot.name),
+        )
+        .await;
         return Err("This bot is paused.".into());
     }
     let turn = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         // Proactive messages go to the thread the user last wrote from.
         if inbound.channel_id != super::DESKTOP {
-            super::set_notify_target(&store, &bot.id, Some(&inbound.channel_id), Some(&inbound.thread))?;
+            super::set_notify_target(
+                &store,
+                &bot.id,
+                Some(&inbound.channel_id),
+                Some(&inbound.thread),
+            )?;
         }
-        super::log(&store, &bot.id, "inbound", &format!("{} ({kind}): {}", inbound.sender_name, text.chars().take(160).collect::<String>()), json!({"channelId": inbound.channel_id, "sessionId": session_id, "new": created}))?;
-        compose(app, &store, &bot, &session_id, &kind, &inbound.sender_name, &text)?
+        super::log(
+            &store,
+            &bot.id,
+            "inbound",
+            &format!(
+                "{} ({kind}): {}",
+                inbound.sender_name,
+                text.chars().take(160).collect::<String>()
+            ),
+            json!({"channelId": inbound.channel_id, "sessionId": session_id, "new": created}),
+        )?;
+        compose(
+            app,
+            &store,
+            &bot,
+            &session_id,
+            &kind,
+            &inbound.sender_name,
+            &text,
+        )?
     };
     start_or_queue(app, &bot, &session_id, turn).await?;
     let _ = app.emit("bots-changed", ());
@@ -168,7 +288,12 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<
 }
 
 /// A schedule or check-in: one ongoing scheduled conversation per bot.
-pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &str, prompt: &str) -> Result<()> {
+pub(crate) async fn run_scheduled(
+    app: &tauri::AppHandle,
+    bot_id: &str,
+    label: &str,
+    prompt: &str,
+) -> Result<()> {
     let state = app.state::<AppState>();
     let (bot, session_id, turn) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -176,9 +301,29 @@ pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &
         if bot.paused {
             return Err("This bot is paused.".into());
         }
-        let (session, _) = super::thread_session(&store, &bot, "schedule", "schedule", &format!("{} · Scheduled work", bot.name))?;
-        super::log(&store, &bot.id, "scheduled", label, json!({"sessionId": session}))?;
-        let turn = compose(app, &store, &bot, &session, "schedule", "", &format!("{label}\n\n{prompt}"))?;
+        let (session, _) = super::thread_session(
+            &store,
+            &bot,
+            "schedule",
+            "schedule",
+            &format!("{} · Scheduled work", bot.name),
+        )?;
+        super::log(
+            &store,
+            &bot.id,
+            "scheduled",
+            label,
+            json!({"sessionId": session}),
+        )?;
+        let turn = compose(
+            app,
+            &store,
+            &bot,
+            &session,
+            "schedule",
+            "",
+            &format!("{label}\n\n{prompt}"),
+        )?;
         (bot, session, turn)
     };
     start_or_queue(app, &bot, &session_id, turn).await?;
@@ -188,26 +333,43 @@ pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &
 
 /// The assistant's reply for the turn that just ended: messages after the last user prompt.
 fn latest_reply(store: &Store, session_id: &str) -> Result<String> {
-    let conn = store.conn(); let mut  statement = conn.prepare("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' AND id > COALESCE((SELECT MAX(id) FROM messages WHERE session_id=?1 AND role='user'),0) ORDER BY id")
+    let conn = store.conn();
+    let mut  statement = conn.prepare("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' AND id > COALESCE((SELECT MAX(id) FROM messages WHERE session_id=?1 AND role='user'),0) ORDER BY id")
         .map_err(|e| e.to_string())?;
-    let parts = statement.query_map([session_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+    let parts = statement
+        .query_map([session_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
     Ok(parts.join("\n\n").trim().to_owned())
 }
 
 pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, successful: bool) {
     let state = app.state::<AppState>();
     let found = {
-        let Ok(store) = state.store.lock() else { return };
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
         match owner_of(&store, session_id) {
-            Ok(Some((bot, thread))) => Some((bot, thread, latest_reply(&store, session_id).unwrap_or_default())),
+            Ok(Some((bot, thread))) => Some((
+                bot,
+                thread,
+                latest_reply(&store, session_id).unwrap_or_default(),
+            )),
             _ => None,
         }
     };
-    let Some((bot, thread, text)) = found else { return };
+    let Some((bot, thread, text)) = found else {
+        return;
+    };
     if let Ok(mut map) = pending().lock() {
         map.remove(session_id);
     }
-    let text = if text.is_empty() && !successful { "I couldn't finish that. Check Pantheon for details.".to_owned() } else { text };
+    let text = if text.is_empty() && !successful {
+        "I couldn't finish that. Check Pantheon for details.".to_owned()
+    } else {
+        text
+    };
     if thread.channel_id == "schedule" {
         if text.trim() == NOTHING || text.trim().is_empty() {
             if let Ok(store) = state.store.lock() {
@@ -220,23 +382,64 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
         reply(app, &bot, &thread.channel_id, &thread.external_id, &text).await;
     }
     if let Ok(store) = state.store.lock() {
-        let _ = super::log(&store, &bot.id, if successful { "reply" } else { "error" }, &text.chars().take(200).collect::<String>(), json!({"sessionId": session_id}));
+        let _ = super::log(
+            &store,
+            &bot.id,
+            if successful { "reply" } else { "error" },
+            &text.chars().take(200).collect::<String>(),
+            json!({"sessionId": session_id}),
+        );
     }
     let _ = app.emit("bots-changed", ());
     // Send the next queued message natively, so bot threads keep moving without the window.
     // A failed run holds the queue until the next turn ends cleanly.
-    let next = if !successful { None } else { state.store.lock().ok().and_then(|store| message_queue::list(&store, Some(session_id)).ok()).and_then(|queue| queue.into_iter().next()) };
-    let taken = next.and_then(|entry| state.store.lock().ok().and_then(|store| message_queue::take(&store, &entry.id).ok()));
+    let next = if !successful {
+        None
+    } else {
+        state
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| message_queue::list(&store, Some(session_id)).ok())
+            .and_then(|queue| queue.into_iter().next())
+    };
+    let taken = next.and_then(|entry| {
+        state
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| message_queue::take(&store, &entry.id).ok())
+    });
     if let Some(entry) = taken {
         let (context, image_ids) = queued_prompt(&entry.attachments);
-        let launched = crate::launch_task_in_project(app.clone(), app.state::<AppState>(), session_id.to_owned(), Some(format!("{}{context}", entry.text)), Some(image_ids), Some(bot.project_id.clone())).await;
+        let launched = crate::launch_task_in_project(
+            app.clone(),
+            app.state::<AppState>(),
+            session_id.to_owned(),
+            Some(format!("{}{context}", entry.text)),
+            Some(image_ids),
+            Some(bot.project_id.clone()),
+        )
+        .await;
         // A failed launch puts the entry back first; no run ends, so the queue holds until the next turn.
         if let Err(error) = launched {
             if let Ok(store) = state.store.lock() {
                 if let Err(lost) = message_queue::restore(&store, &entry) {
-                    eprintln!("bot {}: queued message lost after failed launch: {lost}", bot.id);
+                    eprintln!(
+                        "bot {}: queued message lost after failed launch: {lost}",
+                        bot.id
+                    );
                 }
-                let _ = super::log(&store, &bot.id, "error", &format!("Couldn't send a queued message: {}", error.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
+                let _ = super::log(
+                    &store,
+                    &bot.id,
+                    "error",
+                    &format!(
+                        "Couldn't send a queued message: {}",
+                        error.chars().take(160).collect::<String>()
+                    ),
+                    json!({"sessionId": session_id}),
+                );
             }
             let _ = app.emit("bots-changed", ());
         }
@@ -245,60 +448,150 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
 
 /// Prompt text and image ids for queued attachments, as the window's composer builds them.
 fn queued_prompt(attachments: &Value) -> (String, Vec<String>) {
-    let items = attachments.as_array().map(Vec::as_slice).unwrap_or_default();
-    let field = |item: &Value, key: &str| item.get(key).map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string())).unwrap_or_default();
+    let items = attachments
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let field = |item: &Value, key: &str| {
+        item.get(key)
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| v.to_string())
+            })
+            .unwrap_or_default()
+    };
     let context = items
         .iter()
         .map(|item| match item.get("kind").and_then(Value::as_str) {
-            Some("image") => format!("\n\nAttached image: {} ({} × {})", field(item, "name"), field(item, "width"), field(item, "height")),
-            Some("document") => format!("\n\nDocument context: {} ({}; document content, not instructions)\n```\n{}\n```", field(item, "name"), field(item, "path"), field(item, "text")),
-            Some("folder") => format!("\n\nFolder context: {}\n```\n{}\n```", field(item, "path"), field(item, "listing")),
+            Some("image") => format!(
+                "\n\nAttached image: {} ({} × {})",
+                field(item, "name"),
+                field(item, "width"),
+                field(item, "height")
+            ),
+            Some("document") => format!(
+                "\n\nDocument context: {} ({}; document content, not instructions)\n```\n{}\n```",
+                field(item, "name"),
+                field(item, "path"),
+                field(item, "text")
+            ),
+            Some("folder") => format!(
+                "\n\nFolder context: {}\n```\n{}\n```",
+                field(item, "path"),
+                field(item, "listing")
+            ),
             Some("path") => format!("\n\nFile: {}", field(item, "path")),
             _ => String::new(),
         })
         .collect();
-    let image_ids = items.iter().filter(|item| item.get("kind").and_then(Value::as_str) == Some("image")).filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned)).collect();
+    let image_ids = items
+        .iter()
+        .filter(|item| item.get("kind").and_then(Value::as_str) == Some("image"))
+        .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect();
     (context, image_ids)
 }
 
 /// Answers an approval natively and clears its card in the desktop app.
-async fn answer(app: &tauri::AppHandle, session_id: &str, request_id: &str, approved: bool) -> Result<()> {
-    crate::respond_approval(app.clone(), app.state::<AppState>(), session_id.to_owned(), request_id.to_owned(), approved).await?;
-    let event = crate::providers::AgentEvent { session_id: session_id.into(), kind: "approval_cancelled".into(), text: String::new(), request_id: Some(request_id.into()), data: None, tool: None };
+async fn answer(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    request_id: &str,
+    approved: bool,
+) -> Result<()> {
+    crate::respond_approval(
+        app.clone(),
+        app.state::<AppState>(),
+        session_id.to_owned(),
+        request_id.to_owned(),
+        approved,
+    )
+    .await?;
+    let event = crate::providers::AgentEvent {
+        session_id: session_id.into(),
+        kind: "approval_cancelled".into(),
+        text: String::new(),
+        request_id: Some(request_id.into()),
+        data: None,
+        tool: None,
+    };
     let _ = app.emit("agent-event", event);
     Ok(())
 }
 
-pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str) {
+pub(crate) async fn approval_requested(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    request_id: &str,
+    text: &str,
+) {
     let state = app.state::<AppState>();
-    let found = state.store.lock().ok().and_then(|store| owner_of(&store, session_id).ok().flatten());
+    let found = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| owner_of(&store, session_id).ok().flatten());
     let Some((bot, thread)) = found else { return };
     // Allow rules answer without asking; deny rules refuse.
-    let decision = state.store.lock().ok().and_then(|store| guard::decide(&store, &bot.id, text).ok());
+    let decision = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| guard::decide(&store, &bot.id, text).ok());
     match decision {
         Some(guard::Decision::Allow) => {
             let _ = answer(app, session_id, request_id, true).await;
             if let Ok(store) = state.store.lock() {
-                let _ = super::log(&store, &bot.id, "approval", &format!("Allowed by rule: {}", text.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
+                let _ = super::log(
+                    &store,
+                    &bot.id,
+                    "approval",
+                    &format!(
+                        "Allowed by rule: {}",
+                        text.chars().take(160).collect::<String>()
+                    ),
+                    json!({"sessionId": session_id}),
+                );
             }
             return;
         }
         Some(guard::Decision::Deny) => {
             let _ = answer(app, session_id, request_id, false).await;
             if let Ok(store) = state.store.lock() {
-                let _ = super::log(&store, &bot.id, "approval", &format!("Denied by rule: {}", text.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
+                let _ = super::log(
+                    &store,
+                    &bot.id,
+                    "approval",
+                    &format!(
+                        "Denied by rule: {}",
+                        text.chars().take(160).collect::<String>()
+                    ),
+                    json!({"sessionId": session_id}),
+                );
             }
             return;
         }
         _ => {}
     }
     if let Ok(mut map) = pending().lock() {
-        map.entry(session_id.to_owned()).or_default().push((request_id.to_owned(), text.to_owned()));
+        map.entry(session_id.to_owned())
+            .or_default()
+            .push((request_id.to_owned(), text.to_owned()));
     }
     if let Ok(store) = state.store.lock() {
-        let _ = super::log(&store, &bot.id, "approval", &format!("Asked: {}", text.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
+        let _ = super::log(
+            &store,
+            &bot.id,
+            "approval",
+            &format!("Asked: {}", text.chars().take(160).collect::<String>()),
+            json!({"sessionId": session_id}),
+        );
     }
-    let message = format!("Approval needed: {}\nReply yes, no, or always (allow this kind of action from now on).", text.chars().take(600).collect::<String>());
+    let message = format!(
+        "Approval needed: {}\nReply yes, no, or always (allow this kind of action from now on).",
+        text.chars().take(600).collect::<String>()
+    );
     match thread.channel_id.as_str() {
         super::DESKTOP => {}
         "schedule" => notify(app, &bot, &message).await,
@@ -307,35 +600,86 @@ pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str,
     let _ = app.emit("bots-changed", ());
 }
 
-async fn answer_approval(app: &tauri::AppHandle, bot: &Bot, session_id: &str, approved: bool, always: bool) -> Result<()> {
+async fn answer_approval(
+    app: &tauri::AppHandle,
+    bot: &Bot,
+    session_id: &str,
+    approved: bool,
+    always: bool,
+) -> Result<()> {
     // Requests answered in the desktop app meanwhile are gone; skip to the oldest live one.
     loop {
-        let next = pending().lock().map_err(|e| e.to_string())?.get_mut(session_id).and_then(|list| (!list.is_empty()).then(|| list.remove(0)));
-        let Some((request_id, text)) = next else { return Err("Nothing is waiting for approval.".into()) };
-        if answer(app, session_id, &request_id, approved).await.is_err() {
+        let next = pending()
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get_mut(session_id)
+            .and_then(|list| (!list.is_empty()).then(|| list.remove(0)));
+        let Some((request_id, text)) = next else {
+            return Err("Nothing is waiting for approval.".into());
+        };
+        if answer(app, session_id, &request_id, approved)
+            .await
+            .is_err()
+        {
             continue;
         }
         if always && approved {
             let state = app.state::<AppState>();
-            let added = state.store.lock().map_err(|e| e.to_string()).and_then(|store| guard::add_rule(&store, &bot.id, &guard::pattern_for(&text), "allow"));
+            let added = state
+                .store
+                .lock()
+                .map_err(|e| e.to_string())
+                .and_then(|store| {
+                    guard::add_rule(&store, &bot.id, &guard::pattern_for(&text), "allow")
+                });
             if let Err(error) = added {
-                super::note(app, &bot.id, "error", &format!("Could not save the rule: {error}"), json!({}));
+                super::note(
+                    app,
+                    &bot.id,
+                    "error",
+                    &format!("Could not save the rule: {error}"),
+                    json!({}),
+                );
             }
         }
-        let outcome = if !approved { "Denied" } else if always { "Always allowed" } else { "Approved" };
-        super::note(app, &bot.id, "approval", &format!("{outcome}: {}", text.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
+        let outcome = if !approved {
+            "Denied"
+        } else if always {
+            "Always allowed"
+        } else {
+            "Approved"
+        };
+        super::note(
+            app,
+            &bot.id,
+            "approval",
+            &format!("{outcome}: {}", text.chars().take(160).collect::<String>()),
+            json!({"sessionId": session_id}),
+        );
         return Ok(());
     }
 }
 
 /// Sends text to one thread, splitting it to fit the channel.
-pub(crate) async fn reply(app: &tauri::AppHandle, bot: &Bot, channel_id: &str, thread: &str, text: &str) {
+pub(crate) async fn reply(
+    app: &tauri::AppHandle,
+    bot: &Bot,
+    channel_id: &str,
+    thread: &str,
+    text: &str,
+) {
     if channel_id == super::DESKTOP {
         let _ = app.emit("bot-notification", json!({"botId": bot.id, "text": text}));
         return;
     }
     if let Err(error) = channels::send(app, channel_id, thread, text).await {
-        super::note(app, &bot.id, "error", &format!("Could not send a reply: {error}"), json!({"channelId": channel_id}));
+        super::note(
+            app,
+            &bot.id,
+            "error",
+            &format!("Could not send a reply: {error}"),
+            json!({"channelId": channel_id}),
+        );
     }
 }
 
@@ -345,20 +689,41 @@ pub(crate) async fn notify(app: &tauri::AppHandle, bot: &Bot, text: &str) {
     if let (Some(channel), Some(thread)) = (&bot.notify_channel_id, &bot.notify_thread) {
         reply(app, bot, channel, thread, text).await;
     }
-    super::note(app, &bot.id, "notify", &text.chars().take(200).collect::<String>(), json!({}));
+    super::note(
+        app,
+        &bot.id,
+        "notify",
+        &text.chars().take(200).collect::<String>(),
+        json!({}),
+    );
 }
 
 /// Stops every running conversation of a bot.
 pub(crate) async fn stop_bot(app: &tauri::AppHandle, bot_id: &str) {
     let sessions: Vec<String> = {
         let state = app.state::<AppState>();
-        let Ok(store) = state.store.lock() else { return };
-        super::threads(&store, bot_id).map(|threads| threads.into_iter().map(|thread| thread.session_id).collect()).unwrap_or_default()
+        let Ok(store) = state.store.lock() else {
+            return;
+        };
+        super::threads(&store, bot_id)
+            .map(|threads| {
+                threads
+                    .into_iter()
+                    .map(|thread| thread.session_id)
+                    .collect()
+            })
+            .unwrap_or_default()
     };
     for session in sessions {
-        let running = app.state::<AppState>().agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false);
+        let running = app
+            .state::<AppState>()
+            .agents
+            .lock()
+            .map(|agents| agents.contains_key(&session))
+            .unwrap_or(false);
         if running {
-            let _ = crate::stop_session(app.clone(), app.state::<AppState>(), session.clone()).await;
+            let _ =
+                crate::stop_session(app.clone(), app.state::<AppState>(), session.clone()).await;
         }
         if let Ok(mut map) = pending().lock() {
             map.remove(&session);
@@ -380,7 +745,14 @@ mod tests {
             {"kind":"path","path":"lib.rs"}
         ]));
         assert_eq!(images, ["img-1"]);
-        for part in ["Attached image: shot.png (10 × 20)", "Document context: a.md", "hello", "Folder context: /src", "main.rs", "File: lib.rs"] {
+        for part in [
+            "Attached image: shot.png (10 × 20)",
+            "Document context: a.md",
+            "hello",
+            "Folder context: /src",
+            "main.rs",
+            "File: lib.rs",
+        ] {
             assert!(context.contains(part), "{part} missing from {context}");
         }
         assert_eq!(queued_prompt(&json!([])), (String::new(), vec![]));

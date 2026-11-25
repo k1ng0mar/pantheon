@@ -16,8 +16,6 @@ export type AttachmentsHost = {
   blocked(taskId: string): string | null;
   /** Browser screenshots already waiting on the task; they share the image cap. */
   otherImages(taskId: string): number;
-  /** A reason this task's harness cannot take images, or null when it can. */
-  imagesUnsupported?(taskId: string): string | null;
   notify(message: string): void;
   report(error: unknown): void;
   rerender(taskId: string): void;
@@ -51,8 +49,6 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     const reason = host.blocked(taskId); if (reason) throw new Error(reason);
     const current = list(taskId);
     if (attachment.kind === 'image') {
-      const unsupported = host.imagesUnsupported?.(taskId);
-      if (unsupported) throw new Error(unsupported);
       if (attachment.path && current.some(a => a.kind === 'image' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
       if (current.filter(a => a.kind === 'image').length + host.otherImages(taskId) >= MAX_IMAGES) throw new Error(`Attach up to ${MAX_IMAGES} images per message, including browser screenshots.`);
     } else if (attachment.kind === 'document') {
@@ -74,9 +70,6 @@ export function mountPromptAttachments(host: AttachmentsHost) {
   }
 
   async function addImage(taskId: string, source: { path?: string; dataUrl?: string; name?: string; origin: PromptImage['source']; sketchId?: string; replace?: string }): Promise<PromptImage> {
-    // Refuse what cannot be sent before the native import writes a copy.
-    const unsupported = host.imagesUnsupported?.(taskId);
-    if (unsupported) throw new Error(unsupported);
     if (source.path && list(taskId).some(a => a.kind === 'image' && a.path === source.path)) throw new Error(`${baseName(source.path)} is already attached.`);
     const imported = await call<{ id: string; name: string; width: number; height: number; thumbnail: string }>('import_prompt_image', { path: source.path, dataUrl: source.dataUrl, name: source.name });
     const reason = host.blocked(taskId); if (reason) throw new Error(reason);
@@ -144,13 +137,11 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     const taskId = host.taskId();
     const reason = taskId ? host.blocked(taskId) : 'Start a task before attaching anything.';
     if (reason) { host.notify(reason); return; }
-    // A harness without image input gets documents and folders only.
-    const imageless = Boolean(host.imagesUnsupported?.(taskId));
     await host.menu(anchor, [
-      { id: 'files', label: 'Attach files…', description: imageless ? 'PDFs, documents' : 'Images, PDFs, documents', icon: 'attach' },
+      { id: 'files', label: 'Attach files…', description: 'Images, PDFs, documents', icon: 'attach' },
       { id: 'folder', label: 'Attach a folder…', description: 'Path and structure', icon: 'folder' },
       { id: 'project', label: 'Project files', description: 'From the Files tab', icon: 'file' },
-      ...imageless ? [] : [{ id: 'sketch', label: 'Sketch a mockup…', description: 'Draw and attach', icon: 'sketch' }],
+      { id: 'sketch', label: 'Sketch a mockup…', description: 'Draw and attach', icon: 'sketch' },
     ], async choice => {
       if (choice === 'project') { host.projectFiles(); return; }
       if (choice === 'sketch') { host.sketch(taskId); return; }

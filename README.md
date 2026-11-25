@@ -39,7 +39,7 @@ Pantheon is written in Rust, runs as a single binary, and keeps its state in you
 curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
 
 # Configure: names the env var, never the key
-pantheon setup --yes --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
+pantheon setup --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
 export OPENAI_API_KEY=<your-key>
 
 # Open the terminal UI
@@ -90,7 +90,7 @@ Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same sessi
 
 **Approvals as first-class control.** The capability decision isn't binary: allow, deny, or *ask a human*. Approvals pause the run and resume it - settling the whole batch, not just one call - from the TUI, the web UI, or the messaging gateways. *Trust:* you can hand an agent real capabilities (shell, network, memory writes) and keep a human veto on the dangerous ones, without babysitting every step.
 
-**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run. The only way around that is an explicit operator opt-in, `PANTHEON_SANDBOX_FALLBACK=allow`, which runs the command directly on the host (environment scrubbed, limits applied, no namespace isolation) and says so on stderr and in the tool result. Model-run shell and terminal commands run in a user namespace with every capability dropped, cannot see Pantheon's data dir or common credential files (`~/.ssh`, `~/.aws`, `~/.config/gh`, ...), and are offline unless the call asks for network, which the default policy approves once per session. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway."
+**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run. The only way around that is an explicit operator opt-in, `PANTHEON_SANDBOX_FALLBACK=allow`, which runs the command directly on the host (environment scrubbed, limits applied, no namespace isolation) and says so on stderr and in the tool result. Model-run shell and terminal commands run in a user namespace with every capability dropped, cannot see Pantheon's data dir or common credential files (`~/.ssh`, `~/.aws`, `~/.config/gh`, ...), and are offline unless the call asks for network, which the default policy approves once per session. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway." The namespace boundary is Linux-only (bubblewrap plus unprivileged user namespaces). On macOS and Windows no boundary backend exists, so High-sandbox calls fail closed there and the fallback runs on the host with a scrubbed environment and rlimits only - see the platform table in the getting-started guide before relying on isolation.
 
 **The danger gate.** Before shell text reaches execution, a pre-gate blocks `sh -c`/`eval` wrappers, `${IFS}` tricks, command substitution, backticks, `find -delete`/`-exec`, and obfuscated `rm`. Blocked errors name the rule, not the command - so a denied command containing a token can't leak it into the ledger. *Trust:* the most common prompt-injection-to-shell paths are dead before they reach your filesystem.
 

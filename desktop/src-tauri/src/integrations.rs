@@ -88,94 +88,16 @@ pub async fn discover(cwd: PathBuf) -> Result<Catalog, String> {
     let _permit = discovery_limit()
         .try_acquire()
         .map_err(|_| "Integration discovery is already running".to_owned())?;
-    let path = executable("codex").ok_or("Install Codex to inspect its configured integrations")?;
+    let path =
+        executable("pantheon").ok_or("Install Codex to inspect its configured integrations")?;
     let mut command = crate::providers::command(&path)?;
     command.arg("app-server");
     discover_process(command, &cwd, Limits::default()).await
 }
 
-pub(crate) async fn discover_skills(cwd: &Path) -> Result<Value, String> {
-    let _permit = discovery_limit()
-        .try_acquire()
-        .map_err(|_| "Integration discovery is already running".to_owned())?;
-    let path = executable("codex").ok_or("Install Codex to inspect its skills")?;
-    let mut command = crate::providers::command(&path)?;
-    command.arg("app-server");
-    discover_skills_process(
-        command,
-        cwd,
-        Limits {
-            total: Duration::from_secs(8),
-            request: Duration::from_secs(4),
-            ..Limits::default()
-        },
-    )
-    .await
-}
-
 fn discovery_limit() -> &'static tokio::sync::Semaphore {
     static DISCOVERY: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
     DISCOVERY.get_or_init(|| tokio::sync::Semaphore::new(1))
-}
-
-/// Native-only transport for typed command operations. Callers must expose a
-/// closed command enum, never a frontend-provided JSON-RPC method or parameters.
-pub(crate) struct ControlClient {
-    rpc: Rpc,
-    process: Process,
-    deadline: Instant,
-    _permit: tokio::sync::SemaphorePermit<'static>,
-}
-
-impl ControlClient {
-    pub(crate) async fn start(cwd: &Path) -> Result<Self, String> {
-        Self::start_configured(cwd, false).await
-    }
-
-    pub(crate) async fn start_with_goals(cwd: &Path) -> Result<Self, String> {
-        Self::start_configured(cwd, true).await
-    }
-
-    async fn start_configured(cwd: &Path, goals: bool) -> Result<Self, String> {
-        let permit = discovery_limit()
-            .try_acquire()
-            .map_err(|_| "Codex command discovery is busy. Try again in a moment.".to_owned())?;
-        let path = executable("codex").ok_or("Install Codex to use this command")?;
-        let mut command = crate::providers::command(&path)?;
-        command.arg("app-server");
-        if goals {
-            command.args(["--enable", "goals"]);
-        }
-        let limits = Limits {
-            request: Duration::from_secs(10),
-            total: Duration::from_secs(30),
-            ..Limits::default()
-        };
-        let (process, mut rpc) = start_process(command, cwd, limits)?;
-        let deadline = Instant::now() + limits.total;
-        initialize(&mut rpc, deadline).await?;
-        Ok(Self {
-            rpc,
-            process,
-            deadline,
-            _permit: permit,
-        })
-    }
-
-    pub(crate) async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        self.rpc.request(method, params, self.deadline).await.map_err(|error| {
-            match error {
-                RpcError::Unsupported => "This installed Codex version does not support the requested operation.".into(),
-                RpcError::Failed => "Codex rejected the operation. Check the account or project configuration and retry.".into(),
-                RpcError::Timeout => "Codex did not finish the operation before the timeout. Refresh its state before retrying a change.".into(),
-                _ => "Codex returned an incomplete response. Refresh its state before retrying a change.".into(),
-            }
-        })
-    }
-
-    pub(crate) async fn finish(mut self) {
-        self.process.finish().await;
-    }
 }
 
 // The guard owns both the process group and a child waiter. Cancelling the
@@ -265,6 +187,7 @@ fn start_process(
     Ok((process, rpc))
 }
 
+#[cfg(test)]
 async fn discover_skills_process(
     command: Command,
     cwd: &Path,

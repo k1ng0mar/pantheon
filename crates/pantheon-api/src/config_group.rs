@@ -38,9 +38,18 @@ pub mod config_resolve {
     use crate::model::{DefaultModel, FallbackChain};
 
     /// Last-resort provider when nothing else names one.
-    pub const DEFAULT_PROVIDER: &str = "local";
-    /// Last-resort model when nothing else names one.
-    pub const DEFAULT_MODEL: &str = "llama3.2";
+    ///
+    /// Empty on purpose. Pantheon does not pick a model for the user: a
+    /// provider is either declared in `config.toml` by `pantheon setup`, or
+    /// supplied as an explicit argument/env var. An unset provider therefore
+    /// resolves to an empty string, which the provider plane rejects with a
+    /// clear "no provider was configured" error - a loud failure that names
+    /// the fix, not a silent guess at someone's local runtime.
+    pub const DEFAULT_PROVIDER: &str = "";
+    /// Last-resort model when nothing else names one. Empty for the same
+    /// reason as [`DEFAULT_PROVIDER`]: there is no model Pantheon should
+    /// choose on the user's behalf.
+    pub const DEFAULT_MODEL: &str = "";
 
     /// Non-empty environment variable, trimmed. Empty/whitespace values
     /// read as unset so they cannot shadow a configured value.
@@ -149,10 +158,12 @@ pub mod config_resolve {
             clear_env();
             let cfg = cfg_with_model("cfg-provider", "cfg-model");
 
-            // Default only.
+            // Nothing configured: Pantheon does not pick a provider or model
+            // on the user's behalf. The provider plane rejects the empty
+            // pair with a clear "no provider was configured" error.
             let d = resolve_default_model(None, None, None);
-            assert_eq!(d.provider, "local");
-            assert_eq!(d.model, "llama3.2");
+            assert_eq!(d.provider, "");
+            assert_eq!(d.model, "");
 
             // Config beats default.
             let d = resolve_default_model(Some(&cfg), None, None);

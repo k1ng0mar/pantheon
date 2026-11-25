@@ -11,9 +11,7 @@ const MAX_TEXT: usize = 4000;
 const MAX_DESCRIPTION: usize = 500;
 const MAX_FILE: u64 = 64 * 1024;
 const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
-/// Harnesses whose running turn takes a message. Claude-family harnesses steer on
-/// stream input, Codex uses `turn/steer`, Pi and omp use their own steer, Muse takes
-/// one on the wire, and OpenCode folds a second `session/prompt` into its running loop.
+/// Pantheon takes a message mid-turn, so a recipe that steers is supported.
 const STEERING: [&str; 1] = ["pantheon"];
 const HARNESSES: [&str; 1] = ["pantheon"];
 
@@ -479,17 +477,15 @@ mod tests {
     fn a_steer_step_is_supported_only_where_the_turn_takes_a_message() {
         let r = recipe(vec![step("check", Some("npm test"), None, &["steer"])]);
         let reports = dry_run(&r, "pantheon", &[]).unwrap();
-        assert_eq!(reports[0].status, "supported", "pantheon takes a message mid-turn");
-        for provider in [
-            "kimi",
-            "grok",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "antigravity",
-            "github-copilot",
-        ] {
-            assert_eq!(dry_run(&r, provider, &[]), Err("Unknown harness.".to_string()));
+        assert_eq!(
+            reports[0].status, "supported",
+            "pantheon takes a message mid-turn"
+        );
+        for provider in ["reviewer", "pantheon-old", "other"] {
+            assert_eq!(
+                dry_run(&r, provider, &[]),
+                Err("Unknown harness.".to_string())
+            );
         }
     }
 }

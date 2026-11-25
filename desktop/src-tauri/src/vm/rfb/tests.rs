@@ -1,9 +1,5 @@
 use super::*;
-use std::{
-    net::TcpListener,
-    sync::mpsc,
-    thread,
-};
+use std::{net::TcpListener, sync::mpsc, thread};
 
 /// What the fake server saw the client send after the handshake.
 #[derive(Debug, PartialEq)]
@@ -20,11 +16,18 @@ fn serve(password: Option<&'static str>) -> (SocketAddr, mpsc::Receiver<Seen>) {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let (mut s, _) = listener.accept().unwrap();
-        let take = |s: &mut TcpStream, n: usize| { let mut b = vec![0; n]; s.read_exact(&mut b).unwrap(); b };
+        let take = |s: &mut TcpStream, n: usize| {
+            let mut b = vec![0; n];
+            s.read_exact(&mut b).unwrap();
+            b
+        };
         s.write_all(b"RFB 003.008\n").unwrap();
         assert_eq!(take(&mut s, 12), b"RFB 003.008\n");
         match password {
-            None => { s.write_all(&[1, 1]).unwrap(); assert_eq!(take(&mut s, 1), [1]); }
+            None => {
+                s.write_all(&[1, 1]).unwrap();
+                assert_eq!(take(&mut s, 1), [1]);
+            }
             Some(password) => {
                 s.write_all(&[1, 2]).unwrap();
                 assert_eq!(take(&mut s, 1), [2]);
@@ -32,10 +35,14 @@ fn serve(password: Option<&'static str>) -> (SocketAddr, mpsc::Receiver<Seen>) {
                 s.write_all(&challenge).unwrap();
                 let ok = take(&mut s, 16) == crate::vm::vnc_auth::response(password, &challenge);
                 s.write_all(&u32::from(!ok).to_be_bytes()).unwrap();
-                if !ok { return; }
+                if !ok {
+                    return;
+                }
             }
         }
-        if password.is_none() { s.write_all(&0u32.to_be_bytes()).unwrap(); }
+        if password.is_none() {
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+        }
         assert_eq!(take(&mut s, 1), [1], "shared session");
         let mut init = vec![0, 4, 0, 2];
         init.extend_from_slice(&[32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
@@ -45,11 +52,16 @@ fn serve(password: Option<&'static str>) -> (SocketAddr, mpsc::Receiver<Seen>) {
         assert_eq!(take(&mut s, 20)[0], 0, "SetPixelFormat");
         let encodings = take(&mut s, 4);
         assert_eq!(encodings[0], 2);
-        take(&mut s, 4 * u16::from_be_bytes([encodings[2], encodings[3]]) as usize);
+        take(
+            &mut s,
+            4 * u16::from_be_bytes([encodings[2], encodings[3]]) as usize,
+        );
         let mut captures = 0;
         loop {
             let mut kind = [0u8; 1];
-            if s.read_exact(&mut kind).is_err() { return; }
+            if s.read_exact(&mut kind).is_err() {
+                return;
+            }
             match kind[0] {
                 3 => {
                     take(&mut s, 9);
@@ -59,9 +71,13 @@ fn serve(password: Option<&'static str>) -> (SocketAddr, mpsc::Receiver<Seen>) {
                         // Two rectangles: left half red, right half blue (B, G, R, X).
                         let mut update = vec![0, 0, 0, 2];
                         for (x, colour) in [(0u16, [0, 0, 255, 0]), (2, [255, 0, 0, 0])] {
-                            for value in [x, 0, 2, 2] { update.extend_from_slice(&value.to_be_bytes()); }
+                            for value in [x, 0, 2, 2] {
+                                update.extend_from_slice(&value.to_be_bytes());
+                            }
                             update.extend_from_slice(&0i32.to_be_bytes());
-                            for _ in 0..4 { update.extend_from_slice(&colour); }
+                            for _ in 0..4 {
+                                update.extend_from_slice(&colour);
+                            }
                         }
                         s.write_all(&update).unwrap();
                     } else if captures == 3 {
@@ -70,16 +86,37 @@ fn serve(password: Option<&'static str>) -> (SocketAddr, mpsc::Receiver<Seen>) {
                     } else {
                         // The screen grows to 2×3 and is green.
                         let mut update = vec![0, 0, 0, 2];
-                        for value in [0u16, 0, 2, 3] { update.extend_from_slice(&value.to_be_bytes()); }
+                        for value in [0u16, 0, 2, 3] {
+                            update.extend_from_slice(&value.to_be_bytes());
+                        }
                         update.extend_from_slice(&(-223i32).to_be_bytes());
-                        for value in [0u16, 0, 2, 3] { update.extend_from_slice(&value.to_be_bytes()); }
+                        for value in [0u16, 0, 2, 3] {
+                            update.extend_from_slice(&value.to_be_bytes());
+                        }
                         update.extend_from_slice(&0i32.to_be_bytes());
-                        for _ in 0..6 { update.extend_from_slice(&[0, 255, 0, 0]); }
+                        for _ in 0..6 {
+                            update.extend_from_slice(&[0, 255, 0, 0]);
+                        }
                         s.write_all(&update).unwrap();
                     }
                 }
-                4 => { let b = take(&mut s, 7); tx.send(Seen::Key(u32::from_be_bytes([b[3], b[4], b[5], b[6]]), b[0] == 1)).unwrap(); }
-                5 => { let b = take(&mut s, 5); tx.send(Seen::Pointer(b[0], u16::from_be_bytes([b[1], b[2]]), u16::from_be_bytes([b[3], b[4]]))).unwrap(); }
+                4 => {
+                    let b = take(&mut s, 7);
+                    tx.send(Seen::Key(
+                        u32::from_be_bytes([b[3], b[4], b[5], b[6]]),
+                        b[0] == 1,
+                    ))
+                    .unwrap();
+                }
+                5 => {
+                    let b = take(&mut s, 5);
+                    tx.send(Seen::Pointer(
+                        b[0],
+                        u16::from_be_bytes([b[1], b[2]]),
+                        u16::from_be_bytes([b[3], b[4]]),
+                    ))
+                    .unwrap();
+                }
                 other => panic!("unexpected client message {other}"),
             }
         }
@@ -103,7 +140,11 @@ fn captures_raw_frames_and_follows_a_resize() {
     // An unchanged screen answers nothing; the client returns the frame it already has, quickly.
     let started = std::time::Instant::now();
     let same = rfb.capture().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(same, grown);
 }
 
@@ -116,17 +157,34 @@ fn sends_pointer_and_key_events_clamped_to_the_screen() {
     rfb.key(0xff0d, true).unwrap();
     rfb.key(0xff0d, false).unwrap();
     let events: Vec<_> = (0..4).map(|_| seen.recv_timeout(WAIT).unwrap()).collect();
-    assert_eq!(events, vec![Seen::Pointer(1, 3, 1), Seen::Pointer(0, 3, 1), Seen::Key(0xff0d, true), Seen::Key(0xff0d, false)]);
+    assert_eq!(
+        events,
+        vec![
+            Seen::Pointer(1, 3, 1),
+            Seen::Pointer(0, 3, 1),
+            Seen::Key(0xff0d, true),
+            Seen::Key(0xff0d, false)
+        ]
+    );
 }
 
 #[test]
 fn authenticates_with_a_vnc_password() {
     let (address, _) = serve(Some("secret"));
-    assert_eq!(Rfb::connect(address, Some("secret"), WAIT).unwrap().size(), (4, 2));
+    assert_eq!(
+        Rfb::connect(address, Some("secret"), WAIT).unwrap().size(),
+        (4, 2)
+    );
     let (address, _) = serve(Some("secret"));
-    assert!(Rfb::connect(address, Some("wrong"), WAIT).err().unwrap().contains("rejected"));
+    assert!(Rfb::connect(address, Some("wrong"), WAIT)
+        .err()
+        .unwrap()
+        .contains("rejected"));
     let (address, _) = serve(Some("secret"));
-    assert!(Rfb::connect(address, None, WAIT).err().unwrap().contains("password"));
+    assert!(Rfb::connect(address, None, WAIT)
+        .err()
+        .unwrap()
+        .contains("password"));
 }
 
 /// Against a running VM: `PANTHEON_VNC=vnc://:password@127.0.0.1:port cargo test --lib -- --ignored vm::rfb::tests::live`
@@ -139,11 +197,19 @@ fn live_capture_and_type() {
     let frame = rfb.capture().unwrap();
     let path = std::env::temp_dir().join("pantheon-vm-live.png");
     frame.save(&path).unwrap();
-    eprintln!("{}×{} saved to {}", frame.width(), frame.height(), path.display());
+    eprintln!(
+        "{}×{} saved to {}",
+        frame.width(),
+        frame.height(),
+        path.display()
+    );
     for ch in "echo pantheon".chars() {
         rfb.key(ch as u32, true).unwrap();
         rfb.key(ch as u32, false).unwrap();
     }
     std::thread::sleep(Duration::from_millis(400));
-    rfb.capture().unwrap().save(std::env::temp_dir().join("pantheon-vm-live-typed.png")).unwrap();
+    rfb.capture()
+        .unwrap()
+        .save(std::env::temp_dir().join("pantheon-vm-live-typed.png"))
+        .unwrap();
 }

@@ -183,7 +183,9 @@ fn bounded_snapshot(work: impl FnOnce() -> Snapshot + Send + 'static, wait: Dura
     let mut active = ACTIVE.load(Ordering::SeqCst);
     loop {
         if active >= MAX_SCANS {
-            return Snapshot::unavailable("Change tracking is busy; this turn has no file baseline.");
+            return Snapshot::unavailable(
+                "Change tracking is busy; this turn has no file baseline.",
+            );
         }
         match ACTIVE.compare_exchange_weak(active, active + 1, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => break,
@@ -1583,7 +1585,8 @@ pub fn detail(store: &Store, sid: &str, id: &str, path: &str) -> Result<TurnChan
         .find(|f| f.path == path)
         .ok_or("This file is not in this turn's change summary.")?;
     let stored: Option<String> = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT detail FROM turn_change_files WHERE change_id=?1 AND path=?2",
             params![id, path],
             |r| r.get(0),
@@ -1597,7 +1600,8 @@ pub fn summary(store: &Store, sid: &str, id: &str) -> Result<TurnChanges> {
         return Err("Invalid turn change selection.".into());
     }
     let summary: String = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT summary FROM turn_changes WHERE id=?1 AND session_id=?2",
             params![id, sid],
             |r| r.get(0),

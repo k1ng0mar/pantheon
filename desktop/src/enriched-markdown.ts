@@ -48,8 +48,8 @@ const GENERATIVE = new Set(['ui', 'chart', 'svg', 'html', 'mermaid']);
 // Raw HTML is text to md4c; these collapsibles are the one HTML form agents rely on.
 const DETAILS_OPEN = /^<details( open)?>\s*(?:<summary>([\s\S]*?)<\/summary>)?$/i;
 const SUMMARY = /^<summary>([\s\S]*?)<\/summary>$/i;
-// Follow-up suggestions written as an inline directive, e.g. :codex-followup[Run tests]{prompt="Run the tests"}.
-const FOLLOWUP = /:(?:codex-)?followup\[([^\]\n]{1,80})\](?:\{prompt=("|&quot;)([\s\S]*?)\2\})?/g;
+// Follow-up suggestions written as an inline directive, e.g. :followup[Run tests]{prompt="Run the tests"}.
+const FOLLOWUP = /:followup\[([^\]\n]{1,80})\](?:\{prompt=("|&quot;)([\s\S]*?)\2\})?/g;
 
 /** Writes the tree as HTML. Math becomes inert placeholders that `typesetMath` fills in. */
 export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}): string {

@@ -65,6 +65,7 @@ pub use support_group::agent_runtime;
 pub use support_group::agent_runtime::{profile_err, AgentRuntime, DEFAULT_PROFILE};
 pub use support_group::loop_guard;
 pub use support_group::nightly_tools;
+pub use support_group::project_instructions;
 pub use support_group::rpc;
 pub use support_group::rpc::{Dispatcher, Id, MethodHandler, Request, Response, RpcError};
 pub use support_group::skill_exec_tool;

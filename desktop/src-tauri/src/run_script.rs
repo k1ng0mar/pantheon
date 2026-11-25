@@ -104,21 +104,23 @@ pub fn inspect(root: &Path) -> Result<Option<RunScript>, String> {
 fn preview_path(root: &Path, value: &str) -> Result<String, String> {
     let path = Path::new(value);
     // Windows components consume backslashes, so reject them before parsing.
-    if value.contains('\\') || path.components().any(|part| match part {
-        Component::Normal(name) => name
-            .to_str()
-            .is_none_or(|name| name.starts_with('.') || name.contains(['\\', ':'])),
-        Component::CurDir => false,
-        _ => true,
-    }) || !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "html" | "htm" | "svg"
-            )
+    if value.contains('\\')
+        || path.components().any(|part| match part {
+            Component::Normal(name) => name
+                .to_str()
+                .is_none_or(|name| name.starts_with('.') || name.contains(['\\', ':'])),
+            Component::CurDir => false,
+            _ => true,
         })
+        || !path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "html" | "htm" | "svg"
+                )
+            })
     {
         return Err("Run Script previews must be workspace-relative HTML or SVG files.".into());
     }

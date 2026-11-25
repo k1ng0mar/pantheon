@@ -7,7 +7,7 @@ fn fixture() -> (Store, Session) {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
-        .create_session(&project.id, "codex", "default", "ask")
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
     store.resume(&task.id, "native-thread").unwrap();
     (store, task)
@@ -25,33 +25,64 @@ fn goal(status: &str) -> GoalState {
     }
 }
 #[test]
-fn goal_snapshots_cannot_be_attached_to_another_task_or_harness() {
+fn goal_snapshots_are_validated_and_only_pantheon_tasks_hold_them() {
     let (store, task) = fixture();
     store.record_goal(&task.id, Some(&goal("active"))).unwrap();
-    let mut foreign = goal("complete");
-    foreign.thread_id = "another-thread".into();
-    assert!(store.record_goal(&task.id, Some(&foreign)).is_err());
+    // Provenance from an older build is informational, not a key: the row is
+    // keyed by the session id, so a differing thread id still applies.
+    let mut restored = goal("complete");
+    restored.thread_id = "older-thread".into();
+    store.record_goal(&task.id, Some(&restored)).unwrap();
     assert_eq!(
         store.session(&task.id).unwrap().goal_state.unwrap().status,
-        "active"
+        "complete"
     );
+    // A malformed snapshot is refused, and the stored one survives.
+    let mut broken = goal("active");
+    broken.objective.clear();
+    assert!(store.record_goal(&task.id, Some(&broken)).is_err());
+    assert_eq!(
+        store.session(&task.id).unwrap().goal_state.unwrap().status,
+        "complete"
+    );
+    // A row left behind by a removed harness opens but holds no goal.
     let project = store.add_project(&std::env::temp_dir()).unwrap();
-    let claude = store
-        .create_session(&project.id, "claude", "default", "ask")
+    let legacy = store
+        .create_session(&project.id, "pantheon", "default", "ask")
         .unwrap();
-    store.resume(&claude.id, "native-thread").unwrap();
+    store
+        .conn()
+        .execute(
+            "UPDATE sessions SET provider='codex' WHERE id=?1",
+            [&legacy.id],
+        )
+        .unwrap();
     assert!(store
-        .record_goal(&claude.id, Some(&goal("active")))
+        .record_goal(&legacy.id, Some(&goal("active")))
         .is_err());
     assert!(store.record_goal("missing", None).is_err());
 }
 #[test]
-fn changing_the_native_thread_clears_its_old_goal_snapshot() {
+fn an_active_goal_rides_the_next_turn_and_a_paused_one_does_not() {
+    let (store, task) = fixture();
+    assert_eq!(crate::goal_objective_for(&store, &task.id).unwrap(), None);
+    store.record_goal(&task.id, Some(&goal("active"))).unwrap();
+    assert_eq!(
+        crate::goal_objective_for(&store, &task.id)
+            .unwrap()
+            .as_deref(),
+        Some("Finish the task")
+    );
+    store.record_goal(&task.id, Some(&goal("paused"))).unwrap();
+    assert_eq!(crate::goal_objective_for(&store, &task.id).unwrap(), None);
+}
+
+#[test]
+fn clearing_a_goal_leaves_the_task_with_none() {
     let (store, task) = fixture();
     store.record_goal(&task.id, Some(&goal("paused"))).unwrap();
-    store.resume(&task.id, "native-thread").unwrap();
     assert!(store.session(&task.id).unwrap().goal_state.is_some());
-    store.resume(&task.id, "different-thread").unwrap();
+    store.record_goal(&task.id, None).unwrap();
     assert!(store.session(&task.id).unwrap().goal_state.is_none());
 }
 #[test]
@@ -141,26 +172,6 @@ fn paused_blocked_and_limited_goals_remain_in_progress_until_completion() {
     assert_eq!(store.session(&task.id).unwrap().task_stage, "review");
 }
 #[test]
-fn goal_maintenance_adds_no_user_turn_and_preserves_the_previous_stage() {
-    let (store, task) = fixture();
-    store
-        .conn().execute(
-            "UPDATE sessions SET task_stage='pending' WHERE id=?1",
-            [&task.id],
-        )
-        .unwrap();
-    store.begin_goal_operation(&task.id).unwrap();
-    store
-        .finish_task_operation(&task.id, true, false, Some("pending"))
-        .unwrap();
-    assert!(store.messages(&task.id, None).unwrap().is_empty());
-    assert_eq!(store.session(&task.id).unwrap().task_stage, "pending");
-    store
-        .update(&task.id, None, Some(true), None, None)
-        .unwrap();
-    assert!(store.begin_goal_operation(&task.id).is_err());
-}
-#[test]
 fn startup_recovery_pauses_active_goals_without_losing_objective_or_budget_usage() {
     let path = std::env::temp_dir().join(format!(
         "pantheon-goal-recovery-{}.sqlite3",
@@ -171,7 +182,7 @@ fn startup_recovery_pauses_active_goals_without_losing_objective_or_budget_usage
         let store = Store::open(&path).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store
-            .create_session(&project.id, "codex", "default", "ask")
+            .create_session(&project.id, "pantheon", "default", "ask")
             .unwrap();
         sid = task.id.clone();
         store.resume(&sid, "native-thread").unwrap();
@@ -223,20 +234,4 @@ fn repeated_tool_call_ids_in_automatic_turns_keep_distinct_rows() {
         run_tool_id("run-a", "same", "call"),
         run_tool_id("run-b", "same", "call")
     );
-}
-
-#[test]
-fn acknowledged_normalized_settings_replace_stale_saved_presets() {
-    let (store, task) = fixture();
-    let assistant = Mutex::new(String::new());
-    let normalized = serde_json::json!({"serviceTier":null,"collaborationMode":{"mode":"plan","settings":{"model":"new-model","reasoning_effort":"high","developer_instructions":null}}});
-    let mut activity = event(&task.id, "task_settings", "");
-    activity.data = Some(normalized.clone());
-    save_agent_activity(&store, &assistant, &mut activity, None).unwrap();
-    assert_eq!(
-        store.session(&task.id).unwrap().codex_settings.unwrap(),
-        normalized
-    );
-    activity.data = Some(serde_json::json!({"cwd":"/other/project"}));
-    assert!(save_agent_activity(&store, &assistant, &mut activity, None).is_err());
 }

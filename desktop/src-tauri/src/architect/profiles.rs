@@ -25,29 +25,8 @@ impl ModelSelection {
         }
     }
     fn validate(&self) -> Result<()> {
-        if ![
-            "claude",
-            "codex",
-            "kimi",
-            "opencode",
-            "glm",
-            "antigravity",
-            "grok",
-            "mimo",
-            "pi",
-            "deepseek",
-            "commandcode",
-            "cline",
-            "kilo",
-            "omp",
-            "github-copilot",
-            "muse",
-        ]
-        .contains(&self.provider.as_str())
-            || self.model.len() > 200
-            || self.model.contains('\0')
-        {
-            return Err("Choose a supported harness and a model ID under 200 bytes.".into());
+        if self.provider != "pantheon" || self.model.len() > 200 || self.model.contains('\0') {
+            return Err("Choose a Pantheon model ID under 200 bytes.".into());
         }
         crate::providers::validate_reasoning_effort(
             &self.provider,
@@ -89,7 +68,8 @@ pub struct TeamLibrary {
 
 pub(crate) fn initialize(store: &Store) -> Result<()> {
     let exists: bool = store
-        .conn().query_row(
+        .conn()
+        .query_row(
             "SELECT EXISTS(SELECT 1 FROM architect_library WHERE id=1)",
             [],
             |r| r.get(0),
@@ -116,7 +96,8 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
     }
     let content = serde_json::to_string(&library).map_err(|e| e.to_string())?;
     store
-        .conn().execute(
+        .conn()
+        .execute(
             "INSERT OR IGNORE INTO architect_library(id,content) VALUES(1,?1)",
             [content],
         )
@@ -320,7 +301,9 @@ pub(crate) fn apply_default_on(
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if has_history || super::parent_of_on(conn, sid)?.is_some() || super::load_on(conn, sid)?.is_some()
+    if has_history
+        || super::parent_of_on(conn, sid)?.is_some()
+        || super::load_on(conn, sid)?.is_some()
     {
         return Err("Default team settings only apply to a new user task.".into());
     }
@@ -368,10 +351,7 @@ pub(crate) fn create_user_task(
     store.session(&sid)
 }
 /// Replaces the app-wide lead guidance. Blank or absent means the built-in rules alone.
-pub(crate) fn set_lead_guidance(
-    store: &Store,
-    guidance: Option<String>,
-) -> Result<TeamLibrary> {
+pub(crate) fn set_lead_guidance(store: &Store, guidance: Option<String>) -> Result<TeamLibrary> {
     let mut library = read(store)?;
     library.lead_guidance = guidance
         .map(|text| text.trim().to_owned())

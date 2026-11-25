@@ -21,7 +21,7 @@
 //!   commands the slash-command registry (metadata; handlers live in session)
 //!   setup_graph the setup section graph
 //!   setup_wizard the interactive setup screens over app/widget
-//!   setup    flag parsing + config writer (`pantheon setup [--yes]`)
+//!   setup    flag parsing + config writer (`pantheon setup`)
 //!   prompt   run one widget on the real terminal, return the answer
 //!       |
 //!       v

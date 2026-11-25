@@ -12,8 +12,8 @@ use std::{
 use tauri::{Emitter, Manager};
 
 use super::{screen, tart, Vms};
-use crate::cloud::commands as cloud;
 use crate::agent_tools::{spec, validate_spec};
+use crate::cloud::commands as cloud;
 use crate::providers::ToolHost;
 
 /// The screen settles this long after an action before the follow-up screenshot.
@@ -47,35 +47,82 @@ pub fn catalog() -> Vec<Value> {
 }
 
 fn string(args: &Value, key: &str) -> Option<String> {
-    args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    args[key]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 fn number(args: &Value, key: &str) -> Result<f64, String> {
-    args[key].as_i64().map(|n| n as f64).ok_or_else(|| format!("Missing argument: {key}"))
+    args[key]
+        .as_i64()
+        .map(|n| n as f64)
+        .ok_or_else(|| format!("Missing argument: {key}"))
 }
 
 /// One computer-use action from tool or panel arguments.
 pub fn action(args: &Value) -> Result<screen::Action, String> {
     use screen::Action;
-    let click = |button: u8, count: u8| -> Result<Action, String> { Ok(Action::Click { x: number(args, "x")?, y: number(args, "y")?, button, count }) };
+    let click = |button: u8, count: u8| -> Result<Action, String> {
+        Ok(Action::Click {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+            button,
+            count,
+        })
+    };
     match string(args, "action").as_deref().unwrap_or_default() {
         "click" => click(1, 1),
         "double_click" => click(1, 2),
         "right_click" => click(3, 1),
         "middle_click" => click(2, 1),
-        "move" => Ok(Action::Move { x: number(args, "x")?, y: number(args, "y")? }),
-        "drag" => Ok(Action::Drag { x: number(args, "x")?, y: number(args, "y")?, end_x: number(args, "endX")?, end_y: number(args, "endY")? }),
-        "scroll" => Ok(Action::Scroll { x: number(args, "x")?, y: number(args, "y")?, direction: string(args, "direction").ok_or("Missing argument: direction")?, amount: args["amount"].as_u64().unwrap_or(3) as u32 }),
-        "type" => Ok(Action::Type { text: args["text"].as_str().ok_or("Missing argument: text")?.to_string() }),
-        "key" => Ok(Action::Key { keys: string(args, "keys").ok_or("Missing argument: keys")? }),
+        "move" => Ok(Action::Move {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+        }),
+        "drag" => Ok(Action::Drag {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+            end_x: number(args, "endX")?,
+            end_y: number(args, "endY")?,
+        }),
+        "scroll" => Ok(Action::Scroll {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+            direction: string(args, "direction").ok_or("Missing argument: direction")?,
+            amount: args["amount"].as_u64().unwrap_or(3) as u32,
+        }),
+        "type" => Ok(Action::Type {
+            text: args["text"]
+                .as_str()
+                .ok_or("Missing argument: text")?
+                .to_string(),
+        }),
+        "key" => Ok(Action::Key {
+            keys: string(args, "keys").ok_or("Missing argument: keys")?,
+        }),
         _ => Err("Unknown VM action.".into()),
     }
 }
 
 fn look(vms: &Vms, name: &str, note: &str) -> Result<Value, String> {
-    let shot = if crate::cloud::split(name).is_some() { cloud::screenshot(name)? } else { vms.with_screen(name, true, |rfb| screen::screenshot(rfb, 80))? };
-    let scale = if shot.width == shot.screen_width { String::new() } else { format!(" (screen {}×{}, scaled)", shot.screen_width, shot.screen_height) };
-    Ok(json!({"_pantheonImage":{"mimeType":"image/jpeg","data":STANDARD.encode(&shot.jpeg),
-        "text":format!("{note}VM {name}: {}×{} pixels{scale}; use these pixels as vm_control coordinates.", shot.width, shot.height)}}))
+    let shot = if crate::cloud::split(name).is_some() {
+        cloud::screenshot(name)?
+    } else {
+        vms.with_screen(name, true, |rfb| screen::screenshot(rfb, 80))?
+    };
+    let scale = if shot.width == shot.screen_width {
+        String::new()
+    } else {
+        format!(
+            " (screen {}×{}, scaled)",
+            shot.screen_width, shot.screen_height
+        )
+    };
+    Ok(
+        json!({"_pantheonImage":{"mimeType":"image/jpeg","data":STANDARD.encode(&shot.jpeg),
+        "text":format!("{note}VM {name}: {}×{} pixels{scale}; use these pixels as vm_control coordinates.", shot.width, shot.height)}}),
+    )
 }
 
 pub fn install_desktop(vms: &Vms, name: &str) -> Result<String, String> {
@@ -84,7 +131,10 @@ pub fn install_desktop(vms: &Vms, name: &str) -> Result<String, String> {
 
 fn exec(vms: &Vms, name: &str, args: &Value) -> Result<Value, String> {
     let command = string(args, "command").ok_or("Missing argument: command")?;
-    let timeout = args["timeoutSeconds"].as_u64().unwrap_or(120).clamp(1, 1800);
+    let timeout = args["timeoutSeconds"]
+        .as_u64()
+        .unwrap_or(120)
+        .clamp(1, 1800);
     if crate::cloud::split(name).is_some() {
         let (code, output) = cloud::exec(name, &command, Duration::from_secs(timeout))?;
         return Ok(json!({"exitCode": code, "output": output}));
@@ -93,7 +143,9 @@ fn exec(vms: &Vms, name: &str, args: &Value) -> Result<Value, String> {
     vms.mark_used(name);
     let out = tart::exec(name, macos, &command, Duration::from_secs(timeout))?;
     vms.mark_used(name);
-    Ok(json!({"exitCode": out.code, "stdout": out.stdout, "stderr": out.stderr, "truncated": out.truncated, "timedOut": out.code.is_none()}))
+    Ok(
+        json!({"exitCode": out.code, "stdout": out.stdout, "stderr": out.stderr, "truncated": out.truncated, "timedOut": out.code.is_none()}),
+    )
 }
 
 /// The task's checkout: its worktree, else its project folder.
@@ -101,18 +153,36 @@ fn checkout(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathB
     let state = app.state::<crate::AppState>();
     let store = state.store.lock().ok()?;
     let task = store.session(session_id).ok()?;
-    task.worktree_path.map(Into::into).or_else(|| store.project(&task.project_id).ok().map(|project| project.path.into()))
+    task.worktree_path.map(Into::into).or_else(|| {
+        store
+            .project(&task.project_id)
+            .ok()
+            .map(|project| project.path.into())
+    })
 }
 
-fn manage(app: &tauri::AppHandle, session_id: &str, vms: &Vms, args: &Value) -> Result<Value, String> {
+fn manage(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    vms: &Vms,
+    args: &Value,
+) -> Result<Value, String> {
     let action = string(args, "action").unwrap_or_default();
     let provider = string(args, "provider").unwrap_or_else(|| "local".into());
     let report = match action.as_str() {
         "create" if provider != "local" => {
-            let name = string(args, "name").unwrap_or_else(|| format!("pantheon-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]));
+            let name = string(args, "name").unwrap_or_else(|| {
+                format!(
+                    "pantheon-{}",
+                    &uuid::Uuid::new_v4().simple().to_string()[..6]
+                )
+            });
             let machine = cloud::create(&provider, &name)?;
             vms.show(Some(machine.id.clone()));
-            format!("Created {} ({}). It may take a minute to start; check with vm_list.", machine.id, machine.detail)
+            format!(
+                "Created {} ({}). It may take a minute to start; check with vm_list.",
+                machine.id, machine.detail
+            )
         }
         "create" => {
             let image = string(args, "image").ok_or("Missing argument: image")?;
@@ -124,12 +194,24 @@ fn manage(app: &tauri::AppHandle, session_id: &str, vms: &Vms, args: &Value) -> 
             format!("Created and started {name} from {image}. Commands work now; on Linux a desktop installs in the background for a few minutes before screenshots show it.")
         }
         "install_desktop" => install_desktop(vms, &vms.resolve(string(args, "name").as_deref())?)?,
-        _ if string(args, "name").as_deref().is_some_and(|n| crate::cloud::split(n).is_some()) => {
+        _ if string(args, "name")
+            .as_deref()
+            .is_some_and(|n| crate::cloud::split(n).is_some()) =>
+        {
             let id = string(args, "name").unwrap_or_default();
             match action.as_str() {
-                "show" => { vms.show(Some(id.clone())); format!("Showing {id} in Pantheon's VM panel.") }
-                "start" | "stop" | "delete" => { cloud::power(&id, &action)?; format!("{id}: {action} requested.") }
-                "suspend" => { cloud::power(&id, "stop")?; format!("{id} is stopping; cloud sandboxes stop rather than suspend.") }
+                "show" => {
+                    vms.show(Some(id.clone()));
+                    format!("Showing {id} in Pantheon's VM panel.")
+                }
+                "start" | "stop" | "delete" => {
+                    cloud::power(&id, &action)?;
+                    format!("{id}: {action} requested.")
+                }
+                "suspend" => {
+                    cloud::power(&id, "stop")?;
+                    format!("{id} is stopping; cloud sandboxes stop rather than suspend.")
+                }
                 _ => return Err("That action is for local VMs.".into()),
             }
         }
@@ -137,21 +219,47 @@ fn manage(app: &tauri::AppHandle, session_id: &str, vms: &Vms, args: &Value) -> 
             let name = vms.resolve(string(args, "name").as_deref())?;
             match action.as_str() {
                 "start" => {
-                    let share = if args["shareProject"].as_bool() == Some(true) { Some(checkout(app, session_id).ok_or("This task's folder is unknown.")?) } else { None };
+                    let share = if args["shareProject"].as_bool() == Some(true) {
+                        Some(checkout(app, session_id).ok_or("This task's folder is unknown.")?)
+                    } else {
+                        None
+                    };
                     vms.start(&name, share.as_deref())?;
                     vms.show(Some(name.clone()));
                     super::desktop::ensure_in_background(app.clone(), name.clone());
-                    format!("{name} is running and shown in Pantheon.{}", if share.is_some() { " The project is shared read-only." } else { "" })
+                    format!(
+                        "{name} is running and shown in Pantheon.{}",
+                        if share.is_some() {
+                            " The project is shared read-only."
+                        } else {
+                            ""
+                        }
+                    )
                 }
-                "stop" => { vms.stop(&name)?; format!("{name} is stopped.") }
-                "suspend" => { vms.suspend(&name)?; format!("{name} is suspended.") }
-                "delete" => { vms.delete(&name)?; format!("{name} is deleted.") }
-                "show" => { vms.show(Some(name.clone())); format!("Showing {name} in Pantheon's VM panel.") }
+                "stop" => {
+                    vms.stop(&name)?;
+                    format!("{name} is stopped.")
+                }
+                "suspend" => {
+                    vms.suspend(&name)?;
+                    format!("{name} is suspended.")
+                }
+                "delete" => {
+                    vms.delete(&name)?;
+                    format!("{name} is deleted.")
+                }
+                "show" => {
+                    vms.show(Some(name.clone()));
+                    format!("Showing {name} in Pantheon's VM panel.")
+                }
                 _ => return Err("Unknown VM action.".into()),
             }
         }
     };
-    let _ = app.emit("vm-changed", json!({"show": matches!(action.as_str(), "create" | "start" | "show")}));
+    let _ = app.emit(
+        "vm-changed",
+        json!({"show": matches!(action.as_str(), "create" | "start" | "show")}),
+    );
     Ok(json!(report))
 }
 
@@ -169,7 +277,12 @@ fn list(vms: &Vms) -> Result<Value, String> {
     }))
 }
 
-async fn dispatch(app: tauri::AppHandle, session_id: String, name: String, args: Value) -> Result<Value, String> {
+async fn dispatch(
+    app: tauri::AppHandle,
+    session_id: String,
+    name: String,
+    args: Value,
+) -> Result<Value, String> {
     crate::blocking(move || {
         let vms = app.state::<Vms>();
         let target = || vms.resolve(string(&args, "name").as_deref());
@@ -178,7 +291,11 @@ async fn dispatch(app: tauri::AppHandle, session_id: String, name: String, args:
             "pantheon_vm_screenshot" => look(&vms, &target()?, ""),
             "pantheon_vm_control" => {
                 let vm = target()?;
-                let report = if crate::cloud::split(&vm).is_some() { cloud::act(&vm, &action(&args)?)? } else { vms.with_screen(&vm, true, |rfb| screen::act(rfb, &action(&args)?))? };
+                let report = if crate::cloud::split(&vm).is_some() {
+                    cloud::act(&vm, &action(&args)?)?
+                } else {
+                    vms.with_screen(&vm, true, |rfb| screen::act(rfb, &action(&args)?))?
+                };
                 if args["screenshot"].as_bool() == Some(false) {
                     return Ok(json!(report));
                 }
@@ -194,14 +311,23 @@ async fn dispatch(app: tauri::AppHandle, session_id: String, name: String, args:
 }
 
 /// Add the machine tools: local VMs on Apple silicon Macs, cloud sandboxes everywhere.
-pub fn with_vm(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String, stopped: Arc<AtomicBool>) -> Option<ToolHost> {
+pub fn with_vm(
+    base: Option<ToolHost>,
+    app: tauri::AppHandle,
+    session_id: String,
+    stopped: Arc<AtomicBool>,
+) -> Option<ToolHost> {
     let local = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     if !local && !cloud::connections().iter().any(|c| c.connected) {
         return base;
     }
     let own = catalog();
-    let mut tools = base.as_ref().map_or_else(Vec::new, |host| host.tools.clone());
-    let mut approval_tools = base.as_ref().map_or_else(Default::default, |host| host.approval_tools.clone());
+    let mut tools = base
+        .as_ref()
+        .map_or_else(Vec::new, |host| host.tools.clone());
+    let mut approval_tools = base
+        .as_ref()
+        .map_or_else(Default::default, |host| host.approval_tools.clone());
     for tool in &own {
         let name = tool["name"].as_str().unwrap_or_default();
         if !READ_ONLY.contains(&name) {
@@ -213,7 +339,12 @@ pub fn with_vm(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String
         tools,
         approval_tools,
         handler: Arc::new(move |name, args| {
-            let (base, app, stopped, session_id) = (base.clone(), app.clone(), stopped.clone(), session_id.clone());
+            let (base, app, stopped, session_id) = (
+                base.clone(),
+                app.clone(),
+                stopped.clone(),
+                session_id.clone(),
+            );
             Box::pin(async move {
                 if stopped.load(Ordering::SeqCst) {
                     return Err("Task has stopped.".into());
@@ -239,19 +370,51 @@ mod tests {
     fn the_catalog_validates_and_keeps_looking_free() {
         let tools = catalog();
         assert_eq!(tools.len(), 5);
-        assert!(validate_spec(&tools, "pantheon_vm_control", &json!({"action":"click","x":10,"y":20})).is_ok());
+        assert!(validate_spec(
+            &tools,
+            "pantheon_vm_control",
+            &json!({"action":"click","x":10,"y":20})
+        )
+        .is_ok());
         assert!(validate_spec(&tools, "pantheon_vm_control", &json!({"action":"hover"})).is_err());
-        assert!(validate_spec(&tools, "pantheon_vm_exec", &json!({"command":"uname -a","timeoutSeconds":30})).is_ok());
-        assert!(validate_spec(&tools, "pantheon_vm_manage", &json!({"action":"create","image":"windows"})).is_err());
-        assert!(READ_ONLY.iter().all(|name| tools.iter().any(|t| t["name"] == *name)));
+        assert!(validate_spec(
+            &tools,
+            "pantheon_vm_exec",
+            &json!({"command":"uname -a","timeoutSeconds":30})
+        )
+        .is_ok());
+        assert!(validate_spec(
+            &tools,
+            "pantheon_vm_manage",
+            &json!({"action":"create","image":"windows"})
+        )
+        .is_err());
+        assert!(READ_ONLY
+            .iter()
+            .all(|name| tools.iter().any(|t| t["name"] == *name)));
         assert!(!READ_ONLY.contains(&"pantheon_vm_exec"));
     }
     #[test]
     fn parses_every_action_and_requires_its_fields() {
-        assert!(matches!(action(&json!({"action":"double_click","x":1,"y":2})).unwrap(), screen::Action::Click { count: 2, button: 1, .. }));
-        assert!(matches!(action(&json!({"action":"right_click","x":1,"y":2})).unwrap(), screen::Action::Click { button: 3, .. }));
-        assert!(matches!(action(&json!({"action":"scroll","x":1,"y":2,"direction":"down"})).unwrap(), screen::Action::Scroll { amount: 3, .. }));
-        assert!(action(&json!({"action":"drag","x":1,"y":2})).unwrap_err().contains("endX"));
+        assert!(matches!(
+            action(&json!({"action":"double_click","x":1,"y":2})).unwrap(),
+            screen::Action::Click {
+                count: 2,
+                button: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            action(&json!({"action":"right_click","x":1,"y":2})).unwrap(),
+            screen::Action::Click { button: 3, .. }
+        ));
+        assert!(matches!(
+            action(&json!({"action":"scroll","x":1,"y":2,"direction":"down"})).unwrap(),
+            screen::Action::Scroll { amount: 3, .. }
+        ));
+        assert!(action(&json!({"action":"drag","x":1,"y":2}))
+            .unwrap_err()
+            .contains("endX"));
         assert!(action(&json!({"action":"type"})).is_err());
         assert!(action(&json!({"action":"key","keys":"ctrl+c"})).is_ok());
     }
@@ -267,7 +430,13 @@ mod tests {
     #[ignore]
     fn live_exec_runs_in_the_guest() {
         let name = std::env::var("PANTHEON_VM").expect("set PANTHEON_VM");
-        let out = tart::exec(&name, false, "echo $((6*7)) && whoami", Duration::from_secs(30)).unwrap();
+        let out = tart::exec(
+            &name,
+            false,
+            "echo $((6*7)) && whoami",
+            Duration::from_secs(30),
+        )
+        .unwrap();
         assert_eq!(out.code, Some(0));
         assert_eq!(out.stdout, "42\nadmin\n");
         let failed = tart::exec(&name, false, "exit 3", Duration::from_secs(30)).unwrap();

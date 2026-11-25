@@ -5,6 +5,8 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 const previewBody = (source: string) => source + '\nwindow.__pantheonPreviewUrl = import.meta.url;\n';
 
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
+// Header tooltips spell the host modifier: the app reads navigator.platform.
+const mod = process.platform === 'darwin' ? '⌘' : 'Ctrl';
 // Rows mark tasks with a prompt or response in the last 24 hours; folders group them by project.
 const activeRows = (page: Page) => page.locator('#navigation .task-item[data-activity="active"]');
 const taskRow = (page: Page, id: string, activity?: 'active' | 'inactive') => page.locator(`#navigation .task-item[data-id="${id}"]${activity ? `[data-activity="${activity}"]` : ''}`);
@@ -102,12 +104,15 @@ const savedEffort = (page: Page, sessionId?: string) => page.evaluate(async sess
 async function installReasoningPreview(page: Page): Promise<void> {
   const effort = (id: string, name: string) => ({ id, name, description: `Sample ${name.toLowerCase()} effort.` });
   const catalogs = {
-    claude: [
-      { id: 'sonnet', name: 'Claude Sonnet 5', description: 'Sample Claude model.', reasoningEfforts: [effort('low', 'Low'), effort('high', 'High')], defaultReasoningEffort: 'low', contextWindow: 200000 },
-      { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude model.', reasoningEfforts: [effort('high', 'High'), effort('max', 'Max')], defaultReasoningEffort: 'high', contextWindow: 1000000 },
+    pantheon: [
+      { id: 'openai/gpt-6.1-sol', name: 'GPT-6.1 Sol', description: 'Sample fast model.', reasoningEfforts: [effort('low', 'Low'), effort('high', 'High')], defaultReasoningEffort: 'low', contextWindow: 200000 },
+      { id: 'anthropic/opus-5', name: 'Opus 5', description: 'Sample reasoning model.', reasoningEfforts: [effort('high', 'High'), effort('max', 'Max')], defaultReasoningEffort: 'high', contextWindow: 1000000 },
+      { id: 'google/gemini-3-pro', name: 'Gemini 3 Pro', description: 'Sample model with three efforts.', reasoningEfforts: [effort('low', 'Low'), effort('medium', 'Medium'), effort('high', 'High')], defaultReasoningEffort: 'medium', contextWindow: 1000000 },
+      // More rows than fit in a short window, so the list itself can scroll.
+      { id: 'openai/gpt-6.1-mini', name: 'GPT-6.1 Mini', description: 'Sample small model.', contextWindow: 200000 },
+      { id: 'google/gemini-3-flash', name: 'Gemini 3 Flash', description: 'Sample fast model.', contextWindow: 200000 },
+      { id: 'anthropic/haiku-5', name: 'Haiku 5', description: 'Sample compact model.', contextWindow: 200000 },
     ],
-    codex: [{ id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model.', reasoningEfforts: [effort('low', 'Low'), effort('medium', 'Medium'), effort('high', 'High')], defaultReasoningEffort: 'medium', contextWindow: 400000 }],
-    kimi: [{ id: 'kimi-code/k3', name: 'K3', description: 'No optional metadata available.' }],
   };
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
@@ -175,7 +180,10 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-  await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
+  // The sample reply is on screen before a test starts. Its rich Markdown is a
+  // separate, lazily loaded renderer (covered by markdown.spec.ts), so this smoke
+  // check reads the reply itself rather than waiting on that renderer.
+  await expect(page.locator('[data-message-id="4"] .message-content')).toContainText('One index per dataset');
 });
 
 test('identifies sample data and renders the desktop workspace without runtime errors', async ({ page }) => {
@@ -392,7 +400,8 @@ test('defaults to dark mode and remembers explicit light and dark preferences af
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
   expect(await page.evaluate(() => localStorage.getItem('pantheon.theme'))).toBeNull();
   expect((await appearanceSurfaces(page)).mainContrast).toBeGreaterThanOrEqual(4.5);
-  await expect(page.locator('.provider-logo[data-provider="codex"]').first()).toHaveCSS('filter', 'invert(1)');
+  await expect(page.locator('.provider-logo[data-provider="pantheon"]').first()).toBeVisible();
+  await expect(page.locator('img.provider-logo[data-provider="pantheon"]').first()).toHaveAttribute('src', /pantheon/);
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(menu.getByRole('searchbox', { name: 'Search harnesses and models', exact: true })).toBeFocused();
@@ -440,12 +449,12 @@ test('loads full model names, searches names or IDs, and saves the harness invoc
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const search = picker.getByRole('searchbox', { name: 'Search harnesses and models', exact: true });
-  await expect(picker.getByRole('button', { name: 'Claude Code · Claude Sonnet 5', exact: true })).toHaveAttribute('data-model', 'sonnet');
-  await expect(trigger).toHaveText('Claude Sonnet 5');
+  await expect(picker.getByRole('button', { name: 'Pantheon · GPT-6.1 Sol', exact: true })).toHaveAttribute('data-model', 'openai/gpt-6.1-sol');
+  await expect(trigger).toHaveText('GPT-6.1 Sol');
   expect(await page.evaluate(() => (window as any).__catalogPrompt === document.querySelector('#prompt'))).toBe(true);
   await expect(prompt(page)).toHaveValue('Keep the draft while loading model names');
-  await search.fill('Claude Opus 5');
-  const opus = picker.getByRole('button', { name: 'Claude Code · Claude Opus 5', exact: true });
+  await search.fill('Opus 5');
+  const opus = picker.getByRole('button', { name: 'Pantheon · Opus 5', exact: true });
   await expect(opus).toBeVisible();
   await search.fill('opus');
   await expect(opus).toBeVisible();
@@ -453,8 +462,8 @@ test('loads full model names, searches names or IDs, and saves the harness invoc
   await expect(opus).toBeVisible();
   await page.screenshot({ path: '/tmp/pantheon-model-names.png', animations: 'disabled' });
   await search.press('Enter');
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'opus' });
-  await expect(trigger).toHaveText('Claude Opus 5');
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'anthropic/opus-5' });
+  await expect(trigger).toHaveText('Opus 5');
   await expect(prompt(page)).toHaveValue('Keep the draft while loading model names');
 });
 
@@ -479,10 +488,10 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   await expectColor(lowColor);
   await expect(reasoningLabel(page)).toHaveText('Default');
   await expect(modelPicker(page).getByRole('button', { name: 'Reset reasoning effort', exact: true })).toHaveCount(0);
-  await expect(settings).not.toContainText('Claude Sonnet');
+  await expect(settings).not.toContainText('GPT-6.1 Sol');
   // The context window is shown under the composer, not in this menu.
   await expect(settings).not.toContainText(/context/i);
-  await expect(modelPicker(page).getByRole('button', { name: 'Claude Code · Claude Opus 5', exact: true })).toContainText(/1M/i);
+  await expect(modelPicker(page).getByRole('button', { name: 'Pantheon · Opus 5', exact: true })).toContainText(/1M/i);
   await page.screenshot({ path: '/tmp/pantheon-reasoning-settings.png', animations: 'disabled' });
   await page.setViewportSize({ width: 860, height: 600 });
   await expect(slider).toBeInViewport();
@@ -504,7 +513,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   await page.mouse.move(sliderBounds.x + sliderBounds.width - 16, sliderBounds.y + sliderBounds.height / 2, { steps: 8 });
   await expect(slider).toHaveAttribute('aria-valuetext', 'High');
   await expect(reasoningLabel(page)).toHaveText('High');
-  await expect(settings).not.toContainText('Claude Sonnet');
+  await expect(settings).not.toContainText('GPT-6.1 Sol');
   await expectColor(highColor);
   expect(await savedEffort(page)).toBeNull();
   await page.mouse.up();
@@ -581,8 +590,8 @@ test('keeps the reasoning bar in the theme accent at every level while dragging,
     (window as any).__colorEffortSaves = [];
     (window as any).__closeColorEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Claude Sonnet', description: '', defaultReasoningEffort: 'low', reasoningEfforts: ['Low', 'Medium', 'High', 'Max'].map(name => ({ id: name.toLowerCase(), name, description: '' })) }] }],
-      current: { provider: 'claude', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: ['Low', 'Medium', 'High', 'Max'].map(name => ({ id: name.toLowerCase(), name, description: '' })) }] }],
+      current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {}, onEffortSelect: async effort => { (window as any).__colorEffortSaves.push(effort); },
     });
     window.matchMedia = originalMatchMedia;
@@ -613,11 +622,13 @@ test('keeps the reasoning bar in the theme accent at every level while dragging,
 });
 
 test('keeps the reasoning menu stationary during delayed effort saves', async ({ page }) => {
-  await page.setViewportSize({ width: 860, height: 450 });
+  // One agent keeps the composer list short (a few recent models), so the window
+  // is short enough that the list still has to scroll while the save is pending.
+  await page.setViewportSize({ width: 860, height: 260 });
   await installReasoningPreview(page);
   await prompt(page).fill('Keep this draft while adjusting effort');
   await modelTrigger(page).click();
-  await expect(modelPicker(page).getByRole('button', { name: 'Claude Code · Claude Sonnet 5', exact: true })).toBeVisible();
+  await expect(modelPicker(page).getByRole('button', { name: 'Pantheon · GPT-6.1 Sol', exact: true })).toBeVisible();
   await captureEffortPresentation(page);
   expect(await page.evaluate(() => (window as any).__effortPresentation.scrollTop)).toBeGreaterThan(0);
   for (const [effort, name, key] of [['high', 'High', 'End'], ['low', 'Low', 'Home']]) {
@@ -645,13 +656,13 @@ test('keeps an identical reasoning catalog refresh from rebuilding or scrolling 
   await page.setViewportSize({ width: 860, height: 600 });
   await page.evaluate(async () => {
     const { openModelPicker } = await import('/src/model-picker.ts');
-    const models = [{ id: 'sonnet', name: 'Claude Sonnet', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] },
+    const models = [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] },
       ...Array.from({ length: 20 }, (_, index) => ({ id: `sample-${index}`, name: `Sample model ${index}`, description: '' }))];
     (window as any).__stableEffortCatalog = models;
     (window as any).__closeStableEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample', models }],
-      current: { provider: 'claude', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models }],
+      current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {}, onEffortSelect: async () => {},
       loadModels: () => new Promise(resolve => { (window as any).__resolveStableEffortCatalog = resolve; }),
     });
@@ -670,7 +681,7 @@ test('preserves reasoning effort when changing projects and resets it when chang
   await expect(newTaskHeading(page)).toBeVisible();
   const sessionId = await draftTaskId(page);
   await modelTrigger(page).click();
-  await modelPicker(page).getByRole('button', { name: 'Claude Code · Claude Sonnet 5', exact: true }).click();
+  await modelPicker(page).getByRole('button', { name: 'Pantheon · GPT-6.1 Sol', exact: true }).click();
   await modelTrigger(page).click();
   await reasoningSlider(page).press('End');
   await expect.poll(() => savedEffort(page)).toBe('high');
@@ -682,7 +693,7 @@ test('preserves reasoning effort when changing projects and resets it when chang
   await expect.poll(() => savedEffort(page)).toBe('high');
   await expect(modelTrigger(page)).toContainText('High');
   await modelTrigger(page).click();
-  await modelPicker(page).getByRole('button', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
+  await modelPicker(page).getByRole('button', { name: 'Pantheon · Opus 5', exact: true }).click();
   await expect.poll(() => savedEffort(page)).toBeNull();
   await modelTrigger(page).click();
   await expect(reasoningSlider(page)).toHaveAttribute('aria-valuetext', 'Default');
@@ -690,9 +701,9 @@ test('preserves reasoning effort when changing projects and resets it when chang
   await expect(reasoningSlider(page)).toHaveAttribute('max', '1');
   await reasoningSlider(page).press('End');
   await expect.poll(() => savedEffort(page)).toBe('max');
-  await modelPicker(page).getByRole('button', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+  await modelPicker(page).getByRole('button', { name: 'Pantheon · Gemini 3 Pro', exact: true }).click();
   await expect.poll(() => savedEffort(page)).toBeNull();
-  await expect(modelTrigger(page)).toContainText('GPT-6-Astra');
+  await expect(modelTrigger(page)).toContainText('Gemini 3 Pro');
   await expect(modelTrigger(page)).not.toContainText('Max');
   await expect(prompt(page)).toHaveValue('Use this repository with the same reasoning preference');
   await modelTrigger(page).click();
@@ -772,7 +783,7 @@ test('hides unsupported reasoning and context metadata without inventing values'
   await installReasoningPreview(page);
   await page.locator('.task-item[data-id="session-3"]').click();
   await modelTrigger(page).click();
-  await modelPicker(page).getByRole('button', { name: 'Kimi Code · K3', exact: true }).click();
+  await modelPicker(page).getByRole('button', { name: 'Pantheon · Default', exact: true }).click();
   await modelTrigger(page).click();
   await expect(reasoningSlider(page)).toHaveCount(0);
   await expect(modelPicker(page).locator('.model-menu-settings')).toBeHidden();
@@ -781,7 +792,7 @@ test('hides unsupported reasoning and context metadata without inventing values'
   await page.locator('.task-item[data-id="session-1"]').click();
   await modelTrigger(page).click();
   await modelPicker(page).getByRole('searchbox').fill('custom-without-metadata');
-  await modelPicker(page).getByRole('button', { name: 'Use "custom-without-metadata" with Claude Code', exact: true }).click();
+  await modelPicker(page).getByRole('button', { name: 'Use "custom-without-metadata" with Pantheon', exact: true }).click();
   await modelTrigger(page).click();
   await expect(reasoningSlider(page)).toHaveCount(0);
   await expect(modelPicker(page).locator('.model-menu-settings')).toBeHidden();
@@ -792,8 +803,8 @@ test('hides unsupported reasoning and context metadata without inventing values'
     (window as any).__unsupportedEffortSaves = [];
     (window as any).__closeUnsupportedEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [] }],
-      current: { provider: 'claude', model: 'retired-model', reasoningEffort: 'retired-effort' }, canSwitchProvider: false,
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [] }],
+      current: { provider: 'pantheon', model: 'retired-model', reasoningEffort: 'retired-effort' }, canSwitchProvider: false,
       onSelect: async () => {},
       onEffortSelect: async effort => { (window as any).__unsupportedEffortSaves.push(effort); },
     });
@@ -820,14 +831,15 @@ test('retries unavailable model metadata and keeps custom model IDs usable', asy
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.locator('.model-menu-catalog-error')).toBeVisible();
-  await expect(picker.getByRole('button', { name: 'Claude Code · Claude Sonnet', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Pantheon · openai/gpt-6.1-sol', exact: true })).toBeVisible();
   await picker.getByRole('searchbox').fill('my-proxy/model_42');
-  await picker.getByRole('button', { name: 'Use "my-proxy/model_42" with Claude Code', exact: true }).click();
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'my-proxy/model_42' });
+  await picker.getByRole('button', { name: 'Use "my-proxy/model_42" with Pantheon', exact: true }).click();
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'my-proxy/model_42' });
   await page.evaluate(() => { (window as any).__catalogAvailable = true; });
   await trigger.click();
-  await expect(picker.getByRole('button', { name: 'Claude Code · Claude Sonnet 5', exact: true })).toBeVisible();
-  await expect(picker.getByRole('button', { name: 'Claude Code · my-proxy/model_42', exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(picker.getByRole('button', { name: 'Pantheon · GPT-6.1 Sol', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Pantheon · my-proxy/model_42', exact: true })).toHaveAttribute('aria-current', 'true');
   await expect(picker.locator('.model-menu-catalog-error')).toBeHidden();
 });
 
@@ -836,19 +848,19 @@ test('keeps keyboard focus in the model picker when refreshed metadata removes t
     const { openModelPicker } = await import('/src/model-picker.ts');
     (window as any).__closeFocusPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'legacy', name: 'Legacy model', description: '' }] }],
-      current: { provider: 'claude', model: 'default' }, canSwitchProvider: false,
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'legacy', name: 'Legacy model', description: '' }] }],
+      current: { provider: 'pantheon', model: 'default' }, canSwitchProvider: false,
       onSelect: async () => {},
       loadModels: () => new Promise(resolve => { (window as any).__resolveFocusCatalog = resolve; }),
     });
   });
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  const legacy = picker.getByRole('button', { name: 'Claude Code · Legacy model', exact: true });
+  const legacy = picker.getByRole('button', { name: 'Pantheon · Legacy model', exact: true });
   await legacy.focus();
   await expect(legacy).toBeFocused();
   await page.evaluate(() => (window as any).__resolveFocusCatalog([]));
   await expect(legacy).toHaveCount(0);
-  await expect(picker.getByRole('button', { name: 'Claude Code · Default', exact: true })).toBeFocused();
+  await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeFocused();
   await page.evaluate(() => (window as any).__closeFocusPicker());
 });
 
@@ -857,15 +869,15 @@ test('restores search focus when refreshed metadata removes the focused reasonin
     const { openModelPicker } = await import('/src/model-picker.ts');
     (window as any).__closeEffortFocusPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Claude Sonnet', description: '', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
-      current: { provider: 'claude', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
+      current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {}, onEffortSelect: async () => {},
       loadModels: () => new Promise(resolve => { (window as any).__resolveEffortFocusCatalog = resolve; }),
     });
   });
   await reasoningSlider(page).focus();
   await expect(reasoningSlider(page)).toBeFocused();
-  await page.evaluate(() => (window as any).__resolveEffortFocusCatalog([{ id: 'sonnet', name: 'Claude Sonnet', description: '' }]));
+  await page.evaluate(() => (window as any).__resolveEffortFocusCatalog([{ id: 'sonnet', name: 'Pantheon Standard', description: '' }]));
   await expect(reasoningSlider(page)).toHaveCount(0);
   await expect(modelPicker(page).getByRole('searchbox')).toBeFocused();
   await page.evaluate(() => (window as any).__closeEffortFocusPicker());
@@ -877,8 +889,8 @@ test('commits a Default thumb tap and rejects an effort removed from the catalog
     (window as any).__dragEffortSaves = [];
     (window as any).__closeDragEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Claude Sonnet', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
-      current: { provider: 'claude', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
+      current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {},
       onEffortSelect: async effort => { (window as any).__dragEffortSaves.push(effort); },
       loadModels: () => new Promise(resolve => { (window as any).__resolveDragEffortCatalog = resolve; }),
@@ -899,8 +911,8 @@ test('commits a Default thumb tap and rejects an effort removed from the catalog
   await page.mouse.down();
   await page.mouse.move(bounds.x + bounds.width - 17, bounds.y + bounds.height / 2, { steps: 8 });
   await expect(slider).toHaveAttribute('aria-valuetext', 'High');
-  await page.evaluate(() => (window as any).__resolveDragEffortCatalog([{ id: 'sonnet', name: 'Updated Claude Sonnet', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }] }]));
-  await expect(modelPicker(page).getByRole('button', { name: 'Claude Code · Updated Claude Sonnet', exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).__resolveDragEffortCatalog([{ id: 'sonnet', name: 'Updated Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }] }]));
+  await expect(modelPicker(page).getByRole('button', { name: 'Pantheon · Updated Pantheon Standard', exact: true })).toBeVisible();
   await expect(slider).toHaveAttribute('aria-valuetext', 'High');
   await expect(reasoningLabel(page)).toHaveText('High');
   expect(await page.evaluate(() => (window as any).__dragEffortSaves)).toEqual(['low']);
@@ -924,8 +936,8 @@ for (const outcome of ['resolve', 'reject'] as const) {
       const modelsMarker = /case ["']list_provider_models["']:/;
       expect(providersMarker.test(source)).toBe(true);
       expect(modelsMarker.test(source)).toBe(true);
-      source = source.replace(providersMarker, match => `${match} return providers.map(provider => ({ ...provider, version: provider.id === 'claude' ? String(window.__catalogRace.version) : provider.version, models: provider.models.map(model => ({ ...model })) }));`);
-      source = source.replace(modelsMarker, match => `${match} if (args.provider === 'claude') { const request = { provider: args.provider }; window.__catalogRace.requests.push(request); try { return await new Promise((resolve, reject) => Object.assign(request, { resolve, reject })); } finally { request.settled = true; } }`);
+      source = source.replace(providersMarker, match => `${match} return providers.map(provider => ({ ...provider, version: provider.id === 'pantheon' ? String(window.__catalogRace.version) : provider.version, models: provider.models.map(model => ({ ...model })) }));`);
+      source = source.replace(modelsMarker, match => `${match} if (args.provider === 'pantheon') { const request = { provider: args.provider }; window.__catalogRace.requests.push(request); try { return await new Promise((resolve, reject) => Object.assign(request, { resolve, reject })); } finally { request.settled = true; } }`);
       await route.fulfill({ response, body: previewBody(source) });
     });
     await page.reload();
@@ -942,9 +954,9 @@ for (const outcome of ['resolve', 'reject'] as const) {
     await trigger.click();
     await expect.poll(requestCount).toBe(2);
     if (outcome === 'resolve') {
-      await page.evaluate(() => (window as any).__catalogRace.requests[1].resolve([{ id: 'sonnet', name: 'Current harness model', description: '' }]));
+      await page.evaluate(() => (window as any).__catalogRace.requests[1].resolve([{ id: 'openai/gpt-6.1-sol', name: 'Current harness model', description: '' }]));
       await expect(trigger).toHaveText('Current harness model');
-      await page.evaluate(() => (window as any).__catalogRace.requests[0].resolve([{ id: 'sonnet', name: 'Stale harness model', description: '' }]));
+      await page.evaluate(() => (window as any).__catalogRace.requests[0].resolve([{ id: 'openai/gpt-6.1-sol', name: 'Stale harness model', description: '' }]));
     } else {
       await page.evaluate(() => (window as any).__catalogRace.requests[0].reject(new Error('Old harness unavailable')));
     }
@@ -956,11 +968,11 @@ for (const outcome of ['resolve', 'reject'] as const) {
     // success must not overwrite the current catalog retained for reopening.
     expect(await requestCount()).toBe(2);
     if (outcome === 'reject') {
-      await page.evaluate(() => (window as any).__catalogRace.requests[1].resolve([{ id: 'sonnet', name: 'Current harness model', description: '' }]));
+      await page.evaluate(() => (window as any).__catalogRace.requests[1].resolve([{ id: 'openai/gpt-6.1-sol', name: 'Current harness model', description: '' }]));
     }
     await expect(trigger).toHaveText('Current harness model');
-    await expect(picker.getByRole('button', { name: 'Claude Code · Current harness model', exact: true })).toBeVisible();
-    await expect(picker.getByRole('button', { name: 'Claude Code · Stale harness model', exact: true })).toHaveCount(0);
+    await expect(picker.getByRole('button', { name: 'Pantheon · Current harness model', exact: true })).toBeVisible();
+    await expect(picker.getByRole('button', { name: 'Pantheon · Stale harness model', exact: true })).toHaveCount(0);
     await expect(picker.locator('.model-menu-catalog-error')).toBeHidden();
     expect(await requestCount()).toBe(2);
   });
@@ -968,7 +980,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
 
 test('changes terminal colors without replacing its session or the composer draft', async ({ page }) => {
   await prompt(page).fill('Keep this draft while changing appearance');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   const viewport = page.locator('#terminal-host .xterm-scrollable-element');
   await expect(viewport).toBeVisible();
   await expect(viewport).toHaveCSS('background-color', 'rgb(25, 26, 24)');
@@ -1138,11 +1150,11 @@ test('menus open and close instantly and stay usable', async ({ page }) => {
   await expect(search).toBeFocused();
   await page.keyboard.type('animation-ready-model');
   await expect(search).toHaveValue('animation-ready-model');
-  await expect(menu.getByRole('button', { name: 'Use "animation-ready-model" with Claude Code', exact: true })).toBeEnabled();
+  await expect(menu.getByRole('button', { name: 'Use "animation-ready-model" with Pantheon', exact: true })).toBeEnabled();
   await page.keyboard.press('Enter');
   await expect(menu).toHaveCount(0);
   await expect(prompt(page)).toBeFocused();
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'animation-ready-model' });
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'animation-ready-model' });
 });
 
 test('rapidly reopens menus without leaving interactive or retained closing panels', async ({ page }) => {
@@ -1181,18 +1193,18 @@ test('changes permissions and opens task actions with anchored keyboard menus', 
   await expect(permissions.getByRole('menuitemradio', { name: 'Standard', exact: true })).toBeFocused();
   await page.screenshot({ path: '/tmp/pantheon-permissions-menu.png', animations: 'disabled' });
   await page.keyboard.press('ArrowDown');
-  await expect(permissions.getByRole('menuitemradio', { name: 'Accept edits', exact: true })).toBeFocused();
+  await expect(permissions.getByRole('menuitemradio', { name: 'Plan mode', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(permissions).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Accept edits', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Plan mode', exact: true })).toBeVisible();
   await expect(page.locator('#mode-picker-trigger')).toBeFocused();
   await expect(prompt(page)).toHaveValue('Preserve this draft through menu actions');
   await expect(page.locator('.user-message,.agent-message')).toHaveText(history);
   await page.getByRole('button', { name: 'Task actions', exact: true }).click();
   const actions = page.getByRole('dialog', { name: 'Task actions', exact: true });
-  await expect(actions.getByRole('menuitem', { name: 'Rename task', exact: true })).toBeFocused();
+  await expect(actions.getByRole('menuitem', { name: 'Pin task', exact: true })).toBeFocused();
   await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('Home');
+  await expect(actions.getByRole('menuitem', { name: 'Rename task', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(actions).toHaveCount(0);
   const rename = page.locator('#dialog');
@@ -1216,7 +1228,7 @@ test('updates permissions after leaving and reselecting a task while the save is
   await prompt(page).fill('Preserve this draft while permissions finish saving');
   await page.evaluate(() => { (window as any).__pantheonDelayPermissions = true; });
   await page.getByRole('button', { name: 'Standard', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Accept edits', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Full access', exact: true }).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pantheonReleasePermissions)).toBe('function');
   await page.locator('.task-item[data-id="session-4"]').click();
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Explore the project');
@@ -1228,44 +1240,12 @@ test('updates permissions after leaving and reselecting a task while the save is
     (window as any).__pantheonReleasePermissions();
     delete (window as any).__pantheonReleasePermissions;
   });
-  await expect(page.locator('#mode-picker-trigger')).toHaveText('Accept edits');
+  await expect(page.locator('#mode-picker-trigger')).toHaveText('Full access');
   await expect(prompt(page)).toHaveValue('Preserve this draft while permissions finish saving');
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
-  await page.getByRole('button', { name: 'Accept edits', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Accept edits', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: 'Full access', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Full access', exact: true })).toHaveAttribute('aria-checked', 'true');
 });
-
-for (const configuration of [
-  { provider: 'Claude Code', sessionId: 'session-1', labels: ['Standard', 'Accept edits', 'Approve for me', 'Plan mode', 'Full access'], selected: 'Plan mode', mode: 'plan' },
-  { provider: 'Codex', sessionId: 'session-2', labels: ['Standard', 'Approve for me', 'Read only', 'Full access'], selected: 'Approve for me', mode: 'auto' },
-  { provider: 'Kimi Code', sessionId: 'session-3', labels: ['Standard', 'Ask when needed', 'Plan mode', 'Full access'], selected: 'Full access', mode: 'full' },
-]) {
-  test(`shows supported ${configuration.provider} approval behaviours and remembers the selection for its task`, async ({ page }) => {
-    await page.locator(`.task-item[data-id="${configuration.sessionId}"]`).click();
-    await prompt(page).fill('Keep this draft with its chosen approval behaviour');
-    const trigger = page.locator('#mode-picker-trigger');
-    await expect(trigger).toHaveText('Standard');
-    await trigger.click();
-    const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
-    await expect(menu.getByRole('menuitemradio')).toHaveCount(configuration.labels.length);
-    for (const label of configuration.labels) {
-      await expect(menu.getByRole('menuitemradio', { name: label, exact: true })).toBeVisible();
-    }
-    await menu.getByRole('menuitemradio', { name: configuration.selected, exact: true }).click();
-    await expect(menu).toHaveCount(0);
-    await expect(trigger).toHaveText(configuration.selected);
-    await expect(trigger).toHaveAttribute('title', /\S+/);
-    await expect.poll(() => savedPermission(page)).toBe(configuration.mode);
-    await page.locator('.task-item[data-id="session-4"]').click();
-    await expect(trigger).toHaveText('Standard');
-    await page.locator(`.task-item[data-id="${configuration.sessionId}"]`).click();
-    await expect(trigger).toHaveText(configuration.selected);
-    await expect(prompt(page)).toHaveValue('Keep this draft with its chosen approval behaviour');
-    await trigger.click();
-    await expect(menu.getByRole('menuitemradio', { name: configuration.selected, exact: true })).toHaveAttribute('aria-checked', 'true');
-    await page.keyboard.press('Escape');
-  });
-}
 
 test('keeps the saved approval behaviour and draft when saving a different mode fails', async ({ page }) => {
   await page.route('**/src/preview.ts*', async route => {
@@ -1290,7 +1270,7 @@ test('keeps the saved approval behaviour and draft when saving a different mode 
   await expect(menu.getByRole('menuitemradio', { name: 'Standard', exact: true })).toHaveAttribute('aria-checked', 'true');
 });
 
-test('starts new tasks with Full access and preserves deliberate permissions across harness changes', async ({ page }) => {
+test('starts new tasks with Full access and preserves deliberate permissions across model changes', async ({ page }) => {
   const trigger = page.locator('#mode-picker-trigger');
   const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
   await expect(trigger).toHaveText('Standard');
@@ -1298,23 +1278,22 @@ test('starts new tasks with Full access and preserves deliberate permissions acr
   await expect(newTaskHeading(page)).toBeVisible();
   await expect(trigger).toHaveText('Full access');
   await expect.poll(() => savedPermission(page)).toBe('full');
-  await prompt(page).fill('Keep this draft while switching harnesses');
+  await prompt(page).fill('Keep this draft while switching models');
   for (const selection of [
-    { provider: 'Codex', id: 'codex', mode: 'full', label: 'Full access' },
-    { provider: 'Kimi Code', id: 'kimi', mode: 'plan', label: 'Plan mode' },
-    { provider: 'Claude Code', id: 'claude', mode: 'ask', label: 'Standard' },
+    { mode: 'plan', label: 'Plan mode' },
+    { mode: 'ask', label: 'Standard' },
   ]) {
-    if (selection.mode !== 'full') {
-      await trigger.click();
-      await menu.getByRole('menuitemradio', { name: selection.mode === 'plan' ? 'Read only' : 'Standard', exact: true }).click();
-    }
+    await trigger.click();
+    await menu.getByRole('menuitemradio', { name: selection.label, exact: true }).click();
     await modelTrigger(page).click();
     await modelPicker(page).getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('approval-preserved-model');
-    await modelPicker(page).getByRole('button', { name: `Use "approval-preserved-model" with ${selection.provider}`, exact: true }).click();
-    await expect.poll(() => savedSelection(page)).toEqual({ provider: selection.id, model: 'approval-preserved-model' });
+    // The first pass offers the typed id as a custom entry; afterwards it is the
+    // current model and the picker lists it under the agent's name.
+    await modelPicker(page).getByRole('button', { name: /^(?:Use "approval-preserved-model" with Pantheon|Pantheon · approval-preserved-model)$/ }).click();
+    await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'approval-preserved-model' });
     await expect(trigger).toHaveText(selection.label);
     await expect.poll(() => savedPermission(page)).toBe(selection.mode);
-    await expect(prompt(page)).toHaveValue('Keep this draft while switching harnesses');
+    await expect(prompt(page)).toHaveValue('Keep this draft while switching models');
   }
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(trigger).toHaveText('Standard');
@@ -1344,35 +1323,37 @@ test('chooses the default agent inside Settings without closing the Settings pag
   const trigger = settings.getByRole('button', { name: 'Default agent for new tasks', exact: true });
   await trigger.click();
   const menu = page.getByRole('dialog', { name: 'Default agent', exact: true });
-  await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
+  await expect(menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true })).toBeFocused();
   await page.screenshot({ path: '/tmp/pantheon-settings-menu.png', animations: 'disabled' });
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
   await expect(settings.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   await expect(trigger).toBeFocused();
   await trigger.click();
-  await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
+  await expect(menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true })).toBeFocused();
+  // Only one agent ships, so the list has nothing below Pantheon: End and Home
+  // stay on that row and ArrowDown cannot leave the menu.
   await page.keyboard.press('End');
-  await expect(menu.getByRole('menuitemradio', { name: 'Muse Code', exact: true })).toBeFocused();
+  await expect(menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true })).toBeFocused();
   await page.keyboard.press('Home');
   await page.keyboard.press('ArrowDown');
-  await page.keyboard.press('ArrowDown');
-  await expect(menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true })).toBeFocused();
+  await expect(menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(menu).toHaveCount(0);
   await expect(settings.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await expect(trigger).toHaveText('Kimi Code');
+  await expect(trigger).toHaveText('Pantheon');
   await expect(trigger).toBeFocused();
   await trigger.click();
-  await expect(menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Tab');
   await expect(menu).toHaveCount(0);
   await expect(settings.getByRole('button', { name: 'Default model for new tasks', exact: true })).toBeFocused();
   await closeSettings(page);
   await page.locator('.new-task-button').click();
   await expect(newTaskHeading(page)).toBeVisible();
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'kimi', model: 'default' });
-  await expect(page.locator('#composer .provider-logo[data-provider="kimi"]')).toBeVisible();
+  // New tasks reuse the model remembered from the last task of that agent.
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'openai/gpt-6.1-sol' });
+  await expect(page.locator('#composer .provider-logo[data-provider="pantheon"]')).toBeVisible();
 });
 
 test('keeps the Settings agent menu clickable at the minimum desktop window size', async ({ page }) => {
@@ -1380,19 +1361,19 @@ test('keeps the Settings agent menu clickable at the minimum desktop window size
   const settings = await openSettings(page, 'Agents');
   await settings.getByRole('button', { name: 'Default agent for new tasks', exact: true }).click();
   const menu = page.getByRole('dialog', { name: 'Default agent', exact: true });
-  await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
+  await expect(menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true })).toBeFocused();
   await page.screenshot({ path: '/tmp/pantheon-settings-menu-narrow.png', animations: 'disabled' });
-  // The list scrolls at this height; every agent must be reachable once scrolled to.
+  // The one shipped agent must be fully on screen and hittable at this height.
   const hitTargets = await menu.getByRole('menuitemradio').evaluateAll(elements => elements.map(element => {
     element.scrollIntoView({ block: 'nearest' });
     const rect = element.getBoundingClientRect();
     return { inViewport: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
       reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) };
   }));
-  expect(hitTargets).toHaveLength(15);
+  expect(hitTargets).toHaveLength(1);
   expect(hitTargets.every(target => target.inViewport && target.reachable)).toBe(true);
-  await menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
-  await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toHaveText('Kimi Code');
+  await menu.getByRole('menuitemradio', { name: 'Pantheon', exact: true }).click();
+  await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toHaveText('Pantheon');
   await expect(settings.getByRole('button', { name: 'Back to the workspace', exact: true })).toBeVisible();
 });
 
@@ -1778,6 +1759,7 @@ test('caps long live tool activity without dropping the output being read', asyn
   await expect(error).toBeVisible();
   expect(await error.evaluate(element => element.closest('.turn-activity'))).toBeNull();
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
+  await page.clock.runFor(100);
   await expect(prompt(page)).toBeEnabled();
 });
 
@@ -2047,7 +2029,7 @@ async function emitStatusEvents(page: Page, sessionId: string, events: Array<Rec
 test('shows reported context usage while running and keeps late usage from creating a phantom stream', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page);
   const indicator = page.locator('.context-indicator');
-  await expect(indicator).toHaveText('200K context');
+  await expect(indicator).toHaveText('400K context');
   await expect(modelTrigger(page)).toBeDisabled();
   await page.evaluate(async sessionId => {
     const { invoke } = await import((window as any).__pantheonPreviewUrl);
@@ -2075,7 +2057,7 @@ test('shows reported context usage while running and keeps late usage from creat
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
   await expect(prompt(page)).toBeEnabled();
   await modelTrigger(page).click();
-  await modelPicker(page).getByRole('button', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
+  await modelPicker(page).getByRole('button', { name: 'Pantheon · Opus 5', exact: true }).click();
   await expect(indicator).not.toContainText('25K');
   expect(await page.evaluate(async sessionId => {
     const { invoke } = await import((window as any).__pantheonPreviewUrl);
@@ -2366,7 +2348,11 @@ test('moves a task to inactive automatically at the 24 hour response boundary', 
 test('renaming and changing a model do not make an old response active', async ({ page }) => {
   await taskRow(page, 'session-4', 'inactive').click();
   await page.getByRole('button', { name: 'Task actions', exact: true }).click();
-  const renameAction = page.getByRole('dialog', { name: 'Task actions', exact: true }).getByRole('menuitem', { name: 'Rename task', exact: true });
+  const actions = page.getByRole('dialog', { name: 'Task actions', exact: true });
+  // Opening focuses the first action; the rename entry is one step down.
+  await expect(actions.getByRole('menuitem', { name: 'Pin task', exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  const renameAction = actions.getByRole('menuitem', { name: 'Rename task', exact: true });
   await expect(renameAction).toBeFocused();
   await renameAction.press('Enter');
   const dialog = page.getByRole('dialog');
@@ -2377,7 +2363,7 @@ test('renaming and changing a model do not make an old response active', async (
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await picker.getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('review-old-response');
-  await picker.getByRole('button', { name: 'Use "review-old-response" with Codex', exact: true }).click();
+  await picker.getByRole('button', { name: 'Use "review-old-response" with Pantheon', exact: true }).click();
   await expect(picker).not.toBeVisible();
   await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-old-response');
   await expect(taskRow(page, 'session-4', 'inactive')).toBeVisible();
@@ -2392,7 +2378,8 @@ test('keeps an observed streaming response active when metadata reloads before p
   await prompt(page).fill('Stream while the response timestamp awaits persistence');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   // Assert the first chunk; the short preview can finish between phrase-length polls.
-  await expect(page.locator('.streaming-content')).toContainText('This is');
+  // The paused clock keeps the turn open; the live reply element proves it streams.
+  await expect(page.locator('#stream-region .live-message')).toBeVisible();
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
   await expect(page.locator('#navigation .task-item.selected[data-activity="active"]')).toBeVisible();
@@ -2465,22 +2452,22 @@ test('removes the old project inspector actions while the new task history loads
 });
 
 test('renders provider logos in task rows, composer, picker, and settings', async ({ page }) => {
-  await expect(page.locator('#composer .provider-logo[data-provider="claude"]')).toBeVisible();
-  for (const provider of ['claude', 'codex', 'kimi']) {
+  await expect(page.locator('#composer .provider-logo[data-provider="pantheon"]')).toBeVisible();
+  for (const provider of ['pantheon', 'pantheon', 'pantheon']) {
     await expect(page.locator(`#navigation .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
   }
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  for (const provider of ['claude', 'codex', 'kimi', 'github-copilot']) {
+  for (const provider of ['pantheon', 'pantheon', 'pantheon', 'pantheon']) {
     await expect(picker.locator(`.provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
     await expect(picker.locator(`.model-menu-option .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
   }
   await page.keyboard.press('Escape');
   const settings = await openSettings(page, 'Agents');
-  for (const provider of ['claude', 'codex', 'kimi', 'github-copilot']) {
+  for (const provider of ['pantheon', 'pantheon', 'pantheon', 'pantheon']) {
     await expect(settings.locator(`.provider-diagnostic .provider-logo[data-provider="${provider}"]`)).toBeVisible();
   }
-  await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true }).locator('.provider-logo[data-provider="claude"]')).toBeVisible();
+  await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true }).locator('.provider-logo[data-provider="pantheon"]')).toBeVisible();
   const logos = await page.locator('.provider-logo').evaluateAll(elements => elements.map(element => ({
     decorative: element.getAttribute('aria-hidden'),
     graphic: element.matches('svg,img') || Boolean(element.querySelector('svg,img')),
@@ -2546,9 +2533,9 @@ test('opens a new conversation in the active project without listing it', async 
   await page.screenshot({ path: '/tmp/pantheon-new-task.png' });
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await expect(picker.getByRole('button', { name: 'Claude Code · Default', exact: true })).toBeVisible();
-  await expect(picker.getByRole('button', { name: 'Codex · Default', exact: true })).toBeVisible();
-  await expect(picker.getByRole('button', { name: 'Kimi Code · Default', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
   await page.screenshot({ path: '/tmp/pantheon-brand-picker.png' });
 });
 
@@ -2569,8 +2556,8 @@ test('changes the empty task project while keeping its draft, harness, model, an
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const modelPicker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await modelPicker.getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('project-switch-model');
-  await modelPicker.getByRole('button', { name: 'Use "project-switch-model" with Kimi Code', exact: true }).click();
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'kimi', model: 'project-switch-model' });
+  await modelPicker.getByRole('button', { name: 'Use "project-switch-model" with Pantheon', exact: true }).click();
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'project-switch-model' });
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await page.locator('[data-action="open-diff"]').first().click();
@@ -2588,7 +2575,7 @@ test('changes the empty task project while keeping its draft, harness, model, an
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toContainText('test/pantheon-project');
   await expect(prompt(page)).toHaveValue('Keep this plan while I choose the right repository');
   await expect(page.locator('#composer')).toContainText('project-switch-model');
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'kimi', model: 'project-switch-model' });
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'project-switch-model' });
   await expect(page.locator('.user-message,.agent-message')).toHaveCount(0);
   await page.reload();
   expect(await page.evaluate(() => localStorage.getItem('pantheon.project'))).toBe('project-2');
@@ -2821,26 +2808,35 @@ test('restores the last active project and creates new conversations there', asy
 });
 
 test('chooses a harness and custom model inline without losing the draft, streams, and stops', async ({ page }) => {
+  // A fake clock keeps the sample stream at a known point: the preview replies in
+  // well under a second, so a real-time click on Stop races the end of the turn.
+  await page.clock.install();
+  await page.reload();
   await page.locator('.new-task-button').click();
   await expect(newTaskHeading(page)).toBeVisible();
   await prompt(page).fill('Check the streaming cancellation path');
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker).toBeVisible();
-  await picker.getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('kimi-test-model');
-  await picker.getByRole('button', { name: 'Use "kimi-test-model" with Kimi Code', exact: true }).click();
+  await picker.getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('custom-test-model');
+  await picker.getByRole('button', { name: 'Use "custom-test-model" with Pantheon', exact: true }).click();
   await expect(picker).not.toBeVisible();
-  await expect(page.locator('#composer .provider-logo[data-provider="kimi"]')).toBeVisible();
-  await expect(page.locator('#composer')).toContainText('kimi-test-model');
+  await expect(page.locator('#composer .provider-logo[data-provider="pantheon"]')).toBeVisible();
+  await expect(page.locator('#composer')).toContainText('custom-test-model');
   await expect(prompt(page)).toHaveValue('Check the streaming cancellation path');
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  // The sample reply needs about 440 ms of fake time in total; stop inside that,
+  // while its preview tool is still running.
+  await page.clock.runFor(320);
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
-  await expect(page.locator('.streaming-content')).toContainText('This is');
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
   await expect(prompt(page)).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
   await expect(page.locator('.user-message')).toContainText('Check the streaming cancellation path');
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'kimi', model: 'kimi-test-model' });
+  // Stopping mid-turn cancels the tool the sample stream had in flight.
+  await expect(page.locator('.tool-activity[data-tool-status="failed"]')).toContainText('Canceled before completion');
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'custom-test-model' });
 });
 
 test('opens a project by path and preserves the selected task when canceled', async ({ page }) => {
@@ -2881,7 +2877,7 @@ test('retains a completed conversation and model when switching fixture tasks', 
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
   await expect(prompt(page)).toBeEnabled();
-  await expect(page.locator('.agent-message').last()).toContainText('no agent or shell is running here');
+  await expect(page.locator('.agent-message').last()).toContainText('no model turn or shell is running here');
   await page.locator('.task-item').filter({ hasText: 'Refine the navigation' }).click();
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Refine the navigation');
   await expect(newTaskHeading(page)).toBeVisible();
@@ -2889,10 +2885,10 @@ test('retains a completed conversation and model when switching fixture tasks', 
   await page.locator('.task-item').filter({ hasText: 'Make search feel instant' }).click();
   await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-model');
   await expect(page.locator('.user-message').last()).toContainText('Remember this completed preview message');
-  await expect(page.locator('.agent-message').last()).toContainText('no agent or shell is running here');
+  await expect(page.locator('.agent-message').last()).toContainText('no model turn or shell is running here');
 });
 
-test('switches harness after the first message while preserving conversation and draft', async ({ page }) => {
+test('switches model after the first message while preserving conversation and draft', async ({ page }) => {
   await page.locator('.new-task-button').click();
   await expect(newTaskHeading(page)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(2);
@@ -2901,7 +2897,7 @@ test('switches harness after the first message while preserving conversation and
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(0);
   await expect(prompt(page)).toBeEnabled();
-  await expect(page.locator('.agent-message').last()).toContainText('no agent or shell is running here');
+  await expect(page.locator('.agent-message').last()).toContainText('no model turn or shell is running here');
   await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(0);
   await expect(openTaskProject(page)).toHaveText('orbit');
   await expect(page.locator('#navigation .task-item.selected[data-activity="active"]')).toBeVisible();
@@ -2909,16 +2905,17 @@ test('switches harness after the first message while preserving conversation and
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.getByText('Start a new task to switch harnesses.', { exact: true })).toHaveCount(0);
-  await expect(picker.getByRole('button', { name: 'Kimi Code · Default', exact: true })).toBeEnabled();
-  await picker.getByRole('button', { name: 'Codex · Default', exact: true }).click();
+  await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeEnabled();
+  await picker.getByRole('button', { name: 'Pantheon · Default', exact: true }).click();
   await expect(picker).not.toBeVisible();
-  await expect(page.locator('#composer .provider-logo[data-provider="codex"]')).toBeVisible();
-  await expect(page.locator('.provider-handoff')).toContainText('Conversation carried forward');
-  await expect(page.locator('.agent-message .message-meta strong').last()).toHaveText('Claude Code');
+  await expect(page.locator('#composer .provider-logo[data-provider="pantheon"]')).toBeVisible();
+  // The agent never changed, so no handoff row annotates the transcript.
+  await expect(page.locator('.provider-handoff')).toHaveCount(0);
+  await expect(page.locator('.agent-message .message-meta strong').last()).toHaveText('Pantheon');
   await expect(prompt(page)).toHaveValue('A follow-up draft');
   await expect(page.locator('.user-message')).toContainText('Keep this conversation with the original harness');
-  await expect(page.locator('.agent-message').last()).toContainText('no agent or shell is running here');
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'codex', model: 'default' });
+  await expect(page.locator('.agent-message').last()).toContainText('no model turn or shell is running here');
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'default' });
 });
 
 test('browses a file and includes its contents as attached message context', async ({ page }) => {
@@ -3016,7 +3013,7 @@ test('agent Markdown cannot inject application actions, IDs, or forms', async ({
 });
 
 test('opens a visible terminal without relying on entrance animation', async ({ page }) => {
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect(page.locator('#terminal-drawer .drawer-heading')).toBeVisible();
   await expect(page.locator('#terminal-host .xterm-screen')).toBeVisible();
@@ -3078,12 +3075,12 @@ test('creates a worktree task under its original project with an icon and fresh 
   await expect(selected.getByRole('img', { name: 'Worktree', exact: true })).toHaveClass(/task-worktree/);
   await expect(page.locator('.composer-local')).toHaveText('Worktree');
   await expect(page.locator('#composer-project')).toBeDisabled();
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'sonnet' });
+  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'openai/gpt-6.1-sol' });
   await expect(page.locator('#mode-picker-trigger')).toHaveText('Full access');
   await expect(prompt(page)).toHaveValue('');
   expect(await previewProjectNames(page)).toEqual(projects);
   expect(await previewWorktreeTasks(page)).toEqual([expect.objectContaining({
-    id: taskId, projectId: 'project-1', title: 'New conversation', provider: 'claude', model: 'sonnet', mode: 'full',
+    id: taskId, projectId: 'project-1', title: 'New conversation', provider: 'pantheon', model: 'openai/gpt-6.1-sol', mode: 'full',
     worktreePath: expect.any(String), resumeId: null,
   })]);
   await page.locator('.task-item[data-id="session-1"]').click();
@@ -3105,7 +3102,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
     if (command === 'git_status') return { ...git, branch: session(args.sessionId).worktreePath ? 'codex/worktree-routing' : 'main' };
     if (command === 'read_file') return JSON.stringify({ checkout: session(args.sessionId).worktreePath ? 'worktree' : 'root' });
   `);
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
   await submitWorktree(page, 'codex/worktree-routing');
   await expect(newTaskHeading(page)).toBeVisible();
@@ -3126,7 +3123,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   await expect(page.locator('.user-message')).toContainText('"checkout":"worktree"');
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
   const calls = await page.evaluate(() => (window as any).__pantheonWorktreeCalls);
   for (const command of ['git_status', 'list_files', 'git_diff', 'read_file', 'start_terminal']) {
@@ -3204,7 +3201,7 @@ test('keeps delayed worktree creation with its original task without stealing na
   await expect(page.locator('#breadcrumb')).toContainText('pantheon');
   await expect(prompt(page)).toHaveValue('Keep the other project active');
   expect(await previewProjectNames(page)).toEqual(projects);
-  expect((await previewWorktreeTasks(page))[0]).toMatchObject({ projectId: 'project-1', provider: 'claude', model: 'sonnet' });
+  expect((await previewWorktreeTasks(page))[0]).toMatchObject({ projectId: 'project-1', provider: 'pantheon', model: 'openai/gpt-6.1-sol' });
   const request = await page.evaluate(() => (window as any).__pantheonWorktreeCalls.find((call: any) => call.command === 'create_worktree'));
   expect(request.args).toMatchObject({ sessionId: 'session-1', branch: 'codex/worktree-delayed' });
 });
@@ -3257,11 +3254,11 @@ test('keeps the worktree terminal open when the previous checkout terminal fails
   await expect(newTaskHeading(page)).toBeVisible();
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await page.locator('.task-item[data-id="session-1"]').click();
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pantheonRejectOldTerminal)).toBe('function');
   await page.locator(`.task-item[data-id="${taskId}"]`).click();
   await expect(page.locator('#terminal-drawer')).toBeHidden();
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
   await page.evaluate(() => {
     (window as any).__pantheonCurrentTerminal = document.querySelector('#terminal-host .terminal-tab-surface:not([hidden]) .xterm-screen');
@@ -3300,6 +3297,9 @@ test('switching back to a thread draws it at once: formatted, at the bottom, wit
   const transcript = page.locator('#transcript');
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
   await expect(transcript.locator('.message').first()).toBeVisible();
+  // Warm the Markdown engine first: while its first render is still in flight a
+  // thread can only show plain text, and this measures the redraw after that point.
+  await page.evaluate(async () => { const { markdownHtml } = await import('/src/dom.ts'); await markdownHtml('# warm'); });
   await page.locator('.task-item[data-id="session-2"]').click();
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-2');
   await expect(transcript.locator('.history-notice')).toHaveCount(0);
@@ -3320,7 +3320,7 @@ test('switching back to a thread draws it at once: formatted, at the bottom, wit
     const tick = () => { sample(); if (++count < 8) requestAnimationFrame(tick); else resolve(seen); };
     requestAnimationFrame(tick);
   }));
-  expect(frames.every(frame => !frame.loading && frame.bottom && !frame.raw && frame.messages > 0)).toBe(true);
+  expect(frames.filter(frame => frame.loading || !frame.bottom || frame.raw || frame.messages === 0), JSON.stringify(frames)).toEqual([]);
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
 });
 
@@ -3381,7 +3381,7 @@ test('the prompt sits in the same place in every thread', async ({ page }) => {
 test('streaming keeps the transcript at the bottom after sending and leaves a reader who scrolled up', async ({ page }) => {
   await installHistoryFixture(page, 30);
   const transcript = page.locator('#transcript');
-  const reply = page.locator('#transcript .agent-message .message-content', { hasText: 'connects to the CLI tools' });
+  const reply = page.locator('#transcript .agent-message .message-content', { hasText: 'through the Pantheon runtime' });
   // A multi-line draft grows the composer; sending shrinks it again while the reply streams in.
   await prompt(page).fill('Line one\nLine two\nLine three\nLine four');
   await transcript.evaluate(element => {

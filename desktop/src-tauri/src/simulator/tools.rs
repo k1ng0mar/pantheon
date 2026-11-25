@@ -19,7 +19,11 @@ use crate::providers::ToolHost;
 
 /// UI settles this long after an action before the follow-up screenshot.
 const SETTLE: Duration = Duration::from_millis(650);
-const READ_ONLY: [&str; 3] = ["pantheon_simulator_devices", "pantheon_simulator_screenshot", "pantheon_simulator_describe"];
+const READ_ONLY: [&str; 3] = [
+    "pantheon_simulator_devices",
+    "pantheon_simulator_screenshot",
+    "pantheon_simulator_describe",
+];
 
 pub fn catalog() -> Vec<Value> {
     let udid = json!({"type":"string","maxLength":64,"description":"Simulator UDID from simulator_devices. Omit for the simulator shown in Pantheon, else the first booted one."});
@@ -48,23 +52,45 @@ pub fn catalog() -> Vec<Value> {
 }
 
 fn string(args: &Value, key: &str) -> Option<String> {
-    args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    args[key]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 fn number(args: &Value, key: &str) -> Result<f64, String> {
-    args[key].as_i64().map(|n| n as f64).ok_or_else(|| format!("Missing argument: {key}"))
+    args[key]
+        .as_i64()
+        .map(|n| n as f64)
+        .ok_or_else(|| format!("Missing argument: {key}"))
 }
 
 fn image(bytes: Vec<u8>, text: String) -> Value {
-    let mime = if bytes.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };
+    let mime = if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
     json!({"_pantheonImage":{"mimeType":mime,"data":STANDARD.encode(bytes),"text":text}})
 }
 /// The screen as the device shows it now, and the display to capture (a Duo's cover or inner).
 fn view(sims: &Simulators, device: &Device) -> Result<(Screen, Option<&'static str>), String> {
     Ok((sims.shown(device)?, sims.display(&device.udid)))
 }
-fn look(device: &Device, screen: Screen, display: Option<&str>, note: &str) -> Result<Value, String> {
+fn look(
+    device: &Device,
+    screen: Screen,
+    display: Option<&str>,
+    note: &str,
+) -> Result<Value, String> {
     let jpeg = super::screenshot(&device.udid, Some(screen), display)?;
-    Ok(image(jpeg, format!("{note}{} ({}, {}). Screen {}×{} points; image pixels are points.", device.name, device.runtime, device.udid, screen.width, screen.height)))
+    Ok(image(
+        jpeg,
+        format!(
+            "{note}{} ({}, {}). Screen {}×{} points; image pixels are points.",
+            device.name, device.runtime, device.udid, screen.width, screen.height
+        ),
+    ))
 }
 
 fn control(sims: &Simulators, args: &Value) -> Result<Value, String> {
@@ -72,13 +98,34 @@ fn control(sims: &Simulators, args: &Value) -> Result<Value, String> {
     let (screen, display) = view(sims, &device)?;
     let action = string(args, "action").unwrap_or_default();
     let input = match action.as_str() {
-        "tap" | "double_tap" => Input::Tap { x: number(args, "x")?, y: number(args, "y")? },
-        "long_press" => Input::LongPress { x: number(args, "x")?, y: number(args, "y")?, duration_ms: args["durationMs"].as_u64() },
-        "swipe" => Input::Swipe { x: number(args, "x")?, y: number(args, "y")?, end_x: number(args, "endX")?, end_y: number(args, "endY")?, duration_ms: args["durationMs"].as_u64() },
-        "type" => Input::Type { text: args["text"].as_str().unwrap_or_default().to_string() },
-        "key" => Input::Key { key: string(args, "key").ok_or("Missing argument: key")? },
-        "button" => Input::Button { button: string(args, "button").ok_or("Missing argument: button")? },
-        "tap_label" => Input::TapLabel { label: string(args, "label").ok_or("Missing argument: label")? },
+        "tap" | "double_tap" => Input::Tap {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+        },
+        "long_press" => Input::LongPress {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+            duration_ms: args["durationMs"].as_u64(),
+        },
+        "swipe" => Input::Swipe {
+            x: number(args, "x")?,
+            y: number(args, "y")?,
+            end_x: number(args, "endX")?,
+            end_y: number(args, "endY")?,
+            duration_ms: args["durationMs"].as_u64(),
+        },
+        "type" => Input::Type {
+            text: args["text"].as_str().unwrap_or_default().to_string(),
+        },
+        "key" => Input::Key {
+            key: string(args, "key").ok_or("Missing argument: key")?,
+        },
+        "button" => Input::Button {
+            button: string(args, "button").ok_or("Missing argument: button")?,
+        },
+        "tap_label" => Input::TapLabel {
+            label: string(args, "label").ok_or("Missing argument: label")?,
+        },
         _ => return Err("Unknown simulator action.".into()),
     };
     let duo = sims.duo(&device.udid);
@@ -98,7 +145,10 @@ fn manage(app: &tauri::AppHandle, sims: &Simulators, args: &Value) -> Result<Val
     let action = string(args, "action").unwrap_or_default();
     let udid = string(args, "udid");
     let need = |key: &str| string(args, key).ok_or_else(|| format!("Missing argument: {key}"));
-    let device = sims.resolve(udid.as_deref(), !matches!(action.as_str(), "boot" | "shutdown" | "show"))?;
+    let device = sims.resolve(
+        udid.as_deref(),
+        !matches!(action.as_str(), "boot" | "shutdown" | "show"),
+    )?;
     let report = match action.as_str() {
         "boot" => {
             super::boot(&device.udid)?;
@@ -121,15 +171,31 @@ fn manage(app: &tauri::AppHandle, sims: &Simulators, args: &Value) -> Result<Val
         "appearance" => super::appearance(&device.udid, &need("appearance")?)?,
         "pose" => {
             if !device.duo {
-                return Err(format!("{} does not fold. Only iPhone Duo does.", device.name));
+                return Err(format!(
+                    "{} does not fold. Only iPhone Duo does.",
+                    device.name
+                ));
             }
-            let pose: Pose = serde_json::from_value(json!(need("pose")?)).map_err(|_| "Pose is closed, book or open.")?;
+            let pose: Pose = serde_json::from_value(json!(need("pose")?))
+                .map_err(|_| "Pose is closed, book or open.")?;
             sims.fold(&device.udid, pose)?;
-            format!("{} is {}; the {} display is shown.", device.name, need("pose")?, if pose == Pose::Closed { "cover" } else { "inner" })
+            format!(
+                "{} is {}; the {} display is shown.",
+                device.name,
+                need("pose")?,
+                if pose == Pose::Closed {
+                    "cover"
+                } else {
+                    "inner"
+                }
+            )
         }
         _ => return Err("Unknown simulator action.".into()),
     };
-    let _ = app.emit("simulator-changed", json!({"udid": device.udid, "show": matches!(action.as_str(), "boot" | "show")}));
+    let _ = app.emit(
+        "simulator-changed",
+        json!({"udid": device.udid, "show": matches!(action.as_str(), "boot" | "show")}),
+    );
     Ok(json!(report))
 }
 
@@ -139,9 +205,16 @@ fn device_entry(sims: &Simulators, d: &Device) -> Value {
     }
     let pose = sims.pose(&d.udid);
     let mut entry = json!({"udid": d.udid, "name": format!("{} (foldable, pose: {})", d.name, serde_json::to_value(pose).ok().and_then(|p| p.as_str().map(str::to_string)).unwrap_or_default()), "runtime": d.runtime, "state": d.state});
-    if let Some(active) = Some(d).filter(|d| d.state == "Booted").and_then(|d| super::duo::active(&sims.duo(&d.udid)).cloned()) {
+    if let Some(active) = Some(d)
+        .filter(|d| d.state == "Booted")
+        .and_then(|d| super::duo::active(&sims.duo(&d.udid)).cloned())
+    {
         let (width, height) = active.ui();
-        let orientation = if width > height { "landscape" } else { "portrait" };
+        let orientation = if width > height {
+            "landscape"
+        } else {
+            "portrait"
+        };
         entry["activeDisplay"] = json!({"name": active.name(), "orientation": orientation, "rotation": active.rotation, "width": width, "height": height});
     }
     entry
@@ -176,7 +249,11 @@ async fn dispatch(app: tauri::AppHandle, name: String, args: Value) -> Result<Va
                     (Some(x), Some(y)) => Some((x as f64, y as f64)),
                     _ => None,
                 };
-                Ok(json!(super::describe(&device.udid, at, &sims.duo(&device.udid))?))
+                Ok(json!(super::describe(
+                    &device.udid,
+                    at,
+                    &sims.duo(&device.udid)
+                )?))
             }
             "pantheon_simulator_control" => control(&sims, &args),
             "pantheon_simulator_manage" => manage(&app, &sims, &args),
@@ -187,13 +264,21 @@ async fn dispatch(app: tauri::AppHandle, name: String, args: Value) -> Result<Va
 }
 
 /// Add the simulator tools on macOS; reading is free, acting asks like other host tools.
-pub fn with_simulator(base: Option<ToolHost>, app: tauri::AppHandle, stopped: Arc<AtomicBool>) -> Option<ToolHost> {
+pub fn with_simulator(
+    base: Option<ToolHost>,
+    app: tauri::AppHandle,
+    stopped: Arc<AtomicBool>,
+) -> Option<ToolHost> {
     if !cfg!(target_os = "macos") {
         return base;
     }
     let own = catalog();
-    let mut tools = base.as_ref().map_or_else(Vec::new, |host| host.tools.clone());
-    let mut approval_tools = base.as_ref().map_or_else(Default::default, |host| host.approval_tools.clone());
+    let mut tools = base
+        .as_ref()
+        .map_or_else(Vec::new, |host| host.tools.clone());
+    let mut approval_tools = base
+        .as_ref()
+        .map_or_else(Default::default, |host| host.approval_tools.clone());
     for tool in &own {
         let name = tool["name"].as_str().unwrap_or_default();
         if !READ_ONLY.contains(&name) {
@@ -231,11 +316,33 @@ mod tests {
     fn the_catalog_validates_and_keeps_reads_free_of_approval() {
         let tools = catalog();
         assert_eq!(tools.len(), 5);
-        assert!(validate_spec(&tools, "pantheon_simulator_control", &json!({"action":"tap","x":10,"y":20})).is_ok());
-        assert!(validate_spec(&tools, "pantheon_simulator_control", &json!({"action":"hover"})).is_err());
-        assert!(validate_spec(&tools, "pantheon_simulator_control", &json!({"action":"tap","x":-1})).is_err());
-        assert!(validate_spec(&tools, "pantheon_simulator_manage", &json!({"action":"appearance","appearance":"dark"})).is_ok());
-        assert!(READ_ONLY.iter().all(|name| tools.iter().any(|t| t["name"] == *name)));
+        assert!(validate_spec(
+            &tools,
+            "pantheon_simulator_control",
+            &json!({"action":"tap","x":10,"y":20})
+        )
+        .is_ok());
+        assert!(validate_spec(
+            &tools,
+            "pantheon_simulator_control",
+            &json!({"action":"hover"})
+        )
+        .is_err());
+        assert!(validate_spec(
+            &tools,
+            "pantheon_simulator_control",
+            &json!({"action":"tap","x":-1})
+        )
+        .is_err());
+        assert!(validate_spec(
+            &tools,
+            "pantheon_simulator_manage",
+            &json!({"action":"appearance","appearance":"dark"})
+        )
+        .is_ok());
+        assert!(READ_ONLY
+            .iter()
+            .all(|name| tools.iter().any(|t| t["name"] == *name)));
     }
 
     /// The agent loop against a booted simulator: look, read, act, look. `cargo test -- --ignored simulator::tools::tests::live`
@@ -246,19 +353,51 @@ mod tests {
         let device = sims.resolve(None, true).expect("boot a simulator first");
         let screen = sims.screen(&device).unwrap();
         let shot = look(&device, screen, None, "").unwrap();
-        let jpeg = STANDARD.decode(shot["_pantheonImage"]["data"].as_str().unwrap()).unwrap();
+        let jpeg = STANDARD
+            .decode(shot["_pantheonImage"]["data"].as_str().unwrap())
+            .unwrap();
         let path = std::env::temp_dir().join("pantheon-agent-shot.jpg");
         std::fs::write(&path, &jpeg).unwrap();
-        let size = String::from_utf8(std::process::Command::new("/usr/bin/sips").args(["-g", "pixelWidth", "-g", "pixelHeight"]).arg(&path).output().unwrap().stdout).unwrap();
-        assert!(size.contains(&format!("pixelWidth: {}", screen.width)) && size.contains(&format!("pixelHeight: {}", screen.height)), "{size}");
-        assert!(shot["_pantheonImage"]["text"].as_str().unwrap().contains("image pixels are points"));
-        control(&sims, &json!({"action":"button","button":"home","screenshot":false})).unwrap();
+        let size = String::from_utf8(
+            std::process::Command::new("/usr/bin/sips")
+                .args(["-g", "pixelWidth", "-g", "pixelHeight"])
+                .arg(&path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert!(
+            size.contains(&format!("pixelWidth: {}", screen.width))
+                && size.contains(&format!("pixelHeight: {}", screen.height)),
+            "{size}"
+        );
+        assert!(shot["_pantheonImage"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("image pixels are points"));
+        control(
+            &sims,
+            &json!({"action":"button","button":"home","screenshot":false}),
+        )
+        .unwrap();
         let tree = super::super::describe(&device.udid, None, &[]).unwrap();
         assert!(tree.contains("Settings"), "{tree}");
         let after = control(&sims, &json!({"action":"tap_label","label":"Settings"})).unwrap();
-        assert!(after["_pantheonImage"]["text"].as_str().unwrap().contains("Now showing"));
-        assert!(super::super::describe(&device.udid, None, &[]).unwrap().contains("General"), "Settings opened");
-        control(&sims, &json!({"action":"button","button":"home","screenshot":false})).unwrap();
+        assert!(after["_pantheonImage"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Now showing"));
+        assert!(
+            super::super::describe(&device.udid, None, &[])
+                .unwrap()
+                .contains("General"),
+            "Settings opened"
+        );
+        control(
+            &sims,
+            &json!({"action":"button","button":"home","screenshot":false}),
+        )
+        .unwrap();
     }
-
 }

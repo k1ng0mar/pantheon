@@ -1282,6 +1282,66 @@ pub mod uploads {
         app.data_dir.join("uploads")
     }
 
+    /// How long an upload is kept before [`sweep`] deletes it.
+    pub const DEFAULT_UPLOAD_TTL_DAYS: u64 = 30;
+
+    /// Delete uploads older than the retention window.
+    ///
+    /// Nothing ever removed an upload: the files plus their `<id>.json`
+    /// sidecars and `<id>_unzipped/` trees accumulated for the life of the
+    /// install, each up to 25 MiB (and 100 MiB inflated), with no API to list
+    /// or delete them (audit F6). Sweeping on upload bounds the directory
+    /// without a scheduler. `PANTHEON_UPLOAD_TTL_DAYS=0` disables it.
+    ///
+    /// Best-effort: a file that cannot be removed (permissions, still open) is
+    /// skipped, never an error for the upload that triggered the sweep.
+    pub fn sweep(app: &App) -> usize {
+        let ttl_days = std::env::var("PANTHEON_UPLOAD_TTL_DAYS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_UPLOAD_TTL_DAYS);
+        if ttl_days == 0 {
+            return 0;
+        }
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(
+            std::time::Duration::from_secs(ttl_days.saturating_mul(86_400)),
+        ) else {
+            return 0;
+        };
+        let Ok(entries) = std::fs::read_dir(uploads_dir(app)) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // `symlink_metadata`: never follow a link out of the uploads dir.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
+            if modified >= cutoff {
+                continue;
+            }
+            let gone = if meta.is_dir() && !meta.file_type().is_symlink() {
+                std::fs::remove_dir_all(&path).is_ok()
+            } else {
+                std::fs::remove_file(&path).is_ok()
+            };
+            if gone {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            eprintln!(
+                "dashboard: swept {removed} expired upload entr{} (retention {ttl_days}d)",
+                if removed == 1 { "y" } else { "ies" }
+            );
+        }
+        removed
+    }
+
     /// `upl_<epochms>_<nnnn>`, mirroring `pantheon_runtime::new_scoped_id`
     /// (which is private to that crate).
     fn new_upload_id() -> String {
@@ -1456,6 +1516,9 @@ pub mod uploads {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             return err_json(500, "UPLOAD", &format!("create uploads dir: {e}"));
         }
+        // Retention runs here rather than on a timer: the only moment the
+        // directory is guaranteed to grow is a new upload.
+        sweep(app);
         let id = new_upload_id();
         let file_name = format!("{id}_{safe_name}");
         if let Err(e) = std::fs::write(dir.join(&file_name), &bytes) {
@@ -2001,6 +2064,45 @@ pub mod ui_actions {
                 desktop: Default::default(),
             };
             (app, dir)
+        }
+
+        /// Audit F6: nothing ever removed an upload. The sweep is the only
+        /// path that bounds the directory, so pin the distinction it makes.
+        #[test]
+        fn sweep_removes_uploads_older_than_the_retention_window() {
+            let (app, dir) = test_app();
+            let uploads = dir.join("uploads");
+            std::fs::create_dir_all(&uploads).unwrap();
+            let stale_file = uploads.join("aaa_stale.txt");
+            let stale_dir = uploads.join("ccc_stale_unzipped");
+            let fresh_file = uploads.join("bbb_fresh.txt");
+            std::fs::write(&stale_file, b"old").unwrap();
+            std::fs::write(&fresh_file, b"new").unwrap();
+            std::fs::create_dir_all(&stale_dir).unwrap();
+            std::fs::write(stale_dir.join("inner.txt"), b"old").unwrap();
+            // Backdate what retention should collect; leave the fresh one alone.
+            let long_ago =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 86_400);
+            for path in [&stale_file, &stale_dir.join("inner.txt")] {
+                let file = std::fs::File::options().write(true).open(path).unwrap();
+                file.set_modified(long_ago).unwrap();
+            }
+            // A directory cannot be opened for writing; read-only is enough to
+            // stamp its mtime on Unix (the platform whose dir mtime the sweep
+            // reads).
+            #[cfg(unix)]
+            {
+                let dir_handle = std::fs::File::open(&stale_dir).unwrap();
+                dir_handle.set_modified(long_ago).unwrap();
+            }
+
+            let removed = crate::web_group::uploads::sweep(&app);
+
+            assert_eq!(removed, 2, "the stale file and the unzipped tree");
+            assert!(!stale_file.exists());
+            assert!(!stale_dir.exists());
+            assert!(fresh_file.exists(), "a recent upload is never touched");
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         fn post_req(body: serde_json::Value) -> Request {

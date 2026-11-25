@@ -76,6 +76,17 @@ pub mod http {
     }
 
     impl Response {
+        /// The status this response will carry. Streams are always 200 and a
+        /// takeover is a 101 upgrade; used by the server's auth/error audit
+        /// line and by tests.
+        pub fn status(&self) -> u16 {
+            match self {
+                Self::Buffered { status, .. } => *status,
+                Self::ChunkedStream { .. } | Self::RawStream { .. } => 200,
+                Self::Takeover { .. } => 101,
+            }
+        }
+
         fn buffered(status: u16, content_type: &'static str, body: Vec<u8>) -> Self {
             Self::Buffered {
                 status,
@@ -541,10 +552,12 @@ pub mod http {
             // header cannot vouch for itself, or DNS rebinding chooses the
             // accepted authority.
             let host_name = host_header_name(host);
-            if !ctx.trusted_hosts.iter().any(|trusted| trusted == &host_name) {
-                return Err(Response::forbidden(
-                    "Host is not an allowed dashboard host",
-                ));
+            if !ctx
+                .trusted_hosts
+                .iter()
+                .any(|trusted| trusted == &host_name)
+            {
+                return Err(Response::forbidden("Host is not an allowed dashboard host"));
             }
             if let Some(origin) = req.headers.get("origin") {
                 let authority = authority_of(origin).unwrap_or_default();
@@ -890,6 +903,20 @@ pub mod http {
                     content_type,
                     body.len()
                 );
+                // Baseline browser hardening on every buffered response. The
+                // dashboard is a control plane holding a live session cookie:
+                // without `frame-ancestors` an attacker page can frame it and
+                // overlay clicks on destructive buttons, and the Origin guard
+                // never sees those requests because they originate inside the
+                // same-origin frame (audit F13). `nosniff` stops a mistyped
+                // upload being sniffed as script; `no-referrer` keeps run and
+                // upload ids out of third-party Referer headers.
+                head.push_str("X-Content-Type-Options: nosniff\r\n");
+                head.push_str("X-Frame-Options: DENY\r\n");
+                head.push_str(
+                    "Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'\r\n",
+                );
+                head.push_str("Referrer-Policy: no-referrer\r\n");
                 for (k, v) in extra_headers {
                     head.push_str(&format!("{k}: {v}\r\n"));
                 }
@@ -968,6 +995,12 @@ pub mod http {
                 // Slowloris: a connection that trickles bytes must not hold a
                 // thread forever waiting for the request head.
                 let _ = s.set_read_timeout(Some(READ_TIMEOUT));
+                // Record what was asked for so a rejection leaves a trace. The
+                // control plane used to answer 401/403 with no log line at all,
+                // so a client hammering it (token probing, a misconfigured
+                // proxy, an origin-loop) was invisible (audit F13).
+                let seen: std::cell::RefCell<Option<(String, String)>> =
+                    std::cell::RefCell::new(None);
                 // A panicking handler must not drop the connection silently: a
                 // diagnostic eprintln! hitting a closed stderr (EPIPE) is
                 // enough to panic a request thread, and without this the
@@ -977,6 +1010,7 @@ pub mod http {
                         Err(r) => r, // 431 / 413 guards
                         Ok(None) => Response::bad_request("bad request"),
                         Ok(Some(req)) => {
+                            *seen.borrow_mut() = Some((req.method.clone(), req.path.clone()));
                             if req.path == "/api/session" {
                                 return handle_session(&cfg.auth, &req);
                             }
@@ -1006,6 +1040,19 @@ pub mod http {
                     Ok(resp) => resp,
                     Err(_) => Response::internal("request handler panicked".to_string()),
                 };
+                let status = resp.status();
+                if matches!(status, 401 | 403) || status >= 500 {
+                    let peer = s
+                        .peer_addr()
+                        .map(|a| a.ip().to_string())
+                        .unwrap_or_else(|_| "-".to_string());
+                    let (method, path) = seen
+                        .into_inner()
+                        .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+                    // Status + method + path only: never a header or body, and
+                    // the token is never accepted in the path.
+                    eprintln!("gateway: {method} {path} -> {status} from {peer}");
+                }
                 write_response(s, resp);
             });
         }
@@ -1288,10 +1335,7 @@ pub mod http {
 
         #[test]
         fn bind_all_accepts_a_trusted_host_and_origin() {
-            let req = patch_req(
-                "dashboard.local:7171",
-                Some("http://dashboard.local:7171"),
-            );
+            let req = patch_req("dashboard.local:7171", Some("http://dashboard.local:7171"));
             assert!(check_auth(
                 &req,
                 AuthGroup::DashboardApi,
