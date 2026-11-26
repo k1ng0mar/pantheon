@@ -15,6 +15,28 @@ use std::time::{Duration, Instant};
 
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
+/// Plugin fixtures test the supervisor protocol, not host namespace policy.
+/// On hosted runners bwrap can exist but fail to initialize for a fresh
+/// unprivileged uid map; the fail closed path would then kill the fixture
+/// before it answers. Pin sandbox lookup to an empty directory so the
+/// manifest's explicit direct fallback is exercised deterministically.
+struct NoWrapper(Option<std::ffi::OsString>);
+impl NoWrapper {
+    fn install() -> Self {
+        let previous = std::env::var_os("PANTHEON_SANDBOX_PATH");
+        std::env::set_var("PANTHEON_SANDBOX_PATH", "/nonexistent");
+        Self(previous)
+    }
+}
+impl Drop for NoWrapper {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(v) => std::env::set_var("PANTHEON_SANDBOX_PATH", v),
+            None => std::env::remove_var("PANTHEON_SANDBOX_PATH"),
+        }
+    }
+}
+
 /// Spawn a plugin runner, tolerating the kernel's ETXTBSY ("Text file busy",
 /// os error 26) with a short bounded retry.
 ///
@@ -63,6 +85,7 @@ fn spawn_plugin(
 #[test]
 fn live_call_round_trip() {
     let _lock = PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _no_wrapper = NoWrapper::install();
     let base = std::env::temp_dir().join(format!(
         "pantheon-sup-{}-{}",
         std::process::id(),
@@ -121,6 +144,7 @@ fn live_call_round_trip() {
 #[test]
 fn timeout_kills_wedged_plugin() {
     let _lock = PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _no_wrapper = NoWrapper::install();
     let base = std::env::temp_dir().join(format!(
         "pantheon-sup-wedge-{}-{}",
         std::process::id(),
@@ -180,6 +204,7 @@ fn timeout_kills_wedged_plugin() {
 #[test]
 fn manifest_env_needs_allowlist_hit() {
     let _lock = PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _no_wrapper = NoWrapper::install();
     std::env::set_var("PANTHEON_SUP_TEST_ALLOWED", "visible");
     std::env::set_var("PANTHEON_SUP_TEST_DENIED", "must-not-leak");
 

@@ -522,7 +522,7 @@ pub mod dotenv {
     /// Whether `pid` currently names a live process. Used to tell a temp file
     /// leaked by a dead writer apart from one owned by a writer that is still
     /// going (e.g. an older binary writing without the flock).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn pid_is_alive(pid: u32) -> bool {
         let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(s) => s,
@@ -537,6 +537,20 @@ pub mod dotenv {
             return true;
         };
         !matches!(stat[close + 1..].trim_start().chars().next(), Some('Z'))
+    }
+
+    /// macOS and other Unix hosts have no /proc. `ps -p <pid>` checks
+    /// liveness without adding a libc dependency to this leaf crate.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn pid_is_alive(pid: u32) -> bool {
+        std::process::Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
     }
 
     /// Where liveness cannot be checked, never sweep: a live writer's temp

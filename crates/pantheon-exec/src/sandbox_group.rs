@@ -4561,6 +4561,7 @@ pub mod supervisor {
         }
 
         #[test]
+        #[cfg(unix)]
         fn pinned_runner_approval_binds_bytes_not_identity() {
             // Approval recorded for GOOD bytes. An in-place rewrite (same
             // inode) must NOT pass the pinned-runner check with the new bytes,

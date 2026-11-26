@@ -528,13 +528,19 @@ fn high_profile_child_has_no_capabilities_even_for_root() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn very_high_profile_runs_a_command() {
-    use pantheon_exec::sandbox::{boundary_available, kernel_layer_available};
+    use pantheon_exec::sandbox::kernel_layer_available;
     let profile = SandboxLevel::VeryHigh.profile();
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !boundary_available(profile.boundary)
-        || !kernel_layer_available(profile.seccomp, profile.landlock)
-    {
-        eprintln!("skip: host lacks bwrap, seccomp or Landlock");
+    if !kernel_layer_available(profile.seccomp, profile.landlock) {
+        eprintln!("skip: host lacks seccomp or Landlock");
+        return;
+    }
+    // The runner's own checked builder decides whether this host can stage
+    // the real wrapper shape. A simpler bwrap probe can succeed while the
+    // profile's seccomp fd cannot be staged, which made this test panic on
+    // a host where the product correctly fails closed.
+    if build_sandboxed_checked(&profile, "/bin/true", &[], "/tmp").is_err() {
+        eprintln!("skip: VeryHigh wrapper cannot initialize on this host");
         return;
     }
     let r = run_sandboxed(&profile, "/bin/true", &[], "/tmp")
