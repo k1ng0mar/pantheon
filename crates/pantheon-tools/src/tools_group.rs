@@ -1002,10 +1002,15 @@ pub mod builtins {
         // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
         // + rlimits. The capability gate already ran before we get here,
         // including the network capabilities when the call asked for them.
-        let profile = shell_profile(shell_network_requested(&v));
+        let mut profile = shell_profile(shell_network_requested(&v));
         // Resolve relative to the session root, not the process cwd: the root
         // is read here so a worktree move takes effect on the next call.
         let cwd = workspace.path().to_string_lossy().to_string();
+        // Docs promise shell writes are confined to the workspace, but a
+        // working bwrap binds the host root read-only and mounts a private
+        // /tmp. Without this bind every file write fails on a real sandbox
+        // host and only passes where direct fallback silently ran unsandboxed.
+        profile.writable_paths = vec![cwd.clone()];
 
         // The spawn hook fires synchronously on this thread right after the
         // child is spawned; the pid doubles as the process-group id (the
@@ -4715,7 +4720,8 @@ pub mod pty_tools {
                 args.push("-lc");
                 args.push(command);
             }
-            let profile = crate::tools_group::builtins::shell_profile(network);
+            let mut profile = crate::tools_group::builtins::shell_profile(network);
+            profile.writable_paths = vec![cwd.to_string_lossy().into_owned()];
             let (std_cmd, _sandboxed) = pantheon_exec::sandbox::build_sandboxed_checked(
                 &profile,
                 shell,

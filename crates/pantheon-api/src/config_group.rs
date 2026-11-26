@@ -553,9 +553,26 @@ pub mod dotenv {
             .unwrap_or(true)
     }
 
+    /// Windows has no /proc either. `tasklist /FI "PID eq N"` returns a
+    /// non-empty row for a live process and an "INFO:" line for a dead one.
+    #[cfg(windows)]
+    fn pid_is_alive(pid: u32) -> bool {
+        let pid = pid.to_string();
+        let Ok(out) = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+        else {
+            return true; // conservative: never reap on an unknown host
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        stdout
+            .lines()
+            .any(|line| line.split_whitespace().any(|field| field == pid))
+    }
+
     /// Where liveness cannot be checked, never sweep: a live writer's temp
     /// must not be removed.
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     fn pid_is_alive(_pid: u32) -> bool {
         true
     }
@@ -1189,10 +1206,10 @@ pub mod dotenv {
             for name in &dead {
                 std::fs::write(dir.join(name), "STALE=x\n").unwrap();
             }
-            // Live pid: PID 1 (init) is always alive on Linux, and unlike our
-            // own pid it can never collide with this writer's own temp name.
-            // Must survive the sweep.
-            let live = dir.join(".env.tmp.1");
+            // Live pid: this test process. The sweep explicitly keeps temps
+            // whose pid is our own, so this works on Linux, macOS and Windows
+            // without assuming a platform-specific always-live PID.
+            let live = dir.join(format!("other.tmp.{}", std::process::id()));
             std::fs::write(&live, "STALE=y\n").unwrap();
             // Looks like a temp but the suffix is not a pid. Must survive.
             let not_a_pid = dir.join(".env.tmp.notes");

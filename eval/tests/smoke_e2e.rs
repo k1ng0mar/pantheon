@@ -237,13 +237,21 @@ fn fake_session(data_dir: &Path, port: u16, policy: Policy) -> Session {
         fallbacks: FallbackChain { fallbacks: vec![] },
         auxiliaries: vec![],
     };
-    Session::new(
+    let session = Session::new(
         data_dir.to_path_buf(),
         policy,
         model_policy,
         SecretsBroker::from_system_env(),
     )
-    .expect("fake session")
+    .expect("fake session");
+    // Shell writes are confined to the workspace, not the data dir where
+    // secrets and the ledger live. Give each smoke session its own empty
+    // workspace so the effect files survive a real bwrap sandbox without
+    // re-exposing the data dir to the model.
+    let workspace = data_dir.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    session.workspace.set(&workspace);
+    session
 }
 
 /// Coder policy with ShellExecute parked for approval, so a harmless
@@ -471,7 +479,7 @@ fn scope_parts(scope: &str) -> (String, String, String) {
 #[test]
 fn smoke_fake_provider_crash_after_grant_executes_exactly_once_after_restart() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let effect = dir.path().join("effect-grant.txt");
+    let effect = dir.path().join("workspace/effect-grant.txt");
     let server = start_server(tool_provider_command(
         &format!("echo crashed >> {}", effect.display()),
         "resumed after crash",
@@ -550,7 +558,7 @@ fn smoke_fake_provider_crash_after_grant_and_start_still_executes_exactly_once()
     // strands the model with a dangling tool_call, running it twice
     // duplicates the side effect.
     let dir = tempfile::tempdir().expect("tempdir");
-    let effect = dir.path().join("effect-started.txt");
+    let effect = dir.path().join("workspace/effect-started.txt");
     let server = start_server(tool_provider_command(
         &format!("echo started >> {}", effect.display()),
         "resumed mid-call",
@@ -613,7 +621,7 @@ fn smoke_fake_provider_crash_after_cached_result_replays_without_reexecuting() {
     // settlement anywhere. The resume must replay that result — the
     // side effect must NOT run a second time.
     let dir = tempfile::tempdir().expect("tempdir");
-    let effect = dir.path().join("effect-cached.txt");
+    let effect = dir.path().join("workspace/effect-cached.txt");
     let server = start_server(tool_provider_command(
         &format!("echo cached >> {}", effect.display()),
         "settled from cache",
