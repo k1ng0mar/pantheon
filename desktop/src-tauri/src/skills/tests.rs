@@ -12,6 +12,10 @@ impl Fixture {
         let home = base.join("home");
         fs::create_dir_all(home.join(".claude")).unwrap();
         fs::create_dir_all(home.join(".codex")).unwrap();
+        // The skills matrix only lists a harness it detects as installed.
+        // Pantheon lives in its own data dir, not `~/.pantheon` in a fake
+        // HOME; make the fixture represent a machine with Pantheon present.
+        fs::create_dir_all(home.join(".pantheon")).unwrap();
         Self {
             library: Library::new(base.join("library"), home.clone()),
             home,

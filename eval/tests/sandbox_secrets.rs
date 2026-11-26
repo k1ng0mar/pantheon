@@ -105,8 +105,12 @@ fn shell_sandbox_hides_credentials_and_is_offline_by_default() {
         "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", {port}), 2); print(\"CONNECTED\")' 2>&1"
     );
     let offline = run_sandboxed(&profile, "sh", &["-c", &probe], &work.to_string_lossy()).unwrap();
+    // The Python traceback echoes the source line containing the marker, so
+    // a substring check reports a failed connection as a success. Only a
+    // standalone line is proof the probe actually connected.
+    let connected = |output: &str| output.lines().any(|line| line.trim() == "CONNECTED");
     assert!(
-        !offline.output.contains("CONNECTED"),
+        !connected(&offline.output),
         "offline shell reached the host: {}",
         offline.output
     );
@@ -118,7 +122,7 @@ fn shell_sandbox_hides_credentials_and_is_offline_by_default() {
     )
     .unwrap();
     assert!(
-        online.output.contains("CONNECTED"),
+        connected(&online.output),
         "network:true must reach the host: {}",
         online.output
     );

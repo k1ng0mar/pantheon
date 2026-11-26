@@ -3500,9 +3500,17 @@ locked reason
             let made = m
                 .create("custom", None, Some(&custom))
                 .expect("create custom");
-            assert_eq!(made.path, custom);
+            // macOS canonicalizes /var into /private/var; compare resolved
+            // paths so the assertion tests identity, not spelling.
+            assert_eq!(
+                std::fs::canonicalize(&made.path).unwrap(),
+                std::fs::canonicalize(&custom).unwrap()
+            );
             let found = m.find("custom").expect("find").expect("custom worktree");
-            assert_eq!(found.path, custom);
+            assert_eq!(
+                std::fs::canonicalize(&found.path).unwrap(),
+                std::fs::canonicalize(&custom).unwrap()
+            );
             m.remove("custom", false).expect("remove custom");
             assert!(!custom.exists());
         }
@@ -3538,7 +3546,7 @@ pub mod process {
         }
 
         /// TERM → grace period → KILL.  The guard rejects PID 1 and our own PID.
-        pub fn terminate(&self, grace: Duration) {
+        pub fn terminate(&self, #[cfg_attr(not(unix), allow(unused_variables))] grace: Duration) {
             let Some(group) = Self::new(self.pgid) else {
                 return;
             };
