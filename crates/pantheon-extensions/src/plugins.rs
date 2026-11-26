@@ -1,102 +1,20 @@
-//! Extensions merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
-
 pub mod bundled {
-    //! Bundled plugin catalog: the plugins Pantheon ships. Most are disabled
-    //! by default; a plugin whose shipped manifest says `enabled: true`
-    //! (noisegate, planning-with-files) ships on unless the operator's
-    //! config entry says otherwise - that is the manifest default, and it
-    //! applies whether or not a `config.toml` file exists yet.
+    //! Bundled plugin catalog and enablement helpers.
     //!
-    //! ## Plugins vs MCPs: the trust distinction
+    //! Plugins run code on the host, so enabling one is the consent boundary.
+    //! MCP servers are different: Pantheon talks to them over MCP and does
+    //! not run their code. Bundled entries skip third-party approval because
+    //! they ship here, but they still start disabled unless config enables
+    //! them.
     //!
-    //! This is the distinction the approval UI must surface, because the two
-    //! look similar (both extend what the agent can do) and are trusted
-    //! completely differently:
+    //! [`seed`] writes the bundled files under `<ext_dir>/bundled/<name>/`.
+    //! Existing directories are left alone. The catalog is currently empty;
+    //! the embedded registry in `pantheon-exec` owns the shipped tool and hook
+    //! plugins.
     //!
-    //! - A **plugin** (tool or hook) is code Pantheon itself runs on the
-    //!   operator's machine. The runtime loads its manifest and executes it:
-    //!   tool plugins as spawned runner processes whose tools sit behind the
-    //!   capability gate, with full user privileges and no namespace sandbox;
-    //!   hook plugins as per-fire child processes with a scrubbed environment,
-    //!   sandboxed at the VeryHigh level whenever a capability policy is
-    //!   configured and spawned directly only when no policy is configured.
-    //!   Enabling a plugin is consent to run its code under that gate.
-    //!
-    //! - An **MCP server** is an out-of-process **integration**. Pantheon
-    //!   spawns or connects to a server and speaks the MCP protocol to it;
-    //!   Pantheon never executes the server's code, which may run on another
-    //!   machine entirely. Trust there is in the endpoint and its
-    //!   configuration (command, URL, env), not in shipped code.
-    //!
-    //! Bundled plugins are first-party - shipped in this repo, reviewed
-    //! in-tree - so they skip the third-party approval store
-    //! ([`pantheon_api::approval`], which exists to gate code from sources
-    //! the operator has not vetted). They do **not** skip enablement: every
-    //! catalog entry is disabled unless `[plugins.<name>]` says otherwise.
-    //!
-    //! ## Materialization
-    //!
-    //! Catalog entries ship as source in the repo and are compiled into the
-    //! binary. [`seed`] materializes each entry into
-    //! `<ext_dir>/bundled/<name>/` on load - inert files, never enabled.
-    //! The `<dir>/bundled/` layout is what
-    //! [`pantheon_api::approval::is_bundled`] recognizes, and
-    //! [`crate::manager::ExtensionManager::load_dir`] scans it. An existing
-    //! dir is never overwritten.
-    //!
-    //! This catalog (the vendored-extension path) is currently **empty** -
-    //! distinct from the embedded bundled-plugin registry in pantheon-exec
-    //! (cf-ops, noisegate, hookify, ...), which ships tool/hook plugins of
-    //! its own through the same `[plugins]` enablement. This catalog's
-    //! one-time entry, the time-gap hook plugin (a Python port from Hermes),
-    //! was removed once the native temporal-awareness feature
-    //! (`pantheon_api::temporal`, `[temporal]` in config.toml) covered the
-    //! same ground in-process: ledger-based and restart-safe by
-    //! construction, no child process per call, on by default. The catalog,
-    //! seed, and single-enablement machinery remain for the next vendored
-    //! extension; a Python-plugin fixture for `doctor` lives in
-    //! `eval/fixtures/time-gap-plugin/`.
-    //!
-    //! ## One enablement state
-    //!
-    //! The config file is the source of truth. `[plugins.<name>]` with
-    //! `enabled` (default false) is read and written identically by the
-    //! config file, the dashboard (`GET /api/plugins`,
-    //! `POST /api/plugins/:kind/:name/{approve,disable}`), the mobile app
-    //! (which talks to the same dashboard endpoints), and the agent's
-    //! `enable_plugin` tool. What wins, and why:
-    //!
-    //! - For a **bundled** plugin, the config entry wins over the plugin
-    //!   manifest's own `enabled` flag when present. The manifest is install
-    //!   metadata that ships with the plugin; the config is the operator's
-    //!   declared intent, and it is the one value every surface (TUI,
-    //!   dashboard, app, agent) can read and write. A bundled plugin whose
-    //!   manifest says enabled and whose config entry is absent loads (the
-    //!   manifest default); one whose config entry says false does not.
-    //! - For a **third-party** plugin, the approval store
-    //!   (`<scope>/.approvals.json`) remains the gate: unapproved third-party
-    //!   code never loads no matter what any flag says. Its manifest
-    //!   `enabled` flag is a per-install switch, unchanged by this module.
-    //!
-    //! ## Agent-initiated enable
-    //!
-    //! The agent may propose enabling a bundled plugin through the
-    //! `enable_plugin` tool (capability `plugin.enable`, which default
-    //! policies mark Approval). The run parks, an `ApprovalRequested` event
-    //! is appended to the ledger (audit-logged like every approval), and the
-    //! plugin is switched on only if the operator grants. It is never silent,
-    //! and only bundled names are accepted - this catalog plus the embedded
-    //! registry in pantheon-exec - there is no agent path to install or
-    //! enable arbitrary plugins.
-    //!
-    //! ## Stable interface
-    //!
-    //! The setup wizard's Extensions screen consumes this module. The stable
-    //! surface is [`BundledPlugin`], [`bundled_plugins`], [`find`],
-    //! [`is_enabled`], [`enable`], [`disable`], [`set_enabled`], [`seed`],
-    //! and [`PluginKind`]. New catalog
-    //! entries only add rows; they never change these shapes.
+    //! The setup wizard and `enable_plugin` use the stable helpers in this
+    //! module. Agent requests still go through approval and accept bundled
+    //! names only.
 
     use pantheon_api::config::Config;
     use pantheon_api::error::{Layer, PantheonError};
