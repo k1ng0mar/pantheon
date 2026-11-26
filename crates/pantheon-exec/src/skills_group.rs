@@ -1,5 +1,3 @@
-//! Exec skills_group merged group.
-
 pub mod skills {
     //! Skill discovery: `SKILL.md` files with YAML frontmatter are the
     //! capability contract (ECC/OpenMausBot pattern). Each skill is a named,
@@ -1184,9 +1182,9 @@ pub mod skills {
                 format!("repo must be an https:// URL, got {repo_url}"),
             ));
         }
-        // A per-call directory: the old pid-only name was shared by
-        // concurrent imports in one process (each deleted the other's
-        // clone) and predictable in a shared /tmp.
+        // A per-call directory: a pid-only name is shared by concurrent imports in
+        // one process (each deletes the other's clone) and predictable in a shared
+        // /tmp.
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2304,13 +2302,12 @@ pub mod skills_scan {
         quarantined_skill_names(data_dir).contains(&name.to_string())
     }
 
-    /// Get the data dir from the environment or default.
-    /// Resolve the data dir through the one resolver the rest of the tree
-    /// uses. This used to be a local copy (`PANTHEON_DATA_DIR` else
-    /// `$HOME/.pantheon`) that silently disagreed with
-    /// `pantheon_api::data_dir::resolve()` whenever `HOME` was unset and
-    /// `XDG_DATA_HOME` was not, so the quarantine registry could be read from
-    /// a different directory than the one the scan wrote it to (audit F4).
+    /// Resolve the data dir through the one resolver the rest of the tree uses.
+    ///
+    /// A local `PANTHEON_DATA_DIR`-else-`$HOME/.pantheon` copy disagrees with
+    /// `pantheon_api::data_dir::resolve()` whenever `HOME` is unset and
+    /// `XDG_DATA_HOME` is not, so the quarantine registry could be read from a
+    /// different directory than the one the scan wrote to.
     fn data_dir() -> PathBuf {
         pantheon_api::data_dir::resolve()
     }
@@ -2671,17 +2668,15 @@ pub mod skill_exec {
             .unwrap_or(false)
     }
 
-    /// Sandbox profile for a skill executable: HIGH isolation like `shell`,
-    /// wall clock from the declared `timeout_secs` (1..=600s, enforced at
-    /// parse time).
+    /// Sandbox profile for a skill executable: HIGH isolation like `shell`, wall clock
+    /// from the declared `timeout_secs` (1..=600s, enforced at parse time).
     ///
-    /// Network is OFF unless the call explicitly asks for it (and the
-    /// caller's policy granted `other.shell.network`), and the credential
-    /// locations the shell tool masks are masked here too. Before this the
-    /// profile inherited both `network: true` and an empty `hidden_paths`
-    /// from [`SandboxLevel::High`], which made `skill_exec` a second
-    /// execution path that skipped the shell tool's network approval and
-    /// could read `~/.ssh`/the data dir (audit F1, 2026-11-22).
+    /// Network is off unless the call explicitly asks for it (and the caller's policy
+    /// granted `other.shell.network`), and the credential locations the shell tool
+    /// masks are masked here too. Inheriting `network: true` and an empty
+    /// `hidden_paths` from [`SandboxLevel::High`] would make `skill_exec` a second
+    /// execution path that skips the shell tool's network approval and can read
+    /// `~/.ssh` and the data dir.
     pub fn skill_exec_profile(exec: &SkillExec, network: bool) -> SandboxProfile {
         let mut p = SandboxProfile::from(SandboxLevel::High);
         p.network = network;

@@ -259,13 +259,10 @@ fn cmd_update(args: &[String]) {
         }
     };
 
-    // Swap helper binary, with its own backup for rollback. The old
-    // code ignored both the copy and the rename (`let _ =`) and then
-    // printed success, so a failed helper install was invisible and
-    // unrecoverable. A helper failure is recorded, not ignored: the
-    // main binary is already swapped at this point, so the update
-    // continues through the unit restarts and then exits nonzero
-    // with the failure named, instead of printing success.
+    // Swap helper binary, with its own backup for rollback. A helper failure is
+    // recorded, never ignored: the main binary is already swapped at this point, so
+    // the update continues through the unit restarts and then exits nonzero with the
+    // failure named.
     let helper_exe = current_exe.with_file_name("pantheon-helper");
     let mut helper_failed: Option<String> = None;
     if helper_exe.is_file() {
@@ -336,7 +333,7 @@ fn cmd_update(args: &[String]) {
     // answer --version within the timeout. A failure here does not
     // auto-roll back (that would hide the failure and could loop) and
     // does not hang: it reports plainly and points at the backup.
-    // A full `pantheon doctor` is deliberately not run here — it needs
+    // A full `pantheon doctor` is deliberately not run here: it needs
     // a data dir and config the helper does not own, and its probes
     // can stall; the bounded --version check is the activation check
     // this binary can honestly perform.
@@ -379,8 +376,8 @@ fn cmd_rollback(args: &[String]) {
     // Roll the helper back too: the update backs it up to
     // `pantheon-helper.prev` before swapping. A rollback that restores
     // only the main binary leaves a new helper driving an old main.
-    // No helper backup (updates from before this fix, or a helper
-    // that was never installed) is a note, not a failure.
+    // No helper backup (a helper that was never installed) is a note, not a
+    // failure.
     let helper_exe = current_exe.with_file_name("pantheon-helper");
     let helper_backup = helper_exe.with_extension("prev");
     let mut helper_failed = false;
@@ -398,7 +395,7 @@ fn cmd_rollback(args: &[String]) {
 
     // Restart any systemd units that were stopped. The stored list is
     // parsed tolerantly: blank lines and duplicates are dropped, and
-    // a stale unit name only fails its own restart — it never fails
+    // a stale unit name only fails its own restart, never
     // the rollback itself. The state file is removed only when every
     // restart succeeded: deleting it after a failed restart would
     // lose the only record of which units are still down.
@@ -483,13 +480,12 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
 /// asset is ambiguous and yields None (fail closed) rather than the
 /// first token, which might belong to another file.
 ///
-/// NOTE: a checksum only proves the bytes match the publisher's
-/// published digest when the digest itself is authentic. The
-/// `.sha256` file is fetched from the same origin as the binary, so
-/// a compromised release (or release process) can serve a matching
-/// pair. This is a corruption check, never authentication: real
-/// authentication is the minisign signature checked by
-/// [`verify_signature_for`], and no archive installs without it.
+/// A checksum only proves the bytes match the published digest when the digest
+/// itself is authentic. The `.sha256` file comes from the same origin as the
+/// binary, so a compromised release (or release process) can serve a matching
+/// pair. This is a corruption check, never authentication: real authentication
+/// is the minisign signature checked by [`verify_signature_for`], and no archive
+/// installs without it.
 fn parse_sha256_digest(text: &str, asset: &str) -> Option<String> {
     let tokens = |line: &str| -> Vec<String> {
         line.split_whitespace()
@@ -566,7 +562,7 @@ fn fetch_signature_text(url: &str) -> Result<String, String> {
 /// Run a short-output command with a deadline. Returns the output on
 /// completion (callers check `status.success()`); on timeout the child
 /// is killed and an error naming the timeout is returned. Only for
-/// commands whose output is small (`--version`, unit restarts) — a
+/// commands whose output is small (`--version`, unit restarts): a
 /// chatty child could fill its pipes before the deadline.
 fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, String> {
     use std::io::Read as _;
@@ -831,13 +827,12 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Install a verified candidate over the current binary, atomically
-/// as far as the filesystem allows: preserve the old binary as
-/// `pantheon.prev` first (a backup failure aborts, before any swap),
-/// stage the candidate as `<binary>.new`, then rename it over the
-/// current binary. Returns the backup path. Nothing before this
-/// function in `cmd_update` touches the current binary, which is why
-/// a verification or smoke-test failure leaves it untouched.
+/// Install a verified candidate over the current binary, atomically as far as the
+/// filesystem allows: preserve the current binary as `pantheon.prev` first (a backup
+/// failure aborts, before any swap), stage the candidate as `<binary>.new`, then rename
+/// it over the current binary. Returns the backup path. Nothing before this function in
+/// `cmd_update` touches the current binary, which is why a verification or smoke-test
+/// failure leaves it untouched.
 fn swap_binary(current_exe: &Path, candidate: &Path) -> Result<PathBuf, String> {
     let backup = current_exe.with_extension("prev");
     std::fs::copy(current_exe, &backup)
@@ -868,7 +863,7 @@ fn swap_binary(current_exe: &Path, candidate: &Path) -> Result<PathBuf, String> 
 
 /// Parse a stored unit list (update-state file) tolerantly: blank
 /// lines are dropped, duplicates collapsed, order kept. A stale or
-/// hand-edited list never fails the caller — unknown units simply
+/// hand-edited list never fails the caller: unknown units simply
 /// fail to restart and are reported, never treated as a veto.
 fn parse_state_units(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -911,20 +906,17 @@ fn hash_via_system(bytes: &[u8]) -> Result<String, String> {
 
 /// Extract exactly one binary out of a release tarball.
 ///
-/// The old code ran `tar -xf` over the whole archive and then walked
-/// the tree for a SUBSTRING match (`pantheon-helper` contains
-/// `pantheon`, so a search for `pantheon` could install the helper
-/// as the main binary). It also had no traversal guard: a hostile
-/// tarball could carry `../` members, absolute paths, or a symlink
-/// that a later member writes through, escaping the temp dir.
+/// A substring match on the tree is not enough (`pantheon-helper` contains `pantheon`,
+/// so a search for `pantheon` could install the helper as the main binary), and a
+/// hostile tarball can carry `../` members, absolute paths, or a symlink that a later
+/// member writes through, escaping the temp dir.
 ///
-/// Now: list first (`tar -tf`) and reject absolute paths and any
-/// `..` component before anything is extracted; take the single
-/// member whose BASENAME is exactly the wanted binary (fail on zero
-/// or on ambiguity); extract only that member; and require the
-/// result to be a regular file (never a symlink) under the dest dir.
-/// A release tarball has exactly one binary of each name, so the
-/// strictness costs nothing on legitimate archives.
+/// So: list first (`tar -tf`) and reject absolute paths and any `..` component before
+/// anything is extracted; take the single member whose BASENAME is exactly the wanted
+/// binary (fail on zero or on ambiguity); extract only that member; and require the
+/// result to be a regular file (never a symlink) under the dest dir. A release tarball
+/// has exactly one binary of each name, so the strictness costs nothing on legitimate
+/// archives.
 fn extract_tar(
     archive: &[u8],
     asset: &str,
@@ -1657,9 +1649,8 @@ mod tests {
 
     #[test]
     fn extract_picks_the_exact_binary_not_a_substring_match() {
-        // The old walk matched by substring, so a search for
-        // `pantheon` could install `pantheon-helper` as the main
-        // binary. The exact-basename match must pick `pantheon`.
+        // A substring walk matches `pantheon-helper` for a search for `pantheon`,
+        // so the exact-basename match must pick `pantheon`.
         let dir = tmp_dir("extract-exact");
         let main = binary_member("pantheon");
         let helper = binary_member("pantheon-helper");

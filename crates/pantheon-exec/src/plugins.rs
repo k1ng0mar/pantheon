@@ -256,12 +256,10 @@ pub fn discover_plugins(data_dir: &Path, project_root: &Path) -> Vec<DiscoveredP
     scan_dir(&project_plugins, PluginLocation::Project, &mut out);
     // Sort for deterministic ordering.
     out.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
-    // Same-name collisions must fail loudly, not shadow: the runtime
-    // spawns by name and the TUI lists by name, so a silently dropped
-    // second plugin used to diverge the two views (runtime spawned the
-    // first and logged a registration conflict for the second; the TUI
-    // hid the second entirely). Keep the first by (name, root) order
-    // and report every dropped duplicate to stderr.
+    // Same-name collisions fail loudly rather than shadow: the runtime spawns by name
+    // and the TUI lists by name, so a silently dropped second plugin diverges the two
+    // views. Keep the first by (name, root) order and report every dropped duplicate
+    // to stderr.
     let mut deduped: Vec<DiscoveredPlugin> = Vec::with_capacity(out.len());
     for p in out {
         if let Some(first) = deduped.iter().find(|q| q.manifest.name == p.manifest.name) {
@@ -323,9 +321,9 @@ pub fn load_plugin(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin>
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // npm-style package: package.json with a `pantheon` block.
-            // This is deliberately a layout adapter, not a JS runtime:
-            // the package still speaks the same JSON subprocess protocol,
-            // and the wrapper makes `node <entry>` executable on PATH.
+            // A layout adapter: the package still speaks the same JSON subprocess
+            // protocol, and the wrapper makes `node <entry>` executable on PATH. No JS
+            // runtime is involved.
             load_package_json(path, loc)
         }
         Err(e) => {
@@ -541,29 +539,23 @@ pub fn set_enabled(plugin: &DiscoveredPlugin, enabled: bool) -> Result<(), Panth
 /// confirms the plugin directory is self-contained before enabling.
 ///
 /// The manifest `runner` must be a relative path with no `..` components
-/// (absolute paths and escapes are rejected), and after symlink
-/// resolution it must still sit inside the plugin dir.
+/// (absolute paths and escapes are rejected), and after symlink resolution it must
+/// still sit inside the plugin dir.
 ///
-/// Returns the CANONICALIZED path to the executable that the plugin
-/// supervisor should spawn - never the raw manifest-joined path. Spawning
-/// the raw path would reopen a symlink race: the containment check above
-/// ran against the canonical target, so the raw path must not be used for
-/// exec. Callers that spawn via [`crate::sandbox_group::supervisor::PluginSupervisor`]
-/// should prefer `spawn_verified`, which re-hashes immediately before
-/// spawn and fails closed on mismatch. Does NOT execute anything - that
-/// happens in the supervisor.
+/// Returns the canonicalized path to the executable, not the raw manifest-joined
+/// path: the containment check above ran against the canonical target, so spawning
+/// the raw path would reopen a symlink race. Callers that spawn via
+/// [`crate::sandbox_group::supervisor::PluginSupervisor`] should prefer
+/// `spawn_verified`, which re-hashes immediately before spawn and fails closed on
+/// mismatch. This function executes nothing.
 ///
-/// Approval gate: a third-party plugin that the operator has not explicitly
-/// approved is refused here, even if its manifest says `enabled: true`.
-/// Bundled (first-party) plugins skip the check. This is the enforcement
-/// point for the session spawn path - hand-editing a manifest cannot bypass
-/// the consent requirement.
+/// Approval gate: a third-party plugin the operator has not approved is refused
+/// here, even if its manifest says `enabled: true`. Bundled (first-party) plugins
+/// skip the check. Hand-editing a manifest cannot bypass the consent requirement.
 ///
-/// NOTE on check-then-use: the approval check here hashes the plugin dir
-/// at verification time. The directory can change between this check and
-/// the supervisor's spawn, so `verify_plugin` alone does not bind the
-/// executed bytes - `spawn_verified` closes that gap with a re-hash at
-/// spawn time.
+/// The approval check hashes the plugin dir at verification time, and the directory
+/// can change between here and spawn, so `verify_plugin` alone does not bind the
+/// executed bytes. `spawn_verified` closes that with a re-hash at spawn time.
 pub fn verify_plugin(plugin: &DiscoveredPlugin) -> Result<PathBuf, PantheonError> {
     if !crate::plugin_approval::is_approved(plugin) {
         return Err(merr(
@@ -1105,9 +1097,9 @@ pub fn seed_bundled_plugins(data_dir: &Path) -> Result<Vec<String>, PantheonErro
 /// and contents hash to that entry's embedded digest. Any extra, missing,
 /// unreadable, non-regular, or altered file fails the check.
 ///
-/// This is the canonical-bundled test loaders use instead of the old
-/// path-only check: a hand-dropped `extensions/bundled/evil/` (or a
-/// tampered shipped dir) is not bundled trust, whatever its path says.
+/// This is the canonical-bundled test loaders use instead of a path-only check:
+/// a hand-dropped `extensions/bundled/evil/` (or a tampered shipped dir) is not
+/// bundled trust, whatever its path says.
 pub fn verify_bundled_dir(dir: &Path) -> bool {
     let dir_name = match dir.file_name().and_then(|n| n.to_str()) {
         Some(n) => n,

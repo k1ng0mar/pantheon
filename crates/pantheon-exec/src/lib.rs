@@ -1,13 +1,12 @@
-//! Execution engine: process/fs/git surface + deterministic output
-//! compaction (noisegate lesson as a core primitive, not a plugin).
+//! Execution engine: process/fs/git + deterministic output compaction.
 //!
-//! Rule: noisy tool output is compacted deterministically BEFORE it reaches
-//! model context. No model summarization, no vibe-truncation. Keep exact
-//! head/tail, and note what was dropped in the marker line.
+//! Rule: noisy tool output gets compacted deterministically BEFORE it hits
+//! model context. no model summarization, no vibe-truncation - exact head/tail
+//! and a marker saying what got dropped (noisegate lesson, as a core primitive).
 //!
 //! The callable-tool layer (registry, builtins, memory/vault/session-search
-//! tools and their register helpers) lives in `pantheon-tools` - capability ≠
-//! tool, and `pantheon-tools` depends *on* this crate (Tools → Exec).
+//! tools and register helpers) is in `pantheon-tools` - capability != tool,
+//! and that crate depends on this one (Tools -> Exec).
 
 pub mod plugin_approval;
 pub mod plugins;
@@ -16,13 +15,12 @@ pub mod sandbox_group;
 pub mod skills_group;
 pub mod tools_group;
 
-// Re-exported at the crate root: these were `pantheon_sandbox::...` paths
-// before the sandbox merged into exec.
+// re-exported at crate root: these were `pantheon_sandbox::...` paths before
+// the sandbox merged into exec.
 pub use sandbox::{Enforcement, ExecutionBoundary, SandboxLevel, SandboxProfile};
 
-// Crate-root shims for modules moved into groups by the exec merge.
-// External paths (`pantheon_exec::confine::...` etc.) keep working; same
-// pattern as the providers merge.
+// crate-root shims for modules moved into groups by the exec merge. external
+// paths (`pantheon_exec::confine::...` etc.) keep working; same as providers.
 
 pub mod confine {
     pub use crate::sandbox_group::confine::*;
@@ -80,14 +78,14 @@ pub mod context {
 
 use serde::{Deserialize, Serialize};
 
-/// Compaction policy for one tool's output.
+/// compaction policy for one tool's output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionPolicy {
-    /// Max lines kept total (head + tail).
+    /// max lines kept total (head + tail)
     pub max_lines: usize,
-    /// Lines kept from the head (errors often at tail; keep both).
+    /// lines kept from the head (errors usually live at the tail, keep both)
     pub head_lines: usize,
-    /// Max bytes kept regardless of lines.
+    /// max bytes kept regardless of lines
     pub max_bytes: usize,
 }
 
@@ -108,7 +106,7 @@ pub struct Compacted {
     pub truncated: bool,
 }
 
-/// Deterministic compaction: keep head + tail, drop middle with a marker.
+/// deterministic compaction: keep head + tail, drop the middle w/ a marker
 pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
     let raw_bytes = raw.as_bytes();
     let lines: Vec<&str> = raw.lines().collect();
@@ -140,9 +138,9 @@ pub fn compact_output(raw: &str, policy: &CompactionPolicy) -> Compacted {
     ));
     text.push_str(&tail.join("\n"));
     if text.len() > policy.max_bytes {
-        // Cut on a char boundary: `String::truncate` panics mid-character,
-        // so multi-byte output (CJK, emoji) at the cap crashed the tool
-        // path (audit COR-03).
+        // truncate on a char boundary: `String::truncate` panics mid-char, so
+        // multi-byte output (CJK, emoji) at the cap crashed the tool path
+        // (audit COR-03).
         let mut cut = policy.max_bytes;
         while cut > 0 && !text.is_char_boundary(cut) {
             cut -= 1;

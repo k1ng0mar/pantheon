@@ -208,8 +208,6 @@ pub mod bundled {
     /// values survive the write. (Comments are not preserved - TOML
     /// re-serialization drops them, the same tradeoff the dashboard's config
     /// editor makes.)
-    /// Enable a catalog plugin, persisting to the config file. Rejects
-    /// anything outside the catalog.
     pub fn enable(data_dir: &Path, name: &str) -> Result<(), PantheonError> {
         set_enabled(data_dir, name, true)
     }
@@ -869,8 +867,8 @@ pub mod hooks {
     //! canonical `pantheon_api::events::Event`s onto hooks on the supervisor's
     //! post-durable-write observer fan-out.
     //!
-    //! The rule this file enforces: **no hook may be declared without a fire
-    //! site.** `Hook::is_wired()` is the single source of truth, and
+    //! The rule this file enforces: no hook may be declared without a fire site.
+    //! `Hook::is_wired()` is the single source of truth, and
     //! `compat::map_hook` and `doctor` both consult it, so an unwired hook can
     //! never be reported as `Mapped` (which would promise a plugin that its
     //! handler will run) and a manifest that declares one is flagged loudly.
@@ -879,7 +877,7 @@ pub mod hooks {
     //!
     //! Hook classes matter because they have different contracts:
     //! - [`HookClass::Context`] may inject text; the return value is used.
-    //! - [`HookClass::Gate`] may deny; **fails closed** on plugin error/timeout.
+    //! - [`HookClass::Gate`] may deny; fails closed on plugin error/timeout.
     //! - [`HookClass::Transform`] may replace a payload; fails open.
     //! - [`HookClass::Observer`] is notified; its return value is ignored.
     use serde::{Deserialize, Serialize};
@@ -942,10 +940,9 @@ pub mod hooks {
         SubagentStop,
         /// A model response stream opened. Observer.
         OnStreamStart,
-        /// A streamed text delta arrived. Observer, and **off by default**: the
-        /// runner spawns a process per fire, and this fires per token. Enable
-        /// with `PANTHEON_HOOK_STREAM_DELTA=1` only if a plugin truly needs it.
-        /// Other runtimes make the same call ("off the token path").
+        /// A streamed text delta arrived. Observer, and off by default: the runner
+        /// spawns a process per fire, and this fires per token. Enable with
+        /// `PANTHEON_HOOK_STREAM_DELTA=1` only if a plugin truly needs it.
         OnStreamDelta,
         /// A model response stream closed. Observer.
         OnStreamEnd,
@@ -1105,9 +1102,9 @@ pub mod manager {
         /// Third-party plugins discovered but not approved yet. They are never
         /// fired; see [`approval`].
         pending: Vec<PendingPlugin>,
-        /// Manifest/load failures per plugin dir, surfaced (not just
-        /// eprintln'd) so session start can warn and ledger-log them: a
-        /// typo'd `plugin.yaml` used to look identical to "no plugins".
+        /// Manifest/load failures per plugin dir, surfaced (not just eprintln'd) so
+        /// session start can warn and ledger-log them. Otherwise a typo'd `plugin.yaml`
+        /// looks identical to "no plugins".
         load_errors: Vec<String>,
         /// Duplicate-manifest-name conflicts: two dirs claiming one name.
         /// Approvals are keyed by name alone, so the second dir is never
@@ -1475,10 +1472,9 @@ pub mod manager {
                 ));
                 }
             }
-            // Same-name handling, both ways: a reload of the SAME dir
-            // replaces the old entry in place (loading twice used to push
-            // a second copy, firing its hooks twice), but a DIFFERENT dir
-            // with an already-loaded name is a conflict, not a silent
+            // Same-name handling, both ways: a reload of the SAME dir replaces the entry
+            // in place (pushing a second copy would fire its hooks twice), but a
+            // DIFFERENT dir with an already-loaded name is a conflict, not a silent
             // takeover - the second dir is ignored.
             if let Some(existing) = self.plugins.iter().find(|q| q.manifest.name == name) {
                 if existing.dir.as_path() != dir {
@@ -1563,10 +1559,9 @@ pub mod manager {
                         GateVerdict::NotApproved
                     }
                 }
-                // A hash failure is a GATE failure, not a "not approved":
-                // collapsing it to false used to pend the plugin, inviting
-                // an approval that the broken hash could never satisfy.
-                // Callers quarantine it instead - alone, never fail-open.
+                // A hash failure is a GATE failure, not a "not approved": collapsing it
+                // to false pends the plugin and invites an approval the broken hash can
+                // never satisfy. Callers quarantine it instead - alone, never fail-open.
                 Err(e) => GateVerdict::GateFailed(e.to_string()),
             }
         }
@@ -1648,10 +1643,10 @@ pub mod manager {
                     platform: platform.into(),
                     extra: self.enriched_extra(extra.clone()),
                 };
-                // `fire_hook_full`, not `fire_hook`: the old collapse of every
-                // infrastructure error into `Ok(None)` meant the streak below
-                // could never trigger on this path, and the seen key above
-                // was consumed by crashes. A clean answer (context or
+                // `fire_hook_full`, not `fire_hook`: collapsing every
+                // infrastructure error into `Ok(None)` keeps the streak below from
+                // ever triggering on this path, and the seen key above gets
+                // consumed by crashes. A clean answer (context or
                 // silent) is success and consumes the once-per-session key;
                 // an error envelope or spawn failure bumps the streak and
                 // does NOT consume the key, so one crash does not suppress
@@ -1829,9 +1824,9 @@ pub mod manager {
                 };
                 match fire_hook_full(pl, hook, &hin, &self.cfg) {
                     Ok(out) => {
-                        // An error envelope is a failure, not a clean answer:
-                        // the old code cleared the streak on ANY Ok, so a
-                        // transform that raised on every fire never exhausted.
+                        // An error envelope is a failure, not a clean answer: clearing the
+                        // streak on ANY Ok lets a transform that raises on every fire run
+                        // forever.
                         if let Some(msg) = out.error {
                             self.bump_streak(&pl.manifest.name);
                             eprintln!("transform {}: {msg} (payload unchanged)", pl.manifest.name);
@@ -2411,10 +2406,10 @@ pub mod python_runner {
     impl Default for RunnerConfig {
         fn default() -> Self {
             Self {
-                // Overridable, not hardcoded: a missing/broken `python3` on
-                // PATH used to turn every gate-plugin fire into a fail-closed
-                // denial (total tool outage) with no operator recourse short
-                // of fixing PATH. `PANTHEON_PYTHON` names the interpreter.
+                // Overridable, not hardcoded: a missing/broken `python3` on PATH turns
+                // every gate-plugin fire into a fail-closed denial (total tool outage)
+                // with no recourse short of fixing PATH. `PANTHEON_PYTHON` names the
+                // interpreter.
                 python: std::env::var("PANTHEON_PYTHON")
                     .ok()
                     .filter(|s| !s.trim().is_empty())
@@ -2775,14 +2770,12 @@ print(json.dumps(result))
     /// chatty plugin cannot grow the parent without limit.
     const PIPE_CAP_BYTES: usize = 1024 * 1024;
 
-    /// Grace after the child is gone (exited or killed) for the pipe
-    /// drainers to observe EOF before we stop waiting for them. A
-    /// grandchild that inherited the pipe can hold it open indefinitely
-    /// CPython file descriptors are inheritable by default, so a plugin
-    /// that double-forks leaves the write end open after the direct child
-    /// is dead. Waiting for the drainers without a bound hangs the caller;
-    /// the old code did exactly that (its "the pipes hit EOF once the child
-    /// is dead, so joining cannot hang" comment was wrong).
+    /// Grace after the child is gone (exited or killed) for the pipe drainers to observe
+    /// EOF before we stop waiting for them. A grandchild that inherited the pipe can hold
+    /// it open indefinitely: CPython file descriptors are inheritable by default, so a
+    /// plugin that double-forks leaves the write end open after the direct child is dead.
+    /// Waiting for the drainers without a bound hangs the caller, so EOF does not follow
+    /// from the child being dead.
     const POST_EXIT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
     /// Tail wait after a group-kill: the pipe holder usually dies fast, and
@@ -2995,9 +2988,9 @@ print(json.dumps(result))
         }
 
         /// Item 1 regression, helper level: 200KB on stdout *and* stderr
-        /// must be captured, not wedged. The old try_wait-only loop blocked
-        /// here (child stuck on write, parent on wait) and the watchdog
-        /// misreported the wedge as a timeout.
+        /// must be captured, not wedged. A try_wait-only loop blocks here (child
+        /// stuck on write, parent on wait), and the watchdog misreports the wedge
+        /// as a timeout.
         #[test]
         fn drained_spawn_captures_pipe_flood_without_wedging() {
             let mut cmd = Command::new("python3");

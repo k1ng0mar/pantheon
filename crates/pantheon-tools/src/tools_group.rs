@@ -1,12 +1,10 @@
-//! Tool layer merged group. All *_tools files in one place.
-
 pub mod builtins {
-    //! Built-in tools: shell, read_file, write_file, list_dir.
-    //! Each maps to its capability and compacts output before it hits context.
+    //! built-in tools: shell, read_file, write_file, list_dir. each maps to
+    //! its capability and compacts output before it hits context.
     //!
-    //! `write_file` is NOT a plain atomic write - it routes through the
-    //! safe-writer so every write is checkpointed, journaled, and recoverable.
-    //! That makes the safe path the default, not an opt-in side door.
+    //! `write_file` is NOT a plain atomic write - it routes through the safe-
+    //! writer so every write is checkpointed, journaled, recoverable. the safe
+    //! path is the default, not an opt-in side door.
 
     use crate::tools::{parse_args, ToolRegistry};
     use pantheon_api::capability::Capability;
@@ -20,84 +18,72 @@ pub mod builtins {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    /// Lifecycle event for a `shell` tool child process. Fired on the
-    /// thread running the tool call: `Spawned` comes from the runner's
-    /// spawn hook (synchronously, right after spawn); `Exited` is fired by
-    /// `run_shell` after the wait loop ends (exit, timeout kill, or wait
-    /// error). The pid is also the child's process-group id - the runner
-    /// does `setsid()` in pre-exec - so a cancel path can register the
-    /// group for `killpg` on `Spawned` and unregister it on `Exited`, when
-    /// the pid is stale.
+    /// lifecycle for a `shell` tool child. fired on the tool-call thread:
+    /// `Spawned` from the spawn hook (right after spawn); `Exited` from
+    /// `run_shell` after the wait loop ends (exit, timeout kill, wait error).
+    /// pid doubles as the child's process-group id - the runner does
+    /// `setsid()` pre-exec - so a cancel path registers the group for `killpg`
+    /// on `Spawned` and unregisters on `Exited` (when the pid is stale).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ShellChildEvent {
         Spawned,
         Exited,
     }
 
-    /// `ShellChildEvent -> pid` observer for `shell` children, e.g. the
-    /// runtime registering the pgid so cancel can kill an in-flight shell.
-    /// Must be cheap and non-blocking: it runs on the tool-call thread.
+    /// `ShellChildEvent -> pid` observer for `shell` children, e.g. the runtime
+    /// registering the pgid so cancel can kill an in-flight shell. must be
+    /// cheap + non-blocking: it runs on the tool-call thread.
     pub type ShellChildHook = Arc<dyn Fn(ShellChildEvent, u32) + Send + Sync>;
 
-    /// Per-call extra env for the shell child: command text -> named
-    /// variables the child may receive. The single sanctioned gate for
-    /// secrets into a sandboxed shell child (the Cloudflare token path).
+    /// per-call extra env for the shell child: command text -> named vars the
+    /// child may receive. the single sanctioned gate for secrets into a
+    /// sandboxed shell child (the Cloudflare token path).
     pub type ShellEnvHook = Arc<dyn Fn(&str) -> Vec<(String, String)> + Send + Sync>;
 
-    /// Options for `register_builtins`. Empty defaults keep the old call site
-    /// working; supplying `safewrite_state_dir` routes `write_file` through the
-    /// SafeWriter instead of leaving the safe path as an opt-in side door.
+    /// options for `register_builtins`. empty defaults keep old call sites
+    /// working; `safewrite_state_dir` routes `write_file` through the SafeWriter
+    /// so the safe path isn't an opt-in side door.
     #[derive(Clone)]
     pub struct BuiltinOptions {
         pub safewrite_state_dir: Option<std::path::PathBuf>,
-        /// Session-scoped workspace root: the boundary every file path is
-        /// confined to and the directory relative paths resolve against.
+        /// session root: boundary for every file path, plus what relative paths
+        /// resolve against. the handle is read at *call* time, so moving the
+        /// session (worktree, sibling project) re-roots every tool on the next
+        /// call - no re-registration, no new process. `None` pins the process
+        /// cwd captured at registration (pre-session behavior).
         ///
-        /// The handle is read at *call* time, so a session can move to
-        /// another directory (a git worktree, a sibling project) and every
-        /// tool follows it on the next call - no re-registration, no new
-        /// process. `None` captures the process working directory at
-        /// registration time, which is the pre-session behavior.
-        ///
-        /// Every `read_file`/`write_file`/`list_dir` path is confined with
-        /// `pantheon_exec::confine` (deny globs, then containment) before
-        /// any read or write - a granted `FilesystemRead`/`FilesystemWrite`
-        /// capability never widens it.
+        /// all `read_file`/`write_file`/`list_dir` paths go through
+        /// `pantheon_exec::confine` (deny globs, then containment) before any
+        /// IO - a granted `FilesystemRead`/`FilesystemWrite` never widens it.
         pub workspace: Option<Arc<WorkspaceRoot>>,
-        /// Tool-group toggles from `[tools]` in config.toml: a disabled group
-        /// is never registered, so it cannot appear in the model's tool list.
-        /// `shell` belongs to Terminal; `read_file`/`write_file`/`list_dir`
-        /// to Files; `ask_user` to Ask User.
+        /// `[tools]` config.toml toggles. disabled = never registered, so it
+        /// can't show up in the model's tool list. `shell` -> Terminal,
+        /// `read_file`/`write_file`/`list_dir` -> Files, `ask_user` -> Ask User.
         pub enable_terminal: bool,
         pub enable_files: bool,
         pub enable_ask_user: bool,
-        /// `enable_plugin` belongs to the Plugins group. Off = the agent
-        /// cannot propose plugin enablement at all.
+        /// Plugins group toggle. off = agent can't even *propose* plugin
+        /// enablement.
         pub enable_plugins: bool,
-        /// Data dir holding `config.toml`. Required for `enable_plugin`:
-        /// the config file is the single enablement state, so the tool must
-        /// know where it lives. `None` = the tool reports a configuration
-        /// error instead of guessing.
+        /// dir holding `config.toml`. needed for `enable_plugin`: the config
+        /// file IS the enablement state, so the tool has to know where it lives.
+        /// `None` = report a config error instead of guessing.
         pub data_dir: Option<std::path::PathBuf>,
-        /// Observer for `shell` child-process lifecycle. `None` (default) =
-        /// no observation. Set by hosts that need to kill an in-flight shell
-        /// on cancel: the runtime registers the child's pgid on `Spawned`
-        /// and unregisters it on `Exited`.
+        /// `shell` child lifecycle observer. `None` = no observation. set by
+        /// hosts that kill an in-flight shell on cancel: register the pgid on
+        /// `Spawned`, unregister on `Exited`.
         pub shell_child_hook: Option<ShellChildHook>,
-        /// Per-call extra env for the shell child, resolved by the host at
-        /// call time. Called with the command text; returns the named
-        /// variables the child may receive (empty = none). This is the
-        /// single sanctioned gate for secrets into a sandboxed shell child:
-        /// the host resolves through the secrets broker, the hook decides,
-        /// the runner injects past the scrub. `None` (default) = no extras
-        /// ever.
+        /// per-call extra env for the shell child, resolved by the host at call
+        /// time. called with the command text; returns named vars the child may
+        /// get (empty = none). the single sanctioned gate for secrets into a
+        /// sandboxed shell child: host resolves through the secrets broker, the
+        /// hook decides, the runner injects past the scrub. `None` = no extras.
         pub shell_env_hook: Option<ShellEnvHook>,
-        /// Opt-in post-write formatter. `None` = writes are byte-for-byte
-        /// untouched. A formatter failure is reported but never rolls back a
-        /// successful write.
+        /// opt-in post-write formatter. `None` = writes byte-for-byte untouched.
+        /// a formatter failure is reported but never rolls back a good write.
         pub formatter: Option<Arc<crate::tools_group::format::Formatter>>,
-        /// Session-scoped persistent terminals. Registered only when the
-        /// Terminal group is enabled and the host supplied a manager.
+        /// session-scoped persistent terminals. only registered when Terminal
+        /// group is on and the host gave us a manager.
         pub pty_manager: Option<Arc<crate::tools_group::pty_tools::PtyManager>>,
     }
 
@@ -120,8 +106,8 @@ pub mod builtins {
     }
 
     impl Default for BuiltinOptions {
-        /// Absent `[tools]` section = every group on, matching the
-        /// pre-section behavior exactly.
+        /// absent `[tools]` section = every group on, matching pre-section
+        /// behavior.
         fn default() -> Self {
             Self {
                 safewrite_state_dir: None,
@@ -139,13 +125,12 @@ pub mod builtins {
         }
     }
 
-    /// True when a config entry is exactly what the bundled catalog recipe
-    /// materializes (transport, command, args, env, url). `enabled` and
-    /// `timeout_secs` are operator-controlled and excluded; `pinned_version`
-    /// is informational and not part of the parsed entry. Used by
-    /// `enable_mcp` to re-validate a pre-existing table before flipping the
-    /// flag, so a name-colliding table with an arbitrary command is flagged
-    /// instead of silently kept.
+    /// true when a config entry is exactly what the bundled catalog recipe
+    /// materializes (transport, command, args, env, url). `enabled` /
+    /// `timeout_secs` are operator-controlled so excluded; `pinned_version` is
+    /// informational. used by `enable_mcp` to re-validate a pre-existing table
+    /// before flipping the flag, so a name-colliding table with an arbitrary
+    /// command gets flagged instead of silently kept.
     fn mcp_entry_matches_recipe(
         entry: &pantheon_api::config::McpServerEntry,
         recipe: &pantheon_api::mcp_catalog::BundledMcpServer,
@@ -158,32 +143,29 @@ pub mod builtins {
             && entry.url == canonical.url
     }
 
-    /// Register the default toolset on a registry.
+    /// register the default toolset on a registry.
     pub fn register_builtins(reg: &mut ToolRegistry) {
         register_builtins_with(reg, BuiltinOptions::default());
     }
 
-    /// Register with options. When `safewrite_state_dir` is set, `write_file`
-    /// routes through the SafeWriter (checkpoint + journal + atomic publish +
-    /// stale-hash rejection). Without it, `write_file` falls back to a plain
-    /// atomic write - kept for callers that explicitly want the unsafe path.
+    /// register with options. with `safewrite_state_dir`, `write_file` goes
+    /// through SafeWriter (checkpoint + journal + atomic publish + stale-hash
+    /// rejection). without it, plain atomic write - kept for callers that
+    /// explicitly want the unsafe path.
     pub fn register_builtins_with(reg: &mut ToolRegistry, opts: BuiltinOptions) {
         let sd = opts.safewrite_state_dir.clone();
         let pty_manager = opts.pty_manager.clone();
-        // Session-scoped workspace root. The handle is read at *call* time, so
-        // a live worktree move re-roots every tool on its next call without a
-        // re-registration or a new process. `None` pins the process working
-        // directory captured here, which is the pre-session behavior. Confine
-        // errors propagate with their CONFINE_* codes (deny globs are
-        // evaluated before containment, and independently of the capability
-        // gate).
+        // session root, read at *call* time so a live worktree move re-roots
+        // every tool on its next call, no re-registration. `None` pins the
+        // process cwd captured here (pre-session behavior). confine errors
+        // propagate with their CONFINE_* codes (deny globs evaluated before
+        // containment, and independently of the capability gate).
         let workspace: Arc<WorkspaceRoot> = opts
             .workspace
             .clone()
             .unwrap_or_else(|| Arc::new(WorkspaceRoot::from_cwd()));
         if opts.enable_terminal {
-            // 'static closure: the child hook is an Arc, so the clone here
-            // is cheap and the registry owns its copy.
+            // 'static closure, so clone the Arc'd hook - registry owns a copy.
             let shell_child_hook = opts.shell_child_hook.clone();
             let shell_env_hook = opts.shell_env_hook.clone();
             let shell_workspace = workspace.clone();
@@ -205,11 +187,11 @@ pub mod builtins {
         },
         Capability::ShellExecute,
         move |args| {
-            // Dangerous-pattern pre-gate: deterministic, in-process, runs
-            // before any spawn. Not the security boundary (policy is), but
-            // it fails fast on `rm -rf /` class commands and keeps them
-            // out of the audit trail as executed calls. run_shell parses
-            // the args itself; parse here only for the gate.
+            // dangerous-pattern pre-gate: deterministic, in-process, runs
+            // before any spawn. not the security boundary (policy is), but it
+            // fails fast on `rm -rf /` class commands and keeps them out of the
+            // audit trail as executed calls. run_shell parses args itself; we
+            // only parse here for the gate.
             let v = parse_args(args)?;
             let command = crate::tools::arg_str(&v, "command")?;
             pantheon_exec::danger::gate(&command)?;
@@ -221,15 +203,13 @@ pub mod builtins {
             )
         },
         Some(Box::new(|args: &str| {
-            // `git push` is the one shell operation the policies single
-            // out (coder marks git.push Approval). The static ShellExecute
-            // capability alone let every push through unapproved, so the
-            // command is inspected and the call picks up GitPush.
+            // `git push` is the one shell op the policies single out (coder
+            // marks git.push Approval). static ShellExecute alone let every push
+            // through unapproved, so we inspect the command and pick up GitPush.
             // `cf ...` is the second: Cloudflare CLI calls classify into
-            // read/write/destroy (pantheon-exec::cloudflare), and the
-            // destroy/write classes carry their own tokens so the default
-            // policies park on them. Unknown cf shapes fail closed to
-            // Destroy, the strictest class.
+            // read/write/destroy (pantheon-exec::cloudflare); the destroy/write
+            // classes carry their own tokens so default policies park on them.
+            // unknown cf shapes fail closed to Destroy, the strictest class.
             let Ok(v) = parse_args(args) else {
                 return Vec::new();
             };
@@ -237,10 +217,9 @@ pub mod builtins {
                 return Vec::new();
             };
             let mut caps = Vec::new();
-            // Network is opt-in per call (audit SEC-01, decision D1): it
-            // needs the general NetworkOutbound permission AND the shell
-            // network capability, which the coder policy approval-gates
-            // and a session can grant once.
+            // network is opt-in per call (audit SEC-01, decision D1): it needs
+            // general NetworkOutbound AND the shell network capability, which
+            // coder policy approval-gates so a session can grant it once.
             if shell_network_requested(&v) {
                 caps.push(Capability::NetworkOutbound);
                 caps.push(Capability::Other(SHELL_NETWORK_CAP.into()));
@@ -321,8 +300,8 @@ pub mod builtins {
                     }
                     let total = raw.lines().count();
                     let mut out = String::new();
-                    // Number relative to the file, so a slice is still
-                    // navigable: a model that sees `412:` can ask for 412.
+                    // numbers relative to the file so a slice stays navigable:
+                    // a model that sees `412:` can ask for 412.
                     for (i, line) in raw
                         .lines()
                         .enumerate()
@@ -370,7 +349,7 @@ pub mod builtins {
         move |args| {
             let v = parse_args(args)?;
             let path = crate::tools::arg_str(&v, "path")?;
-            // Confine before either write path (safe or unsafe fallback).
+            // confine before either write path (safe or unsafe fallback).
             let cpath = confine(Path::new(&path), &r1.path())?;
             let content = crate::tools::arg_str(&v, "content")?;
             let expected = v
@@ -378,14 +357,14 @@ pub mod builtins {
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string());
             if let Some(ref dir) = sd {
-                // Safe path: checkpoint + atomic publish + journal.
+                // safe path: checkpoint + atomic publish + journal.
                 let w = SafeWriter::new(dir.clone())
                     .map_err(|e| {
                         crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("open safewrite state {dir:?}: {e}"), "check tool arguments")
                     })?
                     .with_workspace_root(r1.path());
-                // Capture the current fingerprint so stale edits get
-                // rejected by apply_edits when no explicit hash is given.
+                // grab the fingerprint now so apply_edits rejects stale edits
+                // when no explicit hash was passed.
                 let expected = expected.or_else(|| {
                     pantheon_exec::safewrite::fingerprint_of(&cpath)
                         .ok()
@@ -411,7 +390,7 @@ pub mod builtins {
                 );
                 Ok(append_format(msg, formatter.as_deref(), &cpath))
             } else {
-                // Unsafe fallback: caller opted out of the safe path.
+                // unsafe fallback: caller opted out of the safe path.
                 atomic_write(&cpath, content.as_bytes())
                     .map_err(|e| {
                         crate::tools::tool_err("TOOL_FS", Layer::Execution, false, format!("write {}: {e}", cpath.display()), "check tool arguments")
@@ -459,10 +438,9 @@ pub mod builtins {
                 },
             );
         }
-        // `grep` and `glob`: native search tools over the workspace. Shelling
-        // out to `rg`/`find` loses confinement, structured output, and the
-        // capability gate; these walk through `std::fs` and every path is
-        // confined the same way `read_file` is.
+        // `grep` + `glob`: native search over the workspace. shelling out to
+        // `rg`/`find` loses confinement, structured output, and the cap gate.
+        // these walk with `std::fs` and every path is confined like `read_file`.
         let g0 = workspace.clone();
         if opts.enable_files {
             reg.register(
@@ -537,10 +515,10 @@ pub mod builtins {
                 },
             );
         }
-        // `edit_file`: exact string replacement. Reading and rewriting a whole
-        // file to change one line is slow and loses diff context; this finds
-        // `old_string`, optionally replaces every occurrence, and writes the
-        // result through the same SafeWriter path as `write_file`.
+        // `edit_file`: exact string replacement. rewriting a whole file to
+        // change one line is slow + loses diff context; this finds `old_string`,
+        // optionally replaces all, and writes through the same SafeWriter path
+        // as `write_file`.
         let e0 = workspace.clone();
         let e_sd = opts.safewrite_state_dir.clone();
         let e_fmt = opts.formatter.clone();
@@ -631,12 +609,12 @@ pub mod builtins {
                 },
             );
         }
-        // `ask_user` never executes: the agent loop intercepts the call
-        // before gating and parks the turn for operator input (the clarify
-        // card) - production `Session::drive` pre-gates it, so it can never
-        // require approval, consume budget, or execute. It is registered so the model sees it
-        // in the tool list and so direct `execute("ask_user", ...)` callers get
-        // a structured refusal instead of TOOL_UNKNOWN.
+        // `ask_user` never executes: the loop intercepts it before gating and
+        // parks the turn for operator input (clarify card). production
+        // `Session::drive` pre-gates it, so it can't need approval, burn budget,
+        // or execute. registered only so the model sees it in the tool list and
+        // direct `execute("ask_user", ...)` gets a structured refusal, not
+        // TOOL_UNKNOWN.
         if opts.enable_ask_user {
             reg.register(
         ToolSchema {
@@ -659,17 +637,15 @@ pub mod builtins {
     );
         }
         // `enable_plugin` lets the agent propose enabling a bundled plugin.
-        // The capability gate runs before this closure: default policies mark
-        // `plugin.enable` Approval, so the run parks, an `ApprovalRequested`
-        // event is audit-logged, and the write below happens only after the
-        // operator grants. Never silent. Only bundled names are accepted -
-        // the embedded registry (tool/hook plugins compiled into the binary)
-        // or the vendored extensions catalog - so there is no agent path to
-        // install or enable arbitrary plugins. The config file is the single
-        // enablement state, so the toggle lands in `[plugins.<name>]` where
-        // the dashboard, the mobile app, and the TUI all read it. Without a
-        // data dir the tool cannot function, so it is not registered at all
-        // rather than advertised broken.
+        // cap gate runs first: default policies mark `plugin.enable` Approval,
+        // so the run parks, an `ApprovalRequested` event is audit-logged, and
+        // the write below only happens after the operator grants. never silent.
+        // bundled names only (embedded registry or vendored catalog) - no agent
+        // path to install or enable arbitrary plugins. the config file is the
+        // single enablement state, so the toggle lands in `[plugins.<name>]`
+        // where the dashboard, mobile app, and TUI all read it. no data dir =
+        // the tool can't work, so it's not registered at all instead of being
+        // advertised broken.
         if opts.enable_plugins && opts.data_dir.is_some() {
             let dd = opts.data_dir.clone();
             reg.register(
@@ -716,16 +692,14 @@ pub mod builtins {
     );
         }
         // `enable_mcp` lets the agent propose enabling a bundled MCP server.
-        // The capability gate runs before this closure: default policies mark
-        // `mcp.enable` Approval, so the run parks, an `ApprovalRequested`
-        // event is audit-logged, and the write below happens only after the
-        // operator grants. Never silent. Only bundled-catalog names are
-        // accepted - there is no agent path to put an arbitrary command on
-        // the spawn line (the supply-chain boundary). The config file is the
-        // single enablement state, so the toggle lands in
-        // `[mcp.servers.<name>]` where the dashboard, the mobile app, and the
-        // TUI all read it. The pinned catalog version is materialized, never
-        // `latest`.
+        // cap gate runs first: default policies mark `mcp.enable` Approval, so
+        // the run parks, an `ApprovalRequested` event is audit-logged, and the
+        // write below only happens after the operator grants. never silent.
+        // bundled-catalog names only - there is no agent path to put an
+        // arbitrary command on the spawn line (the supply-chain boundary). the
+        // config file is the single enablement state, so the toggle lands in
+        // `[mcp.servers.<name>]` where dashboard, mobile app, and TUI read it.
+        // pinned catalog version is materialized, never `latest`.
         if opts.enable_plugins {
             let dd = opts.data_dir.clone();
             reg.register(
@@ -751,12 +725,11 @@ pub mod builtins {
             let server = pantheon_api::mcp_catalog::find(&name).ok_or_else(|| {
                 crate::tools::tool_err("TOOL_UNKNOWN_MCP_SERVER", Layer::Execution, false, format!("'{name}' is not a bundled MCP server; only catalog servers can be enabled"), "check tool arguments")
             })?;
-            // Re-validate any pre-existing table under this bundled name
-            // against the canonical recipe: `set_enabled` preserves
-            // existing keys, so a name-colliding table carrying an
-            // arbitrary command would otherwise survive a legitimate
-            // enable click and run under the bundled name. Flag it
-            // loudly and refuse - never silently keep the poison.
+            // re-validate any pre-existing table under this bundled name against
+            // the canonical recipe: `set_enabled` preserves existing keys, so a
+            // name-colliding table carrying an arbitrary command would otherwise
+            // survive a legit enable click and run under the bundled name. flag
+            // it loudly and refuse - never silently keep the poison.
             if let Some(entry) = pantheon_api::mcp_catalog::load_config(&data_dir)
                 .as_ref()
                 .and_then(|cfg| cfg.mcp.as_ref())
@@ -790,9 +763,9 @@ pub mod builtins {
         }
     }
 
-    /// Files considered by `grep` and `glob`. Symlinks are deliberately
-    /// skipped: a link inside the workspace can point outside its boundary,
-    /// and following one would defeat `confine` on the search root.
+    /// files considered by `grep` and `glob`. symlinks deliberately skipped: a
+    /// link inside the workspace can point outside its boundary, and following
+    /// one would defeat `confine` on the search root.
     fn search_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
         if depth > 32 || out.len() >= 20_000 {
             return;
@@ -959,24 +932,23 @@ pub mod builtins {
         Ok(paths.join("\n"))
     }
 
-    /// Run a shell command, with an optional caller-supplied extra-env list
-    /// (see `run_sandboxed_with_env`). The Cloudflare integration uses the
-    /// env list to hand the broker-resolved API token to `cf` children;
-    /// the default path passes an empty list and children get nothing
-    /// beyond the scrub allowlist.
-    /// Capability token for network access from the shell and terminal
-    /// tools. Separate from `network.outbound` so a policy can allow the
-    /// HTTP tools while still asking before a shell command goes online.
+    /// run a shell command, optionally with a caller-supplied extra-env list
+    /// (see `run_sandboxed_with_env`). Cloudflare hands the broker-resolved API
+    /// token to `cf` children this way; the default path passes an empty list
+    /// and children get nothing beyond the scrub allowlist.
+    /// capability token for network from shell/terminal tools. separate from
+    /// `network.outbound` so a policy can allow the HTTP tools while still
+    /// asking before a shell command goes online.
     pub const SHELL_NETWORK_CAP: &str = "shell.network";
 
-    /// Whether a shell call asked for network access (`"network": true`).
+    /// whether a shell call asked for network (`"network": true`).
     pub fn shell_network_requested(v: &serde_json::Value) -> bool {
         v.get("network").and_then(|n| n.as_bool()).unwrap_or(false)
     }
 
-    /// The sandbox profile for a model-run shell or terminal command: the
-    /// High level, offline unless `network` (already capability-gated),
-    /// with every credential location masked (audit SEC-01).
+    /// sandbox profile for a model-run shell/terminal command: High, offline
+    /// unless `network` (already cap-gated), every credential location masked
+    /// (audit SEC-01).
     pub fn shell_profile(network: bool) -> SandboxProfile {
         let mut profile = SandboxProfile::from(SandboxLevel::High);
         profile.network = network;
@@ -999,23 +971,22 @@ pub mod builtins {
     ) -> Result<String, PantheonError> {
         let v = parse_args(args)?;
         let command = crate::tools::arg_str(&v, "command")?;
-        // Shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
-        // + rlimits. The capability gate already ran before we get here,
-        // including the network capabilities when the call asked for them.
+        // shell runs at HIGH isolation: bwrap with dropped caps + no-new-privs
+        // + rlimits. cap gate already ran before we're here, including network
+        // caps when the call asked for them.
         let mut profile = shell_profile(shell_network_requested(&v));
-        // Resolve relative to the session root, not the process cwd: the root
-        // is read here so a worktree move takes effect on the next call.
+        // resolve against session root, not process cwd. read the root here so
+        // a worktree move takes effect on the next call.
         let cwd = workspace.path().to_string_lossy().to_string();
-        // Docs promise shell writes are confined to the workspace, but a
-        // working bwrap binds the host root read-only and mounts a private
-        // /tmp. Without this bind every file write fails on a real sandbox
-        // host and only passes where direct fallback silently ran unsandboxed.
+        // docs promise shell writes stay confined to the workspace, but a real
+        // bwrap binds the host root read-only and mounts a private /tmp.
+        // without this bind every file write fails on a real sandbox host and
+        // only passes where direct fallback silently ran unsandboxed.
         profile.writable_paths = vec![cwd.clone()];
 
-        // The spawn hook fires synchronously on this thread right after the
-        // child is spawned; the pid doubles as the process-group id (the
-        // runner does setsid() in pre-exec). Capture it so the Exited event
-        // below names the same child.
+        // spawn hook fires synchronously on this thread right after spawn; pid
+        // doubles as the process-group id (runner does setsid() pre-exec).
+        // capture it so the Exited event below names the same child.
         let spawned: std::cell::Cell<Option<u32>> = std::cell::Cell::new(None);
         let spawn_hook = child_hook.map(|hook| {
             let hook = Arc::clone(hook);
@@ -1034,8 +1005,8 @@ pub mod builtins {
             extra_env,
         );
         if let (Some(hook), Some(pid)) = (child_hook, spawned.get()) {
-            // Fires on every terminal path (exit, timeout kill, wait error):
-            // the pid is stale now - unregister it.
+            // fires on every terminal path (exit, timeout kill, wait error):
+            // pid is stale now - unregister it.
             hook(ShellChildEvent::Exited, pid);
         }
         let result = result?;
@@ -1046,14 +1017,13 @@ pub mod builtins {
         } else {
             format!("{}\n(exit {code})", result.output)
         };
-        // The runner reports whether isolation actually happened. By default
-        // it fails closed: on a host without a working wrapper (a common
-        // case - most EC2/container instances block `bwrap`'s uid map) the
-        // call above already returned a SANDBOX_UNAVAILABLE error. A
-        // `sandboxed == false` result is only possible with the direct
-        // fallback explicitly opted in (PANTHEON_SANDBOX_FALLBACK=allow or
-        // allow_direct_fallback); say so in the result rather than silently
-        // presenting degraded isolation as HIGH.
+        // runner reports whether isolation actually happened. fails closed by
+        // default: on a host without a working wrapper (common - most
+        // EC2/container instances block `bwrap`'s uid map) the call above
+        // already returned SANDBOX_UNAVAILABLE. `sandboxed == false` only
+        // happens with the direct fallback explicitly opted in
+        // (PANTHEON_SANDBOX_FALLBACK=allow or allow_direct_fallback); say so
+        // rather than silently presenting degraded isolation as HIGH.
         let notice = if result.sandboxed {
             String::new()
         } else {
@@ -1063,9 +1033,9 @@ pub mod builtins {
         Ok(compacted.text)
     }
 
-    /// Run the configured formatter after a successful write. Formatting is
-    /// deliberately best-effort: a missing binary, timeout, or syntax error is
-    /// surfaced in the tool result, but the write itself is never rolled back.
+    /// run the configured formatter after a successful write. best-effort on
+    /// purpose: missing binary, timeout, or syntax error shows up in the tool
+    /// result, but the write itself is never rolled back.
     fn append_format(
         mut msg: String,
         formatter: Option<&crate::tools_group::format::Formatter>,
@@ -1148,9 +1118,9 @@ pub mod builtins {
             std::fs::write(root.join("README.md"), "# hello\n").expect("write");
         }
 
-        /// `read_file` with no range keeps the old whole-file behavior; with
-        /// a range it returns only those lines, numbered against the file so
-        /// a follow-up read can address them.
+        /// `read_file` with no range returns the whole file; with a range it returns
+        /// only those lines, numbered against the file so a follow-up read can address
+        /// them.
         #[test]
         fn read_file_slices_by_line_range() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1178,7 +1148,6 @@ pub mod builtins {
             text.contains(&format!("{remaining} more lines"))
         }
 
-        /// A range past the end reports that instead of returning nothing.
         #[test]
         fn read_file_range_past_eof_is_explained() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1193,8 +1162,6 @@ pub mod builtins {
             );
         }
 
-        /// `compact: false` returns the file byte-for-byte, which is what a
-        /// model needs when the whole-file content is the answer.
         #[test]
         fn read_file_can_opt_out_of_compaction() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1206,8 +1173,6 @@ pub mod builtins {
             assert_eq!(out, "a\nb\nc\n");
         }
 
-        /// `grep` finds text in nested files, reports `path:line:text`, and
-        /// never descends into build/output directories.
         #[test]
         fn grep_finds_matches_and_skips_build_dirs() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1226,8 +1191,6 @@ pub mod builtins {
             assert!(!out.contains("hello hello hello"), "target skipped: {out}");
         }
 
-        /// A glob narrows the walk by file name. A bare basename pattern
-        /// applies at any depth, as `rg -g '*.rs'` does.
         #[test]
         fn grep_honors_basename_glob_at_any_depth() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1242,7 +1205,6 @@ pub mod builtins {
             assert!(!out.contains("README.md:"), "markdown excluded: {out}");
         }
 
-        /// Case-insensitive by default, case-sensitive on request.
         #[test]
         fn grep_case_sensitivity_is_opt_in() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1264,8 +1226,6 @@ pub mod builtins {
             assert!(strict.is_empty(), "no uppercase HELLO on disk: {strict}");
         }
 
-        /// Truncation is reported, never silent: the model has to know it is
-        /// looking at a capped result set before it concludes anything.
         #[test]
         fn grep_reports_truncation() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1278,7 +1238,6 @@ pub mod builtins {
             assert_eq!(out.lines().count(), 2, "one hit plus one notice: {out}");
         }
 
-        /// An invalid regex is a user error with a remediation, not a panic.
         #[test]
         fn grep_rejects_invalid_regex() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1289,7 +1248,6 @@ pub mod builtins {
             assert_eq!(err.code, "TOOL_GREP", "got: {}", err.code);
         }
 
-        /// `glob` matches recursive patterns and applies the same skip list.
         #[test]
         fn glob_matches_recursively() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1301,7 +1259,6 @@ pub mod builtins {
             assert_eq!(paths, vec!["src/deep/mod.rs", "src/main.rs"], "got: {out}");
         }
 
-        /// A rooted pattern anchors at the search root.
         #[test]
         fn glob_single_star_does_not_cross_directories() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1312,7 +1269,6 @@ pub mod builtins {
             assert_eq!(out, "src/main.rs");
         }
 
-        /// `edit_file` replaces one occurrence and refuses an ambiguous one.
         #[test]
         fn edit_file_requires_a_unique_match_unless_replace_all() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1344,7 +1300,6 @@ pub mod builtins {
             );
         }
 
-        /// A miss reports where to look, not just that it failed.
         #[test]
         fn edit_file_reports_missing_old_string() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1360,8 +1315,6 @@ pub mod builtins {
             assert_eq!(err.code, "EDIT_NOT_FOUND", "got: {}", err.code);
         }
 
-        /// Every new tool is confined: a sibling directory outside the root
-        /// is refused before any read happens.
         #[test]
         fn search_and_edit_are_confined_to_the_workspace() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1397,10 +1350,9 @@ pub mod builtins {
             );
         }
 
-        /// A poisoned table under a bundled name must be flagged, never
-        /// silently kept: `set_enabled` preserves pre-existing keys, so
-        /// without the re-validation the attacker's command would survive a
-        /// legitimate enable click and run under the bundled exemption.
+        // `set_enabled` preserves pre-existing keys, so without this
+        // re-validation an attacker's command survives a legit enable click and
+        // runs under the bundled exemption.
         #[test]
         fn enable_mcp_flags_poisoned_table() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1424,7 +1376,7 @@ pub mod builtins {
                 "refusal must name the collision; got: {msg}"
             );
 
-            // Never silently kept: the enable flag must NOT have flipped.
+            // never silently kept: the enable flag must NOT have flipped.
             let cfg_text =
                 std::fs::read_to_string(data_dir.join("config.toml")).expect("read config");
             assert!(
@@ -1437,8 +1389,6 @@ pub mod builtins {
             );
         }
 
-        /// The normal path is untouched: no pre-existing table materializes
-        /// the canonical recipe and enables it.
         #[test]
         fn enable_mcp_still_enables_clean_state() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1459,7 +1409,6 @@ pub mod builtins {
             assert_eq!(entry.command.as_deref(), Some("npx"));
         }
 
-        /// Idempotent: enabling an already-canonical table again is fine.
         #[test]
         fn enable_mcp_accepts_canonical_table() {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1477,8 +1426,7 @@ pub mod builtins {
 }
 pub mod code_mode {
     //! Code Mode: a sandboxed JavaScript scratchpad with a narrow host bridge.
-    //!
-    //! The model writes JavaScript once and calls Pantheon tools from it:
+    //! model writes JS once and calls Pantheon tools from it:
     //!
     //! ```js
     //! const hits = tools.call("grep", { pattern: "TODO", path: "src" });
@@ -1487,17 +1435,16 @@ pub mod code_mode {
     //! files;
     //! ```
     //!
-    //! The JS runtime has no filesystem, network, process, or module APIs of
-    //! its own. Its only escape hatch is `tools.call`, which goes through
-    //! [`ToolRegistry::execute_gated`] with the session's policy. A nested call
-    //! that needs operator approval is denied rather than silently granted:
-    //! Code Mode cannot park the turn for a human, so the safe default is to
-    //! tell the model to use the direct tool or ask first.
+    //! the JS runtime has no filesystem, network, process, or module APIs of
+    //! its own. its only escape hatch is `tools.call`, which goes through
+    //! [`ToolRegistry::execute_gated`] with the session's policy. a nested call
+    //! needing operator approval is denied, not silently granted: Code Mode
+    //! can't park the turn for a human, so the safe default is to tell the
+    //! model to use the direct tool or ask first.
     //!
-    //! The outer `execute` tool is registered as a host-mediated stub; the
-    //! runtime intercepts it and calls [`execute`] with the real registry and
-    //! policy. This keeps the registry immutable and avoids a self-referential
-    //! tool closure.
+    //! the outer `execute` tool is a host-mediated stub; the runtime intercepts
+    //! it and calls [`execute`] with the real registry + policy. keeps the
+    //! registry immutable and avoids a self-referential tool closure.
 
     use crate::tools::{tool_err, ToolCallContext, ToolRegistry};
     use pantheon_api::capability::Policy;
@@ -1508,10 +1455,10 @@ pub mod code_mode {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    /// The bridge callbacks are installed as `'static` QuickJS functions, but
-    /// they only run synchronously inside [`run_js`], where these borrows are
-    /// valid. The thread-local keeps that lifetime contract explicit instead of
-    /// making the registry cloneable (its tool closures are not `Clone`).
+    /// the bridge callbacks are `'static` QuickJS functions but only run
+    /// synchronously inside [`run_js`], where these borrows are valid. the
+    /// thread-local makes that lifetime contract explicit instead of making the
+    /// registry cloneable (its closures aren't `Clone`).
     #[derive(Clone)]
     struct CodeCtx {
         registry: *const ToolRegistry,
@@ -1553,7 +1500,7 @@ pub mod code_mode {
             let guard = c.borrow();
             let ctx = guard.clone()?;
             // SAFETY: the guard installed in `run_js` keeps both referents
-            // alive for the whole synchronous eval, and this thread is the only
+            // alive for the whole synchronous eval; this thread is the only
             // reader of the thread-local.
             unsafe { Some(f(&*ctx.registry, &*ctx.policy, &ctx.call)) }
         })
@@ -1565,8 +1512,8 @@ pub mod code_mode {
     const DEFAULT_TIMEOUT_MS: u64 = 5_000;
     const MAX_TIMEOUT_MS: u64 = 30_000;
 
-    /// Register the model-visible `execute` stub. Execution happens in the
-    /// runtime's tool runner, which owns the registry and policy.
+    /// register the model-visible `execute` stub. runtime's tool runner owns the
+    /// real registry + policy.
     pub fn register_code_mode_stub(reg: &mut ToolRegistry) {
         reg.register(
         ToolSchema {
@@ -1596,7 +1543,7 @@ pub mod code_mode {
     );
     }
 
-    /// Execute one Code Mode request. `args_json` is the tool-call arguments:
+    /// execute one Code Mode request. `args_json` = the tool-call arguments:
     /// `{"code": "...", "timeout_ms": 5000}`.
     pub fn execute(
         registry: &ToolRegistry,
@@ -1606,9 +1553,9 @@ pub mod code_mode {
         execute_with_context(registry, policy, args_json, None)
     }
 
-    /// Like [`execute`], but installs the outer call's durable context for
-    /// nested tool calls. The production adapter supplies this so a tool called
-    /// from Code Mode can link its side effects to the same step.
+    /// like [`execute`], but installs the outer call's durable context for
+    /// nested tool calls. production adapter supplies this so a tool called from
+    /// Code Mode can link its side effects to the same step.
     pub fn execute_with_context(
         registry: &ToolRegistry,
         policy: &Policy,
@@ -1859,14 +1806,14 @@ globalThis.__pantheon_raw = JSON.stringify(__pantheon_out);
         )
     }
 
-    /// Help the model discover the bridge without exposing implementation
-    /// internals in the tool schema.
+    /// help the model discover the bridge without leaking implementation
+    /// internals into the tool schema.
     pub fn bridge_summary() -> &'static str {
         "tools.call(name, args), tools.names(), console.log(...)"
     }
 
-    // The bridge summary is referenced by tests and can be used by a future
-    // system-prompt hint; keep it out of the hot path.
+    // bridge summary is used by tests and might get a future system-prompt
+    // hint; keep it out of the hot path.
     #[allow(dead_code)]
     fn _assert_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -3927,10 +3874,9 @@ pub mod memory_tools {
 
                 match forget_opts.store.forget(layer, &namespace, &key) {
                     Ok(true) => {
-                        // Recorded only on a successful forget: the old code
-                        // recorded `Forgotten` BEFORE the store call, so the
-                        // ledger claimed a forget even when nothing was
-                        // removed (`Ok(false)`) or the store errored.
+                        // Recorded only on a successful forget: recording before the
+                        // store call claims a forget even when nothing was removed
+                        // (`Ok(false)`) or the store errored.
                         forget_opts.sink.record(MemoryToolEvent::Forgotten {
                             layer,
                             namespace: namespace.clone(),
@@ -4080,9 +4026,9 @@ pub mod memory_tools {
             // Success: one Forgotten event.
             assert!(reg.execute("memory_forget", r#"{"key":"k"}"#).is_ok());
             assert_eq!(forgotten_count(&sink), 1);
-            // Not found: an error, and NO second Forgotten event - the old
-            // code recorded Forgotten before the store call, so the ledger
-            // claimed a forget that never happened.
+            // Not found: an error, and NO second Forgotten event - recording
+            // Forgotten before the store call claims a forget that never
+            // happened.
             assert!(reg.execute("memory_forget", r#"{"key":"k"}"#).is_err());
             assert_eq!(forgotten_count(&sink), 1);
         }
@@ -4694,12 +4640,11 @@ pub mod pty_tools {
         /// The PTY child, inside the same boundary as the `shell` tool
         /// (audit SEC-03): bwrap at the High level with credentials masked
         /// and the network off unless the call asked (and was approved)
-        /// for it, and the scrubbed child environment. It used to spawn
-        /// the login shell straight on the host, so `terminal_open`
-        /// bypassed every sandbox guarantee the `shell` tool had. Fails
-        /// closed (SANDBOX_UNAVAILABLE) exactly like the shell tool. The
-        /// profile's rlimits are not carried over (portable-pty owns the
-        /// fork); the namespace and env boundaries are.
+        /// for it, and the scrubbed child environment. Spawning the login shell straight
+        /// on the host would let `terminal_open` bypass every sandbox guarantee the
+        /// `shell` tool has. Fails closed (SANDBOX_UNAVAILABLE) exactly like the shell
+        /// tool. The profile's rlimits are not carried over (portable-pty owns the fork);
+        /// the namespace and env boundaries are.
         fn sandboxed_pty_command(
             shell: &str,
             command: Option<&str>,

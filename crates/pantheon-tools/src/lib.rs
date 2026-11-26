@@ -1,24 +1,20 @@
-//! Tool layer: named, schema'd, capability-gated callable operations.
+//! named + schema'd + capability-gated callable ops.
 //!
-//! Deliberate workspace change (capability ≠ tool):
+//! capability != tool, and the distinction was deliberate:
+//! - capability = what policy lets you do (`filesystem.write`); types in
+//!   `pantheon-api::capability`, role maps/resolution in `pantheon-agent::capability`
+//! - tool = the actual callable thing (`write_file`); that's this crate
 //!
-//! - a **capability** is what a policy *allows or is able to do*
-//!   (`filesystem.write`) - its types live in `pantheon-api::capability`,
-//!   its role maps and resolution in `pantheon-agent::capability`;
-//! - a **tool** is one actual callable operation (`write_file`) - here.
-//!
-//! The registry is the choke point: `execute_gated` applies the policy
-//! before any closure runs, so a new caller gets enforcement by default
-//! rather than by remembering. Tools execute *through* `pantheon-exec`
-//! (process/fs engines); `pantheon-exec` itself no longer knows about the
-//! registry - that is what keeps `capability → tools → exec` acyclic.
+//! the registry is where enforcement happens: `execute_gated` checks policy
+//! before any closure runs, so new callers get it without having to remember.
+//! tools go *through* `pantheon-exec` (process/fs engines) and exec knows
+//! nothing about the registry - that's what keeps `capability → tools → exec` acyclic.
 
 pub mod tools;
 pub mod tools_group;
 
-// Crate-root shims for modules moved into the tools group by the tools
-// merge. External paths (`pantheon_tools::builtins::...` etc.) keep working;
-// same pattern as the exec and providers merges.
+// shims for modules moved into the tools group. old paths like
+// `pantheon_tools::builtins::...` still work. same trick as exec/providers.
 
 pub mod builtins {
     pub use crate::tools_group::builtins::*;

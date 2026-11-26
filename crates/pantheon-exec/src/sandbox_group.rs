@@ -1,18 +1,16 @@
-//! Exec sandbox_group merged group.
-
 pub mod confine {
     //! Path confinement for file tools.
     //!
     //! Every model-supplied filesystem path goes through [`confine`] before any
     //! read or write. Two layers, in this order:
     //!
-    //! 1. **Deny globs** - secret-bearing locations (`~/.ssh/**`, `/etc/**`,
+    //! 1. Deny globs: secret-bearing locations (`~/.ssh/**`, `/etc/**`,
     //!    ...) are rejected outright, evaluated *before* any capability allow: a
     //!    granted `FilesystemRead` never implies the right to read
     //!    `~/.ssh/id_rsa`. The globs are matched against the raw input, the
     //!    `~`-expanded input, the absolutized path, and the canonicalized path,
     //!    so `../.ssh/id_rsa` and symlinks into denied dirs are caught too.
-    //! 2. **Workspace containment** - the path is canonicalized (resolving `..`
+    //! 2. Workspace containment: the path is canonicalized (resolving `..`
     //!    and symlinks via the longest existing prefix) and must stay under the
     //!    canonical workspace root.
     //!
@@ -144,10 +142,10 @@ pub mod confine {
         // `gateway.env`, `secure-forms.json`) and the ledgers. It is
         // resolved the same way the rest of the app resolves it, so the
         // default `~/.pantheon` is covered even when PANTHEON_DATA_DIR is
-        // unset; the old env-only check left `<data_dir>/.env` writable
-        // by the file tools, and loading it on the next launch could flip
-        // security switches (audit SEC-02). Credential locations shared
-        // with the shell sandbox's hidden paths come from one list.
+        // unset; an env-only check leaves `<data_dir>/.env` writable by the file tools,
+        // and loading it on the next launch could flip security switches (audit
+        // SEC-02). Credential locations shared with the shell sandbox's hidden paths
+        // come from one list.
         let data_dir = pantheon_api::data_dir::resolve();
         let home_path = home.as_ref().map(std::path::PathBuf::from);
         let mut secret_paths = crate::sandbox::data_dir_secret_paths(&data_dir);
@@ -416,10 +414,9 @@ pub mod danger {
     pub struct DangerAssessment {
         pub level: RiskLevel,
         pub matches: Vec<RuleMatch>,
-        /// Command after normalization (quote collapsing, whitespace squeeze).
-        /// Kept in-process for future AST-aware analysis. Never log or display
-        /// this raw: it may embed secrets, which is why `gate()` reports a hash
-        /// instead.
+        /// Command after normalization (quote collapsing, whitespace squeeze). Kept
+        /// in-process for AST-aware analysis. Never log or display this raw: it may
+        /// embed secrets, which is why `gate()` reports a hash instead.
         pub normalized: String,
     }
 
@@ -507,14 +504,11 @@ pub mod danger {
         seg
     }
 
-    /// Wrappers that run their argument as the real command, with the
-    /// options that take a separate value (`sudo -u root`, `nice -n 5`,
-    /// `timeout -s KILL 5`). ONE table, shared by `strip_wrappers` and
-    /// the `env_split_string` rule. The old code knew wrapper names but
-    /// not their flags, so the first flag stopped the peel: `sudo -u root
-    /// rm -rf /`, `nice -n 5 rm -rf /`, `env -i rm -rf /` all classified
-    /// Low, and the `env` rule carried its own drifting copy of the list
-    /// (audit SEC-06).
+    /// Wrappers that run their argument as the real command, with the options that
+    /// take a separate value (`sudo -u root`, `nice -n 5`, `timeout -s KILL 5`). One
+    /// table, shared by `strip_wrappers` and the `env_split_string` rule, so a flag
+    /// can't stop the peel: `sudo -u root rm -rf /`, `nice -n 5 rm -rf /` and
+    /// `env -i rm -rf /` all classify above Low.
     fn wrapper_value_flags(word: &str) -> Option<&'static [&'static str]> {
         Some(match word {
             "sudo" | "doas" => &["-u", "-g", "-h", "-p", "-c", "-d", "-r", "-t", "-u", "-c"],
@@ -538,10 +532,10 @@ pub mod danger {
         }
     }
 
-    /// Shell grammar that can precede a command word without changing
-    /// what runs: subshell/group openers, `!`, and compound-command
-    /// keywords. `(rm -rf /)`, `{ rm -rf /; }` and `if x; then rm -rf /;
-    /// fi` used to hide `rm` behind these tokens.
+    /// Shell grammar that can precede a command word without changing what runs:
+    /// subshell/group openers, `!`, and compound-command keywords. `(rm -rf /)`,
+    /// `{ rm -rf /; }` and `if x; then rm -rf /; fi` must not hide `rm` behind these
+    /// tokens.
     fn is_grammar_prefix(word: &str) -> bool {
         matches!(
             word,
@@ -868,8 +862,8 @@ pub mod danger {
         "shred_root",
         "shred of a filesystem root or block device",
         |c: &str| {
-            // Per segment with wrappers peeled, like `rm_rf_root`: the old
-            // `starts_with("shred ")` let `sudo shred /dev/sda` through.
+            // Per segment with wrappers peeled, like `rm_rf_root`: a `starts_with("shred ")`
+            // test lets `sudo shred /dev/sda` through.
             segments(c).any(|seg| {
                 let seg = strip_wrappers(seg);
                 cmd_name(first_word(seg)) == "shred"
@@ -910,41 +904,34 @@ pub mod danger {
     ),
 ];
 
-    /// ADVISORY DETECTION, NOT A SECURITY BOUNDARY.
-    ///
-    /// `is_git_push` is an early-warning heuristic, not a guarantee. It is a
-    /// shell-word parser that spots git pushes written out in the open, so the
-    /// model cannot run `git push` unnoticed through the `shell` tool. A purely
-    /// syntactic parser cannot be complete here: opaque shell constructions
-    /// can hide a push from it by construction - interpreters (`sh -c`,
-    /// `bash -c`, `python -c`, `perl -e`, ...), `find -exec`, scripts arriving
-    /// on stdin, function shadowing, git `!`-aliases, launcher wrappers that
-    /// forward argv, field-splitting tricks, and anything decoded or fetched
-    /// at runtime. A clean scan is therefore NOT proof there is no push; it
-    /// only means no push was seen.
-    ///
-    /// INTENDED FUTURE ARCHITECTURE: authoritative enforcement belongs at the
-    /// exec/policy boundary, not in this parser. The plan is a final-argv check
-    /// (a `git` argv whose subcommand is `push` requires approval) with every
-    /// opaque shell construction (interpreters, `eval`, `sh -c`-style re-parse,
-    /// unreadable argv) classified as opaque execution under the policy, so
-    /// hiding a push behind opacity is itself the gated event.
-    /// That gate DOES NOT EXIST YET. What this parser does close, as of the
-    /// security fix pass, is the `sh`/`bash`/… opaque-execution hole itself:
-    /// a script-file argument, `-s`, or a bare shell reading stdin now
-    /// counts as a push and parks for approval. What still evades it, and
-    /// must be read as residual risk until the final-argv gate lands:
-    /// executing a script directly (`./deploy.sh`, `bash` via a launcher
-    /// wrapper that forwards argv), `find -exec`, other interpreters
-    /// running script files (`python deploy.py`, `perl deploy.pl`), code
-    /// fetched or decoded at runtime, and git `!`-aliases. A clean scan
-    /// is NOT proof there is no push; it only means no push was seen.
-    ///
     /// True when a shell command performs a git push.
     ///
-    /// This drives the capability gate, not a block: a push is legal but the
+    /// Advisory detection, not a security boundary. This is an early-warning
+    /// heuristic: a shell-word parser that spots git pushes written out in the
+    /// open, so the model cannot run `git push` unnoticed through the `shell`
+    /// tool. A purely syntactic parser cannot be complete: opaque shell
+    /// constructions hide a push from it by construction (interpreters like
+    /// `sh -c`/`python -c`, `find -exec`, scripts arriving on stdin, function
+    /// shadowing, git `!`-aliases, launcher wrappers that forward argv,
+    /// field-splitting tricks, anything decoded or fetched at runtime).
+    ///
+    /// This drives the capability gate, not a block: a push is legal, but the
     /// policies mark `git.push` as needing approval, so the call parks for the
     /// operator instead of running unattended.
+    ///
+    /// Authoritative enforcement belongs at the exec/policy boundary rather than
+    /// in this parser: a final-argv check (a `git` argv whose subcommand is
+    /// `push` requires approval) with every opaque shell construction
+    /// (interpreters, `eval`, `sh -c`-style re-parse, unreadable argv) classified
+    /// as opaque execution, so hiding a push behind opacity is itself the gated
+    /// event. That gate does not exist yet. What this parser does close is the
+    /// opaque-execution hole itself: a script-file argument, `-s`, or a bare shell
+    /// reading stdin counts as a push and parks for approval. Residual risk until
+    /// the final-argv gate lands: executing a script directly (`./deploy.sh`,
+    /// `bash` via a launcher wrapper that forwards argv), `find -exec`, other
+    /// interpreters running script files (`python deploy.py`, `perl deploy.pl`),
+    /// code fetched or decoded at runtime, git `!`-aliases. A clean scan is not
+    /// proof there is no push; it only means no push was seen.
     ///
     /// This is a REAL shell-word parser, not a substring scan. Detection
     /// semantics (matching is case-insensitive; the conservative direction
@@ -1052,10 +1039,9 @@ pub mod danger {
         Redir,         // < > << >> <<< <> >& <& >| &> and fd-prefixed forms
     }
 
-    /// Tokenize a command line, respecting quotes, escapes, `$` constructs,
-    /// and process substitution. This is the structural foundation the old
-    /// blocklist approach lacked: a metachar inside quotes never splits a
-    /// word, and a word split never happens inside `$(...)`.
+    /// Tokenize a command line, respecting quotes, escapes, `$` constructs and
+    /// process substitution: a metachar inside quotes never splits a word, and a
+    /// word split never happens inside `$(...)`.
     fn tokenize(s: &str) -> Vec<Tok> {
         let c: Vec<char> = s.chars().collect();
         let mut toks: Vec<Tok> = Vec::new();
@@ -3241,9 +3227,8 @@ pub mod danger {
             }
         }
 
-        /// Wrappers with a mandatory argument must consume it, or the
-        /// argument becomes the command word: `timeout 5 rm -rf /` used to
-        /// reduce to `5 rm -rf /`.
+        /// Wrappers with a mandatory argument must consume it, or the argument becomes
+        /// the command word: `timeout 5 rm -rf /` would reduce to `5 rm -rf /`.
         #[test]
         fn argument_taking_wrappers_consume_their_argument() {
             assert_eq!(strip_wrappers("timeout 5 rm -rf /"), "rm -rf /");
@@ -3407,9 +3392,8 @@ pub mod danger {
 
         #[test]
         fn git_push_opaque_shell_execution_counts() {
-            // A script file may have been written by an allowed write_file
-            // call; stdin may carry a piped push. Both used to return
-            // false, so neither needed GitPush approval.
+            // A script file may have been written by an allowed write_file call, and
+            // stdin may carry a piped push. Both need GitPush approval.
             assert!(is_git_push("sh deploy.sh"));
             assert!(is_git_push("bash scripts/deploy.sh arg1"));
             assert!(is_git_push("sh"));
@@ -3494,8 +3478,8 @@ pub mod danger {
 
         #[test]
         fn git_push_wrapper_arguments_peeled() {
-            // The old strip-word approach never consumed wrapper ARGUMENTS,
-            // so one flag defeated it every time.
+            // Wrapper peeling consumes wrapper ARGUMENTS; stripping only the wrapper word
+            // leaves its flags to defeat the match.
             assert!(is_git_push("timeout 5 git push"));
             assert!(is_git_push("nice -n 5 git push"));
             assert!(is_git_push("sudo -u root git push"));
@@ -3592,9 +3576,8 @@ pub mod danger {
         }
 
         /// Short-flag clusters containing `c` (e.g. `-lc`, `-ce`, `-ic`) are
-        /// equivalent to `-c` and must be blocked by the shell_dash_c rule.
-        /// Previously only the exact word `-c` or `--command` matched, so
-        /// `bash -lc 'rm -rf /'` classified as Low.
+        /// equivalent to `-c` and must be blocked by the shell_dash_c rule, so
+        /// `bash -lc 'rm -rf /'` can't classify as Low.
         #[test]
         fn shell_dash_c_blocks_flag_clusters_containing_c() {
             for cmd in [
@@ -3616,8 +3599,8 @@ pub mod danger {
         }
 
         /// `env -S` / `--split-string` re-parses its argument as a command line,
-        /// hiding the real command from scanning — exactly like `sh -c`.
-        /// Previously no rule caught it, so `env -S 'rm -rf /'` was Low.
+        /// hiding the real command from scanning, exactly like `sh -c`, so
+        /// `env -S 'rm -rf /'` must not classify as Low.
         #[test]
         fn env_split_string_is_blocked() {
             for cmd in [
@@ -3763,11 +3746,9 @@ pub mod supervisor {
     impl PluginSupervisor {
         /// Verify-then-spawn with the check-then-use gap closed.
         ///
-        /// This is the ONLY spawn entry point: the old approval-free
-        /// `spawn` was deleted (it had no callers - session startup and
-        /// the race harness both go through here) so no caller can exec
-        /// a plugin the operator never approved. Do not re-add an
-        /// approval-free spawn; any new spawn path must check approval
+        /// This is the ONLY spawn entry point: session startup and the race
+        /// harness both come through here, and there is no approval-free
+        /// alternative. Do not add one; any new spawn path must check approval
         /// against the same pinned bytes it seals and execs:
         ///  1. Full `verify_plugin` boundary (manifest checks, approval bound
         ///     to the current content hash, containment of the canonical
@@ -4377,9 +4358,8 @@ pub mod supervisor {
         });
     }
 
-    // Every field is Send (std process handles, strings, plain data), so
-    // the type is Send without the `unsafe impl` it used to carry, which
-    // would also have hidden a future non-Send field (audit LOW-09).
+    // Every field is Send (std process handles, strings, plain data), so the type is
+    // Send without an `unsafe impl`, which would also hide a future non-Send field.
     const _: fn() = || {
         fn assert_send<T: Send>() {}
         assert_send::<PluginSupervisor>();
@@ -4434,8 +4414,8 @@ pub mod supervisor {
         }
 
         /// Write `bytes` to the runner IN PLACE (same inode): open with
-        /// truncate + write, no rename. This is the attack the old loader lost
-        /// to - the open fd pins identity, not bytes.
+        /// truncate + write, no rename. Checking a path rather than an open fd
+        /// pins identity, not bytes, and loses to exactly this.
         ///
         /// Never panics: the churner thread outlives this call in the test
         /// harness, so a vanished path (tempdir dropped at teardown) is a
@@ -4587,9 +4567,9 @@ pub mod supervisor {
         #[cfg(unix)]
         fn pinned_runner_approval_binds_bytes_not_identity() {
             // Approval recorded for GOOD bytes. An in-place rewrite (same
-            // inode) must NOT pass the pinned-runner check with the new bytes,
-            // and the check with the old bytes must fail too once the dir
-            // changed - the binding is on bytes, not identity.
+            // inode) must NOT pass the pinned-runner check with the new bytes, and
+            // the check must fail once the dir changed - the binding is on bytes,
+            // not identity.
             let tmp = tempfile::tempdir().unwrap();
             let plugin_root = tmp.path().join("plugins").join("bindtest");
             std::fs::create_dir_all(&plugin_root).unwrap();
@@ -4815,10 +4795,9 @@ pub mod safewrite {
         let tmp = path.with_file_name(tmp_name);
         let mut f = open_tmp_nofollow(&tmp)
             .map_err(|e| serr("SAFE_WRITE", format!("tmp create {}: {e}", tmp.display())))?;
-        // Write, fsync, publish. Every failure removes the tmp file (the
-        // old code left `.tmp.<pid>.<n>` litter), and a failed fsync is an
-        // error: reporting success for bytes the disk refused to persist
-        // broke the "atomic, durable" contract (audit REL-01).
+        // Write, fsync, publish. Every failure removes the tmp file, and a failed
+        // fsync is an error: reporting success for bytes the disk refused to persist
+        // breaks the "atomic, durable" contract.
         let staged = {
             use std::io::Write;
             f.write_all(bytes)
@@ -5098,11 +5077,10 @@ pub mod safewrite {
                 .map_err(|e| serr("SAFE_MKDIR", format!("checkpoint dir: {e}")))?;
             let mut files = vec![];
             for (i, p) in paths.iter().enumerate() {
-                // Read once and hash THOSE bytes. The old code fingerprinted
-                // one read and stored a second, `unwrap_or_default()`ed read:
-                // a file that changed or vanished in between was recorded as
-                // existing with an empty pre-image, and a rollback wrote an
-                // empty file over the user's content (audit COR-04).
+                // Read once and hash those bytes. Fingerprinting one read and storing
+                // a second `unwrap_or_default()`ed read records a changed or vanished
+                // file as existing with an empty pre-image, and a rollback then writes
+                // an empty file over the user's content.
                 let (fp, blob) = match std::fs::read(p) {
                     Ok(b) => (
                         Fingerprint {
@@ -5350,11 +5328,10 @@ pub mod safewrite {
                 files: applied,
             })
         }
-        /// Roll a half-applied batch back to its auto-checkpoint after
-        /// `cause`. Any error after the first write rolls back (a failed
-        /// post-write fingerprint used to return early with the batch half
-        /// applied), and a failed rollback is reported with the cause
-        /// instead of being dropped (audit COR-04).
+        /// Roll a half-applied batch back to its auto-checkpoint after `cause`. Any
+        /// error after the first write rolls back, including a failed post-write
+        /// fingerprint. A failed rollback is reported with the cause rather than
+        /// dropped.
         fn rollback_after_failure(
             &self,
             checkpoint_id: &str,
@@ -5536,7 +5513,7 @@ pub mod prestate {
     //! Scope is deliberately narrow: `write_file` is the only built-in tool
     //! whose write target is enumerable from its arguments. `shell` and MCP
     //! tools execute exactly the approved bytes (the approval scope binds
-    //! them), but their effects are not re-validated — see the Permissions
+    //! them), but their effects are not re-validated; see the Permissions
     //! section of the Runs user guide for the stated boundary.
     //!
     //! This is optimistic concurrency control. It closes the gap where a user

@@ -1,9 +1,9 @@
 //! Third-party tool-plugin approval: thin adapter over [`pantheon_api::approval`].
 //!
-//! The approval store, the content-hash binding, and the privilege warning
-//! are the shared implementation in `pantheon-api` (one store for tool
-//! plugins here and hook plugins in `pantheon-extensions`). This module
-//! only maps the tool-plugin [`DiscoveredPlugin`] shape onto that store.
+//! The approval store, content-hash binding, and privilege warning are shared
+//! in `pantheon-api` (one store for tool plugins here and hook plugins in
+//! `pantheon-extensions`). This module just maps the tool-plugin
+//! [`DiscoveredPlugin`] shape onto that store.
 use crate::plugins::DiscoveredPlugin;
 use pantheon_api::approval::{self, ApprovalRecord};
 use pantheon_api::error::PantheonError;
@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 
 pub use approval::{warning_text, PRIVILEGE_WARNING};
 
-/// The scope directory that owns this plugin's approvals. For a plugin at
-/// `<scope>/plugins/<name>` this is `<scope>/plugins`; for a bundled one at
-/// `<scope>/plugins/bundled/<name>` it is still `<scope>/plugins` (bundled
-/// plugins skip approval, so the store is never consulted for them).
+/// scope dir that owns this plugin's approvals: for `<scope>/plugins/<name>`
+/// that's `<scope>/plugins`; for a bundled one at `<scope>/plugins/bundled/<name>`
+/// it's still `<scope>/plugins` (bundled plugins skip approval, so the store is
+/// never asked about them)
 fn scope_dir_of(plugin: &DiscoveredPlugin) -> PathBuf {
     let plugins_dir = plugin
         .root
@@ -31,23 +31,22 @@ fn scope_dir_of(plugin: &DiscoveredPlugin) -> PathBuf {
     }
 }
 
-/// True for plugins shipped with Pantheon; they skip the approval gate.
+/// true for plugins shipped with Pantheon; they skip the approval gate
 pub fn is_bundled(plugin: &DiscoveredPlugin) -> bool {
     approval::is_bundled(&scope_dir_of(plugin), &plugin.root)
 }
 
-/// True only when the plugin is a bundled-path dir whose contents match
-/// the embedded shipped registry byte-for-byte. A hand-dropped dir under
-/// `bundled/` (or a tampered shipped dir) is path-bundled but NOT
-/// canonical: it must go through third-party approval like any other
-/// unvetted code. This is the check approval gates must use; the
-/// path-only [`is_bundled`] is for listing/layout only.
+/// true only when the plugin is a bundled-path dir whose contents match the
+/// embedded registry byte-for-byte. a hand-dropped dir under `bundled/`
+/// (or a tampered shipped dir) is path-bundled but NOT canonical: it must go
+/// through third-party approval like anything else unvetted. this is the
+/// check approval gates must use; path-only [`is_bundled`] is for listing/layout.
 pub fn is_canonical_bundled(plugin: &DiscoveredPlugin) -> bool {
     is_bundled(plugin) && crate::plugins::verify_bundled_dir(&plugin.root)
 }
 
-/// True when the plugin is bundled, or a third-party plugin whose recorded
-/// approval is still bound to its current content hash.
+/// true when bundled, or a third-party plugin whose recorded approval is
+/// still bound to its current content hash
 pub fn is_approved(plugin: &DiscoveredPlugin) -> bool {
     if is_canonical_bundled(plugin) {
         return true;
@@ -59,22 +58,21 @@ pub fn is_approved(plugin: &DiscoveredPlugin) -> bool {
     }
 }
 
-/// Approval check bound to bytes already in hand.
+/// approval check bound to bytes we already hold.
 ///
-/// The loader opens the runner first (pinning the inode), reads its bytes
-/// through that fd, and passes them here with the fd's fstat metadata.
-/// The directory hash is recomputed with the runner's bytes+identity taken
-/// from the pinned read instead of a fresh path open, then compared
-/// against the store. A `true` result proves the exact bytes the caller
-/// holds were operator-approved: an in-place rewrite of the runner file
-/// (same inode, new bytes) after the read cannot pass, because the check
-/// runs on the bytes already read, not on whatever the path resolves to
-/// now. The caller must exec a sealed copy of `runner_bytes` - never
-/// re-open the path - for the guarantee to hold.
+/// the loader opens the runner first (pinning the inode), reads its bytes
+/// through that fd, and passes them here with the fd's fstat metadata. the
+/// dir hash is recomputed with the runner's bytes+identity from that pinned
+/// read, not a fresh path open, then compared to the store. a `true` means
+/// the exact bytes the caller holds were operator-approved: rewriting the
+/// runner file in place (same inode, new bytes) after the read can't pass,
+/// since we hash what we read, not what the path resolves to now. the caller
+/// must exec a sealed copy of `runner_bytes` - never re-open the path - for
+/// this to hold.
 ///
-/// `canon_root` / `canon_runner` must be the canonicalized plugin root and
-/// runner path (the same pair `spawn_verified` containment-checked).
-/// Bundled plugins skip the check, like [`is_approved`].
+/// `canon_root`/`canon_runner` must be the canonicalized plugin root and
+/// runner path (the same pair `spawn_verified` containment-checked). bundled
+/// plugins skip the check, like [`is_approved`].
 pub fn is_approved_with_pinned_runner(
     plugin: &DiscoveredPlugin,
     canon_root: &Path,
@@ -96,8 +94,8 @@ pub fn is_approved_with_pinned_runner(
     }
 }
 
-/// Record operator approval for a discovered plugin. The caller must have
-/// shown [`warning_text`] and obtained explicit consent first.
+/// record operator approval; caller must have shown [`warning_text`] and
+/// gotten explicit consent first
 pub fn record_approval(plugin: &DiscoveredPlugin) -> Result<ApprovalRecord, PantheonError> {
     approval::record_approval_for(
         &scope_dir_of(plugin),
@@ -107,15 +105,14 @@ pub fn record_approval(plugin: &DiscoveredPlugin) -> Result<ApprovalRecord, Pant
     )
 }
 
-/// Revoke a recorded approval. The plugin stays installed but will no
-/// longer verify until re-approved.
+/// revoke a recorded approval; plugin stays installed but won't verify again
+/// until re-approved
 pub fn revoke_approval(plugin: &DiscoveredPlugin) -> Result<bool, PantheonError> {
     approval::revoke_approval_for(&scope_dir_of(plugin), &plugin.manifest.name)
 }
 
-/// Third-party plugins that are installed but not approved (or whose
-/// approval lapsed after a code change). They will not verify until
-/// approved.
+/// plugins installed but not approved (or whose approval lapsed after a code
+/// change); they won't verify until approved
 pub fn pending_approvals(plugins: &[DiscoveredPlugin]) -> Vec<&DiscoveredPlugin> {
     plugins
         .iter()

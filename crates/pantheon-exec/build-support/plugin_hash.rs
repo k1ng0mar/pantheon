@@ -1,12 +1,11 @@
-/* Canonical content hash for bundled plugins, shared between
-build.rs (hash of what gets embedded) and `pantheon_exec::plugins`
-(hash of what seeding materialized on disk).
+/* canonical hash for bundled plugins: build.rs hashes what gets embedded,
+`pantheon_exec::plugins` hashes what seeding materialized. both must agree.
 
-Canonical form: pairs sorted by relative path; each pair fed as
-`rel bytes + 0x00 + content bytes + 0x00`. Hex-encoded sha256.
+sort pairs by relative path, feed each as `rel bytes + 0x00 + content bytes
++ 0x00`, hex-encode the sha256.
 
-NOTE: this file is `include!`d by build.rs and `#[path]`-included by
-the crate, so it must not start with inner (`//!`) doc comments. */
+NOTE: `include!`d by build.rs and `#[path]`-included by the crate, so no
+inner (`//!`) doc comments here. */
 
 pub fn canonical_sha256(files: &[(&str, &str)]) -> String {
     use sha2::{Digest, Sha256};

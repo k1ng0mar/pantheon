@@ -1,5 +1,6 @@
-//! MCP merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
+//! MCP transports and the bundled-server helpers.
+//!
+//! The public modules are re-exports, so existing import paths keep working.
 
 pub mod bundled {
     //! Thin facade over the canonical bundled MCP catalog.
@@ -10,9 +11,8 @@ pub mod bundled {
     //! `tools -> mcp` dependency cycle). This module re-exports the
     //! canonical type and adds the launcher-side pure helpers: membership
     //! checks and the in-memory enable/disable helpers the tests and the
-    //! setup wizard drive. There is no second copy of the recipe data
-    //! the old "two copies + drift test" arrangement is gone by
-    //! construction. Every recipe is inert until the operator enables it in
+    //! setup wizard drive. There is no second copy of the recipe data, so there is
+    //! nothing to drift. Every recipe is inert until the operator enables it in
     //! `[mcp.servers.<name>]`; nothing here launches anything.
     //!
     //! MCPs vs plugins: a bundled MCP server is an out-of-process
@@ -70,8 +70,8 @@ pub mod bundled {
     /// catalog - only catalog names are toggleable, which is what keeps
     /// arbitrary commands off the command line.
     ///
-    /// Note: this only mutates the in-memory [`McpSection`]; persisting the
-    /// config file is the surfaces' (wizard/dashboard/app) job.
+    /// This only mutates the in-memory [`McpSection`]; persisting the config file is
+    /// the surfaces' (wizard/dashboard/app) job.
     pub fn set_bundled_enabled(
         section: &mut McpSection,
         name: &str,
@@ -109,7 +109,7 @@ pub mod client {
     //!
     //! # Call direction
     //!
-    //! This client only initiates calls **to** the server. Calls **from** the
+    //! This client only initiates calls to the server. Calls from the
     //! server to the client (`sampling/createMessage`, `roots/list`, ...) are out
     //! of scope: the reader answers any server-initiated request with JSON-RPC
     //! `-32601 Method not found` and moves on, so a chatty server cannot wedge
@@ -118,7 +118,7 @@ pub mod client {
     //! # Capability enforcement
     //!
     //! Every `tools/call` passes through the embedder-supplied
-    //! [`CapabilityGate`] **before** anything is written to the server's stdin.
+    //! [`CapabilityGate`] before anything is written to the server's stdin.
     //! A denial aborts the call; the server never sees it.
 
     use crate::framed::{self, FrameError};
@@ -356,10 +356,9 @@ pub mod client {
         pub server_version: Option<String>,
         dead: bool,
         elicitation: Option<ElicitationHandler>,
-        /// Bounded tail of the child's stderr (last 4 KiB), collected on
-        /// a reader thread. A crash-on-start server used to surface only
-        /// as "transport closed" because stderr went to null; the tail
-        /// is attached to transport-closed errors instead.
+        /// Bounded tail of the child's stderr (last 4 KiB), collected on a reader
+        /// thread and attached to transport-closed errors: with stderr on null, a
+        /// crash-on-start server surfaces only as "transport closed".
         stderr_tail: Arc<Mutex<String>>,
     }
 
@@ -758,7 +757,7 @@ pub mod client {
             ))
         }
 
-        /// `tools/call`: the gate runs **first** - a denial aborts the call
+        /// `tools/call`: the gate runs first - a denial aborts the call
         /// before anything is written to the server. On success returns the raw
         /// `result` object; when the server reports `isError: true` this is
         /// [`McpError::ServerToolError`] carrying the server's text.
@@ -1493,9 +1492,9 @@ pub mod http {
     //!
     //! Sync, via ureq (the same crate the provider layer uses). For SSE the
     //! stream is read on a background thread and fanned into an mpsc channel,
-    //! mirroring the stdio client's reader thread; `request` pairs by id with
-    //! a deadline. Server-initiated requests on the SSE stream are ignored
-    //! they cannot wedge the pairing because responses are matched by id.
+    //! mirroring the stdio client's reader thread; `request` pairs by id with a
+    //! deadline. Server-initiated requests on the SSE stream are ignored, and cannot
+    //! wedge the pairing because responses are matched by id.
     //!
     //! Shutdown note: the SSE reader thread blocks on the socket, so after
     //! `shutdown` it can linger until the stream agent's overall timeout (one
@@ -2710,10 +2709,9 @@ pub mod manager {
     /// Caller-supplied capability overrides for projected MCP tools.
     ///
     /// `server` maps a server name to the capability for all of its tools
-    /// (the CUA driver pattern). `tool` maps an exact `(server, tool)` pair
-    /// — built from the authoritative MCP handshake names, never by
-    /// splitting the namespaced `mcp_<server>_<tool>` string — to the
-    /// capability for that one tool.
+    /// (the CUA driver pattern). `tool` maps an exact `(server, tool)` pair, built from
+    /// the authoritative MCP handshake names rather than by splitting the namespaced
+    /// `mcp_<server>_<tool>` string, to the capability for that one tool.
     ///
     /// Deterministic precedence in [`resolve_tool_capability`]:
     /// per-tool override > per-server override > built-in per-tool
@@ -2746,10 +2744,10 @@ pub mod manager {
     /// Fail-closed properties:
     /// * Unknown tools (no per-tool entry anywhere) fall to the server
     ///   fallback or [`Capability::McpUnclassified`], which default policies
-    ///   park for approval — never to a *more* permissive capability than the
-    ///   server's own classification. The old `NetworkOutbound` default was
-    ///   allowed by the coder policy, so an unclassified destructive tool ran
-    ///   with server approval as the only gate.
+    ///   park for approval, never to a *more* permissive capability than the
+    ///   server's own classification. A `NetworkOutbound` default would be allowed by
+    ///   the coder policy, leaving server approval as the only gate on an unclassified
+    ///   destructive tool.
     /// * Malformed override keys cannot match: lookup uses exact
     ///   `(server, tool)` tuple equality against the handshake pair.
     /// * A resolution failure is impossible by construction (every path
@@ -3588,10 +3586,9 @@ pub mod manager {
             overrides: &McpCapabilityOverrides,
         ) -> McpReport {
             let mut report = McpReport::default();
-            // Dedup against names already in the registry, not just
-            // within this call: two servers sanitizing to the same
-            // `mcp_*` name across register_tools + register_server_tools
-            // previously overwrote each other silently.
+            // Dedup against names already in the registry, not just within this call: two
+            // servers sanitizing to the same `mcp_*` name across register_tools +
+            // register_server_tools would otherwise silently overwrite each other.
             let mut used: HashSet<String> = reg.names().into_iter().collect();
             // Hold the lock for the whole pass: server I/O is sequential and
             // the agent loop calls tools one at a time anyway.
@@ -5556,11 +5553,11 @@ pub mod rea {
     //! REA is a third-party MCP server that exposes binary reverse-engineering
     //! tools to agents. Its tool catalogue spans two risk tiers:
     //!
-    //! * **Static analysis** (read-only): decompile, inspect, and compare
+    //! * Static analysis (read-only): decompile, inspect, and compare
     //!   binaries without executing the target. These map to
     //!   [`Capability::FilesystemRead`] only if the tool also avoids spawning
     //!   processes and accessing the network.
-    //! * **External or mutating effects**: process launches, network access,
+    //! * External or mutating effects: process launches, network access,
     //!   writes, and dynamic tracing map to [`Capability::BinaryTrace`], which
     //!   default policies mark Approval so the run parks for a human.
     //!
@@ -5574,8 +5571,8 @@ pub mod rea {
     //!
     //! The classification keys on the configured server name `"rea"` (the
     //! documented setup). Tool identity uses exact `(server, tool)` tuple
-    //! keys built from the authoritative MCP handshake pair — never string
-    //! splitting — so a tool cannot accidentally match another server.
+    //! keys built from the authoritative MCP handshake pair, never string
+    //! splitting, so a tool cannot accidentally match another server.
 
     use pantheon_api::capability::Capability;
     use std::collections::HashMap;

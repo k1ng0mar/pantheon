@@ -17,9 +17,9 @@
 //! error rather than running the command without isolation. A weaker
 //! wrapper is never substituted for a stronger boundary: in particular
 //! `StrictNamespaces` without `bwrap` refuses rather than falling back
-//! to plain `unshare` and reporting `sandboxed=true`. The old
-//! silent-degrade to a direct host spawn is only available via explicit
-//! opt-in - `SandboxProfile::allow_direct_fallback` or the
+//! to plain `unshare` and reporting `sandboxed=true`. A direct host
+//! spawn is only available via explicit opt-in -
+//! `SandboxProfile::allow_direct_fallback` or the
 //! `PANTHEON_SANDBOX_FALLBACK=allow` environment variable. The capability
 //! gate is always the first check, so the fallback (when opted in) only
 //! loses the OS-level isolation, never the policy enforcement.
@@ -79,12 +79,10 @@ fn is_executable(p: &std::path::Path) -> bool {
     p.is_file()
 }
 
-/// Scrub a sandboxed child's environment to an allowlist. The agent's
-/// full environment - API keys, tokens, session secrets - must never
-/// cross the boundary implicitly (contrast the old behavior, where a
-/// tool subprocess inherited everything). Callers add back exactly what
-/// the child needs via `cmd.env` *after* [`build_sandboxed`] returns;
-/// `env_clear` here only wipes what was set before.
+/// Scrub a sandboxed child's environment to an allowlist. The agent's full
+/// environment - API keys, tokens, session secrets - must not cross the boundary
+/// implicitly. Callers add back exactly what the child needs via `cmd.env` *after*
+/// [`build_sandboxed`] returns; `env_clear` here only wipes what was set before.
 fn scrub_child_env(cmd: &mut Command) {
     cmd.env_clear();
     // env_clear() wipes everything set before it, so PATH comes first.
@@ -338,18 +336,14 @@ pub fn build_sandboxed(
         }
 
         super::ExecutionBoundary::StrictNamespaces => {
-            // bwrap with --unshare-all + --dev-bind for the program:
-            // every namespace (user, pid, net, ipc, uts, cgroup, mount)
-            // unshared. Deliberately not a VM - no hypervisor involved.
-            // This level is only reached after interactive approval.
+            // bwrap with --unshare-all + --dev-bind for the program: every namespace
+            // (user, pid, net, ipc, uts, cgroup, mount) unshared. Not a VM - no
+            // hypervisor. This level is only reached after interactive approval.
             //
-            // bwrap is MANDATORY here: a weaker wrapper must never stand
-            // in for this boundary. The old code fell back to plain
-            // `unshare --pid --mount` when bwrap was absent and still
-            // reported `sandboxed=true` - a wrong-strength downgrade.
-            // Without bwrap the command builds unwrapped, and
-            // `run_sandboxed` fails closed (SANDBOX_UNAVAILABLE) unless
-            // the direct fallback is explicitly opted in.
+            // bwrap is mandatory here: a weaker wrapper must not stand in for this
+            // boundary. Without bwrap the command builds unwrapped, and
+            // `run_sandboxed` fails closed (SANDBOX_UNAVAILABLE) unless the direct
+            // fallback is explicitly opted in.
             if let Some(bwrap) = find_binary("bwrap").filter(|_| seccomp_ready) {
                 let mut cmd = Command::new(bwrap);
                 // --unshare-all only TRIES the user namespace; the
@@ -372,11 +366,10 @@ pub fn build_sandboxed(
                 for writable in &profile.writable_paths {
                     cmd.arg("--bind").arg(writable).arg(writable);
                 }
-                // Seccomp goes INSIDE the sandbox: bwrap loads the BPF
-                // program from an fd and applies it to the payload after
-                // its own setup. Installing the filter in the wrapper's
-                // pre_exec (the old path) denied the mount/pivot_root/
-                // unshare calls bwrap itself needs (audit COR-02).
+                // Seccomp goes inside the sandbox: bwrap loads the BPF program from
+                // an fd and applies it to the payload after its own setup. Installing
+                // the filter in the wrapper's pre_exec denies the mount/pivot_root/
+                // unshare calls bwrap itself needs.
                 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 if let Some(fd) = seccomp_fd {
                     attach_seccomp_fd(&mut cmd, fd);
@@ -987,12 +980,11 @@ fn wrapper_failure_reason(profile: &SandboxProfile, cwd: &str) -> Option<String>
 }
 
 fn wrapper_probe(profile: &SandboxProfile, cwd: &str) -> ProbeResult {
-    // Cached per wrapper shape, not per boundary type: the probe's result
-    // depends on the profile's masks, binds, seccomp/Landlock and the cwd,
-    // so one caller's failure (a cwd bwrap cannot reach) used to make every
-    // later profile of that boundary SANDBOX_UNAVAILABLE for the life of
-    // the process, and one caller's success vouched for profiles it never
-    // tried (audit REL-01).
+    // Cached per wrapper shape, not per boundary type: the probe's result depends on
+    // the profile's masks, binds, seccomp/Landlock and the cwd. Keyed per boundary,
+    // one caller's failure (a cwd bwrap cannot reach) made every later profile of
+    // that type SANDBOX_UNAVAILABLE for the life of the process, and one caller's
+    // success vouched for profiles it never tried.
     use std::hash::{Hash, Hasher};
     static PROBES: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<u64, ProbeResult>>,
@@ -1347,10 +1339,9 @@ pub fn run_sandboxed_with_spawn_hook_and_env(
 
     if timed_out {
         // The args may carry secrets (API keys, tokens), so they never go
-        // into the error text verbatim. Same treatment as the
-        // dangerous-pattern gate in pantheon-exec/src/danger.rs: a short
-        // stable digest plus the length - enough to correlate the timeout
-        // with the request that caused it, without leaking the command.
+        // into the error text verbatim. Same treatment as the dangerous-pattern
+        // gate: a short stable digest plus the length - enough to correlate the
+        // timeout with the request that caused it, without leaking the command.
         let digest = cmd_digest(&args.join(" "));
         return Err(berr(
             "SANDBOX_TIMEOUT",
@@ -1421,8 +1412,8 @@ fn berr(code: &str, cause: String, recoverable: bool) -> PantheonError {
 /// of the same command correlate, but irreversible, so an error carrying
 /// it cannot leak the arguments - which may themselves contain secrets.
 ///
-/// Mirrors `cmd_digest` in pantheon-exec/src/danger.rs; keep the two in
-/// sync so a digest from either crate identifies the same command.
+/// Mirrors `cmd_digest` in `sandbox_group`; keep the two in sync so a digest
+/// from either identifies the same command.
 /// FNV-1a rather than a crypto hash because this is an identifier, not
 /// authentication; it needs to be std-only and fast on the hot path.
 fn cmd_digest(args: &str) -> String {
@@ -1434,9 +1425,8 @@ fn cmd_digest(args: &str) -> String {
     format!("cmd:{:08x} len:{}", (h >> 32) as u32, args.len())
 }
 
-/// Adversarial regression tests for the sandbox boundary (item 1).
-/// Each test performs a REAL bypass attempt against the old behavior:
-/// they fail on the pre-fix code (verified) and pass after.
+/// Adversarial regression tests for the sandbox boundary. Each test performs a real
+/// bypass attempt, so it fails if the boundary regresses.
 #[cfg(all(test, target_os = "linux"))]
 mod sandbox_escape_tests {
     use super::*;
@@ -1629,10 +1619,9 @@ mod sandbox_escape_tests {
         s
     }
 
-    /// Item 1a: `Medium` sets `network: false` - the child must land in
-    /// a DIFFERENT network namespace than the parent. The old unshare
-    /// branch never passed a net flag, so the namespaces were identical
-    /// (verified live before the fix).
+    /// Item 1a: `Medium` sets `network: false`, so the child must land in a
+    /// DIFFERENT network namespace than the parent; without a net flag the two
+    /// namespaces are identical.
     #[test]
     fn unshare_honors_network_false_with_own_netns() {
         // Serialized with the PANTHEON_SANDBOX_PATH mutator below: the
@@ -1705,12 +1694,10 @@ mod sandbox_escape_tests {
         );
     }
 
-    /// Item 1c: `VeryHigh` without `bwrap` must FAIL CLOSED
-    /// (`SANDBOX_UNAVAILABLE`), never silently downgrade to plain
-    /// unshare while reporting `sandboxed=true`. Simulates the
-    /// bwrap-absent host with a PATH dir containing unshare but no
-    /// bwrap - the old code took the unshare fallback and reported
-    /// success (verified before the fix).
+    /// `VeryHigh` without `bwrap` must fail closed (`SANDBOX_UNAVAILABLE`) rather
+    /// than silently downgrading to plain unshare while reporting `sandboxed=true`.
+    /// Simulates the bwrap-absent host with a PATH dir containing unshare but no
+    /// bwrap.
     #[test]
     fn veryhigh_without_bwrap_fails_closed() {
         let _g = ENV_GUARD.lock().unwrap();

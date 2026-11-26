@@ -1,13 +1,11 @@
-//! Generate the bundled-skills registry.
+//! Generate the bundled-skills and bundled-plugins registries.
 //!
-//! Walks `bundled-skills/*/` and embeds `SKILL.md` + `scripts/**` +
-//! `references/**` (text files) via `include_str!` into a generated
-//! registry source in OUT_DIR. Content workers add skills by adding
-//! directories - no per-skill hand edits, no registry code changes.
+//! Walks `bundled-skills/*/` and `bundled-plugins/*/` and embeds text files
+//! via `include_str!` into registries in OUT_DIR. Add a directory to add a
+//! skill or plugin; no hand-edited registry entries.
 //!
-//! The walk/render logic lives in `build-support/gen.rs`, shared with
-//! unit tests through `include!` (a build script cannot depend on the
-//! crate it is building).
+//! Logic lives in `build-support/gen.rs` etc, shared with unit tests via
+//! `include!` (build scripts can't depend on the crate they're building).
 
 include!("build-support/gen.rs");
 include!("build-support/plugin_hash.rs");
@@ -16,7 +14,7 @@ include!("build-support/gen_plugins.rs");
 fn main() {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest_dir.join("bundled-skills");
-    // Re-run when any bundled skill changes (cargo watches the dir).
+    // cargo watches the dir, so any skill edit re-runs this
     println!("cargo:rerun-if-changed={}", root.display());
     let (defs, skipped) = discover_bundled_skills(&root);
     for s in &skipped {
@@ -31,9 +29,6 @@ fn main() {
     std::fs::write(&out, src).unwrap();
 
     // --- bundled plugins section (do not touch the skills section above) ---
-    // Walks `bundled-plugins/*/` and embeds every text file plus a sha256
-    // per plugin into a generated registry in OUT_DIR. Content workers add
-    // plugins by adding directories - no per-plugin hand edits.
     let plugins_root = manifest_dir.join("bundled-plugins");
     println!("cargo:rerun-if-changed={}", plugins_root.display());
     let (pdefs, pskipped) = discover_bundled_plugins(&plugins_root);

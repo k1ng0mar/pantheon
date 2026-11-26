@@ -1,49 +1,44 @@
 //! Kernel-level confinement applied in the child between `fork` and `exec`:
 //! a seccomp syscall filter and a Landlock filesystem ruleset.
 //!
-//! Three layers, and they are not interchangeable:
+//! Three layers, and they don't overlap:
 //!
-//! - **Namespaces** (`bwrap`/`unshare`, in `runner.rs`) decide what the
-//!   child can *see*. They are the strongest boundary and the one already
-//!   in place.
-//! - **seccomp** decides what the child can *ask the kernel to do*. A
-//!   namespace-confined process can still call `ptrace`, `bpf`,
-//!   `userfaultfd`, `keyctl`, or `io_uring_setup`, and those are the
-//!   syscalls a confined process uses to escape confinement.
-//! - **Landlock** decides which *paths* the child may write, even as the
-//!   owning user. Namespaces do not restrict this: a process in its own
-//!   mount namespace still writes `$HOME` if the mount is bound in.
+//! - Namespaces (`bwrap`/`unshare`, in `runner.rs`) decide what the child can
+//!   *see* - the strongest boundary, already in place.
+//! - seccomp decides what the child can *ask the kernel to do*. a namespace-
+//!   confined process can still call `ptrace`, `bpf`, `userfaultfd`, `keyctl`,
+//!   or `io_uring_setup`, and those are how confinement gets escaped.
+//! - Landlock decides which *paths* the child may write, even as the owning
+//!   user. namespaces don't restrict that: a process in its own mount
+//!   namespace still writes `$HOME` if the mount is bound in.
 //!
-//! All three are applied in `pre_exec`, which runs after `fork` and before
-//! `exec`. That zone is async-signal-safe only: no allocation, no locks, no
-//! `println!`. Every filter is therefore compiled in the PARENT and the
-//! child only makes the two syscalls. `apply_filter` and
-//! `landlock_restrict_self` are both plain syscalls, which is why this is
-//! sound.
+//! All three run in `pre_exec`, after `fork` and before `exec`. that zone is
+//! async-signal-safe only: no allocation, no locks, no `println!`. every filter
+//! is compiled in the PARENT and the child only makes the two syscalls.
+//! `apply_filter` and `landlock_restrict_self` are both plain syscalls, which
+//! is why this is sound.
 //!
-//! Fail-closed is the rule. When a profile asks for a layer and the host
-//! cannot provide it, the child returns an error from `pre_exec`, the spawn
-//! fails, and the tool reports the failure. A silent downgrade to running
-//! unfiltered would be the same wrong-strength bug the namespace path
-//! already fixed once.
+//! Fail-closed is the rule. when a profile asks for a layer the host can't
+//! provide, the child errors out of `pre_exec`, the spawn fails, and the tool
+//! reports it. a silent downgrade to running unfiltered would be the same
+//! wrong-strength bug the namespace path already fixed once.
 
 /// The syscalls a sandboxed child may make, everything else is denied.
 ///
-/// Deliberately narrow and deliberately explicit. A denylist was rejected:
-/// the kernel adds syscalls faster than a denylist can track them, and the
-/// escape primitives (`ptrace`, `bpf`, `userfaultfd`, `keyctl`,
-/// `perf_event_open`, `io_uring_setup`, `process_vm_*`, `kcmp`, `open_by_handle_at`)
-/// are exactly the ones a denylist author forgets. An allowlist of what a
-/// build/test/lint child actually needs inverts the default.
+/// narrow and explicit, an allowlist not a denylist: the kernel adds
+/// syscalls faster than a denylist can track them, and the escape primitives
+/// (`ptrace`, `bpf`, `userfaultfd`, `keyctl`, `perf_event_open`,
+/// `io_uring_setup`, `process_vm_*`, `kcmp`, `open_by_handle_at`) are the
+/// ones a denylist author forgets. listing what a build/test/lint child
+/// actually needs inverts the default.
 ///
-/// Grouped by what they are for, because the list is the security policy and
-/// a reviewer has to be able to audit it.
+/// grouped by purpose, because the list IS the security policy and a reviewer
+/// has to be able to audit it.
 ///
-/// x86_64-only, like the filter it feeds: the BPF program is compiled
-/// against x86_64 syscall numbers, so on another arch these names would
-/// resolve to numbers the kernel never sees. Non-x86_64 Linux keeps
-/// Landlock, which is an LSM and arch-independent, and refuses a seccomp
-/// profile fail-closed.
+/// x86_64-only, like the filter it feeds: the BPF program is compiled against
+/// x86_64 numbers, so on another arch these names would resolve to numbers the
+/// kernel never sees. non-x86_64 Linux keeps Landlock (an LSM, arch-independent)
+/// and refuses a seccomp profile fail-closed.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub const ALLOWED_SYSCALLS: &[&str] = &[
     // --- process lifecycle ---
@@ -157,8 +152,8 @@ pub const ALLOWED_SYSCALLS: &[&str] = &[
     "mincore",
     "memfd_create",
     "membarrier",
-    // --- networking (the capability gate decides whether egress is
-    // allowed at all; when it is, these are what it takes) ---
+    // --- networking (the capability gate decides whether egress is allowed
+    // at all; when it is, this is what it takes) ---
     "socket",
     "socketpair",
     "connect",
@@ -202,11 +197,10 @@ pub const ALLOWED_SYSCALLS: &[&str] = &[
     "getgroups",
     "setgroups",
     "personality",
-    // Positional and vector I/O, legacy path calls and basic process
-    // housekeeping. This allowlist had never run (the filter could not
-    // compile, audit COR-02); once it did, the dynamic loader died on
-    // `pread64` and every error message on `writev`. These are ordinary
-    // userland calls, none on the escape-primitive list below.
+    // positional/vector I/O, legacy path calls, basic process housekeeping.
+    // this allowlist had NEVER run - the filter couldn't compile (audit COR-02).
+    // once it did, the dynamic loader died on `pread64` and every error message
+    // on `writev`. ordinary userland calls, none on the escape list below.
     "pread64",
     "pwrite64",
     "readv",
@@ -254,20 +248,20 @@ pub const ALLOWED_SYSCALLS: &[&str] = &[
     "restart_syscall",
 ];
 
-/// Syscalls that are refused even though a broad allowlist might include
-/// them. Kept as an explicit list so the refusal is auditable and a future
-/// allowlist edit cannot silently re-admit one.
+/// syscalls refused even though a broad allowlist might include them. kept
+/// explicit so the refusal is auditable and a future allowlist edit can't
+/// silently re-admit one.
 ///
-/// These are the escape primitives. `seccompiler` applies deny rules
-/// after the allowlist, so listing one here is a hard deny.
+/// these are the escape primitives. `seccompiler` applies deny rules after the
+/// allowlist, so listing one here is a hard deny.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub const DENIED_SYSCALLS: &[&str] = &[
-    // Debugging another process - the classic container escape primitive.
+    // debugging another process - classic container escape primitive
     "ptrace",
     "process_vm_readv",
     "process_vm_writev",
     "kcmp",
-    // Kernel attack surface reachable from an unprivileged process.
+    // kernel attack surface reachable from an unprivileged process
     "bpf",
     "userfaultfd",
     "perf_event_open",
@@ -279,45 +273,44 @@ pub const DENIED_SYSCALLS: &[&str] = &[
     "io_uring_setup",
     "io_uring_enter",
     "io_uring_register",
-    // Kernel keyring: credential material the child has no business in.
+    // kernel keyring: credential material the child has no business in
     "keyctl",
     "add_key",
     "request_key",
-    // Mounting and namespace manipulation from inside the sandbox.
+    // mounting + namespace manipulation from inside the sandbox
     "mount",
     "umount2",
     "pivot_root",
     "chroot",
     "setns",
     "unshare",
-    // Opening by inode handle bypasses path-based (Landlock) checks.
+    // opening by inode handle bypasses path-based (Landlock) checks
     "open_by_handle_at",
     "name_to_handle_at",
-    // Direct device and port access.
+    // direct device and port access
     "iopl",
     "ioperm",
-    // Reboot/host control.
+    // reboot/host control
     "reboot",
     "swapon",
     "swapoff",
     "acct",
     "quotactl",
-    // Kernel log introspection. (`sysctl` is not a syscall on x86_64; the
-    // name-resolution test catches arch mismatches like that.)
+    // kernel log introspection. (`sysctl` isn't a syscall on x86_64; the
+    // name-resolution test catches arch mismatches like that)
     "syslog",
 ];
 
-/// Compile the seccomp program in the PARENT, so the child's `pre_exec`
-/// closure only has to make the syscall.
+/// compile the seccomp program in the PARENT, so the child's `pre_exec` closure
+/// only has to make the syscall.
 ///
-/// Returns the compiled BPF program. The caller applies it inside
-/// `pre_exec` via [`seccompiler::apply_filter`], which is async-signal-safe.
+/// returns the compiled BPF program; the caller applies it in `pre_exec` via
+/// [`seccompiler::apply_filter`], which is async-signal-safe.
 ///
-/// x86_64-only: `SeccompFilter::new` is built with `TargetArch::x86_64`,
-/// and a filter compiled with another arch's numbers denies the wrong
-/// syscalls. On non-x86_64 Linux this function does not exist, so
-/// `kernel_layer_available` reports seccomp unavailable and the runner
-/// refuses a profile that asks for it.
+/// x86_64-only: `SeccompFilter::new` is built with `TargetArch::x86_64`, and a
+/// filter compiled with another arch's numbers denies the wrong syscalls. on
+/// non-x86_64 Linux this fn doesn't exist, so `kernel_layer_available` reports
+/// seccomp unavailable and the runner refuses a profile that asks for it.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn compile_seccomp() -> Result<seccompiler::BpfProgram, String> {
     use seccompiler::{SeccompAction, SeccompFilter, SeccompRule, TargetArch};
@@ -325,31 +318,31 @@ pub fn compile_seccomp() -> Result<seccompiler::BpfProgram, String> {
 
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
 
-    // Resolve names to numbers once, in the parent. An unknown name is a
-    // build error, not a runtime skip: a typo in the allowlist must not
-    // silently drop a permission the child needs, and a typo in the denylist
-    // must not silently leave an escape primitive open.
+    // resolve names to numbers once, in the parent. unknown name = build error,
+    // not a runtime skip: a typo in the allowlist must not silently drop a
+    // permission the child needs, and one in the denylist must not leave an
+    // escape primitive open.
     for name in ALLOWED_SYSCALLS {
         let nr = syscall_number(name)
             .ok_or_else(|| format!("seccomp allowlist names unknown syscall: {name}"))?;
-        // An empty rule vec means "match unconditionally", which for the
-        // allowlist is what we want: allow this syscall regardless of args.
+        // empty rule vec = "match unconditionally", which is what we want here:
+        // allow this syscall regardless of args.
         rules.entry(nr).or_default();
     }
     for name in DENIED_SYSCALLS {
         let nr = syscall_number(name)
             .ok_or_else(|| format!("seccomp denylist names unknown syscall: {name}"))?;
-        // A deny is expressed by REMOVING the allow entry; the filter's
-        // default action is what actually denies. Listing a denied syscall
-        // that the allowlist also named is the conflict we must not have.
+        // deny = REMOVING the allow entry; the filter's default action does the
+        // denying. naming a denied syscall that the allowlist also named is the
+        // conflict we must not have.
         rules.remove(&nr);
     }
 
-    // seccompiler's argument order is (rules, mismatch_action,
-    // match_action, arch). Mismatch = a syscall not in the allowlist ->
-    // EPERM; match = an allowlisted syscall -> Allow. Passing EPERM for
-    // both was rejected by seccompiler (IdenticalActions), so the filter
-    // never compiled and every VeryHigh spawn failed (audit COR-02).
+    // seccompiler's args are (rules, mismatch_action, match_action, arch).
+    // mismatch = syscall not in allowlist -> EPERM; match = allowlisted ->
+    // Allow. passing EPERM for both was rejected by seccompiler
+    // (IdenticalActions), so the filter never compiled and every VeryHigh spawn
+    // failed (audit COR-02).
     let filter = SeccompFilter::new(
         rules,
         SeccompAction::Errno(libc::EPERM as u32),
@@ -363,15 +356,15 @@ pub fn compile_seccomp() -> Result<seccompiler::BpfProgram, String> {
         .map_err(|e| format!("seccomp filter compile failed: {e}"))
 }
 
-/// Resolve a syscall name to its number for the build target.
+/// resolve a syscall name to its number for the build target.
 ///
-/// `libc::SYS_*` constants are the source of truth; matching on the name
-/// keeps the policy list readable. Unknown names return `None` so the
-/// caller fails the build rather than skipping.
+/// `libc::SYS_*` constants are the source of truth; matching on the name keeps
+/// the policy list readable. unknown names return `None` so the caller fails
+/// the build rather than skipping.
 ///
-/// x86_64-only, for the same reason as the lists above: the table holds
-/// x86_64 syscall numbers, and names like `arch_prctl` or the non-`at`
-/// file syscalls do not exist on other arches.
+/// x86_64-only, same reason as the lists above: the table holds x86_64 numbers,
+/// and names like `arch_prctl` or the non-`at` file syscalls don't exist on
+/// other arches.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn syscall_number(name: &str) -> Option<i64> {
     let n = match name {
@@ -610,17 +603,16 @@ pub fn syscall_number(name: &str) -> Option<i64> {
     Some(n)
 }
 
-/// The Landlock ruleset to apply in the child: read everywhere, write only
-/// under the profile's writable roots.
+/// landlock ruleset for the child: read everywhere, write only under the
+/// profile's writable roots.
 ///
-/// Compiled in the parent for the same async-signal-safety reason as the
-/// seccomp program. Returns the created ruleset, which the child restricts
+/// compiled in the parent for the same async-signal-safety reason as the
+/// seccomp program. returns the created ruleset, which the child restricts
 /// itself with via `landlock_restrict_self`.
 ///
-/// ABI note: the ruleset is built against `ABI::V1` access rights only.
-/// That keeps it working on any kernel with Landlock at all (5.13+), which
-/// is the portability the earlier probe showed (this host reports ABI 8,
-/// but a stricter build must not require it).
+/// abi note: built against `ABI::V1` access rights only - works on any kernel
+/// with Landlock at all (5.13+), which is the portability we want (this host
+/// reports ABI 8, but a stricter build must not require it).
 #[cfg(target_os = "linux")]
 pub fn compile_landlock(
     cwd: &str,
@@ -638,17 +630,16 @@ pub fn compile_landlock(
         .create()
         .map_err(|e| format!("landlock ruleset create failed: {e}"))?;
 
-    // Read: the whole filesystem. The child has to load its dynamic
-    // libraries and read its own program; restricting read here would break
-    // every binary without adding a boundary that matters (the process
-    // already reads as its own uid). Write is the boundary.
+    // read: whole filesystem. the child has to load its libs and read its own
+    // program; restricting read breaks every binary without adding a boundary
+    // that matters (it already reads as its own uid). write is the boundary.
     let root = PathFd::new("/").map_err(|e| format!("landlock open /: {e}"))?;
     ruleset = ruleset
         .add_rule(PathBeneath::new(root, read))
         .map_err(|e| format!("landlock read rule failed: {e}"))?;
 
-    // Write: cwd plus any explicit writable roots. Deduplicated so a
-    // repeated path does not add a redundant rule.
+    // write: cwd + any explicit writable roots. deduped so a repeated path
+    // doesn't add a redundant rule.
     let mut roots: Vec<String> = vec![cwd.to_string()];
     for p in writable_paths {
         if !roots.contains(p) {
@@ -657,9 +648,9 @@ pub fn compile_landlock(
     }
     for path in &roots {
         let Ok(fd) = PathFd::new(path) else {
-            // A writable root that does not exist is a profile mistake, but
-            // failing the spawn over it would be worse than skipping: the
-            // cwd rule still applies. Skip and let the profile be fixed.
+            // writable root that doesn't exist is a profile mistake, but failing
+            // the spawn over it is worse than skipping: the cwd rule still
+            // applies. skip and let the profile get fixed.
             continue;
         };
         ruleset = ruleset
@@ -667,27 +658,25 @@ pub fn compile_landlock(
             .map_err(|e| format!("landlock write rule for {path} failed: {e}"))?;
     }
 
-    // A ruleset that did not fully apply is a downgrade, and the caller
-    // decides whether to refuse. `RulesetCreated::restrict_self` returns the
-    // status, so the child reads it after applying and the profile's
-    // fail-closed rule is enforced there.
+    // ruleset that didn't fully apply is a downgrade, and the caller decides
+    // whether to refuse. `RulesetCreated::restrict_self` returns the status,
+    // so the child reads it after applying and the profile's fail-closed rule
+    // is enforced there.
     Ok(ruleset)
 }
 
-/// Probe: does this host support the layers a profile asks for?
+/// probe: does this host support the layers a profile asks for?
 ///
-/// Mirrors `boundary_available` for the wrapper: the binary existing is not
-/// the same as the mechanism working. Called in the PARENT before a spawn so
-/// the failure is a clean `SANDBOX_UNAVAILABLE` rather than a mysterious
-/// child exit.
+/// mirrors `boundary_available` for the wrapper: binary existing != mechanism
+/// working. called in the PARENT before a spawn so the failure is a clean
+/// `SANDBOX_UNAVAILABLE` rather than a mysterious child exit.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
     if seccomp && compile_seccomp().is_err() {
         return false;
     }
     if landlock {
-        // Landlock needs the syscall to exist. ABI 0 means the kernel has
-        // no Landlock at all.
+        // landlock needs the syscall to exist; ABI 0 = no landlock at all
         let abi = unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -705,18 +694,16 @@ pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
     true
 }
 
-/// Non-x86_64 Linux: Landlock is an LSM and works on any arch, but the
-/// seccomp filter is x86_64-only, so a profile asking for seccomp is
-/// reported unavailable (the runner then refuses it fail-closed) rather
-/// than silently run unfiltered.
+/// non-x86_64 Linux: Landlock is an LSM, works on any arch, but the seccomp
+/// filter is x86_64-only, so a profile asking for seccomp is reported
+/// unavailable (runner refuses it fail-closed) rather than silently unfiltered.
 #[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
 pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
     if seccomp {
         return false;
     }
     if landlock {
-        // Landlock needs the syscall to exist. ABI 0 means the kernel has
-        // no Landlock at all.
+        // landlock needs the syscall to exist; ABI 0 = no landlock at all
         let abi = unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -734,8 +721,8 @@ pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
     true
 }
 
-/// Non-Linux stub: the layers are Linux-only, and a profile that asks for
-/// them on another platform must fail closed rather than silently skip.
+/// non-Linux stub: the layers are Linux-only, and a profile that asks for them
+/// elsewhere must fail closed rather than silently skip.
 #[cfg(not(target_os = "linux"))]
 pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
     !seccomp && !landlock
@@ -745,9 +732,9 @@ pub fn kernel_layer_available(seccomp: bool, landlock: bool) -> bool {
 mod tests {
     use super::*;
 
-    /// The policy lists must be disjoint and every name must resolve. A
-    /// typo in either list is a build error here rather than a silently
-    /// dropped permission at run time.
+    /// the policy lists must be disjoint and every name must resolve. a typo
+    /// in either list is a build error here, not a silently dropped permission
+    /// at runtime.
     // x86_64-only: the lists and the resolver exist only there.
     #[cfg(target_arch = "x86_64")]
     #[test]
@@ -766,9 +753,9 @@ mod tests {
         }
     }
 
-    /// The escape primitives must not be reachable through the allowlist.
-    /// This is the property the whole filter exists for, so it is asserted
-    /// rather than trusted to review.
+    /// escape primitives must not be reachable through the allowlist. this is
+    /// the property the whole filter exists for, so assert it rather than
+    /// trusting review.
     // x86_64-only: resolves through the x86_64 syscall table.
     #[cfg(target_arch = "x86_64")]
     #[test]
@@ -786,16 +773,16 @@ mod tests {
         }
     }
 
-    /// The filter must compile on this host, or the profile that asks for it
-    /// would fail every spawn.
+    /// the filter must compile on this host, or any profile asking for it
+    /// fails every spawn
     // x86_64-only: `compile_seccomp` exists only there.
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn seccomp_compiles() {
-        // Compiling is pure BPF generation and does not depend on the
-        // host. The old early return on `kernel_layer_available` (which
-        // itself compiles the filter) made this test vacuous while the
-        // filter never compiled (audit COR-02).
+        // compiling is pure BPF generation, doesn't depend on the host. an early
+        // return on `kernel_layer_available` (which itself compiles the filter)
+        // made this test vacuous whenever the filter couldn't compile
+        // (audit COR-02).
         compile_seccomp().expect("seccomp filter compiles");
     }
 
@@ -811,21 +798,21 @@ mod tests {
     }
 }
 
-// The live proofs drive the real filter, so they exist only where the
-// filter does: x86_64 Linux.
+// the live proofs drive the real filter, so they only exist where the filter
+// does: x86_64 Linux.
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
 mod live_tests {
     use super::*;
 
-    /// The filter must actually deny in a real child, not just compile.
+    /// the filter must actually deny in a real child, not just compile.
     ///
-    /// This is the proof the whole module exists for: fork a child, apply
-    /// the filter, and try a syscall that is NOT on the allowlist. If the
-    /// child survives, the filter is decorative.
+    /// this is the proof the whole module exists for: fork a child, apply the
+    /// filter, try a syscall NOT on the allowlist. if the child survives, the
+    /// filter is decorative.
     ///
-    /// `getcpu` is used as the probe because it is a real syscall that is
-    /// deliberately absent from the allowlist, takes no arguments that can
-    /// fail for other reasons, and cannot affect the parent.
+    /// `getcpu` is the probe: a real syscall deliberately absent from the
+    /// allowlist, takes no args that can fail for other reasons, and can't
+    /// affect the parent.
     #[test]
     fn filter_denies_a_non_allowlisted_syscall_in_a_real_child() {
         if !kernel_layer_available(true, false) {
@@ -834,9 +821,9 @@ mod live_tests {
         }
         let program = compile_seccomp().expect("compiles");
 
-        // SAFETY: fork in a test is deliberate. The child only issues
-        // apply_filter then one probe syscall, then _exit. No allocation
-        // happens in the child, so the post-fork zone is safe.
+        // SAFETY: fork in a test is deliberate. child only calls apply_filter,
+        // then one probe syscall, then _exit - no allocation in the child, so
+        // the post-fork zone is safe.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
@@ -848,7 +835,7 @@ mod live_tests {
                 if seccompiler::apply_filter(&program).is_err() {
                     libc::_exit(11);
                 }
-                // A syscall that is not allowlisted: must fail with EPERM.
+                // a syscall that's not allowlisted: must fail w/ EPERM
                 let rc = libc::syscall(
                     libc::SYS_getcpu,
                     std::ptr::null_mut::<u32>(),
@@ -876,10 +863,9 @@ mod live_tests {
         );
     }
 
-    /// The allowlist must not be so tight that ordinary work fails: a
-    /// filtered child must still be able to write a file in its cwd. A
-    /// filter that breaks every real command gets turned off, and then it
-    /// protects nothing.
+    /// allowlist must not be so tight that ordinary work fails: a filtered
+    /// child must still be able to write a file in its cwd. a filter that
+    /// breaks every real command gets turned off, and then it protects nothing.
     #[test]
     fn filter_permits_ordinary_file_io() {
         if !kernel_layer_available(true, false) {
@@ -900,7 +886,7 @@ mod live_tests {
                 if seccompiler::apply_filter(&program).is_err() {
                     libc::_exit(11);
                 }
-                // open/write/close: all on the allowlist.
+                // open/write/close: all on the allowlist
                 let fd = libc::open(
                     c_path.as_ptr(),
                     libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC,
@@ -910,8 +896,8 @@ mod live_tests {
                     libc::_exit(20);
                 }
                 let msg = b"ok";
-                // Never ran before audit COR-02 (the filter could not
-                // compile), so its old `!= 3` for a 2-byte write went unseen.
+                // never ran before COR-02 (filter wouldn't compile), so its
+                // old `!= 3` for a 2-byte write went unseen
                 if libc::write(fd, msg.as_ptr() as *const libc::c_void, msg.len())
                     != msg.len() as isize
                 {

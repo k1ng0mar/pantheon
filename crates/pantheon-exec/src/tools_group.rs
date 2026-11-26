@@ -1,5 +1,3 @@
-//! Exec tools_group merged group.
-
 pub mod cloudflare {
     //! Cloudflare command classification for `cf` CLI invocations.
     //!
@@ -203,15 +201,14 @@ pub mod cloudflare {
             return CfOp::Read;
         }
         let refs: Vec<&str> = path.iter().map(String::as_str).collect();
-        // Meta-commands whose trailing words are NOT operations, so a
-        // verb word inside them must never classify the call:
+        // Meta-commands whose trailing words are not operations, so a verb word
+        // inside them must not classify the call:
         // - `cf cli search "<anything>"`: the whole query is free text.
-        // - `cf help <topic>` / `cf complete <shell>`: the trailing word
-        //   is a help topic / shell name, not an operation.
-        // Scoped to these shapes on purpose: the old check returned Read
-        // whenever ANY path word was search/help/complete, so
-        // `cf kv namespace delete search` - delete a namespace literally
-        // named "search" - rode the read tier with no approval.
+        // - `cf help <topic>` / `cf complete <shell>`: the trailing word is a help
+        //   topic or shell name, not an operation.
+        // Scoped to these shapes: matching any path word of search/help/complete would
+        // let `cf kv namespace delete search` - deleting a namespace named "search" -
+        // ride the read tier with no approval.
         if refs
             .first()
             .map(|p| p.eq_ignore_ascii_case("help"))
@@ -298,15 +295,14 @@ pub mod cloudflare {
         "--error",
     ];
 
-    /// Drop leading wrappers and assignments so the caller sees the real
-    /// command word.
+    /// Drop leading wrappers and assignments so the caller sees the real command
+    /// word.
     ///
-    /// This must agree with the wrapper handling in `danger.rs`: when the two
-    /// disagree, a wrapped command slips past classification. It used to peel
-    /// only `env`/`sudo`/`nohup`, so `timeout 30 cf workers delete` was not
-    /// recognized as a cf command at all. The destroy classification never
-    /// ran, no `cloudflare.destroy` capability was required, and the delete
-    /// proceeded unattended under the coder policy. Same for `setsid`,
+    /// This must agree with the wrapper table in `sandbox_group`: when the two
+    /// disagree, a wrapped command slips past classification. Peeling only
+    /// `env`/`sudo`/`nohup` misses `timeout 30 cf workers delete`, so the destroy
+    /// classification never runs, no `cloudflare.destroy` capability is required,
+    /// and the delete proceeds unattended under the coder policy. Same for `setsid`,
     /// `exec`, `command`, and `nice -n 5`.
     fn peel_to_command(argv: &[String]) -> Vec<String> {
         let mut rest = argv.to_vec();
@@ -369,11 +365,10 @@ pub mod cloudflare {
     mod tests {
         use super::*;
 
-        /// A destroy verb must stay classified as a destroy through every
-        /// wrapper. `is_cf_command` used to peel only `env`/`sudo`/`nohup`,
-        /// so `timeout 30 cf workers delete` was not seen as a cf command at
-        /// all: `cloudflare.destroy` was never required and the delete ran
-        /// unattended under the coder policy.
+        /// A destroy verb must stay classified as a destroy through every wrapper.
+        /// `is_cf_command` peeling only `env`/`sudo`/`nohup` misses
+        /// `timeout 30 cf workers delete`, so `cloudflare.destroy` is never required
+        /// and the delete runs unattended under the coder policy.
         ///
         /// This walks the wrappers rather than spot-checking one, because the
         /// failure mode is a wrapper quietly missing from the list.
@@ -517,9 +512,9 @@ pub mod cloudflare {
         #[test]
         fn verb_words_in_argument_position_do_not_downgrade() {
             // A namespace literally named "search" (or "help") is an
-            // argument, not the operation: the delete must still classify
-            // Destroy. The old any-word search/help/complete early return
-            // let these ride the read tier.
+            // argument, not the operation: the delete must still classify Destroy.
+            // An any-word search/help/complete early return lets these ride the read
+            // tier.
             assert_eq!(classify("cf kv namespace delete search"), CfOp::Destroy);
             assert_eq!(classify("cf kv namespace delete help"), CfOp::Destroy);
             assert_eq!(classify("cf workers script delete complete"), CfOp::Destroy);
@@ -554,7 +549,7 @@ pub mod cloudflare {
         }
 
         /// Classifications pinned to commands verified against the real cf
-        /// surface (`cf cli search`, 2026-10-02, cf v1.0.0-beta.12). When cf
+        /// surface (`cf cli search`, cf v1.0.0-beta.12). When cf
         /// renames verbs these fail and the table needs a look, not a guess.
         #[test]
         fn live_surface_commands_classify() {
@@ -602,7 +597,7 @@ pub mod http {
     //!
     //! Two layers of tolerance:
     //!
-    //! 1. **Unclean TLS shutdowns.** Some servers close the TCP connection
+    //! 1. Unclean TLS shutdowns. Some servers close the TCP connection
     //!    without sending a TLS `close_notify` alert. rustls treats that as
     //!    an `UnexpectedEof` I/O error once the buffered plaintext is
     //!    consumed; curl and OpenSSL accept the bytes. Since every byte we
@@ -610,7 +605,7 @@ pub mod http {
     //!    was sloppy - we accept the body when the framing says it is
     //!    already whole, and keep failing hard on genuine truncation.
     //!
-    //! 2. **curl fallback.** Some egress proxies drop rustls handshakes
+    //! 2. curl fallback. Some egress proxies drop rustls handshakes
     //!    while OpenSSL succeeds (observed: every HTTPS host through a
     //!    filtering proxy fails pre-status-line with ureq, while curl
     //!    returns 200). rustls exposes no knob for this - there is no
@@ -932,7 +927,7 @@ pub mod lsp {
     //! opens a document, pushes changes, and collects `publishDiagnostics`
     //! notifications into a cache that a `lsp.diagnostics` tool reads back.
     //!
-    //! What it deliberately is *not*: a full LSP client. It implements the
+    //! This is a diagnostics-only path, not a full LSP client. It implements the
     //! smallest subset that gets real diagnostics - the `initialize`
     //! handshake, `initialized`, `textDocument/didOpen`, `didChange`,
     //! `shutdown`/`exit` - plus a passive read loop that turns server

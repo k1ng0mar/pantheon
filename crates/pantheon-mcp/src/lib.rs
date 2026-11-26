@@ -1,17 +1,8 @@
-//! MCP adapter (spec section 15): external interop boundary, not internal
-//! architecture. Internal code speaks the native Capability API; MCP servers
-//! are projected into it, and every projected tool is capability-gated.
+//! MCP is an external tool boundary. Server capabilities get projected into
+//! Pantheon's policy API and gated before a call runs.
 //!
-//! Three halves: [`client`] is the real stdio MCP client (`initialize`,
-//! `tools/list`, `tools/call`) with call-time capability enforcement;
-//! [`http`] is the same protocol over the two remote transports (legacy
-//! SSE and streamable HTTP); [`manager`] is the production wiring
-//! lifecycle, reconnect backoff, operator approval, and `ToolRegistry`
-//! projection. [`bundled`] is the curated catalog of opt-in recipes
-//! (packages, commands, secret names) the setup wizard and surfaces
-//! enable/disable in `[mcp.servers.<name>]`; every recipe is disabled by
-//! default. The projection helpers below map a server's advertised
-//! tools through a [`Policy`](pantheon_api::capability::Policy).
+//! transports = stdio / remote IO, manager = lifecycle, reconnects, approval
+//! and registry projection. Bundled recipes are off until config enables them.
 
 pub mod transports;
 
@@ -60,10 +51,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One resource advertised by `resources/list`.
-///
-/// The wire shape is camelCase; `McpResource` is the stable shape the
-/// runtime and CLI consume. `size` is advisory (the server may omit it).
+/// One resource from `resources/list`. Wire shape is camelCase; this is the
+/// stable shape runtime/CLI use. `size` is advisory, servers may omit it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpResource {
@@ -79,7 +68,7 @@ pub struct McpResource {
     pub size: Option<u64>,
 }
 
-/// One parameterized resource template from `resources/templates/list`.
+/// Resource template from `resources/templates/list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpResourceTemplate {
@@ -93,8 +82,8 @@ pub struct McpResourceTemplate {
     pub mime_type: Option<String>,
 }
 
-/// One content block returned by `resources/read`. Exactly one of `text` or
-/// `blob` is normally set; both are optional so unusual servers still parse.
+/// Content block from `resources/read`. Usually one of `text` / `blob` is set,
+/// but both are optional so oddball servers still parse.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpResourceContent {
@@ -108,7 +97,7 @@ pub struct McpResourceContent {
     pub blob: Option<String>,
 }
 
-/// One prompt advertised by `prompts/list`.
+/// One prompt from `prompts/list`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpPrompt {
@@ -131,9 +120,9 @@ pub struct McpPromptArgument {
     pub required: bool,
 }
 
-/// One message returned by `prompts/get`. `content` stays as raw JSON
-/// because MCP permits text, image, audio, embedded-resource, and future
-/// block types; flattening it would silently drop data.
+/// Message from `prompts/get`. `content` stays raw JSON because the spec
+/// allows text/image/audio/embedded-resource (and future) block types;
+/// flattening would quietly drop data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpPromptMessage {
     pub role: String,
@@ -148,8 +137,8 @@ pub struct McpPromptResult {
     pub messages: Vec<McpPromptMessage>,
 }
 
-/// One live server connection, regardless of transport. `Send` so the
-/// manager can hold it behind a mutex; requests are issued one at a time.
+/// One live server connection, any transport. `Send` so the manager can hold
+/// it behind a mutex; requests go one at a time.
 pub(crate) trait McpConn: Send {
     fn list_tools(&mut self) -> Result<Vec<McpToolDef>, McpError>;
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<Value, McpError>;
@@ -158,9 +147,9 @@ pub(crate) trait McpConn: Send {
     fn read_resource(&mut self, uri: &str) -> Result<Vec<McpResourceContent>, McpError>;
     fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError>;
     fn get_prompt(&mut self, name: &str, args: &Value) -> Result<McpPromptResult, McpError>;
-    /// Cheap liveness probe: no network/stdin traffic.
+    /// Cheap liveness probe, no network/stdin traffic.
     fn alive(&mut self) -> bool;
-    /// Release the connection (kill the child / drop the stream).
+    /// Release the connection (kill child / drop stream).
     fn shutdown(&mut self);
     fn negotiated_version(&self) -> &str;
     /// The server's self-reported version, when it sends one.
@@ -186,8 +175,8 @@ fn parse_list<T: DeserializeOwned>(
         .collect()
 }
 
-/// Cursor for the next page of a list result. An empty string is treated
-/// as the end, matching servers that use `""` for "no more".
+/// Cursor for the next page of a list result. Empty string = end, matching
+/// servers that use `""` for "no more".
 pub(crate) fn next_cursor(result: &Value) -> Option<String> {
     result
         .get("nextCursor")
@@ -219,8 +208,8 @@ pub(crate) fn prompt_result_from(result: &Value) -> Result<McpPromptResult, McpE
         .map_err(|e| McpError::Protocol(format!("prompts/get returned a bad result: {e}")))
 }
 
-/// Classify one decoded JSON-RPC value. Shared by the stdio and HTTP
-/// clients so the pairing rules stay identical.
+/// Classify one decoded JSON-RPC value. Shared by stdio + HTTP clients so the
+/// pairing rules stay identical.
 pub(crate) enum Wire {
     Request {
         id: Value,
@@ -281,10 +270,10 @@ pub(crate) fn classify(v: &Value) -> Wire {
     }
 }
 
-/// Pull the human-readable text out of a `tools/call` result's `content`
-/// blocks. This is what a projected `mcp_*` tool returns to the agent
-/// loop; when the server reports `isError: true` the caller maps it to
-/// [`McpError::ServerToolError`] first, so this never sees error results.
+/// Pull human-readable text out of a `tools/call` result's `content` blocks.
+/// This is what a projected `mcp_*` tool returns to the agent loop. Callers
+/// map `isError: true` to [`McpError::ServerToolError`] first, so errors
+/// never reach here.
 pub fn result_text(result: &Value) -> String {
     let mut out = String::new();
     if let Some(blocks) = result.get("content").and_then(|c| c.as_array()) {
@@ -306,7 +295,7 @@ pub fn result_text(result: &Value) -> String {
     }
 }
 
-/// One tool as an MCP server advertises it (subset of the wire shape).
+/// One tool as a server advertises it (subset of the wire shape).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpTool {
     pub name: String,
@@ -324,16 +313,15 @@ pub struct ProjectedTool {
     pub allowed: bool,
 }
 
-/// Map a policy token string to a capability. Unknown tokens become
-/// `Other(name)` so policy can still gate them explicitly.
-/// Delegates to [`Capability::from_token`] - the single token table.
+/// Map a policy string to a capability. Unknown tokens become `Other(name)`
+/// so policy can still gate them explicitly. Delegates to
+/// [`Capability::from_token`] - single token table.
 pub fn capability_from_token(token: &str) -> Capability {
     Capability::from_token(token)
 }
 
-/// Project a server's tools through a policy. A tool whose capability is not
-/// allowed is still listed but marked `allowed: false` so `pantheon logs` can
-/// show why it never ran.
+/// Project a server's tools through policy. A disallowed tool is still listed
+/// but marked `allowed: false` so `pantheon logs` can show why it never ran.
 pub fn project(server: &str, tools: &[McpTool], policy: &Policy) -> Vec<ProjectedTool> {
     tools
         .iter()

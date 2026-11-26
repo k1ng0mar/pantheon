@@ -1,19 +1,15 @@
-//! Tool registry: named tools with schemas + capability mapping, executed
-//! behind the agent-loop gate. Tools are runtime-owned; the model only sees
-//! schemas and gets results.
+//! tool registry: names -> schemas + capabilities, run behind the agent-loop
+//! gate. runtime owns the tools; model just sees schemas + results.
 
 use pantheon_api::capability::{Capability, Decision, Policy};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::message::ToolSchema;
 use std::collections::HashMap;
 
-/// Shared error constructor for the tool layer: `PantheonError::new` with
-/// the evidence slot pinned empty. Every module names its own remediation;
-/// `retryable` marks transient failures.
-///
-/// This replaces the eight copy-pasted `berr` / `merr` / `name_err` / ...
-/// constructors (plus ad-hoc `PantheonError::new` calls) that had drifted
-/// across the tool modules.
+/// `PantheonError::new` with the evidence slot pinned empty. callers fill in
+/// their own remediation; `retryable` means transient.
+/// there used to be eight copy-pasted `berr` / `merr` / `name_err` / ...
+/// constructors and they'd drifted apart.
 pub(crate) fn tool_err(
     code: &str,
     layer: Layer,
@@ -29,30 +25,26 @@ pub struct Tool {
     pub schema: ToolSchema,
     pub capability: Capability,
     pub run: ToolFn,
-    /// Extra capabilities this call needs on top of `capability`, decided
-    /// from the arguments. A shell tool that sees `git push` returns
-    /// `[GitPush]` here, so the loop gates the call on both.
+    /// extra caps this call needs beyond `capability`, picked from the args.
+    /// a shell tool that sees `git push` returns `[GitPush]` so the loop gates both.
     ///
-    /// Without this, an argument-insensitive static capability made the
-    /// `git push needs approval` policy rule unreachable: every push came
-    /// through `shell`, whose only capability is ShellExecute.
+    /// without this the `git push needs approval` rule was unreachable: every
+    /// push went through `shell`, whose only cap is ShellExecute.
     pub extra_capabilities: Option<ArgCapabilities>,
 }
 
-/// Derives extra required capabilities from one call's arguments.
+/// derives extra required capabilities from one call's args.
 pub type ArgCapabilities = Box<dyn Fn(&str) -> Vec<Capability> + Send + Sync>;
 
-/// Boxed tool implementation: every tool is a sync string-in/string-out
-/// closure behind the registry.
+/// Boxed tool impl: every tool is a sync string-in/string-out closure behind
+/// the registry.
 pub type ToolFn = Box<dyn Fn(&str) -> Result<String, PantheonError> + Send + Sync>;
 
-/// Identifies the tool call executing on the current thread, when the
-/// host installed one. Tools are plain `Fn(&str)` closures, so a call
-/// that must key durable side effects to its own call (the delegate
-/// tool links the child run it spawns to the parent transcript step)
-/// reads the context from here instead of growing a parameter every
-/// registration site would have to thread. Mirrors the TUI's
-/// `STREAM_RUN` thread-local.
+/// identifies the tool call running on this thread, when the host installed one.
+/// tools are plain `Fn(&str)` closures, so a call that has to key durable side
+/// effects to its own call (the delegate tool links the child run it spawns to
+/// the parent transcript step) reads it from here instead of threading a
+/// parameter through every registration site. mirrors the TUI's `STREAM_RUN`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCallContext {
     pub run_id: String,
@@ -73,9 +65,8 @@ pub fn current_call_context() -> Option<ToolCallContext> {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Tool>,
-    /// Tools loaded into the model's current turn. Auto mode starts
-    /// with a small core set; the model loads more by name through
-    /// the `load_tools` meta tool. Always-available mode loads all.
+    /// loaded into this turn. auto starts with a small core set; model loads
+    /// more via `load_tools`. always-available mode loads everything.
     loaded: std::collections::HashSet<String>,
 }
 
@@ -93,7 +84,7 @@ impl ToolRegistry {
         self.register_with(schema, capability, run, None);
     }
 
-    /// Register a tool whose required capabilities depend on the arguments.
+    /// register a tool whose required caps depend on the args.
     pub fn register_with(
         &mut self,
         schema: ToolSchema,
@@ -112,10 +103,8 @@ impl ToolRegistry {
         );
     }
 
-    /// Remove a tool by name. The nightly repair loop's host adapter
-    /// uses this to disable a broken tool: the tool stops being offered
-    /// to the agent loop, and the host records the disable so the next
-    /// registry build skips it. Returns `true` when a tool was removed.
+    /// remove a tool by name. nightly repair's host adapter uses this to
+    /// disable a broken tool. returns true if one was actually removed.
     pub fn remove(&mut self, name: &str) -> bool {
         self.tools.remove(name).is_some()
     }
@@ -128,8 +117,7 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.schema.clone()).collect()
     }
 
-    /// Schemas for tools loaded into the current turn (auto mode).
-    /// Empty loaded set means always-available: all schemas.
+    /// schemas for tools loaded this turn (auto mode). empty set = always-available.
     pub fn loaded_schemas(&self) -> Vec<ToolSchema> {
         if self.loaded.is_empty() {
             return self.schemas();
@@ -145,8 +133,7 @@ impl ToolRegistry {
         self.tools.keys().cloned().collect()
     }
 
-    /// Mark tools as loaded for the next turn. Unknown names are
-    /// ignored. Returns the names actually loaded.
+    /// mark tools loaded for next turn. unknown names ignored. returns what actually loaded.
     pub fn load_tools(&mut self, names: &[String]) -> Vec<String> {
         let mut loaded = Vec::new();
         for name in names {
@@ -157,7 +144,7 @@ impl ToolRegistry {
         loaded
     }
 
-    /// Set the always-loaded core set (auto mode start state).
+    /// set the always-loaded core set (auto-mode start state).
     pub fn set_core_tools(&mut self, names: &[String]) {
         self.loaded = names
             .iter()
@@ -170,7 +157,7 @@ impl ToolRegistry {
         self.loaded.is_empty() || self.loaded.contains(name)
     }
 
-    /// Execute by name. Unknown tool is a structured error, never a panic.
+    /// execute by name. unknown tool = structured error, never a panic.
     pub fn execute(&self, name: &str, args: &str) -> Result<String, PantheonError> {
         let tool = self.tools.get(name).ok_or_else(|| {
             tool_err(
@@ -184,10 +171,9 @@ impl ToolRegistry {
         (tool.run)(args)
     }
 
-    /// Execute with a [`ToolCallContext`] installed on this thread for
-    /// the duration of the call. The previous context (an outer call on
-    /// the same thread) is restored on return, so nested executions
-    /// never leak their identity into the caller.
+    /// execute with a [`ToolCallContext`] installed on this thread for the call.
+    /// restores the previous context on return so nested executions don't leak
+    /// their identity into the caller.
     pub fn execute_with_context(
         &self,
         name: &str,
@@ -200,18 +186,16 @@ impl ToolRegistry {
         result
     }
 
-    /// Capability a tool requires (for the loop's gate).
+    /// capability the tool requires (for the loop's gate).
     pub fn capability_of(&self, name: &str) -> Option<Capability> {
         self.tools.get(name).map(|t| t.capability.clone())
     }
 
-    /// Every capability one concrete call needs: the tool's static
-    /// capability plus anything the arguments add.
+    /// every cap one concrete call needs: static cap + anything the args add.
     ///
-    /// The loop gates on the full set, not the first capability, so a
-    /// `git push` through `shell` is checked against GitPush (which the
-    /// coder policy marks Approval) and not silently waved through as
-    /// ShellExecute.
+    /// loop gates on the FULL set, not the first cap. that's why a `git push`
+    /// through `shell` gets checked against GitPush (Approval in coder policy)
+    /// instead of being waved through as plain ShellExecute.
     pub fn required_capabilities(&self, name: &str, args: &str) -> Vec<Capability> {
         let Some(tool) = self.tools.get(name) else {
             return vec![Capability::Other(name.to_string())];
@@ -227,31 +211,25 @@ impl ToolRegistry {
         caps
     }
 
-    /// Execute by name with the capability gate applied.
+    /// execute by name with the capability gate applied.
     ///
-    /// `execute` above is capability-free by construction: it resolves a name
-    /// and calls the closure. That is the right primitive for a caller that
-    /// has *already* gated the call (the agent loop does, and it needs the
-    /// approval/diagnostic flow), but it means any other caller that reaches
-    /// for `execute` runs the tool ungated. Two did: the CLI's direct
-    /// `reg.execute("vault_*", ..)` calls and the plugin tool closures in
-    /// `supervisor.rs`, whose doc comment claimed they re-checked policy and
-    /// did not.
+    /// `execute` above does no gating on purpose - it just resolves a name and
+    /// calls the closure. fine for a caller that already gated (the agent loop,
+    /// which needs the approval/diagnostic flow), but everyone else who used it
+    /// ran the tool ungated: the CLI's direct `reg.execute("vault_*", ..)` calls
+    /// and the plugin tool closures in `supervisor.rs` both did.
     ///
-    /// This is the choke point: the gate lives here, so a new caller gets
-    /// policy enforcement by default rather than by remembering. Denials
-    /// return a structured error naming the tool and the missing capability
-    /// rather than a silent refusal, so the failure is debuggable.
+    /// gate lives here so new callers get enforcement by default. denials are
+    /// structured errors naming the tool + missing cap, not a silent refusal.
     pub fn execute_gated(
         &self,
         policy: &Policy,
         name: &str,
         args: &str,
     ) -> Result<String, PantheonError> {
-        // Resolve the name before gating. `required_capabilities` maps an
-        // unknown name to `Other(name)`, so gating first would report a
-        // capability denial for a tool that does not exist, hiding the one
-        // error the caller can actually fix (a typo in the tool name).
+        // resolve the name first. `required_capabilities` maps an unknown name
+        // to `Other(name)`, so gating first would report a cap denial for a tool
+        // that doesn't exist - hiding the one thing the caller can fix (a typo).
         if !self.tools.contains_key(name) {
             return Err(tool_err(
                 "TOOL_UNKNOWN",
@@ -265,16 +243,13 @@ impl ToolRegistry {
         for cap in &required {
             match policy.check(cap) {
                 Decision::Allow => {}
-                // Approval is not a denial, and this choke point has
-                // no run id or scope to fill a grant command with: the
-                // old message told direct callers (CLI vault commands,
-                // nightly probes, Code Mode) to run
-                // `pantheon run --taskID <run> --grant <scope>`, a
-                // command that names nothing real in their context.
-                // Say what is actually needed instead. The code stays
-                // TOOL_DENIED: callers key on it (the UI path maps it
-                // to UI_TOOL_DENIED), and the cause text now states
-                // which verdict produced it.
+                // approval isn't a denial, and this choke point has no run id or
+                // scope to fill a grant command with. the old message told direct
+                // callers (CLI vault, nightly probes, Code Mode) to run
+                // `pantheon run --taskID <run> --grant <scope>` - which names
+                // nothing real in their context. say what's actually needed.
+                // stays TOOL_DENIED: callers key on it (UI maps it to
+                // UI_TOOL_DENIED), the cause text just says which verdict fired.
                 Decision::Approval => {
                     return Err(tool_err("TOOL_DENIED", Layer::Execution, false, format!(
                             "tool '{name}' needs capability {cap:?}, which requires operator approval; \
@@ -292,9 +267,9 @@ impl ToolRegistry {
         self.execute(name, args)
     }
 
-    /// [`execute_gated`] with a call context installed. Code Mode uses this
-    /// so nested delegate/tool calls can still key durable side effects to
-    /// the outer step. The previous context is restored on return.
+    /// [`execute_gated`] with a call context installed. Code Mode uses this so
+    /// nested delegate/tool calls can key durable side effects to the outer
+    /// step. previous context restored on return.
     pub fn execute_gated_with_context(
         &self,
         policy: &Policy,
@@ -309,7 +284,7 @@ impl ToolRegistry {
     }
 }
 
-/// Parse a JSON args string; empty means empty object.
+/// parse a JSON args string; empty = empty object.
 pub fn parse_args(args: &str) -> Result<serde_json::Value, PantheonError> {
     if args.trim().is_empty() {
         return Ok(serde_json::json!({}));
@@ -325,13 +300,11 @@ pub fn parse_args(args: &str) -> Result<serde_json::Value, PantheonError> {
     })
 }
 
-/// Extract a required string argument from parsed tool args.
+/// pull a required string arg out of parsed tool args.
 ///
-/// The single implementation of a check that was copy-pasted in five places
-/// (`builtins`, `session_search_tools`, `browser/tools`, `websearch/tools`,
-/// `exec/skills`) with the same `TOOL_BAD_ARGS` shape and the same message.
-/// Public because every tool module needs it and they already depend on this
-/// crate.
+/// this was copy-pasted in five places (`builtins`, `session_search_tools`,
+/// `browser/tools`, `websearch/tools`, `exec/skills`) with the same
+/// `TOOL_BAD_ARGS` shape + message. public because every tool module needs it.
 pub fn arg_str(v: &serde_json::Value, key: &str) -> Result<String, PantheonError> {
     v.get(key)
         .and_then(|x| x.as_str())
@@ -406,11 +379,9 @@ mod call_context_tests {
 
     #[test]
     fn execute_gated_names_the_verdict_without_a_fake_grant_command() {
-        // A BinaryTrace tool: the coder policy parks it (Approval),
-        // the default policy denies it. Neither error may name a
-        // `pantheon run --taskID <run> --grant <scope>` command:
-        // execute_gated has no run or scope, so that remediation
-        // named placeholders, not anything the caller could run.
+        // BinaryTrace tool: coder policy parks it (Approval), default denies it.
+        // neither error may name `pantheon run --taskID <run> --grant <scope>`:
+        // execute_gated has no run/scope, so that "remediation" was placeholders.
         let mut reg = ToolRegistry::new();
         reg.register(
             ToolSchema {
@@ -463,7 +434,7 @@ mod call_context_tests {
             pantheon_api::capability::Capability::FilesystemRead,
             |_| Ok("x".into()),
         );
-        // Empty loaded set = always available.
+        // empty loaded set = always available.
         assert!(!reg.loaded_schemas().is_empty());
         reg.set_core_tools(&["probe".into()]);
         assert_eq!(reg.loaded_schemas().len(), 1);
@@ -477,7 +448,7 @@ mod call_context_tests {
     #[test]
     fn context_is_installed_for_one_call_and_restored_after() {
         let reg = probe_registry();
-        // No context outside an installed execution.
+        // no context outside an installed execution.
         assert_eq!(current_call_context(), None);
         assert_eq!(reg.execute("probe", "").unwrap(), "none");
         let ctx = ToolCallContext {
@@ -488,7 +459,7 @@ mod call_context_tests {
             reg.execute_with_context("probe", "", ctx).unwrap(),
             "run-1:call_3"
         );
-        // Restored afterwards: later plain calls see no context.
+        // restored after: later plain calls see no context.
         assert_eq!(current_call_context(), None);
         assert_eq!(reg.execute("probe", "").unwrap(), "none");
     }

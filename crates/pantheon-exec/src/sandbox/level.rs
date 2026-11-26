@@ -1,35 +1,28 @@
-//! Execution boundaries and the limits attached to each level (§10).
+//! execution boundaries. level is the policy, boundary is the mechanism that
+//! actually enforces it here, profile is the limit set handed to the executor.
 //!
-//! The level is a policy value; the boundary is the mechanism that enforces
-//! it on this host, and the profile is the concrete limit set handed to the
-//! executor. Pattern we follow: capability-dropped containers, no-new-privs,
-//! per-boundary rlimits - sandboxing as a runtime primitive, not a Docker
-//! wrapper.
+//! containers with dropped caps, no-new-privs, rlimits. no docker wrapper.
 
 use super::SandboxLevel;
 use serde::{Deserialize, Serialize};
 
-/// The mechanism that actually enforces a level.
-///
-/// Kept separate from [`SandboxLevel`] so a level can be compared and
-/// persisted as policy while the boundary stays an implementation detail.
+/// separate from SandboxLevel so a level can be compared and stored as policy
+/// while the mechanism stays an implementation detail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionBoundary {
-    /// Direct in-process call. LOW.
+    /// in-process
     InProcess,
-    /// Forked child process under rlimits. MEDIUM.
+    /// forked child under rlimits
     IsolatedProcess,
-    /// Container with dropped capabilities and no-new-privs. HIGH.
+    /// container with dropped caps and no-new-privs
     Container,
-    /// Strict namespace isolation (bwrap with every namespace unshared).
-    /// VERY HIGH. Honest naming: this is the strongest OS-level boundary
-    /// the runner offers - no hypervisor, no guest kernel, no VM semantics
-    /// of any kind. (A real VM backend was considered and rejected.)
+    /// bwrap with every namespace unshared. the strongest thing we've got - no
+    /// vm, no guest kernel. a real vm backend was considered and rejected.
     StrictNamespaces,
 }
 
 impl SandboxLevel {
-    /// Boundary that enforces this level.
+    /// which mechanism enforces this level
     pub fn boundary(self) -> ExecutionBoundary {
         match self {
             SandboxLevel::Low => ExecutionBoundary::InProcess,
@@ -39,97 +32,75 @@ impl SandboxLevel {
         }
     }
 
-    /// Execution limits for this level.
+    /// limits for this level
     pub fn profile(self) -> SandboxProfile {
         profile_for(self)
     }
 }
 
-/// Concrete limits handed to the executor for one execution.
-///
-/// `None` means "this level does not impose that limit" - never "unlimited
-/// by design". The runtime may tighten any field, never loosen it.
+/// `None` means this level doesn't impose that limit - not "unlimited". the
+/// runtime can tighten a field, never loosen one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxProfile {
     pub level: SandboxLevel,
     pub boundary: ExecutionBoundary,
-    /// Drop all capabilities from the bounding set before exec.
     pub drop_capabilities: bool,
-    /// Set PR_SET_NO_NEW_PRIVS so setuid/setcap binaries cannot escalate.
+    /// PR_SET_NO_NEW_PRIVS, so a setuid/setcap binary can't climb out
     pub no_new_privs: bool,
-    /// Whether this boundary may mediate network egress at all. Egress is
-    /// still capability-gated (`network.outbound`); this is the outer limit.
+    /// may this boundary mediate egress at all. still gated by
+    /// `network.outbound`, this is just the outer limit
     pub network: bool,
     pub max_memory_mb: Option<u64>,
     pub max_pids: Option<u32>,
-    /// Wall-clock budget for the execution, in milliseconds.
+    /// wall clock budget, ms
     pub wall_clock_ms: u64,
-    /// Opt-in to the direct-spawn fallback: when the boundary's wrapper
-    /// (bwrap/unshare) cannot initialize, run the command directly on the
-    /// host instead of failing. Default is `false` - the runner fails
-    /// closed. The `PANTHEON_SANDBOX_FALLBACK=allow` environment variable
-    /// enables the same fallback at run time without touching profiles.
-    /// Tool plugins set `allow_env_fallback` to false so only the manifest
-    /// flag can opt in, never the global env var.
+    /// when bwrap/unshare can't init, run the command on the host instead of
+    /// failing. default false, runner fails closed. PANTHEON_SANDBOX_FALLBACK=allow
+    /// does the same at runtime without touching profiles. tool plugins force this
+    /// false so only their manifest can opt in.
     #[serde(default)]
     pub allow_direct_fallback: bool,
-    /// Whether the global `PANTHEON_SANDBOX_FALLBACK` env var may opt in
-    /// for this profile. Default true for existing callers. Tool plugins
-    /// set false so fallback is per plugin manifest only.
+    /// may the global PANTHEON_SANDBOX_FALLBACK env var opt in for this one.
+    /// tool plugins set false, so fallback is manifest-only.
     #[serde(default = "default_allow_env_fallback")]
     pub allow_env_fallback: bool,
-    /// Apply a seccomp syscall filter in the child before exec.
+    /// seccomp filter in the child. namespaces decide what it can see, seccomp
+    /// decides what it can ask the kernel to do - a namespace-confined process
+    /// can still call ptrace/bpf/userfaultfd/keyctl, and that's the way out.
+    /// deny by default with an allowlist, after no_new_privs (seccomp needs that
+    /// bit for an unprivileged filter).
     ///
-    /// Namespaces (bwrap) decide what the child can *see*; seccomp decides
-    /// what it can *ask the kernel to do*. The two are complementary: a
-    /// namespace-confined process can still call `ptrace`, `bpf`,
-    /// `userfaultfd`, or `keyctl`, and those are how a confined process
-    /// escapes. Deny-by-default with a curated allowlist, applied after
-    /// `no_new_privs` (seccomp requires that bit for unprivileged filters).
-    ///
-    /// Linux-only. On a kernel or build without seccomp support the runner
-    /// refuses rather than running unfiltered when this is set, because a
-    /// silent downgrade is exactly the wrong-strength bug the namespace
-    /// path already fixed.
+    /// linux only. if the kernel can't do it we refuse instead of running
+    /// unfiltered - a silent downgrade is the wrong-strength bug the namespace
+    /// path already had once.
     #[serde(default)]
     pub seccomp: bool,
-    /// Apply a Landlock filesystem ruleset in the child before exec.
-    ///
-    /// The third layer: namespaces hide, seccomp restricts syscalls,
-    /// Landlock restricts *file paths* the process may touch even as the
-    /// owning user. Where the profile's `cwd` is the only writable root,
-    /// a confined process cannot write to `$HOME` or `/tmp` even though
-    /// its uid allows it. Requires kernel Landlock support (ABI >= 1).
+    /// landlock ruleset in the child. the third layer: namespaces hide, seccomp
+    /// restricts syscalls, landlock restricts paths - even for the owning uid.
+    /// needs kernel ABI >= 1.
     #[serde(default)]
     pub landlock: bool,
-    /// Paths the Landlock ruleset grants read+write. Empty = the `cwd`
-    /// alone. Read access is granted to the whole filesystem so the
-    /// program can load its libraries; only write is restricted, which is
-    /// the boundary that matters for an agent running untrusted commands.
+    /// paths landlock grants read+write. empty = cwd only. read stays open
+    /// everywhere so libraries load; write is the part that matters.
     #[serde(default)]
     pub writable_paths: Vec<String>,
-    /// Host paths masked inside the bwrap boundaries (Container,
-    /// StrictNamespaces): a directory is covered by an empty tmpfs, a
-    /// file by `/dev/null`. The shell and terminal tools fill this with
-    /// [`super::sensitive_paths`] so a model-run command cannot read the
-    /// data dir's secrets, SSH keys or cloud credentials through the
-    /// read-only root bind (audit SEC-01). Empty by default: plugin and
-    /// MCP profiles keep their current view.
+    /// masked inside bwrap (Container, StrictNamespaces): dirs get an empty
+    /// tmpfs, files get /dev/null. shell/terminal fill this from [`sensitive_paths`]
+    /// so a model-run command can't read the data dir's secrets, ssh keys, or cloud
+    /// creds through the read-only root bind. empty for plugin and mcp profiles.
     #[serde(default)]
     pub hidden_paths: Vec<String>,
 }
 
-/// On for the built-in profiles: `PANTHEON_SANDBOX_FALLBACK=allow` stays
-/// an operator opt-in that existing setups rely on (decision D2 keeps
-/// `.env` keys working). It is never on unless that variable is set, the
-/// `.env` loader flags it as a security-boundary key, and every degraded
-/// spawn is announced on stderr and in the tool result. Tool plugins
-/// set this false so only their manifest can opt in.
+/// on for built-in profiles: PANTHEON_SANDBOX_FALLBACK=allow is an operator opt-in
+/// existing setups rely on. never on unless the var is set, the .env loader flags
+/// it as a security key, and every degraded spawn says so on stderr + in the tool
+/// result.
 fn default_allow_env_fallback() -> bool {
     true
 }
 
-/// Execution limits for a level.
+/// limits for a level
 pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
     match level {
         SandboxLevel::Low => SandboxProfile {
@@ -189,11 +160,8 @@ pub fn profile_for(level: SandboxLevel) -> SandboxProfile {
             max_memory_mb: Some(2048),
             max_pids: Some(64),
             wall_clock_ms: 300_000,
-            // The strongest boundary gets all three layers. Namespaces
-            // decide what the child sees, seccomp what it may ask the
-            // kernel to do, Landlock which paths it may write. This is the
-            // level only reached after interactive approval, so the extra
-            // layers cost nothing in the common path.
+            // strongest boundary, all three layers. only reachable after
+            // interactive approval, so it costs nothing on the common path
             seccomp: true,
             landlock: true,
             writable_paths: Vec::new(),

@@ -1,27 +1,19 @@
 /* Bundled-plugin registry generator.
 
-Walks `bundled-plugins/<name>/`, collecting every UTF-8 text file,
-and renders the Rust registry source with `include_str!` embeddings
-plus a per-plugin sha256 over the (relative path, content) pairs.
-Seeding (`pantheon_exec::plugins::seed_bundled_plugins`) re-hashes the
-materialized directory against the embedded digest and fails closed
-on mismatch.
+Walks `bundled-plugins/<name>/`, embeds every UTF-8 text file with
+`include_str!`, and computes a sha256 over the (relative path, content) pairs.
+Seeding (`pantheon_exec::plugins::seed_bundled_plugins`) re-hashes what landed
+on disk against that digest and fails closed on mismatch.
 
-Each plugin directory holds EITHER `manifest.yaml` (tool plugin,
-Pantheon tool-plugin schema) OR `plugin.yaml` (hook plugin,
-extensions shape). Directories with neither are ignored; directories
-with both are skipped with a warning.
+A plugin dir holds either `manifest.yaml` (tool plugin, Pantheon tool-plugin
+schema) or `plugin.yaml` (hook plugin, extensions shape). Neither = ignored,
+both = skipped w/ a warning.
 
-Content workers add plugins by adding directories - no code changes,
-no per-plugin hand edits. Only UTF-8 text files are embedded; anything
-else is reported as skipped so a stray binary never breaks the build.
-Build/test artifacts (`__pycache__/`, `*.pyc`, dotfiles) are excluded
-silently instead - they are never content, so warning about them
-would be noise.
+Add a dir to add a plugin. `__pycache__/`, `*.pyc` and dotfiles are dropped
+silently - never content, warning about them every build would be noise.
 
-NOTE: this file is `include!`d by build.rs (alongside `plugin_hash.rs`,
-which provides `canonical_sha256`), so it must not start with inner
-(`//!`) doc comments. */
+NOTE: included by build.rs next to `plugin_hash.rs` (which provides
+`canonical_sha256`), so no inner (`//!`) doc comments here. */
 
 /* Which half of the plugin system a bundled plugin belongs to. */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,7 +23,7 @@ pub enum BundledPluginKind {
 }
 
 impl BundledPluginKind {
-    /* Stable lowercase token, also used in the generated registry. */
+    /* Lowercase token for the generated registry and `as_str()`. */
     pub fn as_str(self) -> &'static str {
         match self {
             BundledPluginKind::Tool => "tool",
@@ -39,7 +31,7 @@ impl BundledPluginKind {
         }
     }
 
-    /* The manifest file that declares this kind. */
+    /* manifest that declares this kind */
     pub fn manifest_file(self) -> &'static str {
         match self {
             BundledPluginKind::Tool => "manifest.yaml",
@@ -48,17 +40,16 @@ impl BundledPluginKind {
     }
 }
 
-/* One bundled plugin found on disk. */
+/* one plugin dir found on disk */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundledPluginDef {
-    /* Directory name under `bundled-plugins/` (also the seed target name). */
+    /* dir name under `bundled-plugins/` (also the seed target name) */
     pub dir_name: String,
     pub kind: BundledPluginKind,
-    /* (relative path with `/` separators, absolute path, UTF-8 content). */
+    /* (relative path with `/` separators, absolute path, UTF-8 content) */
     pub files: Vec<BundledPluginFileDef>,
 }
 
-/* One embedded text file. */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundledPluginFileDef {
     pub rel: String,
@@ -66,16 +57,16 @@ pub struct BundledPluginFileDef {
     pub content: String,
 }
 
-/* Non-UTF8 files met during the walk: skipped with a build warning. */
+/* non-UTF8 / unreadable files, skipped w/ a build warning */
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedPluginFile {
     pub plugin: String,
     pub rel: String,
 }
 
-/* Plugin-dir slug rule, mirroring `pantheon_exec::skills::valid_slug`
-(ASCII alphanumerics plus `-`/`_`, 1..=64). The build script cannot
-depend on the crate it builds, so the rule is duplicated here. */
+/* plugin-dir slug: same rule as `pantheon_exec::skills::valid_slug` (ASCII
+alnum + `-`/`_`, 1..=64). build scripts can't depend on the crate they build,
+so it's duplicated here. */
 fn valid_plugin_slug(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty()
@@ -85,15 +76,11 @@ fn valid_plugin_slug(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_')
 }
 
-/* Canonical content hash over (relative path, content) pairs. Lives in
-`plugin_hash.rs`, shared between build.rs (hash of what gets embedded)
-and the seed-time re-hash in `pantheon_exec::plugins` (hash of what
-landed on disk) - see that file for the canonical form. */
+/* content hash lives in `plugin_hash.rs`, shared between build.rs (what gets
+embedded) and seed-time (what landed on disk). same canonical form both sides. */
 
-/* Discover bundled plugins under `root`
-(`crates/pantheon-exec/bundled-plugins`). Returns `(plugins,
-skipped_files)`, plugins sorted by dir name for a deterministic
-registry. */
+/* find plugins under `root` (`crates/pantheon-exec/bundled-plugins`);
+sorted by dir name so the registry is deterministic */
 pub fn discover_bundled_plugins(
     root: &std::path::Path,
 ) -> (Vec<BundledPluginDef>, Vec<SkippedPluginFile>) {
@@ -144,20 +131,15 @@ pub fn discover_bundled_plugins(
     (plugins, skipped)
 }
 
-/* Build and test artifacts that must never enter the embedded bundle,
-even if a content worker runs a test suite inside the plugin dir:
-`__pycache__/` bytecode caches, `*.pyc` files, and dotfiles/dotdirs.
-These are skipped SILENTLY - not recorded as skipped, no build
-warning - because they are never plugin content; warning about them
-would just be noise on every build. (Non-UTF8 files and symlinks,
-by contrast, are recorded and warned about, since those may be
-content the worker intended to ship.) */
+/* never embed build/test leftovers, even if a content worker ran tests in
+the plugin dir: `__pycache__/`, `*.pyc`, dotfiles. skipped SILENTLY - no
+warning, never content. non-UTF8 and symlinks are recorded instead since
+those might be content the worker meant to ship. */
 fn is_artifact_name(name: &str) -> bool {
     name == "__pycache__" || name.ends_with(".pyc") || name.starts_with('.')
 }
 
-/* Recursively collect UTF-8 text files under `dir`; `rel_prefix` is the
-already-accumulated relative path ("" at the top). */
+/* walk `dir` for UTF-8 text; `rel_prefix` is the relative path so far ("" at top) */
 fn collect_plugin_text_files(
     dir: &std::path::Path,
     rel_prefix: &str,
@@ -177,8 +159,8 @@ fn collect_plugin_text_files(
         if is_artifact_name(name) {
             continue;
         }
-        // Symlinks are never embedded: the registry must be self-contained
-        // bytes, not pointers into the build machine's filesystem.
+        // no symlinks: registry should be self-contained bytes, not pointers
+        // into whoever's build machine
         if p.is_symlink() {
             skipped.push(SkippedPluginFile {
                 plugin: plugin.to_string(),
@@ -219,12 +201,9 @@ fn join_rel(prefix: &str, name: &str) -> String {
     }
 }
 
-/* Render the registry Rust source. Each file is embedded with
-`include_str!` at an ABSOLUTE path, so content is read at crate
-compile time (fresh on every build) rather than serialized into the
-generated source as escaped literals. The sha256 is computed over the
-contents read here at build time; seeding re-hashes the materialized
-files with the same canonical form. */
+/* render registry source. absolute `include_str!` paths -> content is read at
+compile time, fresh each build. sha256 is over what's read here; seeding
+re-hashes the materialized files with the same canonical form. */
 pub fn render_plugin_registry_rs(defs: &[BundledPluginDef]) -> String {
     let mut out = String::from("// @generated by crates/pantheon-exec/build.rs - do not edit.\n");
     out.push_str(
