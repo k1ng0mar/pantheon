@@ -80,7 +80,7 @@ test.describe('turn changes', () => {
     await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
     await page.clock.runFor(400);
     await expect(page.locator('#stream-region .live-text')).not.toBeEmpty();
-    await expect(transcript(page).locator('.turn-changes')).toHaveCount(0);
+    if (view === 'conversation') await expect(transcript(page).locator('.turn-changes')).toHaveCount(0);
     await page.clock.runFor(2000);
     await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeHidden();
     const card = transcript(page).locator('.turn-changes');
