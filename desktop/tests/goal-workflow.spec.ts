@@ -87,6 +87,9 @@ test('goal workflow keeps edits through goal events and reports failed changes',
   await startGoal(page);
   await banner(page).getByRole('button', { name: 'Manage task goal', exact: true }).click();
   const objective = goalDialog(page).getByRole('textbox', { name: 'Goal objective' });
+  // The dialog loads the current goal asynchronously. Typing before it settles
+  // can race the load and append to the loaded objective instead of replacing it.
+  await expect(goalDialog(page).getByRole('button', { name: 'Save goal', exact: true })).toBeEnabled();
   await objective.fill('Keep this revised objective');
   const retained = await objective.elementHandle();
   await page.evaluate(() => {
