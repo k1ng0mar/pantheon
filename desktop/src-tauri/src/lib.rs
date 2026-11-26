@@ -1,5 +1,7 @@
 mod agent_tools;
 mod appearance;
+#[cfg(test)]
+mod tool_ownership;
 mod architect;
 mod bots;
 mod browser;
