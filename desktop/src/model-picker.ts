@@ -55,7 +55,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" aria-label="Search models" placeholder="Search models…" autocomplete="off" spellcheck="false" maxlength="200"></div>${canSwitchProvider ? '' : '<p class="model-menu-note">Start a new task to switch models.</p>'}<div class="model-menu-list"></div><div class="model-menu-settings" hidden></div><p class="model-menu-catalog-error" role="status" hidden></p><p class="model-menu-error" role="alert" hidden></p><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" aria-label="Search providers and models" placeholder="Search providers and models…" autocomplete="off" spellcheck="false" maxlength="200"></div>${canSwitchProvider ? '' : '<p class="model-menu-note">Start a new task to switch providers.</p>'}<div class="model-menu-list"></div><div class="model-menu-settings" hidden></div><p class="model-menu-catalog-error" role="status" hidden></p><p class="model-menu-error" role="alert" hidden></p><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
   const settings = panel.querySelector<HTMLElement>('.model-menu-settings')!;

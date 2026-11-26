@@ -202,7 +202,7 @@ test.describe('bots', () => {
     await newBot(page);
     await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-    await picker.getByRole('searchbox', { name: 'Search models', exact: true }).fill('bot-thread-model');
+    await picker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('bot-thread-model');
     await picker.getByRole('button', { name: 'Use "bot-thread-model" with Pantheon', exact: true }).click();
     await expect(page.locator('#composer')).toContainText('bot-thread-model');
     // Saved on the conversation itself: it is still chosen after leaving and coming back.
