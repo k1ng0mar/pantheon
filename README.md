@@ -1,199 +1,118 @@
 # Pantheon
 
 <p align="center">
-  <strong>The durable runtime for AI agents.</strong><br>
-  <em>The model proposes. Pantheon disposes.</em>
+  <strong>Your AI. Your way of working.</strong><br>
+  <em>An open, general-purpose AI agent harness.</em>
 </p>
 
 <p align="center">
   <a href="https://github.com/k1ng0mar/pantheon/actions/workflows/ci.yml"><img src="https://github.com/k1ng0mar/pantheon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/k1ng0mar/pantheon/releases"><img src="https://img.shields.io/github/v/release/k1ng0mar/pantheon?display_name=tag" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/Rust-2021-orange?logo=rust" alt="Rust 2021">
 </p>
 
-## The problem
+Pantheon turns a model you choose into an agent you control. Connect a provider, give the agent tools, and put it to work on your own machine. It handles sessions, memory, permissions and recovery. You decide what the agent does and what it can touch.
 
-Models are stateless oracles. You hand one a conversation and it returns the next token - fluent, confident, and amnesiac. Kill the process and the agent dies with it: no record of what it decided, no record of what it touched, no way to resume except replaying the transcript and hoping.
+No cloud account. No server to keep alive. One binary and a config file in your home directory.
 
-A conversation is not durable state. A prompt is not a policy. And a model that can run shell commands with your UID because it *said so in a tool call* is not an agent you own - it's a very eloquent guest with root.
+## Who it is for
 
-Every agent harness eventually rediscovers this. The ones that don't are demos.
+Pantheon is not only a coding tool. Four groups tend to recognize themselves in it:
 
-## The thesis
+| You want to | What that looks like |
+| --- | --- |
+| Get everyday work off your plate | Organize information, research a topic, handle repetitive tasks, keep track of what you asked for last week |
+| Run a small business or a team | Automate admin work, process documents, keep recurring jobs on schedule, connect the tools you already use |
+| Build software | Debug, review changes, manage a repository, run tests, work across several models without rebuilding your setup |
+| Build something specialized | Gather sources, run scheduled research, add plugins and skills, shape an agent around a workflow nobody else has |
 
-**Runtime authority over model authority.** The model reasons; the runtime decides what happens. Pantheon sits between the model and the world and enforces three separations:
+The common thread is simple. You have work you want done, and you would rather do it with an agent than build an agent framework first.
 
-- **Policy is enforced at execution, not at prompt time.** The model never sees a policy it can argue with. Tool calls pass a capability gate in the runtime: allow, deny, or pause for human approval. A jailbroken system prompt changes nothing - the gate isn't in the prompt.
-- **The SQLite event ledger is the source of truth.** Every turn, tool call, approval, and failure is appended to a local, WAL-mode SQLite database. Sessions survive crashes, restarts, and provider outages because the agent's state is the ledger, not the context window. Rewind in the UI never rewrites history; the ledger only appends, with retention pruning and explicit run deletion as the sole removals.
-- **Memory is provenance-aware, not a suggestion box.** Every memory carries its trust tier and origin. External tiers are clamped to Untrusted; writes are scanned for secret patterns before they land. Memory provides context; it never grants authority.
+## What you get
 
-Pantheon is written in Rust, runs as a single binary, and keeps its state in your home directory. No database server. No sidecar. No cloud account required.
+| | |
+| --- | --- |
+| **Your model, your terms** | Use OpenAI, Anthropic, Gemini or a custom endpoint. Switch providers without rebuilding the agent around one vendor. |
+| **Ready in a few commands** | Install, answer a few setup questions, start talking. You do not need to understand tool call protocols or orchestration to begin. |
+| **One agent, many kinds of work** | Coding is a capability here, not the identity. The same agent can research, write, schedule and operate tools. |
+| **Permissions you can see** | Allow, deny or ask for every capability. Approvals pause a run and can be granted from the terminal, the web UI or a chat gateway. |
 
-## How it works
+Pantheon also grows with you. Plugins, skills, MCP servers, memory backends and Discord or Telegram gateways all plug into the same runtime. What the agent can actually do depends on the model you connect, the tools you grant and the permissions you set. It does not promise to do everything.
 
-### 30 seconds
+## Start using it
+
+Linux or macOS:
 
 ```sh
-# Install (Linux/macOS; Windows has an equivalent .ps1)
 curl -fsSL https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.sh | bash
+```
 
-# Configure: names the env var, never the key
-pantheon setup --provider openai --model gpt-4o-mini --api-key-env OPENAI_API_KEY
-export OPENAI_API_KEY=<your-key>
+Windows (PowerShell):
 
-# Open the terminal UI
+```powershell
+iwr https://raw.githubusercontent.com/k1ng0mar/pantheon/master/install.ps1 -useb | iex
+```
+
+Then set up a provider and open the terminal app:
+
+```sh
+pantheon setup
 pantheon
 ```
 
-Scripts and automation use `pantheon run "task"`; inspect anything with `pantheon runs <run_id>`; diagnose with `pantheon doctor`. Build from source with `cargo build --release` (Rust 2021, SQLite bundled).
+`setup` asks which provider and model to use, where your API key lives and how strict permissions should be. The config file names the environment variable holding the key. The key itself never lands in config.
 
-### The turn loop
+Type `/help` inside the app. For scripts, run one task and exit:
 
-```text
-┌─────────┐   ┌──────────┐   ┌──────────────┐   ┌───────────┐
-│   TUI   │──▶│ Runtime  │──▶│ Agent engine │──▶│ Providers │
-│ tabs ·  │   │(session  │   │ (turn loop,  │   │ OpenAI /  │
-│ status  │   │ runs ·   │   │  unique call │   │ Anthropic │
-│ bar ·   │   │ approvals│   │  IDs, run    │   │ + custom  │
-│ timeline│   │ recovery)│   │  budgets)    │   │ endpoints │
-└─────────┘   └────┬─────┘   └──────────────┘   └───────────┘
-                   │                                  │
-                   │        ┌──────────────┐           │
-                   ├───────▶│ Capability   │◀──────────┘
-                   │        │ gate         │  allow · deny ·
-                   │        └──────┬───────┘  approve
-                   │               │
-                   │        ┌──────▼───────┐
-                   │        │ Tools (shell,│
-                   │        │ fs, memory,  │
-                   │        │ MCP client...)│
-                   │        └──────┬───────┘
-                   │               │
-                   │        ┌──────▼───────┐
-                   └───────▶│ Sandbox      │
-                            │ (fail-closed │
-                            │ isolation)   │
-                            └──────┬───────┘
-                                   │
-                            ┌──────▼───────┐
-                            │ SQLite event │
-                            │ ledger (WAL) │
-                            └──────────────┘
+```sh
+pantheon run --taskID t1 --say "summarize these logs" --deliver session
 ```
 
-Surfaces (TUI, web, Discord, Telegram gateways, CLI) all speak to the same session runtime. The model proposes tool calls; the capability gate, sandbox, and ledger decide what they become.
+`pantheon doctor` checks the config, the key, storage and memory, then tells you how to fix what is wrong. Build from source with `cargo build --release` if you prefer. Rust is the only dependency.
 
-## Mechanisms - and what each one buys you
+## How it behaves
 
-**The ledger.** Every lifecycle event - turn started, tool called, approval requested, cost stamped - is appended to a SQLite database in WAL mode with a busy timeout. Ledger writes are redacted at append time: every string in an event is scrubbed of known key formats and of every secret the broker has handed out, and blocked-command errors carry a digest and rule name, never raw text. A resumed session therefore sees `[REDACTED]` where a secret was pasted. *Trust:* a crashed process loses nothing. `pantheon runs <id>` shows exactly what happened, and resuming a run is replay, not reconstruction. Two qualifications keep the claim honest: retention (`prune_events_before*`) and explicit run deletion (`delete_run`) remove rows, so "append-only" describes normal operation, not an absolute; and events carry no hash chain and no format version, so the ledger is an audit trail you control, **not tamper-evident** evidence against someone with write access to the file.
+**Sessions survive restarts.** Every turn, tool call and approval is appended to a SQLite event ledger in your data dir. Close the app, reopen it, and the run picks up from the ledger rather than from a hoped-for transcript. Ledger writes are redacted as they land, so pasted secrets do not stay in the history.
 
-**Approvals as first-class control.** The capability decision isn't binary: allow, deny, or *ask a human*. Approvals pause the run and resume it - settling the whole batch, not just one call - from the TUI, the web UI, or the messaging gateways. *Trust:* you can hand an agent real capabilities (shell, network, memory writes) and keep a human veto on the dangerous ones, without babysitting every step.
+**The model never sets policy.** Tools declare the capability they need. The runtime decides whether to allow it, deny it or pause for a human. A clever prompt cannot talk its way past the gate, because the gate is not in the prompt.
 
-**Fail-closed sandbox.** Tool execution requests an isolation level. If the sandbox wrapper can't establish it, the command does not run. The only way around that is an explicit operator opt-in, `PANTHEON_SANDBOX_FALLBACK=allow`, which runs the command directly on the host (environment scrubbed, limits applied, no namespace isolation) and says so on stderr and in the tool result. Model-run shell and terminal commands run in a user namespace with every capability dropped, cannot see Pantheon's data dir or common credential files (`~/.ssh`, `~/.aws`, `~/.config/gh`, ...), and are offline unless the call asks for network, which the default policy approves once per session. *Trust:* "the sandbox was unavailable" can never silently become "the agent ran it on your machine anyway." The namespace boundary is Linux-only (bubblewrap plus unprivileged user namespaces). On macOS and Windows no boundary backend exists, so High-sandbox calls fail closed there and the fallback runs on the host with a scrubbed environment and rlimits only - see the platform table in the getting-started guide before relying on isolation.
+**Memory carries its origin.** Records keep a trust tier and a source. Outside material is clamped down to Untrusted, and writes are scanned for secret patterns. Memory informs the agent without granting it authority.
 
-**The danger gate.** Before shell text reaches execution, a pre-gate blocks `sh -c`/`eval` wrappers, `${IFS}` tricks, command substitution, backticks, `find -delete`/`-exec`, and obfuscated `rm`. Blocked errors name the rule, not the command - so a denied command containing a token can't leak it into the ledger. *Trust:* the most common prompt-injection-to-shell paths are dead before they reach your filesystem.
+**Isolation is honest about its limits.** On Linux, shell calls request a bubblewrap user namespace with capabilities dropped, no access to your credential files and no network unless the call asks for it. If that boundary cannot be created, the call fails unless you explicitly opt into a direct spawn. macOS and Windows have no boundary backend today, so treat shell access there as unsandboxed and keep approvals on. `pantheon doctor` tells you which case you are in.
 
-**Capability-gated tools.** Every tool declares the capability it needs; the runtime policy (`reader`, `coder`, `coder_memory`) decides per operation. File tools are confined to the workspace root with `O_NOFOLLOW`, and plugin names can't squat builtins. *Trust:* a compromised or confused model can't reach `~/.ssh` because the path boundary isn't in the prompt - it's in the syscall-adjacent layer.
+**Scheduled work is durable.** Cron, one-shot and interval jobs claim their ticks through a table that survives restarts, so a job does not fire twice because the process came back.
 
-**Durable scheduler claims.** Cron (with a fixed Vixie DOM/DOW interpretation), one-shot, and interval jobs register with validation and claim their ticks through a unified claims table - surviving restarts without double-firing. Per-job timeouts (default 600s), overlap policies (skip/replace/queue), and durable run history for repair. Webhook triggers were removed; a persisted legacy webhook row is dropped on load with a warning, never executed. *Trust:* scheduled work is a runtime guarantee, not a process that has to stay alive - provided a Pantheon process is running.
+## Under the hood
 
-**Output caps that ride the wire.** `/tokens N` (or `[budget].max_tokens` in config) caps how many tokens the model may emit per response - session override beats config beats the model's known maximum output (16k fallback when unknown), clamped to what the model actually supports. *Trust:* a runaway model can't dump a novel into your transcript; the cap is enforced in the request body, not the prompt.
+Pantheon is a Rust workspace that ships as one binary. The runtime owns the session lifecycle, approvals, recovery and event ledger. Providers are replaceable. Tools, memory, plugins and the TUI sit at the edges. The architecture doc explains the crate boundaries and the decisions behind them: [docs/developer/architecture.md](docs/developer/architecture.md).
 
-**Trust-tiered memory.** Five memory layers plus runtime state, each with byte budgets and trust-aware eviction. External tiers (remote servers, imported files) are clamped to Untrusted regardless of what they claim; writes are scanned for secret patterns before landing. *Trust:* memory retrieved from outside can't launder itself into a trusted instruction, and your API keys don't end up in the memory store.
+Pantheon Desktop lives in [desktop/](desktop/README.md) as a first-party client.
 
-**Transactional migration.** Importing state (detect → plan → approve → apply → validate) runs as stage → validate → atomic commit, with automatic rollback and byte/file budgets. *Trust:* migrating from another harness is a transaction, not a hope - a failed import leaves your existing state untouched.
+## Documentation
 
-## Crate map
-
-| Crate | One line |
-|---|---|
-| `pantheon` | Façade: re-exports every library crate under `pantheon::...` |
-| `pantheon-tui` | The terminal product - TUI, CLI verbs, session tabs, status bar |
-| `pantheon-runtime` | Supervisor: run lifecycle, quotas, recovery, checkpointing, swarm delegation |
-| `pantheon-agent` | Agent engine primitives: run budgets, capability policy/role maps, sub-agent registry (the production turn loop is `pantheon-runtime::Session::drive`) |
-| `pantheon-api` | Bottom protocol leaf: commands, events, shared types, config document, plugin approval, agent profiles |
-| `pantheon-exec` | Execution engine: process/fs/git surface, danger gate, confinement, sandbox levels, plugin approval |
-| `pantheon-tools` | Named, schema'd, capability-gated tools (shell, fs, memory, ...) |
-| `pantheon-web` | Browser automation + web search |
-| `pantheon-mcp` | MCP client (stdio): `initialize` / `tools/list` / `tools/call` |
-| `pantheon-memory` | Memory plane: five layers + runtime state, trust tiers |
-| `pantheon-secrets` | Secrets broker: values resolved at execution, never in prompts |
-| `pantheon-storage` | SQLite event-sourced execution ledger |
-| `pantheon-scheduler` | Durable jobs: cron, one-shot, interval, claims |
-| `pantheon-gateway` | Discord/Telegram gateways: routing, queues, dead-letter |
-| `pantheon-extensions` | Hooks and plugins: spec, `plugin.yaml` loader, Python/JS runners |
-| `pantheon-migration` | Import flows: detect → plan → approve → apply → validate |
-| `pantheon-providers` | Provider adapters: OpenAI, Anthropic, Gemini, custom endpoints, fallbacks |
-| `pantheon-doctor` | Structured diagnostics engine behind `pantheon doctor` and `GET /api/health` |
-| `pantheon-helper` | Detached self-update handoff binary: verify, swap, restart |
-| `pantheon-nightly` | Nightly self-improvement pass: proposals, memory consolidation, repair |
-| `pantheon-release-verify` | Offline minisign verification for release archives |
-| `pantheon-dashboard` | Web dashboard: runs, swarm, session factory, health |
-| `pantheon-eval` | Behavioral/integration test suite (`cargo test -p pantheon-eval`) |
-
-## Configuration
-
-`config.toml` in the data dir (`$PANTHEON_DATA_DIR` or `~/.pantheon/`) is the single source of truth. Setup writes it; every verb reads it. Secrets are never in it - config names env vars, the runtime resolves them at the execution boundary.
-
-```toml
-[model]
-provider    = "openai"
-model       = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"   # name only, never the key
-reasoning   = "high"             # off|minimal|low|medium|high|xhigh|max
-
-[[model.fallbacks]]              # ordered, failure-only, runtime-controlled
-provider = "anthropic"
-model    = "claude-sonnet-4-5"
-
-policy = "coder"                 # reader | coder | coder_memory
-
-[memory]
-backend = "native"
-
-[secrets]
-env_allowlist = ["MY_API_KEY", "PANTHEON_*"]   # empty by default: fail closed
-
-[server]
-port = 18789
-host = "127.0.0.1"
-
-[agents.default]
-display_name = "Default"
-policy       = "coder_memory"
-```
-
-Env overrides: `PANTHEON_PROVIDER`, `PANTHEON_MODEL`, `PANTHEON_REASONING`, `PANTHEON_DATA_DIR`, plus `PANTHEON_<AUX>_PROVIDER`/`_MODEL` for auxiliaries (judge, compression, embeddings, ...). Gateway tokens live in `<data_dir>/.env` (`PANTHEON_DISCORD_TOKEN`, `PANTHEON_TELEGRAM_BOT_TOKEN`, `PANTHEON_GATEWAY_ALLOW`), never in config. Full reference: [docs/reference/configuration.md](docs/reference/configuration.md).
-
-## Guides
-
-| | |
-|---|---|
-| [Getting started](docs/getting-started.md) | Install, configure, first session |
-| [Agents](docs/user-guide/agents.md) | Identities, profiles, collaboration |
-| [Runs](docs/user-guide/runs.md) | Lifecycle, approvals, recovery, pipelines, scheduling |
-| [Memory](docs/user-guide/memory.md) | Scope, provenance, trust, skills |
+| Page | What it covers |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Install, configure, first session, platform notes |
+| [Sessions](docs/user-guide/sessions.md) | The terminal app, past conversations, one-off tasks |
+| [Agents](docs/user-guide/agents.md) | Named agents, profiles, working together |
+| [Memory](docs/user-guide/memory.md) | What is remembered and how trust is applied |
+| [Runs](docs/user-guide/runs.md) | Lifecycle, approvals, recovery, pipelines |
 | [Providers](docs/user-guide/providers.md) | Models, fallbacks, custom endpoints |
 | [Channels](docs/user-guide/channels.md) | Terminal, web, Discord, Telegram |
-| [Sessions](docs/user-guide/sessions.md) | Terminal app, one-off tasks, past conversations |
-| [Scheduling](docs/user-guide/scheduling.md) | Recurring tasks that run on their own |
-| [Web access](docs/user-guide/web.md) | Web search and browser automation |
-| [MCP servers](docs/user-guide/mcp.md) | Third-party tools: declaring, approving, watching them run |
-| [Cloudflare](docs/user-guide/cloudflare.md) | Cloudflare through the cf CLI, cf-ops plugin and remote MCP |
-| [Extensions](docs/user-guide/extensions.md) | Hooks, tools, plugin behavior |
-| [Configuration](docs/reference/configuration.md) | Every field, the data dir, secrets |
-| [Troubleshooting](docs/reference/troubleshooting.md) | Diagnostics and common issues |
-
-The repo also ships a CLI evaluation harness with isolated sandboxes and regression cases ([eval/README.md](eval/README.md)). CI runs `cargo fmt`, Clippy, the workspace test suite, and a release-binary smoke check.
+| [Scheduling](docs/user-guide/scheduling.md) | Recurring jobs |
+| [Extensions](docs/user-guide/extensions.md) | Plugins, hooks and extra capabilities |
+| [Web access](docs/user-guide/web.md) | Search and browser automation |
+| [MCP servers](docs/user-guide/mcp.md) | Third-party tools and their approvals |
+| [Cloudflare](docs/user-guide/cloudflare.md) | Cloudflare through the CLI, plugins and remote MCP |
+| [Configuration](docs/reference/configuration.md) | Every setting and where secrets live |
+| [Terminal reference](docs/reference/terminal.md) | Commands, flags, exit codes |
+| [Troubleshooting](docs/reference/troubleshooting.md) | Common failures and fixes |
+| [Docs index](docs/index.md) | Everything else |
 
 ## Contributing
 
-See [docs/developer/contributing.md](docs/developer/contributing.md) for the workspace layout and development workflow. The design decisions behind the crate boundaries live in [docs/developer/architecture.md](docs/developer/architecture.md). Pull requests run the full CI gate: formatting, Clippy with warnings denied, and tests.
+See [docs/developer/contributing.md](docs/developer/contributing.md) for the workspace layout and development workflow. CI runs formatting, Clippy with warnings denied, the workspace tests and a release binary smoke check.
 
 ## License
 
-MIT, see [LICENSE](LICENSE), except where a subdirectory carries its own
-license (listed in [NOTICE](NOTICE)). In particular, **Pantheon Desktop
-(`desktop/`) is a fork of PandaCode** (<https://github.com/aicodeking/pandacode>)
-under the PandaCode License, MIT with an attribution requirement.
+MIT, see [LICENSE](LICENSE), except where a subdirectory carries its own license, listed in [NOTICE](NOTICE). Pantheon Desktop under `desktop/` is a fork of PandaCode and carries the PandaCode license, MIT with an attribution requirement.

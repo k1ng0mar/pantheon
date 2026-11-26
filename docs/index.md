@@ -1,8 +1,12 @@
 # Pantheon docs
 
-> The model is replaceable. Your agent is not.
+> Your AI. Your way of working.
 
-Pantheon is an assistant that runs on your own computer. It talks to AI models for you, remembers what happened, asks before doing anything important, and picks up where it left off, even if you close the laptop or switch models.
+Pantheon is an open, general-purpose AI agent harness. You bring the model and decide what the agent can reach. Pantheon provides the tools, permissions, memory and recovery that let it do useful work on your machine.
+
+## Who it is for
+
+Everyday users, professionals and small teams, developers, and researchers or builders. The common thread is having work you want done without building an agent framework first. Coding is one capability here, not the identity.
 
 ## Start here
 
