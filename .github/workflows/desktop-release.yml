@@ -269,11 +269,15 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - name: Publish npx pantheon
-        working-directory: packages/npx
         run: |
+          if [ ! -f packages/npx/package.json ]; then
+            echo "::warning::packages/npx is not present; skipping the npm publish of pantheon."
+            exit 0
+          fi
           if [ -z "$NODE_AUTH_TOKEN" ]; then
             echo "::warning::NPM_TOKEN is not set; skipping the npm publish of pantheon."
             exit 0
           fi
+          cd packages/npx
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           npm publish --provenance --access public
