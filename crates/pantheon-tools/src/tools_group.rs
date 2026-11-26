@@ -980,7 +980,7 @@ pub mod builtins {
     pub fn shell_profile(network: bool) -> SandboxProfile {
         let mut profile = SandboxProfile::from(SandboxLevel::High);
         profile.network = network;
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = pantheon_exec::sandbox::home_dir();
         profile.hidden_paths = pantheon_exec::sandbox::sensitive_paths(
             &pantheon_api::data_dir::resolve(),
             home.as_deref(),

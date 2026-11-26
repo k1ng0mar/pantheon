@@ -54,6 +54,14 @@ pub fn data_dir_secret_paths(data_dir: &std::path::Path) -> Vec<std::path::PathB
         .collect()
 }
 
+/// The user's home on every platform. HOME is set on Unix; Windows uses
+/// USERPROFILE, the same fallback `pantheon_api::data_dir::resolve` uses.
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
 /// Home-relative credential locations (absolute), empty without a home.
 pub fn home_secret_paths(home: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
     home.map(|h| SENSITIVE_HOME_PATHS.iter().map(|rel| h.join(rel)).collect())

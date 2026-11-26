@@ -2686,7 +2686,7 @@ pub mod skill_exec {
         let mut p = SandboxProfile::from(SandboxLevel::High);
         p.network = network;
         p.wall_clock_ms = exec.timeout_secs.saturating_mul(1000);
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let home = crate::sandbox::home_dir();
         p.hidden_paths =
             crate::sandbox::sensitive_paths(&pantheon_api::data_dir::resolve(), home.as_deref())
                 .into_iter()

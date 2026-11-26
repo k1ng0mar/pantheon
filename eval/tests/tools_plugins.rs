@@ -10,6 +10,26 @@ use pantheon_tools::tools::ToolRegistry;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// See `eval/tests/exec_supervisor.rs`: a working bwrap on a hosted runner
+/// can fail to initialize for the fixture uid and kill the plugin before it
+/// answers. The protocol tests opt into direct fallback explicitly.
+struct NoWrapper(Option<std::ffi::OsString>);
+impl NoWrapper {
+    fn install() -> Self {
+        let previous = std::env::var_os("PANTHEON_SANDBOX_PATH");
+        std::env::set_var("PANTHEON_SANDBOX_PATH", "/nonexistent");
+        Self(previous)
+    }
+}
+impl Drop for NoWrapper {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(v) => std::env::set_var("PANTHEON_SANDBOX_PATH", v),
+            None => std::env::remove_var("PANTHEON_SANDBOX_PATH"),
+        }
+    }
+}
+
 /// Spawn a plugin runner, tolerating the kernel's ETXTBSY ("Text file busy",
 /// os error 26) with a short bounded retry.
 ///
@@ -102,6 +122,11 @@ fn registry_wires_plugin_tool() {
         },
         provider: None,
     };
+    // Plugin fixtures test the supervisor protocol, not host namespace
+    // policy. Pin wrapper lookup to an empty dir so the manifest's explicit
+    // direct fallback is used deterministically on hosted runners where
+    // bwrap exists but cannot be initialized for this uid.
+    let _no_wrapper = NoWrapper::install();
     let sup = Arc::new(Mutex::new(spawn_plugin(
         &dir,
         &manifest,

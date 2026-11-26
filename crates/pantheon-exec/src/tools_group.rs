@@ -3114,10 +3114,10 @@ pub mod worktree {
         pub fn find(&self, name: &str) -> Result<Option<Worktree>, PantheonError> {
             let managed = self.path_for(name)?;
             let branch = format!("{WORKTREE_BRANCH_PREFIX}{name}");
-            Ok(self
-                .list()?
-                .into_iter()
-                .find(|w| w.path == managed || w.branch.as_deref() == Some(branch.as_str())))
+            Ok(self.list()?.into_iter().find(|w| {
+                same_worktree_path(&w.path, &managed)
+                    || w.branch.as_deref() == Some(branch.as_str())
+            }))
         }
 
         /// `git worktree list --porcelain`, parsed. The first entry is the
@@ -3198,7 +3198,9 @@ pub mod worktree {
             let wanted = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
             self.list()?
                 .into_iter()
-                .find(|w| w.path == wanted || w.path == target)
+                .find(|w| {
+                    same_worktree_path(&w.path, &wanted) || same_worktree_path(&w.path, &target)
+                })
                 .ok_or_else(|| {
                     err(
                         "WORKTREE_NOT_FOUND",
@@ -3224,9 +3226,10 @@ pub mod worktree {
                 self.path_for(target)?
             };
             let entry = if path_target {
-                self.list()?
-                    .into_iter()
-                    .find(|w| w.path == wanted || w.path == Path::new(target))
+                self.list()?.into_iter().find(|w| {
+                    same_worktree_path(&w.path, &wanted)
+                        || same_worktree_path(&w.path, Path::new(target))
+                })
             } else {
                 self.find(target)?
             }
@@ -3347,6 +3350,26 @@ pub mod worktree {
 
     /// Parse `git worktree list --porcelain`. Blocks are separated by blank
     /// lines; the first block is the main worktree.
+    /// Windows reports short paths (RUNNER~1) from git while canonicalize
+    /// returns the long path. Compare resolved paths so both spellings match.
+    fn same_worktree_path(a: &Path, b: &Path) -> bool {
+        let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let a = resolve(a);
+        let b = resolve(b);
+        if a == b {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            a.to_string_lossy()
+                .eq_ignore_ascii_case(&b.to_string_lossy())
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
     fn parse_porcelain(raw: &str) -> Vec<Worktree> {
         let mut out: Vec<Worktree> = Vec::new();
         let mut cur: Option<Worktree> = None;
