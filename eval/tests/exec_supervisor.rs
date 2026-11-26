@@ -10,7 +10,10 @@ use pantheon_exec::plugins::{
     DiscoveredPlugin, EnvVarDecl, PluginLocation, PluginManifest, PluginSandbox, ToolCapability,
 };
 use pantheon_exec::supervisor::*;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
 /// Spawn a plugin runner, tolerating the kernel's ETXTBSY ("Text file busy",
 /// os error 26) with a short bounded retry.
@@ -59,6 +62,7 @@ fn spawn_plugin(
 /// and drive a full call through the supervisor.
 #[test]
 fn live_call_round_trip() {
+    let _lock = PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let base = std::env::temp_dir().join(format!(
         "pantheon-sup-{}-{}",
         std::process::id(),
@@ -116,6 +120,7 @@ fn live_call_round_trip() {
 /// A plugin that never answers must time out and die, not hang the test.
 #[test]
 fn timeout_kills_wedged_plugin() {
+    let _lock = PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let base = std::env::temp_dir().join(format!(
         "pantheon-sup-wedge-{}-{}",
         std::process::id(),
@@ -174,6 +179,7 @@ fn timeout_kills_wedged_plugin() {
 /// secrets past the boundary.
 #[test]
 fn manifest_env_needs_allowlist_hit() {
+    let _lock = PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("PANTHEON_SUP_TEST_ALLOWED", "visible");
     std::env::set_var("PANTHEON_SUP_TEST_DENIED", "must-not-leak");
 

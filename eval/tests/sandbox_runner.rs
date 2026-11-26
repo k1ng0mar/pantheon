@@ -6,7 +6,7 @@ use pantheon_exec::sandbox::{SandboxLevel, SandboxProfile};
 
 #[test]
 fn echo_runs_and_produces_output() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let profile = SandboxLevel::Low.profile();
     let result = run_sandboxed(&profile, "echo", &["test-output"], "/tmp");
     assert!(result.is_ok(), "run failed: {:?}", result.err());
@@ -16,7 +16,7 @@ fn echo_runs_and_produces_output() {
 
 #[test]
 fn timeout_kills_long_running_command() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let profile = SandboxProfile {
         level: SandboxLevel::Low,
         boundary: ExecutionBoundary::InProcess,
@@ -68,7 +68,7 @@ fn host_limit(what: &str) -> Option<u64> {
 fn proc_limit(profile: &SandboxProfile, what: &str) -> Option<u64> {
     // Serialized with the env-mutating tests: they blank PATH, which
     // would break this helper's `sh` lookup mid-run.
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let r = run_sandboxed(
         profile,
         "sh",
@@ -270,7 +270,7 @@ impl Drop for EnvPathGuard {
 fn wrapper_init_failure_fails_closed_without_opt_in() {
     // No wrapper binary visible and no fallback opt-in: the runner must
     // refuse to run, not silently drop the isolation.
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = EnvGuard::break_wrapper_lookup();
     let profile = SandboxLevel::High.profile();
     assert!(!profile.allow_direct_fallback);
@@ -283,7 +283,7 @@ fn wrapper_init_failure_fails_closed_without_opt_in() {
 fn direct_fallback_allowed_via_env_opt_in() {
     // Same broken wrapper lookup, but PANTHEON_SANDBOX_FALLBACK=allow:
     // the command runs directly, flagged as unsandboxed.
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = EnvGuard::break_wrapper_lookup();
     std::env::set_var("PANTHEON_SANDBOX_FALLBACK", "allow");
     let profile = SandboxLevel::High.profile();
@@ -297,7 +297,7 @@ fn direct_fallback_allowed_via_env_opt_in() {
 #[test]
 fn direct_fallback_allowed_via_profile_opt_in() {
     // Same, but opted in on the profile instead of the environment.
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = EnvGuard::break_wrapper_lookup();
     let mut profile = SandboxLevel::High.profile();
     profile.allow_direct_fallback = true;
@@ -325,7 +325,7 @@ fn direct_fallback_allowed_via_profile_opt_in() {
 /// - the silent degrade the README's fail-closed promise forbids.
 #[test]
 fn build_sandboxed_checked_fails_closed_without_opt_in() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = EnvGuard::break_wrapper_lookup();
     let profile = SandboxLevel::VeryHigh.profile();
     assert!(!profile.allow_direct_fallback);
@@ -338,7 +338,7 @@ fn build_sandboxed_checked_fails_closed_without_opt_in() {
 /// command and honestly report that it is not isolated.
 #[test]
 fn build_sandboxed_checked_honors_opt_in_fallback() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _env = EnvGuard::break_wrapper_lookup();
     std::env::set_var("PANTHEON_SANDBOX_FALLBACK", "allow");
     let profile = SandboxLevel::VeryHigh.profile();
@@ -349,7 +349,7 @@ fn build_sandboxed_checked_honors_opt_in_fallback() {
 
 #[test]
 fn large_stdout_does_not_deadlock() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 200KiB of stdout - over the 64KiB pipe buffer. The old code only
     // read the pipes after try_wait reported exit, so this wedged until
     // the wall-clock timeout; the drainer threads must let it complete.
@@ -372,7 +372,7 @@ fn large_stdout_does_not_deadlock() {
 
 #[test]
 fn output_over_cap_is_truncated_with_marker() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 3MiB of stdout against the 2MiB cap: output must be cut at the cap
     // with a marker naming the dropped byte count.
     let profile = SandboxLevel::Low.profile();
@@ -400,7 +400,7 @@ fn output_over_cap_is_truncated_with_marker() {
 
 #[test]
 fn timeout_error_redacts_secret_bearing_args() {
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let profile = SandboxProfile {
         level: SandboxLevel::Low,
         boundary: ExecutionBoundary::InProcess,
@@ -495,7 +495,7 @@ fn high_profile_child_has_no_capabilities_even_for_root() {
         return;
     }
     let profile = SandboxLevel::High.profile();
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let r = match run_sandboxed(
         &profile,
         "sh",
@@ -530,9 +530,11 @@ fn high_profile_child_has_no_capabilities_even_for_root() {
 fn very_high_profile_runs_a_command() {
     use pantheon_exec::sandbox::{boundary_available, kernel_layer_available};
     let profile = SandboxLevel::VeryHigh.profile();
-    let _env_lock = ENV_LOCK.lock().unwrap();
-    if !boundary_available(profile.boundary) || !kernel_layer_available(false, true) {
-        eprintln!("skip: host lacks bwrap user namespaces or Landlock");
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !boundary_available(profile.boundary)
+        || !kernel_layer_available(profile.seccomp, profile.landlock)
+    {
+        eprintln!("skip: host lacks bwrap, seccomp or Landlock");
         return;
     }
     let r = run_sandboxed(&profile, "/bin/true", &[], "/tmp")
@@ -572,7 +574,7 @@ fn medium_boundary_is_read_only_and_fails_closed_on_mount_errors() {
         eprintln!("skip: unshare cannot create a user namespace here");
         return;
     }
-    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let probe = "/usr/pantheon-sec11-probe";
     let r = run_sandboxed(
         &profile,
