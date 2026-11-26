@@ -67,7 +67,7 @@ pub fn ensure_private_at(dir: &Path) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

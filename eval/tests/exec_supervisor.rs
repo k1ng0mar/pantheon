@@ -75,7 +75,7 @@ fn live_call_round_trip() {
     // Reads one request line, answers with result "pong:<tool>".
     std::fs::write(
             &runner,
-            "#!/bin/sh\nread -r line\ntool=$(printf '%s' \"$line\" | sed 's/.*\"tool\":\"\\([^\"]*\\)\".*/\\1/')\ncid=$(printf '%s' \"$line\" | sed 's/.*\"call_id\":\"\\([^\"]*\\)\".*/\\1/')\nprintf '{\"call_id\":\"%s\",\"result\":\"pong:%s\"}\\n' \"$cid\" \"$tool\"\n",
+            "#!/bin/sh\nread -r line\ntool=$(printf '%s' \"$line\" | /usr/bin/sed 's/.*\"tool\":\"\\([^\"]*\\)\".*/\\1/')\ncid=$(printf '%s' \"$line\" | /usr/bin/sed 's/.*\"call_id\":\"\\([^\"]*\\)\".*/\\1/')\nprintf '{\"call_id\":\"%s\",\"result\":\"pong:%s\"}\\n' \"$cid\" \"$tool\"\n",
         )
         .unwrap();
     #[cfg(unix)]
@@ -197,7 +197,7 @@ fn manifest_env_needs_allowlist_hit() {
         concat!(
             "#!/bin/sh\n",
             "read -r line\n",
-            "cid=$(printf '%s' \"$line\" | sed 's/.*\"call_id\":\"\\([^\"]*\\)\".*/\\1/')\n",
+            "cid=$(printf '%s' \"$line\" | /usr/bin/sed 's/.*\"call_id\":\"\\([^\"]*\\)\".*/\\1/')\n",
             "printf '{\"call_id\":\"%s\",\"result\":\"allowed=%s denied=%s\"}\\n' \"$cid\" ",
             "\"${PANTHEON_SUP_TEST_ALLOWED:-<unset>}\" \"${PANTHEON_SUP_TEST_DENIED:-<unset>}\"\n",
         ),

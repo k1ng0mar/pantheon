@@ -245,6 +245,27 @@ impl Drop for EnvGuard {
     }
 }
 
+struct EnvPathGuard(Option<std::ffi::OsString>);
+impl EnvPathGuard {
+    fn prepend(dir: &std::path::Path) -> Self {
+        let previous = std::env::var_os("PATH");
+        let joined = match &previous {
+            Some(p) => format!("{}:{}", dir.display(), p.to_string_lossy()),
+            None => dir.display().to_string(),
+        };
+        std::env::set_var("PATH", joined);
+        Self(previous)
+    }
+}
+impl Drop for EnvPathGuard {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
 #[test]
 fn wrapper_init_failure_fails_closed_without_opt_in() {
     // No wrapper binary visible and no fallback opt-in: the runner must
@@ -509,11 +530,11 @@ fn high_profile_child_has_no_capabilities_even_for_root() {
 fn very_high_profile_runs_a_command() {
     use pantheon_exec::sandbox::{boundary_available, kernel_layer_available};
     let profile = SandboxLevel::VeryHigh.profile();
+    let _env_lock = ENV_LOCK.lock().unwrap();
     if !boundary_available(profile.boundary) || !kernel_layer_available(false, true) {
         eprintln!("skip: host lacks bwrap user namespaces or Landlock");
         return;
     }
-    let _env_lock = ENV_LOCK.lock().unwrap();
     let r = run_sandboxed(&profile, "/bin/true", &[], "/tmp")
         .unwrap_or_else(|e| panic!("VeryHigh spawn failed: {} {}", e.code, e.cause));
     assert_eq!(r.exit_code, 0, "VeryHigh child failed: {}", r.output);
@@ -588,16 +609,8 @@ fn medium_boundary_is_read_only_and_fails_closed_on_mount_errors() {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let old_path = std::env::var_os("PATH");
-    std::env::set_var(
-        "PATH",
-        format!("{}:/usr/sbin:/usr/bin:/sbin:/bin", shim.display()),
-    );
+    let _path = EnvPathGuard::prepend(&shim);
     let r = run_sandboxed(&profile, "sh", &["-c", "echo RAN"], "/tmp");
-    match old_path {
-        Some(p) => std::env::set_var("PATH", p),
-        None => std::env::remove_var("PATH"),
-    }
     let _ = std::fs::remove_dir_all(&shim);
     // The wrapper probe runs the same script, so the refusal surfaces
     // either as the probe failing closed or as the script's exit 126.

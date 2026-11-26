@@ -627,7 +627,7 @@ pub mod approval {
     // (hash stability, lapse on code change, store round-trip) is covered in
     // `pantheon-eval` (`eval/tests/approval_store.rs`).
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     mod tests {
         use super::*;
         use std::os::unix::fs::symlink;

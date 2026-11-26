@@ -649,6 +649,7 @@ fn confine_child(cmd: &mut Command, profile: &SandboxProfile) {
     // stricter than the Landlock ruleset (that one also opens the cwd).
     // Both layers still apply to direct spawns (the opted-in fallback),
     // which have no mount namespace.
+    #[cfg(any(target_os = "linux", target_arch = "x86_64"))]
     let wrapped_by_bwrap = std::path::Path::new(cmd.get_program())
         .file_name()
         .is_some_and(|n| n == "bwrap");
