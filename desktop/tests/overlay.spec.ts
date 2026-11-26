@@ -65,7 +65,7 @@ test('launcher offers harness and model selection without opening the workspace'
   await page.goto('/?view=launcher');
   await page.getByRole('button', {name:'Choose harness and model'}).click();
   await expect(page.getByRole('dialog', {name:'Harness and model'})).toBeVisible();
-  await expect(page.getByRole('searchbox', {name:'Search harnesses and models'})).toBeFocused();
+  await expect(page.getByRole('searchbox', {name:'Search models'})).toBeFocused();
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden', 'true');
   expect(page.url()).toContain('view=launcher');
 });
@@ -84,7 +84,7 @@ test('launcher model trigger toggles the picker without reopening it', async ({p
   await trigger.click();
   await expect(picker).toBeVisible();
   await expect(picker).toHaveCount(1);
-  await page.getByRole('searchbox',{name:'Search harnesses and models'}).press('Shift+Tab');
+  await page.getByRole('searchbox',{name:'Search models'}).press('Shift+Tab');
   await expect(picker).toHaveCount(0);
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden','true');
 });
@@ -243,7 +243,7 @@ test('launcher discovers full model names on demand and launches the chosen mode
   const standard = page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true});
   await expect(standard).toBeVisible();
   await expect(standard.locator('.provider-logo')).toHaveCount(1);
-  await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('Pantheon Standard');
+  await page.getByRole('searchbox',{name:'Search models'}).fill('Pantheon Standard');
   await standard.click();
   await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
   await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
@@ -365,7 +365,7 @@ test('launcher model picker fits the minimum window and Escape only closes the p
   expect(rect!.y).toBeGreaterThanOrEqual(0);
   expect(rect!.x + rect!.width).toBeLessThanOrEqual(490);
   expect(rect!.y + rect!.height).toBeLessThanOrEqual(410);
-  await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('Pantheon Deep');
+  await page.getByRole('searchbox',{name:'Search models'}).fill('Pantheon Deep');
   const deep = page.locator('.model-menu-option[data-provider="pantheon"][data-model="deep"]');
   await expect(deep).toBeInViewport();
   await expect(deep.locator('.provider-logo')).toHaveCount(1);
