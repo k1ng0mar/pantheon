@@ -2941,7 +2941,13 @@ print(json.dumps(result))
         /// `pre_llm_call` handler floods stderr with 200KB (well past the
         /// 64KiB pipe buffer) and then answers cleanly.
         fn chatty_plugin_dir() -> PathBuf {
-            let dir = std::env::temp_dir().join(format!(
+            // StrictNamespaces bwrap mounts a private /tmp, so a fixture
+            // under temp_dir() vanishes before the child chdir. Cargo's
+            // target tmpdir lives inside the checkout and stays visible.
+            let root = std::env::var_os("CARGO_TARGET_TMPDIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+            let dir = root.join(format!(
                 "pantheon-ext-drain-test-{}-{}",
                 std::process::id(),
                 FIXTURE_SEQ.fetch_add(1, Ordering::SeqCst)

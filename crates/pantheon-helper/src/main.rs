@@ -1647,15 +1647,25 @@ mod tests {
         out
     }
 
+    fn binary_member(name: &str) -> String {
+        if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        }
+    }
+
     #[test]
     fn extract_picks_the_exact_binary_not_a_substring_match() {
         // The old walk matched by substring, so a search for
         // `pantheon` could install `pantheon-helper` as the main
         // binary. The exact-basename match must pick `pantheon`.
         let dir = tmp_dir("extract-exact");
+        let main = binary_member("pantheon");
+        let helper = binary_member("pantheon-helper");
         let archive = tar_bytes(&[
-            ("bin/pantheon-helper", b"helper", b'0', ""),
-            ("bin/pantheon", b"main", b'0', ""),
+            (format!("bin/{helper}").as_str(), b"helper", b'0', ""),
+            (format!("bin/{main}").as_str(), b"main", b'0', ""),
         ]);
         let found = extract_tar(&archive, "x.tar", &dir, "pantheon").unwrap();
         assert_eq!(std::fs::read(&found).unwrap(), b"main");
@@ -1671,7 +1681,8 @@ mod tests {
         let abs = tar_bytes(&[("/tmp/evil", b"x", b'0', "")]);
         let err = extract_tar(&abs, "a.tar", &dir, "pantheon").unwrap_err();
         assert!(err.contains("absolute"), "{err}");
-        let link = tar_bytes(&[("pantheon", b"", b'2', "/etc/passwd")]);
+        let link_name = binary_member("pantheon");
+        let link = tar_bytes(&[(link_name.as_str(), b"", b'2', "/etc/passwd")]);
         let err = extract_tar(&link, "l.tar", &dir, "pantheon").unwrap_err();
         assert!(err.contains("not a regular file"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
