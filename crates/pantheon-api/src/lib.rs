@@ -48,4 +48,5 @@ pub use types_group::temporal;
 pub use types_group::todo;
 pub mod config;
 pub mod data_dir;
+pub mod desktop_tool_contract;
 pub mod ui;
