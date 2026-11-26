@@ -1,51 +1,51 @@
-//! Modal Vim editing for the composer (opt-in).
+//! modal vim editing for the composer (opt-in).
 //!
-//! v1 scope is deliberately small: Normal + Insert modes only. No Visual
-//! mode, no macros, no registers beyond one internal yank register, no
-//! `.vimrc`. The help text says so plainly.
+//! v1 scope is small: Normal + Insert only. no Visual, no macros, no
+//! registers beyond one internal yank register, no `.vimrc`. the help text
+//! says so plainly.
 //!
-//! All buffer logic here is pure: it operates on `(&mut String, &mut
-//! VimState)` and never touches `TuiState`, so it is unit-testable without
-//! a terminal. The event loop in `session.rs` owns the `TuiState` glue
-//! (key routing, overlay precedence, rendering).
+//! all buffer logic here is pure: operates on `(&mut String, &mut VimState)`
+//! and never touches `TuiState`, so it's unit-testable without a terminal.
+//! the event loop in `session.rs` owns the `TuiState` glue (key routing,
+//! overlay precedence, rendering).
 //!
-//! Cursor coordinates are char indices, never byte indices, so multi-byte
-//! text cannot split a character. In Normal mode the cursor sits *on* a
-//! character (clamped to the last char); in Insert mode it sits *between*
-//! characters (may equal the line length).
+//! cursor coordinates are char indices, never byte indices, so multi-byte
+//! text can't split a character. in Normal the cursor sits *on* a character
+//! (clamped to the last char); in Insert it sits *between* characters (may
+//! equal the line length)
 
-/// Composer editing mode. Insert behaves like today's composer;
-/// Normal interprets keys as motions and edits.
+/// composer editing mode. Insert behaves like the plain composer; Normal
+/// interprets keys as motions and edits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VimMode {
-    /// Motions and edits; the default when vim is enabled.
+    /// motions and edits; default when vim is enabled
     #[default]
     Normal,
-    /// Type text; Esc returns to Normal.
+    /// type text; Esc returns to Normal
     Insert,
 }
 
-/// Modal state for the composer. Lives on `TuiState` as `state.vim`.
+/// modal state for the composer. lives on `TuiState` as `state.vim`
 #[derive(Debug, Clone)]
 pub struct VimState {
-    /// Master switch: `[tui] vim` in config.toml, toggled live by `/vim`.
-    /// When false, every key path behaves exactly as it does today.
+    /// master switch: `[tui] vim` in config.toml, toggled live by `/vim`.
+    /// when false, every key path behaves exactly as it does today
     pub enabled: bool,
     pub mode: VimMode,
     row: usize,
     col: usize,
-    /// Undo snapshots of `(text, row, col)`, oldest-first, capped.
+    /// undo snapshots of `(text, row, col)`, oldest-first, capped
     undo: Vec<(String, usize, usize)>,
-    /// Internal yank register (never touches the system clipboard).
+    /// internal yank register (never touches the system clipboard)
     register: String,
-    /// `true` when the register holds whole lines (`dd`).
+    /// `true` when the register holds whole lines (`dd`)
     register_linewise: bool,
-    /// Multi-key sequences: `Some('d')` after `d`, `Some('g')` after `g`.
+    /// multi-key sequences: `Some('d')` after `d`, `Some('g')` after `g`
     pending: Option<char>,
 }
 
-/// Cap on undo history: enough to recover from a bad edit spree,
-// bounded so a long session cannot grow it without limit.
+/// undo cap: enough to recover from a bad edit spree, bounded so a long
+/// session can't grow it without limit
 const UNDO_CAP: usize = 100;
 
 impl VimState {
@@ -62,22 +62,22 @@ impl VimState {
         }
     }
 
-    /// Cursor as `(row, col)` char indices, clamped to `text`.
+    /// cursor as `(row, col)` char indices, clamped to `text`
     pub fn cursor(&self, text: &str) -> (usize, usize) {
         let lines: Vec<&str> = text.split('\n').collect();
         let row = self.row.min(lines.len().saturating_sub(1));
         let len = lines.get(row).map(|l| l.chars().count()).unwrap_or(0);
         let col = match self.mode {
-            // Normal sits on a character: never past the last one.
+            // normal sits on a character: never past the last one
             VimMode::Normal => self.col.min(len.saturating_sub(1)),
-            // Insert sits between characters: may equal the length.
+            // insert sits between characters: may equal the length
             VimMode::Insert => self.col.min(len),
         };
         (row, col)
     }
 
-    /// Status-bar label, e.g. `-- NORMAL --`; `None` when vim is off so
-    /// non-users see no noise.
+    /// status-bar label, e.g. `-- NORMAL --`; `None` when vim is off so
+    /// non-users see no noise
     pub fn status_label(&self) -> Option<String> {
         if !self.enabled {
             return None;
@@ -91,8 +91,8 @@ impl VimState {
         )
     }
 
-    /// Reset after a submit: back to Normal, cursor home, history kept
-    /// (undo across submits is a feature, not a bug).
+    /// reset after a submit: back to Normal, cursor home, history kept
+    /// (undo across submits is a feature, not a bug)
     pub fn on_submit(&mut self) {
         self.mode = VimMode::Normal;
         self.row = 0;
@@ -100,8 +100,8 @@ impl VimState {
         self.pending = None;
     }
 
-    /// Esc in Insert mode: drop back to Normal without touching the text
-    /// or arming the interrupt/rewind. Clears a half-typed `d`/`g`.
+    /// esc in Insert: drop back to Normal without touching the text or arming
+    /// the interrupt/rewind. clears a half-typed `d`/`g`
     pub fn esc_to_normal(&mut self) {
         self.mode = VimMode::Normal;
         self.pending = None;
@@ -129,8 +129,8 @@ impl Default for VimState {
     }
 }
 
-/// Read `[tui] vim` from config.toml. Missing config or missing key =
-/// disabled; vim is strictly opt-in.
+/// read `[tui] vim` from config.toml. missing config or key = disabled;
+/// vim is strictly opt-in
 pub fn load_vim(data_dir: &std::path::Path) -> bool {
     crate::config::Config::load(data_dir)
         .ok()
@@ -139,7 +139,7 @@ pub fn load_vim(data_dir: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Persist the vim choice to `[tui] vim` in config.toml.
+/// persist the vim choice to `[tui] vim` in config.toml
 pub fn save_vim(
     data_dir: &std::path::Path,
     enabled: bool,
@@ -151,20 +151,20 @@ pub fn save_vim(
     cfg.save(data_dir)
 }
 
-/// Outcome of a key in Normal mode. The caller (`session.rs`) owns any
-/// `TuiState`-level effects (quit, overlay); buffer edits are already
-/// applied to `text`/`vim` when this returns.
+/// outcome of a key in Normal. the caller (`session.rs`) owns any
+/// `TuiState`-level effects (quit, overlay); buffer edits are already applied
+/// to `text`/`vim` when this returns
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalKey {
-    /// Enter Insert mode; the cursor is already positioned.
+    /// enter Insert; the cursor is already positioned
     ToInsert,
-    /// `q` on an empty buffer: quit the app, like `q` does today.
+    /// `q` on an empty buffer: quit the app, like `q` does today
     Quit,
-    /// `?` on an empty buffer: open the shortcuts overlay, like today.
+    /// `?` on an empty buffer: open the shortcuts overlay, like today
     Shortcuts,
-    /// Consumed as a motion/edit (or an unbound key: a no-op).
+    /// consumed as a motion/edit (or an unbound key: a no-op)
     Consumed,
-    /// Not a vim binding; the caller decides (e.g. `v` = image preview).
+    /// not a vim binding; the caller decides (e.g. `v` = image preview)
     Pass(char),
 }
 
@@ -180,20 +180,20 @@ fn line_len(lines: &[String], row: usize) -> usize {
     lines.get(row).map(|l| l.chars().count()).unwrap_or(0)
 }
 
-/// Clamp `(row, col)` to `lines` for Normal mode (cursor on a char).
+/// clamp `(row, col)` to `lines` for Normal (cursor on a char)
 fn clamp_normal(lines: &[String], row: usize, col: usize) -> (usize, usize) {
     let row = row.min(lines.len().saturating_sub(1));
     let len = line_len(lines, row);
     (row, col.min(len.saturating_sub(1)))
 }
 
-/// Char at `(row, col)`, or `None` past the end.
+/// char at `(row, col)`, or `None` past the end
 fn char_at(lines: &[String], row: usize, col: usize) -> Option<char> {
     lines.get(row)?.chars().nth(col)
 }
 
-/// Flattened position of `(row, col)`: total chars before it, counting
-/// one virtual char per newline.
+/// flattened position of `(row, col)`: total chars before it, counting one
+/// virtual char per newline
 fn flat_pos(lines: &[String], row: usize, col: usize) -> usize {
     let mut pos = 0;
     for (i, line) in lines.iter().enumerate() {
@@ -205,7 +205,7 @@ fn flat_pos(lines: &[String], row: usize, col: usize) -> usize {
     pos
 }
 
-/// `(row, col)` of a flattened position.
+/// `(row, col)` of a flattened position
 fn unflat_pos(lines: &[String], mut pos: usize) -> (usize, usize) {
     for (i, line) in lines.iter().enumerate() {
         let len = line.chars().count();
@@ -221,12 +221,12 @@ fn total_chars(lines: &[String]) -> usize {
     flat_pos(lines, lines.len().saturating_sub(1), usize::MAX)
 }
 
-/// Start of the next word at/after `pos` (flattened). `None` = no more
-/// words; the caller falls back to end-of-buffer.
+/// start of the next word at/after `pos` (flattened). `None` = no more words;
+/// the caller falls back to end-of-buffer
 fn next_word_start(lines: &[String], pos: usize) -> Option<usize> {
     let total = total_chars(lines);
     let mut p = pos;
-    // If on a word char, skip the rest of this word first.
+    // on a word char: skip the rest of this word first
     let (mut r, mut c) = unflat_pos(lines, p);
     if char_at(lines, r, c).is_some_and(is_word_char) {
         while p < total {
@@ -237,7 +237,7 @@ fn next_word_start(lines: &[String], pos: usize) -> Option<usize> {
             p += 1;
         }
     }
-    // Skip non-word chars to the next word start.
+    // skip non-word chars to the next word start
     while p < total {
         let (rr, cc) = unflat_pos(lines, p);
         r = rr;
@@ -250,14 +250,14 @@ fn next_word_start(lines: &[String], pos: usize) -> Option<usize> {
     None
 }
 
-/// Start of the word at/before `pos`: if `pos` is at a word start, the
-/// previous word's start; otherwise the current word's start.
+/// start of the word at/before `pos`: if `pos` is at a word start, the
+/// previous word's start; otherwise the current word's start
 fn prev_word_start(lines: &[String], pos: usize) -> Option<usize> {
     if pos == 0 {
         return None;
     }
     let mut p = pos - 1;
-    // Skip non-word chars backward.
+    // skip non-word chars backward
     loop {
         let (r, c) = unflat_pos(lines, p);
         if char_at(lines, r, c).is_some_and(is_word_char) {
@@ -268,7 +268,7 @@ fn prev_word_start(lines: &[String], pos: usize) -> Option<usize> {
         }
         p -= 1;
     }
-    // Skip word chars backward to the word start.
+    // skip word chars backward to the word start
     loop {
         let (r, c) = unflat_pos(lines, p);
         if !char_at(lines, r, c).is_some_and(is_word_char) {
@@ -281,11 +281,11 @@ fn prev_word_start(lines: &[String], pos: usize) -> Option<usize> {
     }
 }
 
-/// End of the word at/after `pos` (last word char).
+/// end of the word at/after `pos` (last word char)
 fn word_end(lines: &[String], pos: usize) -> Option<usize> {
     let total = total_chars(lines);
     let mut p = pos;
-    // Skip non-word chars to the next word.
+    // skip non-word chars to the next word
     while p < total {
         let (r, c) = unflat_pos(lines, p);
         if char_at(lines, r, c).is_some_and(is_word_char) {
@@ -296,7 +296,7 @@ fn word_end(lines: &[String], pos: usize) -> Option<usize> {
     if p >= total {
         return None;
     }
-    // Advance to the last word char.
+    // advance to the last word char
     let mut end = p;
     while end + 1 < total {
         let (r, c) = unflat_pos(lines, end + 1);
@@ -305,7 +305,7 @@ fn word_end(lines: &[String], pos: usize) -> Option<usize> {
         }
         end += 1;
     }
-    // If already at the end, move to the next word's end instead (vim `e`).
+    // already at the end: move to the next word's end instead (vim `e`)
     if end == pos {
         if let Some(ns) = next_word_start(lines, pos + 1) {
             return word_end(lines, ns);
@@ -322,7 +322,7 @@ fn first_non_blank(lines: &[String], row: usize) -> usize {
 }
 
 fn remove_range(lines: &mut Vec<String>, from: usize, to: usize) -> String {
-    // Remove flattened `[from, to)`, return the removed text.
+    // remove flattened `[from, to)`, return the removed text
     let text = lines.join("\n");
     let chars: Vec<char> = text.chars().collect();
     let (from, to) = (from.min(chars.len()), to.min(chars.len()));
@@ -335,14 +335,14 @@ fn remove_range(lines: &mut Vec<String>, from: usize, to: usize) -> String {
     removed
 }
 
-/// Interpret one key in Normal mode, mutating `text`/`vim` for edits and
-/// motions. Returns what the caller must do at the `TuiState` level.
+/// interpret one key in Normal, mutating `text`/`vim` for edits and motions.
+/// returns what the caller must do at the `TuiState` level
 pub fn handle_normal_key(text: &mut String, vim: &mut VimState, key: char) -> NormalKey {
     let mut lines = split_lines(text);
     let (row, col) = clamp_normal(&lines, vim.row, vim.col);
     vim.set_cursor(row, col);
 
-    // Multi-key sequences first.
+    // multi-key sequences first
     if let Some(p) = vim.pending {
         vim.pending = None;
         match (p, key) {
@@ -363,7 +363,7 @@ pub fn handle_normal_key(text: &mut String, vim: &mut VimState, key: char) -> No
                 vim.push_undo(text);
                 let pos = flat_pos(&lines, row, col);
                 let end = next_word_start(&lines, pos).unwrap_or_else(|| {
-                    // No next word: delete to end of line (vim `dw`).
+                    // no next word: delete to end of line (vim `dw`)
                     flat_pos(&lines, row, line_len(&lines, row))
                 });
                 vim.register = remove_range(&mut lines, pos, end);
@@ -399,8 +399,8 @@ pub fn handle_normal_key(text: &mut String, vim: &mut VimState, key: char) -> No
         // --- insert entries: position the cursor, caller flips the mode ---
         'i' => NormalKey::ToInsert,
         'a' => {
-            // Append after the cursor: one char right, clamped to the
-            // insert-style end of line.
+            // append after the cursor: one char right, clamped to the
+            // insert-style end of line
             let len = line_len(&lines, row);
             vim.set_cursor(row, (col + 1).min(len));
             NormalKey::ToInsert
@@ -464,7 +464,7 @@ pub fn handle_normal_key(text: &mut String, vim: &mut VimState, key: char) -> No
                     vim.set_cursor(r, c);
                 }
                 None => {
-                    // No more words: end of buffer.
+                    // no more words: end of buffer
                     let last = lines.len() - 1;
                     let (_, c) = clamp_normal(&lines, last, usize::MAX);
                     vim.set_cursor(last, c);
@@ -532,8 +532,8 @@ pub fn handle_normal_key(text: &mut String, vim: &mut VimState, key: char) -> No
             if !vim.register.is_empty() {
                 vim.push_undo(text);
                 if vim.register_linewise {
-                    // Pasting onto a buffer that `dd` emptied restores the
-                    // line in place instead of leaving a stray blank line.
+                    // pasting onto a buffer that `dd` emptied restores the line
+                    // in place instead of leaving a stray blank line
                     if lines.len() == 1 && lines[0].is_empty() {
                         lines[0] = vim.register.clone();
                         vim.set_cursor(0, 0);
@@ -572,7 +572,7 @@ pub fn handle_normal_key(text: &mut String, vim: &mut VimState, key: char) -> No
     }
 }
 
-/// Insert one char at the cursor (Insert mode). The cursor advances.
+/// insert one char at the cursor (Insert). the cursor advances
 pub fn insert_char(text: &mut String, vim: &mut VimState, c: char) {
     let mut lines = split_lines(text);
     let row = vim.row.min(lines.len().saturating_sub(1));
@@ -585,10 +585,8 @@ pub fn insert_char(text: &mut String, vim: &mut VimState, c: char) {
     *text = lines.join("\n");
 }
 
-/// Delete key in either vim mode: delete the char under the cursor;
-/// at end of line, join the next line (standard Delete semantics);
-/// at end of text, a no-op. The composer's vim branch previously had
-/// no Delete arm at all.
+/// Delete key in either vim mode: delete the char under the cursor; at end of
+/// line, join the next line; at end of text, a no-op
 pub fn delete_char(text: &mut String, vim: &mut VimState) {
     let mut lines = split_lines(text);
     let row = vim.row.min(lines.len().saturating_sub(1));
@@ -609,8 +607,8 @@ pub fn delete_char(text: &mut String, vim: &mut VimState) {
     }
 }
 
-/// Backspace in Insert mode: delete the char before the cursor; at
-/// column 0, join with the previous line.
+/// Backspace in Insert: delete the char before the cursor; at column 0, join
+/// with the previous line
 pub fn backspace(text: &mut String, vim: &mut VimState) {
     let mut lines = split_lines(text);
     let row = vim.row.min(lines.len().saturating_sub(1));
@@ -631,20 +629,17 @@ pub fn backspace(text: &mut String, vim: &mut VimState) {
     }
 }
 
-/// Move the cursor by an arrow key, in either mode. This is the vim
-/// equivalent of `h`/`j`/`k`/`l`: the column is preserved across lines
-/// (the renderer's `cursor()` clamps it per line), and edges are
-/// sticky — pressing Up on the first line or Left at column 0 does not
-/// move or reset the column. Arrow keys previously reached no handler
-/// in the main loop at all, so vim users had no cursor keys.
+/// move the cursor by an arrow key, in either mode. the vim equivalent of
+/// `h`/`j`/`k`/`l`: column preserved across lines (the renderer's `cursor()`
+/// clamps per line), edges sticky - Up on the first line or Left at column 0
+/// doesn't move or reset the column
 pub fn move_arrow(text: &str, vim: &mut VimState, drow: isize, dcol: isize) {
     let lines = split_lines(text);
     let (row, col) = vim.cursor(text);
-    // Vertical moves must preserve the *stored* column, not the
-    // clamped display column: cursor() clamps to the current line,
-    // so reading it would lose the column after crossing a short
-    // line (line0 col2 -> short line1 -> line2 would land at col1
-    // instead of col2). Horizontal moves keep the display column.
+    // vertical moves must preserve the *stored* column, not the clamped display
+    // column: cursor() clamps to the current line, so reading it would lose the
+    // column after crossing a short line (line0 col2 -> short line1 -> line2
+    // would land at col1 instead of col2). horizontal moves keep display column
     let base_col = if drow != 0 { vim.col } else { col };
     let new_row = (row as isize + drow).clamp(0, lines.len() as isize - 1) as usize;
     let new_col = if dcol < 0 {
@@ -652,14 +647,14 @@ pub fn move_arrow(text: &str, vim: &mut VimState, drow: isize, dcol: isize) {
     } else {
         base_col + dcol as usize
     };
-    // When the row changes, keep the column; `cursor()` clamps it to
-    // the target line on render, so a short line does not lose the
-    // column for the line after it.
+    // when the row changes, keep the column; `cursor()` clamps it to the
+    // target line on render, so a short line doesn't lose the column for the
+    // line after it
     vim.set_cursor(new_row, new_col);
 }
 
-/// Move the cursor to the end of the input (used before `@` mentions,
-/// which complete at end-of-input).
+/// move the cursor to the end of the input (used before `@` mentions, which
+/// complete at end-of-input)
 pub fn move_to_end(text: &str, vim: &mut VimState) {
     let lines = split_lines(text);
     let row = lines.len().saturating_sub(1);
@@ -667,15 +662,13 @@ pub fn move_to_end(text: &str, vim: &mut VimState) {
     vim.mode = VimMode::Insert;
 }
 
-/// Snapshot the buffer before an insert session so `u` can undo it whole.
+/// snapshot the buffer before an insert session so `u` can undo it whole
 pub fn begin_insert_undo(text: &str, vim: &mut VimState) {
     vim.push_undo(text);
 }
 
-// ---------------------------------------------------------------------------
-// Small deterministic invariant unit tests. Behavioral, integration, and
-// timing tests live in `pantheon-eval`, never here.
-// ---------------------------------------------------------------------------
+// small deterministic invariant unit tests. behavioral, integration, and
+// timing tests live in `pantheon-eval`, never here
 
 #[cfg(test)]
 mod move_arrow_tests {
@@ -708,9 +701,8 @@ mod move_arrow_tests {
 
     #[test]
     fn arrow_down_preserves_column_across_short_line() {
-        // Column 2 survives the one-char middle line: the renderer
-        // clamps it to 1 there, and the stored column is still 2 on
-        // the line after.
+        // col 2 survives the one-char middle line: renderer clamps to 1 there,
+        // but the stored column is still 2 on the line after
         let text = "abc\nx\ndef";
         let mut v = vim_at(0, 2, VimMode::Insert);
         move_arrow(text, &mut v, 1, 0);

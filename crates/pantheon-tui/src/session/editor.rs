@@ -1,12 +1,12 @@
-//! Fullscreen draft editor for long prompts.
+//! fullscreen draft editor for long prompts.
 //!
-//! A tiny multi-line buffer with a visible cursor: no `$EDITOR`, no
-//! subprocess, no temp files. Opens with the current draft, `Ctrl+Enter`
-//! (or `Ctrl+S`) sends, `Esc` cancels and keeps the draft in the input
-//! box. All operations are char-boundary safe.
+//! tiny multi-line buffer with a visible cursor: no `$EDITOR`, no subprocess,
+//! no temp files. opens with the current draft, `Ctrl+Enter` (or `Ctrl+S`)
+//! sends, `Esc` cancels and keeps the draft in the input box. all ops are
+//! char-boundary safe
 
-/// The editable draft. `col` is a char index into the line, never a byte
-/// index, so multi-byte text cannot split a character.
+/// the editable draft. `col` is a char index into the line, never a byte
+/// index, so multi-byte text can't split a character
 #[derive(Debug, Clone)]
 pub struct DraftEditor {
     lines: Vec<String>,
@@ -15,7 +15,7 @@ pub struct DraftEditor {
 }
 
 impl DraftEditor {
-    /// Open on existing text; the cursor starts at the end of the draft.
+    /// open on existing text; cursor starts at the end
     pub fn from_text(text: &str) -> Self {
         let lines: Vec<String> = if text.is_empty() {
             vec![String::new()]
@@ -27,7 +27,7 @@ impl DraftEditor {
         Self { lines, row, col }
     }
 
-    /// The draft as one string, newlines joined.
+    /// the draft as one string, newlines joined
     pub fn text(&self) -> String {
         self.lines.join("\n")
     }
@@ -65,7 +65,6 @@ impl DraftEditor {
         self.col = col + 1;
     }
 
-    /// Split the line at the cursor.
     pub fn newline(&mut self) {
         let chars = self.line_chars();
         let col = self.col.min(chars.len());
@@ -76,8 +75,7 @@ impl DraftEditor {
         self.col = 0;
     }
 
-    /// Delete the char before the cursor; at column 0, join with the
-    /// previous line.
+    /// delete the char before the cursor; at col 0, join with the previous line
     pub fn backspace(&mut self) {
         if self.col > 0 {
             let mut chars = self.line_chars();
@@ -93,8 +91,7 @@ impl DraftEditor {
         }
     }
 
-    /// Delete the char under the cursor; at end of line, join the next
-    /// line up.
+    /// delete the char under the cursor; at end of line, pull the next one up
     pub fn delete(&mut self) {
         let len = self.line_chars().len();
         if self.col < len {
@@ -127,9 +124,9 @@ impl DraftEditor {
     }
 
     pub fn move_up(&mut self) {
-        // At the first line there is nowhere to go: stay put instead
-        // of resetting the column to 0 (which lost the column for
-        // nothing, and made Up at the top line a destructive move).
+        // at the first line there's nowhere to go: stay put instead of
+        // resetting col to 0 (that lost the column and made Up on the top
+        // line a destructive move)
         if self.row > 0 {
             self.row -= 1;
             self.col = self.col.min(self.lines[self.row].chars().count());
@@ -137,8 +134,7 @@ impl DraftEditor {
     }
 
     pub fn move_down(&mut self) {
-        // Same at the last line: stay put instead of jumping to the
-        // line end.
+        // same at the last line: stay put instead of jumping to line end
         if self.row + 1 < self.lines.len() {
             self.row += 1;
             self.col = self.col.min(self.lines[self.row].chars().count());
@@ -161,7 +157,7 @@ mod move_edge_tests {
     #[test]
     fn move_up_at_first_line_keeps_column() {
         let mut ed = DraftEditor::from_text("hello\nworld");
-        // Cursor starts at end of last line; move to first line col 3.
+        // cursor starts at end of last line; move to first line col 3
         ed.move_up();
         ed.move_left();
         ed.move_left();

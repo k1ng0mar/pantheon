@@ -1,10 +1,7 @@
-//! Screenshot harness for the transcript blocks.
+//! transcript screenshot harness - renders a demo screen through `TestBackend`
+//! and writes a PNG. throwaway visual-check tooling, not shipped.
 //!
-//! Renders a demo screen (tab bar, transcript, footer) through
-//! `TestBackend` and writes it as a PNG. Temporary visual-verification
-//! tooling - not shipped.
-//!
-//! Usage: `cargo run -p pantheon-tui --example transcript_shots OUT.png`
+//! `cargo run -p pantheon-tui --example transcript_shots OUT.png`
 
 use std::io::Write;
 use std::path::Path;
@@ -76,7 +73,7 @@ fn chunk(out: &mut Vec<u8>, ty: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&crc32(&mac).to_be_bytes());
 }
 
-/// Minimal truecolor PNG writer: 8-bit RGB, one IDAT.
+/// just enough PNG for this: 8-bit RGB, one IDAT
 fn write_png(path: &Path, w: u32, h: u32, px: &[u8]) {
     let mut out = Vec::new();
     out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -105,7 +102,6 @@ fn dim(th: &Theme, s: &str) -> Span<'static> {
 
 fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
     let mut lines = vec![
-        // Tab bar mock.
         Line::from(vec![
             Span::styled(
                 " pantheon ",
@@ -118,7 +114,6 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
             dim(th, "                          transcript pass"),
         ]),
         Line::from(""),
-        // User message.
         Line::from(Span::styled(
             "You",
             Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
@@ -130,7 +125,7 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
         Line::from(""),
     ];
 
-    // Collapsed thought.
+    // collapsed thought, then activity, then expanded thought
     let t1 = ThoughtView::collapsed(
         "The http client currently fails hard on 429s. I should add a retry helper with jittered backoff.",
         Some(Duration::from_millis(4000)),
@@ -138,12 +133,10 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
     lines.extend(t1.lines(th));
     lines.push(Line::from(""));
 
-    // Activity burst summary.
     lines.push(activity_summary_line(1, burst_object("web_search"), th));
     lines.push(activity_summary_line(2, burst_object("read_file"), th));
     lines.push(Line::from(""));
 
-    // Expanded thought.
     let mut t2 = ThoughtView::collapsed(
         "Retry on 429/503 only; cap at 5 attempts.\nJitter avoids thundering herds.",
         Some(Duration::from_millis(2300)),
@@ -152,7 +145,7 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
     lines.extend(t2.lines(th));
     lines.push(Line::from(""));
 
-    // Tool rows in three states.
+    // three tool states: running, ok, failed
     for (name, status, dur, toks) in [
         ("search.codebase", ToolStatus::Running, None, None),
         (
@@ -186,7 +179,6 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
 
-    // Shell card, collapsed, long output.
     let out: Vec<String> = (1..=20).map(|i| format!("src/file{i:02}.rs")).collect();
     let sh = ShellView {
         command: "find src -name '*.rs' | head -20".to_string(),
@@ -198,14 +190,12 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
     lines.extend(sh.lines(th));
     lines.push(Line::from(""));
 
-    // Edit diff card, collapsed.
     let old = "fn retry() {}\nfn backoff() {}\nfn jitter() {}\nfn cap() {}\nfn sleep() {}\nfn again() {}\nfn more() {}\nfn extra() {}\nfn last() {}\n";
     let new = "fn retry() {}\nfn backoff_ms() {}\nfn jitter() {}\nfn cap() {}\nfn sleep() {}\nfn again() {}\nfn more() {}\nfn extra() {}\nfn last() {}\n";
     let ev = EditView::from_texts("crates/pantheon-tui/src/http.rs", old, new, false);
     lines.extend(ev.lines(th));
     lines.push(Line::from(""));
 
-    // Assistant message.
     lines.push(Line::from(Span::styled(
         "Pantheon",
         Style::default().fg(th.primary).add_modifier(Modifier::BOLD),
@@ -216,11 +206,10 @@ fn demo_lines(th: &Theme) -> Vec<Line<'static>> {
     )));
     lines.push(Line::from(""));
 
-    // Jump-to-latest affordance (as if scrolled up).
+    // pretend we scrolled up
     lines.push(jump_to_latest_line(th));
     lines.push(Line::from(""));
 
-    // Footer mock.
     let mut footer = vec![
         dim(th, "Build · openai · gpt-4o "),
         dim(th, &run_stats_segment(Duration::from_secs(270), 7317)),
@@ -253,7 +242,6 @@ fn main() {
     let (cw, ch) = (CELL_W as usize, CELL_H as usize);
     let (pw, ph) = (100 * cw, 52 * ch);
     let mut px = vec![0u8; pw * ph * 3];
-    // Base fill.
     for p in px.as_chunks_mut::<3>().0 {
         p.copy_from_slice(&[bg_r, bg_g, bg_b]);
     }
@@ -275,7 +263,7 @@ fn main() {
             } else {
                 (fr, fg_, fb)
             };
-            // Glyph blob: inset rect suggesting a character.
+            // draw the glyph as an inset rect
             for dy in 4..ch - 4 {
                 for dx in 1..cw - 1 {
                     let i = ((y * ch + dy) * pw + x * cw + dx) * 3;
@@ -284,7 +272,6 @@ fn main() {
                     px[i + 2] = fb;
                 }
             }
-            // CROSSED_OUT: strike line through the middle.
             if cell.modifier.contains(Modifier::CROSSED_OUT) {
                 let dy = ch / 2;
                 for dx in 0..cw {

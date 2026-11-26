@@ -1,5 +1,3 @@
-//! heal_group: doctor, reflect_cli, nightly_cli, nightly_repair, repair, schedule_self_heal, schedule in one file.
-
 pub mod doctor {
     //! `pantheon doctor`: system diagnostics.
     //!
@@ -91,11 +89,9 @@ pub mod doctor {
                     fail_usage(&format!("unexpected flag {s:?}"));
                 }
                 s => {
-                    // A second positional used to vanish silently, and a
-                    // plugin dir silently dropped `--check` (the plugin
-                    // form runs before the subsystem engine). Both are
-                    // argument errors now: the plugin form takes exactly
-                    // one directory and no `--check`.
+                    // A second positional and a plugin dir with `--check` are both
+                    // argument errors: the plugin form takes exactly one directory and no
+                    // `--check`.
                     if plugin_dir.is_some() {
                         fail_usage(&format!(
                             "unexpected extra argument {s:?}; doctor takes at most one plugin directory"
@@ -298,12 +294,11 @@ pub mod doctor {
 pub mod reflect_cli {
     //! `pantheon reflect` - compatibility shim over the unified nightly pass.
     //!
-    //! The old standalone reflection pipeline is merged into
-    //! [`crate::nightly_cli`]: `pantheon reflect` now runs the full nightly
-    //! pass (single ledger scan → proposals → eval/replay gates → approval
-    //! queue → audit). Every function here keeps its old name and shape so
-    //! the TUI, the scheduler, and scripts keep working; new code should call
-    //! `nightly_cli` directly.
+    //! `pantheon reflect` runs the full nightly pass in [`crate::nightly_cli`]
+    //! (single ledger scan → proposals → eval/replay gates → approval queue →
+    //! audit). The functions here keep their names and shapes because the TUI, the
+    //! scheduler and scripts call them; new code should call `nightly_cli`
+    //! directly.
 
     use std::path::Path;
 
@@ -315,8 +310,8 @@ pub mod reflect_cli {
         crate::nightly_cli::run_one_pass(data_dir, dry_run)
     }
 
-    /// Persist the nightly LLM toggle. Writes `[nightly] enabled`; the old
-    /// `[reflect]` section is still read as a legacy fallback.
+    /// Persist the nightly LLM toggle. Writes `[nightly] enabled`; `[reflect]` is
+    /// still read as a fallback.
     pub fn persist_reflect_enabled(data_dir: &Path, enabled: bool) -> Result<(), String> {
         crate::nightly_cli::persist_nightly_enabled(data_dir, enabled)
     }
@@ -370,16 +365,13 @@ pub mod nightly_cli {
     //! `run_one_pass` builds the model policy from the on-disk config, so the
     //! CLI, the TUI worker thread, and the scheduler share one routing path.
     //!
-    //! The pass is **off by default** and does nothing unless enabled: an
+    //! The pass is off by default and does nothing unless enabled: an
     //! explicit `enabled` flag wins, otherwise a `[nightly.model]` pin (or
     //! the `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env
     //! overrides) implies on - see [`pantheon_api::config::nightly_enabled`].
     //! With no `[nightly]` section, legacy `[reflect]` / `[consolidation]`
-    //! With no `[nightly]` section, legacy `[reflect]` / `[consolidation]`
-    //! opt-ins are honored as a deprecated fallback.
-    //!
-    //! The old `pantheon reflect` / `pantheon consolidate` commands remain as
-    //! thin compatibility shims over this module.
+    //! opt-ins are honored as a deprecated fallback, and `pantheon reflect` /
+    //! `pantheon consolidate` remain as thin shims over this module.
 
     use pantheon_api::capability::Policy;
     use pantheon_api::error::{Layer, PantheonError};
@@ -636,11 +628,10 @@ pub mod nightly_cli {
             .is_some_and(pantheon_api::config::nightly_model_pin_present)
     }
 
-    /// Whether the nightly pass has any model pin in play: the
-    /// `[nightly.model]` table or the `PANTHEON_NIGHTLY_PROVIDER` /
-    /// `PANTHEON_NIGHTLY_MODEL` env overrides. Mirrors the pin half of
-    /// [`pantheon_api::config::nightly_enabled`] - used to decide whether
-    /// `/nightly on` should print pin guidance.
+    /// Whether the nightly pass has any model pin in play: the `[nightly.model]` table
+    /// or the `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` overrides.
+    /// Mirrors the pin half of [`pantheon_api::config::nightly_enabled`], and decides
+    /// whether `/nightly on` prints pin guidance.
     pub fn nightly_pin_present(data_dir: &Path) -> bool {
         nightly_model_pin(data_dir) || pantheon_api::config::nightly_env_pin_present()
     }
@@ -1198,7 +1189,7 @@ pub mod nightly_repair {
     //!   the declaring migration file) plus the live manager.
     //! - [`ScheduleRepairAdapter`] reads/writes `schedule.json` through the
     //!   scheduler core's [`load_jobs`]/[`save_jobs`] and merges per-job
-    //!   failure counters from [`RunHistory`]. It deliberately does not touch
+    //!   failure counters from [`RunHistory`]. It does not touch
     //!   the tick loop's locking, pause propagation, or fire recording.
     //! - [`ToolRepairAdapter`] smoke-probes tools with empty args behind the
     //!   capability gate (allowlist-only), re-resolves MCP-backed tools
@@ -1536,8 +1527,7 @@ pub mod nightly_repair {
                         enable_ask_user: tools.ask_user,
                         enable_plugins: tools.plugins,
                         data_dir: Some(self.data_dir.clone()),
-                        // Drive-by compile fix (another leaf added this field to
-                        // BuiltinOptions): None matches the struct's Default.
+                        // None matches `BuiltinOptions`' Default.
                         shell_child_hook: None,
                         // The nightly repair host never runs `cf` commands
                         // and never injects child env: None matches Default.
@@ -1549,9 +1539,8 @@ pub mod nightly_repair {
                     },
                 );
                 if let Some(mcp) = &self.mcp {
-                    // Project the servers' tools so allowlisted `mcp_*` names
-                    // probe the real thing. This connects to approved servers
-                    // - the same thing session startup does - which is why it
+                    // Project the servers' tools so allowlisted `mcp_*` names probe the real
+                    // thing. This connects to approved servers, as session startup does, so it
                     // stays behind the lazy build.
                     let _ = mcp.register_tools(&mut reg);
                 }
@@ -1572,7 +1561,7 @@ pub mod nightly_repair {
                 ));
             }
             // Empty-args smoke probe behind the capability gate. The policy is
-            // deliberately read-only: a probe must never mutate, and a tool
+            // read-only: a probe must not mutate, and a tool
             // that cannot run read-only fails closed - the ladder then
             // contains it instead of trusting it.
             let policy = Policy::researcher_readonly();
@@ -1619,27 +1608,25 @@ pub mod repair {
     //! `pantheon repair` - find and fix anything wrong with this install.
     //!
     //! `doctor` is diagnosis: it reports every problem and a fix hint per check.
-    //! `repair` is the fixing half, and it is deliberately a separate verb so
+    //! `repair` is the fixing half, and it is a separate verb so
     //! neither one can quietly do the other's job - a `doctor` that mutated state
     //! would be unsafe to run in a loop, and a repair that diagnosed would be
     //! useless.
     //!
     //! The mechanism is one check body with two callers, not two implementations.
     //! Each entry below pairs a `diagnose` (read-only, always runs first) with a
-    //! `repair` (mutates, only when `diagnose` found something). This is the shape
-    //! The established doctor/report shape, where
-    //! `should_fix` is a bool handed to the same function. The first version of
-    //! this file was a `repair check|runs` subcommand pair that re-implemented a
-    //! narrow slice of `doctor` and called it coverage; that is the failure this
-    //! registry exists to prevent.
+    //! `repair` (mutates, only when `diagnose` found something), the shape
+    //! `doctor` already uses: `should_fix` is a bool handed to the same function.
+    //! A `repair` subcommand pair that re-implements a narrow slice of `doctor` and
+    //! calls it coverage is the failure this registry exists to prevent.
     //!
     //! Rules every fixer obeys:
     //!
-    //! 1. **Back up before mutating.** A repair that can make things worse leaves
+    //! 1. Back up before mutating. A repair that can make things worse leaves
     //!    the original recoverable, and names the copy in its report.
-    //! 2. **Diagnose first, repair second.** A fixer never runs unconditionally,
+    //! 2. Diagnose first, repair second. A fixer never runs unconditionally,
     //!    so `repair` on a healthy install changes nothing.
-    //! 3. **A problem with no safe automatic fix is reported as manual**, not
+    //! 3. A problem with no safe automatic fix is reported as manual, not
     //!    skipped. "Repair found nothing it could fix" has to be an honest
     //!    statement about the install.
 
@@ -1670,7 +1657,7 @@ pub mod repair {
         pub repair: fn(&Path) -> Result<String, String>,
     }
 
-    /// Checks that deliberately have no automatic fix, because the only correct
+    /// Checks that have no automatic fix, because the only correct
     /// action needs a human decision. A fixer that declines one of these is
     /// working, not failing.
     const FIXERS_WITHOUT_A_SAFE_FIX: &[&str] = &["skills", "config"];
@@ -1797,9 +1784,8 @@ pub mod repair {
         }
 
         if as_json {
-            // One document, one shape. The previous version printed a bare `true`
-            // and then the array on a second call, which is two JSON documents and
-            // parses as neither.
+            // One document, one shape: a bare `true` followed by the array on a second
+            // call is two JSON documents and parses as neither.
             #[derive(Serialize)]
             struct Report<'a> {
                 ok: bool,
@@ -3335,13 +3321,11 @@ pub mod schedule {
         Ok(line.trim().to_string())
     }
 
-    /// Build the stored job from `schedule create` arguments, validating
-    /// everything before anything is persisted.
+    /// Build the stored job from `schedule create` arguments, validating everything
+    /// before anything is persisted.
     ///
-    /// A bad cron expression used to be stored without a murmur and then
-    /// silently never fire. Now it is rejected here, with the field and the
-    /// reason, so a broken schedule is a loud error at registration instead
-    /// of a quiet no-show at 3am.
+    /// A bad cron expression is rejected here with the field and the reason, rather
+    /// than stored and silently never firing.
     fn build_job_from_create(parsed: &CreateArgs) -> Result<ScheduledJob, String> {
         // Kind precedence: --cron > --every > --at. One of them is required:
         // a job with no schedule could never fire and must not be stored.
@@ -3499,7 +3483,7 @@ pub mod schedule {
                         // scheduled jobs.
                         let is_oneshot = matches!(j.job.kind, ScheduleKind::OneShot { .. });
                         let task = j.job.resolve_task(&TemplateStore::open(data_dir));
-                        // A manual `run` keeps the old hard-fail behavior: the
+                        // A manual `run` keeps the hard-fail behavior: the
                         // tick loop instead logs and continues with other jobs.
                         let report = run_job_now(&task, &j.job, data_dir);
                         if let Some(e) = report.error {
@@ -3524,21 +3508,15 @@ pub mod schedule {
                 }
             }
             "tick" => {
-                // Fire every job that is due. Jobs used to be written to
-                // schedule.json and nothing ever read it against a clock, so no
-                // job could ever fire on its own. `tick` is the primitive a
-                // daemon, cron entry, or CI step calls; `--watch` keeps it
-                // running in the foreground.
+                // Fire every job that is due. `tick` is the primitive a daemon, cron
+                // entry or CI step calls; `--watch` keeps it running in the foreground.
                 //
-                // This shares the gateway service's scheduler loop
-                // (pantheon_gateway::scheduler::SchedulerLoop): same claim
-                // ledger, same job store, so the two can never double-fire.
-                // Every fire goes through the durable claim ledger first: the
-                // claim is an atomic first-wins INSERT, so two ticks racing the
-                // same due job - two threads, two processes, or a restart
-                // replaying a minute - agree on exactly one winner instead of
-                // double-executing. A claim that cannot be persisted fails
-                // closed: the run does not start.
+                // This shares the gateway's scheduler loop
+                // (pantheon_gateway::scheduler::SchedulerLoop): same claim ledger, same
+                // job store, so the two can't double-fire. Every fire takes the durable
+                // claim first - an atomic first-wins INSERT - so two ticks racing the
+                // same due job (threads, processes, or a restart replaying a minute)
+                // agree on one winner. A claim that can't be persisted fails closed.
                 let watch = parts.iter().any(|a| a == "--watch");
                 let mut sched = match SchedulerLoop::open(data_dir, 30) {
                     Ok(s) => s,
@@ -3686,11 +3664,9 @@ pub mod schedule {
         pub claims_pruned: usize,
     }
 
-    /// Run the retention pass now. Thin wrapper over the scheduler crate's
-    /// pass ([`retention::run_retention`]): the TUI used to carry its own
-    /// copy of this prune, and the two copies shared only a doc promise to
-    /// keep them in sync. There is one implementation now; the TUI keeps
-    /// its own report type so existing callers are untouched.
+    /// Run the retention pass now. A thin wrapper over the scheduler crate's
+    /// [`retention::run_retention`], so there's one implementation; the TUI keeps its
+    /// own report type only so existing callers are untouched.
     pub fn run_retention(data_dir: &Path, keep_days: u32) -> Result<RetentionReport, String> {
         let r = retention::run_retention(data_dir, keep_days)?;
         Ok(RetentionReport {
@@ -3881,22 +3857,16 @@ pub mod schedule {
         }
     }
 
-    /// Fire a job now: a real agent turn against the configured model, with the
-    /// job's own model/provider pin applied when it has one.
+    /// Fire a job now: a real agent turn against the configured model, with the job's
+    /// own model/provider pin applied when it has one.
     ///
-    /// This used to open a run, log a progress line, and mark it complete
-    /// without ever calling a model. The user saw "ran <task>" and an idle
-    /// ledger. A scheduled task that never executes the task is worse than one
-    /// that fails loudly.
-    ///
-    /// Returns `Err` instead of exiting: the tick loop runs jobs on worker
-    /// threads, and a failing job must not take the whole daemon down with it.
-    /// Callers that want the old hard-fail behavior (`schedule run`) exit on
-    /// What one scheduled job's execution produced: the task-level truth.
-    /// `error` is `None` when the task ran cleanly; `Some` when the task
-    /// itself failed (or never started, in which case `run_id` is empty).
-    /// The outcome sink maps `Some` to [`RunOutcome::Failed`] for run
-    /// history, which feeds both the nightly repair loop and self-heal.
+    /// Returns `Err` instead of exiting, because the tick loop runs jobs on worker
+    /// threads and a failing job must not take the daemon down. Callers that want a
+    /// hard failure (`schedule run`) exit on the error.
+    /// What one scheduled job's execution produced. `error` is `None` when the task
+    /// ran cleanly, `Some` when it failed (or never started, leaving `run_id` empty).
+    /// The outcome sink maps `Some` to [`RunOutcome::Failed`] for run history, which
+    /// feeds the nightly repair loop and self-heal.
     pub(crate) struct JobRunReport {
         pub run_id: String,
         pub error: Option<String>,

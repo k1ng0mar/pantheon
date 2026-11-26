@@ -1,5 +1,3 @@
-//! model_group: model, model_browser, model_catalog, provider, ollama, setup_providers in one file.
-
 pub mod model {
     //! `pantheon model`: point pantheon at a provider and pick the model.
     //!
@@ -886,9 +884,9 @@ pub mod model {
     /// `nightly` writes the `[nightly.model]` sub-table; a fresh `[nightly]`
     /// comes from its `Default` impl (off unless the pin is present).
     fn pin_aux_slot(cfg: &mut Config, kind: &str, choice: &ModelChoice) -> Result<(), String> {
-        // A re-pin replaces provider/model/key, never the timeout the
-        // operator set: the old `timeout: None` literal reset every aux
-        // timeout on every model pick.
+        // A re-pin replaces provider/model/key, never the timeout the operator
+        // set: a `timeout: None` literal would reset every aux timeout on every
+        // model pick.
         let pin = |prev_timeout: Option<u64>| AuxSection {
             provider: choice.provider.clone(),
             model: choice.model.clone(),
@@ -1057,9 +1055,9 @@ pub mod model {
                 &choice.key_env,
             )?;
         }
-        // Reload: the row writer above persisted + registered already.
-        // Fail closed on a corrupt config: `unwrap_or_default` here used to
-        // overwrite a malformed config.toml with defaults plus one model.
+        // Reload: the row writer above persisted and registered already.
+        // A corrupt config is an error here, so a malformed config.toml is never
+        // overwritten with defaults plus one model.
         let mut cfg = Config::load_for_save(data_dir).map_err(|e| e.to_string())?;
         match &choice.target {
             Target::Default => {
@@ -1070,10 +1068,9 @@ pub mod model {
                     .unwrap_or_default();
                 cfg.model = Some(config::ModelSection {
                     // A model pick does not touch reasoning or the timeout:
-                    // changing providers must not silently reset an effort
-                    // level or a timeout the user chose. (The old literal
-                    // wrote `reasoning_budget: None` / `timeout_ms: None`,
-                    // resetting both on every pick.)
+                    // changing providers must not silently reset an effort level
+                    // or a timeout the user chose. A literal `reasoning_budget:
+                    // None` / `timeout_ms: None` would reset both on every pick.
                     reasoning_budget: prev.as_ref().and_then(|m| m.reasoning_budget),
                     provider: choice.provider.clone(),
                     model: choice.model.clone(),
@@ -1855,13 +1852,11 @@ pub mod model {
         if raw.iter().any(|a| a == "--help" || a == "-h") {
             model_help();
         }
-        // Unknown flags used to fall through to the interactive picker
-        // (on a TTY) or to a confusing "needs both" error: `--model x
-        // --bogus y` never told the operator the flag was dropped.
-        // Value flags take their value as the next token, exactly like
-        // `flag()` reads them, so a value is never mistaken for a flag.
-        // The `--flag=value` form is not read by `flag()` at all, so it
-        // is rejected loudly instead of being silently ignored.
+        // Unknown flags are an error rather than falling through to the interactive
+        // picker (on a TTY) or a confusing "needs both" message.
+        // Value flags take their value as the next token, exactly like `flag()` reads
+        // them, so a value is never mistaken for a flag. The `--flag=value` form isn't
+        // read by `flag()` at all, so it's rejected loudly.
         {
             let rest: Vec<String> = args.iter().skip(2).cloned().collect();
             let value_flags = [
@@ -2145,7 +2140,7 @@ pub mod model {
         fn save_choice_preserves_timeout_ms_and_reasoning() {
             // A model pick rebuilds `[model]` with the new provider/model;
             // a timeout or reasoning level the user chose must survive it,
-            // exactly like the fallbacks do — never silently reset.
+            // exactly like the fallbacks do, never silently reset.
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
@@ -2182,13 +2177,11 @@ pub mod model {
 }
 
 pub mod model_browser {
-    //! Alternate-screen model browser.
+    //! Alternate-screen model browser: filter tabs, a four-column table, and a details
+    //! card.
     //!
-    //! A richer replacement for the scroll-only `pick` that `pantheon model`
-    //! previously used: filter tabs, a four-column table, and a details card.
-    //! It deliberately returns a row index plus a chosen action, so the
-    //! caller (and not this widget) decides what saving means. The browser
-    //! is intentionally a TTY-only, side-effect-free value producer.
+    //! Returns a row index plus a chosen action, so the caller decides what saving
+    //! means. TTY-only and side-effect-free.
 
     use crate::model_catalog::ModelRow;
     use std::io::Write;
@@ -2244,12 +2237,11 @@ pub mod model_browser {
         let mut selected = 0usize;
         let mut detail = false;
 
-        // Capability tabs filter on catalog flags, not id substrings:
-        // the old Vision tab listed every `claude`/`gemini` id (including
-        // text-only rows) and missed vision models whose ids say nothing
-        // about vision. A row with unknown flags (live-only, `None`)
-        // keeps the old substring heuristic as a fallback — unknown is
-        // not false — while a catalogued `Some(false)` is excluded.
+        // Capability tabs filter on catalog flags, not id substrings: a substring
+        // test lists every `claude`/`gemini` id (including text-only rows) and
+        // misses vision models whose ids say nothing about vision. A row with
+        // unknown flags (live-only, `None`) falls back to the substring test:
+        // unknown is not false, while a catalogued `Some(false)` is excluded.
         fn tab_match(tab: usize, row: &ModelRow) -> bool {
             let id = row.id.to_lowercase();
             match tab {
@@ -2604,7 +2596,7 @@ pub mod model_catalog {
         format!("{}/models", base_url.trim_end_matches('/'))
     }
 
-    /// Fetch the live model list **with** an API key, for the wizard's
+    /// Fetch the live model list with an API key, for the wizard's
     /// post-key model step. Same response shape as [`fetch_live_models`]
     /// but it sends the auth header for the wire mode, so a keyed endpoint
     /// (the local router, most hosted providers) returns its real list
@@ -2725,7 +2717,7 @@ pub mod model_catalog {
         pub input_per_mtok_usd: Option<f64>,
         pub output_per_mtok_usd: Option<f64>,
         /// Catalog capability flags; `None` on rows built before flags
-        /// were threaded (live-only rows stay `None` — unknown, not false).
+        /// were threaded (live-only rows stay `None`, unknown, not false).
         pub vision: Option<bool>,
         pub reasoning: Option<bool>,
     }
@@ -3608,7 +3600,7 @@ pub mod setup_providers {
     /// The outcome of one provider screen.
     ///
     /// Skip and cancel are different intents. `Skipped` means the user
-    /// deliberately left the tool unconfigured: the wizard removes the
+    /// left the tool unconfigured: the wizard removes the
     /// tool group from the enabled-tools vec, so the shared setup path
     /// writes no provider section and the runtime never registers the
     /// tool - a clean "not configured", never a half-written config.

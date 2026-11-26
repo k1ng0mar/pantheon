@@ -1,9 +1,7 @@
-//! The Pantheon session: the agent cockpit.
+//! terminal session + its event-driven layout
 //!
-//! Visual blocks for each event type, persistent header, status bar.
-//! Uses ratatui + crossterm. There is no streaming-text fallback: if the
-//! terminal cannot host the alternate screen, entry refuses to start rather
-//! than becoming a second, worse interface.
+//! alternate screen only; refuses to start if the terminal can't give us one.
+//! events become timeline blocks, status, prompts.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,8 +36,8 @@ use pantheon_providers::model_event::ModelEvent;
 use pantheon_runtime::session::Session;
 use std::path::PathBuf;
 
-/// TUI-B feature modules. Declared here (not in lib.rs) so a sibling
-/// worker editing lib.rs cannot conflict with this branch.
+/// feature modules. Declared here, not lib.rs, so a sibling worker editing
+/// lib.rs doesn't conflict with this branch.
 pub mod activity;
 pub mod bg;
 mod editor;
@@ -49,13 +47,10 @@ pub mod theme;
 mod timeline;
 pub mod vim;
 
-/// The slash-command registry: (command, one-line description). This is
-/// the single source of truth - `/help`, the `/` command palette, and
-/// completion all read from here, so a command can never be listed twice
-/// or drift out of sync. Only the dynamic `/<skill>` entry is
-/// documentation-only and skipped by the palette; real commands with
-/// `<...>` usage in their display string are offered, and Enter runs
-/// their bare form.
+/// (command, one-line description). single source of truth: `/help`, the `/`
+/// palette, and completion all read this. `/<skill>` is docs-only and skipped
+/// by the palette; entries with `<...>` in their display string still get
+/// offered, with the suffix stripped on Enter.
 const COMMANDS: &[(&str, &str)] = &[
     ("/help", "this list"),
     ("/models [FILTER]", "providers first, then models - Enter switches"),
@@ -136,8 +131,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("/exit", "leave pantheon"),
 ];
 
-/// Key hints shown at the end of `/help`. Not commands: kept separate so
-/// the palette never offers them.
+/// key hints for the end of `/help`. not commands - the palette mustn't offer them.
 const KEY_HINTS: &[(&str, &str)] = &[
     ("PgUp/PgDn", "scroll the transcript"),
     ("Ctrl+O / F2", "turn timeline: arrows move, Enter jumps"),
@@ -151,8 +145,7 @@ const KEY_HINTS: &[(&str, &str)] = &[
     ("Esc Esc (idle)", "offer to rewind the last turn"),
 ];
 
-/// One `/help` line per registry entry, in the two-space-separated format
-/// `render_help_table` parses.
+/// one `/help` line per entry, in the two-space format `render_help_table` parses.
 fn help_lines() -> Vec<String> {
     let mut out = Vec::with_capacity(COMMANDS.len() + KEY_HINTS.len() + 1);
     out.push("commands:".to_string());
@@ -180,30 +173,21 @@ fn help_lines() -> Vec<String> {
     out
 }
 
-/// The `/` command palette: type to filter the registry by name or
-/// description, Up/Down to move, Enter to run, Esc to dismiss. While open
-/// it owns the keyboard - exactly like the `@` mention picker.
+/// `/` palette: filter by name/description, Up/Down, Enter, Esc. Owns the
+/// keyboard while open, same as the `@` mention picker.
 #[derive(Debug, Default)]
 pub struct PaletteState {
-    /// Raw filter text (without the leading `/`).
+    /// filter text, no leading `/`
     pub input: String,
-    /// Selected index into the *filtered* list.
+    /// into the *filtered* list
     pub sel: usize,
 }
 
 impl PaletteState {
-    /// Registry entries matching the filter, in registry order. Only
-    /// the dynamic `/<skill>` entry is documentation-only and never
-    /// offered: every other entry is a real command even when its
-    /// display string carries `<...>` usage (e.g. `/team [<id>
-    /// [<task>]]`, `/send <target> <message>`), and Enter on a pick
-    /// strips the usage suffix and runs the bare command. The old
-    /// filter excluded every entry containing `<`, so the palette
-    /// could never offer /team, /send, /tasks, /swarm <id>,
-    /// /agent new or /agents create at all.
-    /// Name matches come before description matches: typing `agents`
-    /// should offer `/agents`, not `/settings` (whose description happens
-    /// to mention "agents").
+    /// matching registry entries, registry order. `/<skill>` is docs-only and
+    /// never offered; `<...>` entries are, with the suffix stripped on Enter.
+    /// name matches sort ahead of description matches, so `agents` offers
+    /// `/agents` before `/settings` (whose desc happens to mention agents).
     pub fn filtered(&self) -> Vec<(&'static str, &'static str)> {
         let f = self.input.to_lowercase();
         let offered: Vec<(&'static str, &'static str)> = COMMANDS
@@ -240,53 +224,37 @@ impl PaletteState {
 
 /// A single block in the conversation transcript.
 #[derive(Debug, Clone)]
-// ToolCall is intentionally larger than the other variants: it carries the
-// full tool card state (name, args, timing, error, tokens) inline. Boxing it
-// would touch every construction and match site for a marginal layout win.
+// ToolCall is bigger than the other variants on purpose - it holds the whole
+// tool card inline. boxing it means touching every construction/match site for
+// a marginal layout win. not worth it.
 #[allow(clippy::large_enum_variant)]
 pub enum BlockKind {
     UserMessage(String),
     AssistantMessage(String),
-    /// Reasoning trace. Renders as a collapsible `◇ Thought` row via
-    /// [`crate::transcript::ThoughtView`]; the live (streaming) block
-    /// stays expanded, settled ones collapse until clicked.
-    /// `duration` is measured from the first reasoning delta to the
-    /// first following non-reasoning event (see `settle_thinking`);
-    /// it is `None` while streaming and for imported traces, never
-    /// an invented number.
+    /// reasoning trace, rendered as a collapsible `◇ Thought` row via
+    /// [`crate::transcript::ThoughtView`]; live block stays expanded, settled
+    /// ones collapse until clicked. `duration` runs from first delta to the
+    /// first non-reasoning event (`settle_thinking`); `None` while streaming
+    /// and for imported traces, never a made-up number.
     Thinking {
         text: String,
         expanded: bool,
-        /// Explicit user collapse of the live (streaming) block. The
-        /// renderer expands the live block even when `expanded` is
-        /// false (new thinking starts collapsed in the field but must
-        /// show while streaming), so without this flag a click to shut
-        /// the live block did nothing until another block landed.
+        /// renderer expands the live block even with `expanded = false`, so
+        /// without this flag clicking to shut the live block did nothing until
+        /// the next block landed.
         user_collapsed: bool,
         duration: Option<std::time::Duration>,
     },
-    /// Tool card: running until the matching runtime completion event
-    /// sets `ok`. `name` is the registry id (`shell`) - the UI shows
-    /// the presentable display name. Args render inline;
-    /// `started`/`duration` give the timing, `error` carries the
-    /// failure detail, and `tokens` freezes the session token count at
-    /// completion (the header shows the live count while running).
-    /// Deliberately NO stall label here: elapsed time alone is not
-    /// proof of a stuck tool. The runtime's activity watchdog
-    /// (`pantheon-runtime/src/watchdog.rs`, budget from
-    /// `PANTHEON_STALL_BUDGET_MS`, default 30s) only advances at
-    /// turn-entry boundaries, probes with a ledger read, and kills
-    /// only on a failed probe (`WATCHDOG_KILL`, already surfaced as a
-    /// turn failure); it emits no state the TUI could render, and
-    /// the TUI feed drops `ToolOutput` events and only receives
-    /// shell output at completion, so no per-tool last-output
-    /// timestamp exists to derive one from. A proactive stall UI
-    /// needs a runtime addition (e.g. a watchdog/progress event the
-    /// TUI can timestamp), not a TUI-side elapsed threshold — see
-    /// the 2026-10-27 next-pass report.
-    /// `expanded` toggles the detail on click; `output` holds captured
-    /// stdout for `shell` calls, rendered as a collapsible `$ cmd` card
-    /// via [`crate::transcript::ShellView`].
+    /// tool card, running until the matching completion sets `ok`. `name` is
+    /// the registry id (`shell`), UI shows the display name. `tokens` freezes
+    /// the session count at completion; `expanded` toggles detail; `output`
+    /// holds shell stdout as a collapsible `$ cmd` card.
+    ///
+    /// no stall label on purpose: elapsed time doesn't prove a tool is stuck.
+    /// the watchdog only advances at turn boundaries and kills on a failed
+    /// ledger probe, so there's nothing renderable; ToolOutput events get
+    /// dropped, so there's no per-tool last-output timestamp either. need a
+    /// runtime event before we can show one.
     ToolCall {
         name: String,
         args: String,
@@ -299,80 +267,66 @@ pub enum BlockKind {
         expanded: bool,
         output: Vec<String>,
     },
-    /// One delegation group: every agent spawned by the same parent
-    /// tool call (`call_id`) shares this block, and this block's
-    /// `agents` list is the ONLY place its rows render from. That is
-    /// what makes duplication impossible: the renderer never reads
-    /// the global `SubAgentRecord` registry under a Swarm block, so
-    /// an agent cannot repeat once per spawn. Spawns with no call id
-    /// (legacy rows, spawn paths with no tool call in hand) get one
-    /// single-agent block each, as before — still block-local, so
-    /// still no duplication.
+    /// one delegation group: all agents from the same parent tool call
+    /// (`call_id`) share a block, and `agents` is the only place its rows
+    /// render from - the renderer never reads the global `SubAgentRecord`
+    /// registry under a Swarm block, so no dupes. no call id -> one block
+    /// per agent.
     Swarm {
         call_id: Option<String>,
         agents: Vec<SwarmAgent>,
     },
     Status(String),
-    /// Live todo checklist card, rendered inline in the transcript with
-    /// the inline card (`todo_card_lines`). Present only while
-    /// the sidebar is hidden (narrow terminal or toggled off): in wide
-    /// mode the sidebar's todo view owns this. One live block, updated
-    /// in place as the plan progresses - never duplicated, removed when
-    /// the todo list empties or the sidebar comes back.
+    /// live todo card, inline in the transcript (`todo_card_lines`). only while
+    /// the sidebar is hidden - wide mode lets the sidebar own this. one block,
+    /// updated in place; gone when the list empties or the sidebar comes back.
     Todos(Vec<crate::todo_card::TodoCardItem>),
-    /// A finished `/btw` background task, labeled with the originating
-    /// prompt. Rendered as its own card - visually distinct from assistant
-    /// messages so a result that lands mid-turn never reads as the main
-    /// agent speaking.
+    /// finished `/btw` task, labeled with its prompt. its own card so a result
+    /// landing mid-turn doesn't read as the main agent speaking.
     BgResult {
         task_id: u64,
         label: String,
         output: String,
         ok: bool,
     },
-    /// Inline unified diff of files a write tool changed, computed from
-    /// pre-tool snapshots at ToolCompleted. Rendered red/green; never
-    /// affects the ledger.
-    /// Long diffs collapse behind an `(N more lines)` expander;
+    /// inline diff from pre-tool snapshots at ToolCompleted. red/green, no
+    /// ledger effect. long diffs hide behind an `(N more lines)` expander -
     /// click the header to toggle.
     Diff {
         lines: Vec<crate::diffview::DiffLine>,
         expanded: bool,
     },
-    /// Approval decision card. The tool intent renders calmly above it;
-    /// the card itself is the amber decision point. `decision` collapses
-    /// the card to a dim one-line marker once resolved.
+    /// amber decision point; the intent text above stays calm. `decision`
+    /// collapses it to a dim one-line marker once resolved.
     Approval {
         tool: String,
         sentence: String,
         target: String,
         decision: Option<bool>,
     },
-    /// Clarify question card (`ask_user`). Cyan `?`, never amber.
-    /// `answered` collapses the card once the operator replies.
+    /// clarify question (`ask_user`). cyan `?`, never amber; `answered`
+    /// collapses it.
     Clarify {
         question: String,
         options: Vec<String>,
         answered: Option<String>,
     },
-    /// Rendered output of one slash command: the echo plus a titled
-    /// result block. `/help` renders as a two-column table.
+    /// echo + titled result block; `/help` is a two-column table.
     Command {
         cmd: String,
         lines: Vec<String>,
         failed: bool,
     },
-    /// Destructive slash command awaiting confirmation (`/clear`).
-    /// Amber decision card like Approval; `decided` collapses it.
+    /// destructive slash awaiting confirmation (`/clear`), amber like
+    /// Approval; `decided` collapses it.
     Confirm {
         label: String,
         sentence: String,
         decided: Option<bool>,
     },
-    /// Provider failure card: which provider/model failed, the classified
-    /// error kind + message, and what the chain did next. Rate-limit
-    /// failures render in the warning tone so quota trouble is visibly
-    /// distinct from a dead provider.
+    /// which provider/model failed, classified error kind + message, and
+    /// what the chain did next. rate limits use the warning tone so quota
+    /// trouble doesn't look like a dead provider.
     ProviderError {
         provider: String,
         model: String,
@@ -380,10 +334,9 @@ pub enum BlockKind {
         message: String,
         fallback: FallbackOutcome,
     },
-    /// Structured UI published by the agent (`render_ui`, protocol
-    /// `pantheon_api::ui`). Rendered by the component renderer
-    /// (`ui_render`); `revision` tracks `UiUpdated` application so
-    /// out-of-order replays cannot regress the view.
+    /// agent-published structured UI (`render_ui`, `pantheon_api::ui`),
+    /// drawn by `ui_render`. `revision` guards against out-of-order
+    /// `UiUpdated` replays regressing the view.
     Ui {
         ui_id: String,
         revision: u64,
@@ -391,52 +344,46 @@ pub enum BlockKind {
     },
 }
 
-/// What the fallback chain did after a provider failure.
+/// what the fallback chain did after a provider failure
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FallbackOutcome {
-    /// A fallback was available and engaged: this provider/model is now
-    /// the active one.
+    /// fallback engaged; this provider/model is active now
     Engaged { provider: String, model: String },
-    /// Retryable failure, but the chain had nothing left to try.
+    /// retryable, but nothing left to try
     Exhausted,
-    /// The error is not retryable, so no fallback was attempted.
+    /// not retryable, so no fallback was attempted
     NotRetryable,
-    /// The chain is retrying the same provider/model: retry `attempt` of
-    /// `max_attempts`, waiting `wait_secs` before the next try. The card
-    /// stays live - each `RetryAttempt` updates this line in place so
-    /// the transcript shows "retrying 2/3", never a frozen screen.
+    /// retrying the same provider/model: retry `attempt`/`max_attempts` after
+    /// `wait_secs`. card stays live - each `RetryAttempt` updates its line
+    /// in place ("retrying 2/3"), no frozen screen.
     Retrying {
         attempt: u32,
         max_attempts: u32,
         wait_secs: u64,
     },
-    /// A retry recovered the turn: retry `attempt` of `max_attempts`
-    /// succeeded. The card keeps the honest trail instead of going
-    /// silent or freezing on "retrying n/3".
+    /// retry `attempt`/`max_attempts` succeeded. keep the trail instead of
+    /// going silent or stuck on "retrying n/3".
     Recovered { attempt: u32, max_attempts: u32 },
 }
 
-/// A retryable provider failure waiting on the chain's verdict. The next
-/// chain event resolves it: `RetryAttempt` (a retry is being waited out),
-/// `Fallback` (a fallback engaged), `Exhausted` (nothing left to try),
-/// or `Attempt` on the same model (a stacked key rotated, not a chain
-/// move). Non-retryable failures render immediately too - a TUI that
-/// attached mid-chain may never see their verdict, and a failure must
-/// never be silent.
+/// retryable failure waiting on the chain's verdict. next event resolves it:
+/// `RetryAttempt`, `Fallback`, `Exhausted`, or `Attempt` on the same model
+/// (stacked key rotating, not a chain move). non-retryable failures render
+/// right away too - a TUI attached mid-chain may never see the verdict, and
+/// failures shouldn't be silent.
 struct PendingProviderFailure {
     provider: String,
     model: String,
     kind: ProviderErrorKind,
     message: String,
     code: String,
-    /// Block index of the live error card, if one is on screen. Verdicts
-    /// update the card in place instead of pushing a second one; the
-    /// index is verified before each update (rewind can truncate).
+    /// live card index, if on screen. verdicts update in place; rewind can
+    /// truncate, so verify before each update.
     card_index: Option<usize>,
-    /// Set by `RetryAttempt`: the next `Attempt` on this model is a
-    /// retry, not a stacked-key rotation (no "trying next key" line).
+    /// set by `RetryAttempt`: the next `Attempt` here is a retry, not a
+    /// stacked-key rotation.
     retrying: bool,
-    /// Last `(attempt, max_attempts)` seen, for the Recovered line.
+    /// last `(attempt, max_attempts)` for the recovered line
     last_retry: Option<(u32, u32)>,
 }
 
@@ -445,25 +392,19 @@ pub struct TranscriptBlock {
     pub kind: BlockKind,
 }
 
-/// One agent inside a [`BlockKind::Swarm`] block: the agent name plus
-/// its lifecycle, owned by the block itself. Status reuses
-/// [`activity::SubAgentStatus`] so the transcript and the sidebar
-/// timeline cannot drift into two status vocabularies.
+/// one agent in a [`BlockKind::Swarm`] block, owned by the block. status
+/// reuses [`activity::SubAgentStatus`] so transcript and sidebar don't end
+/// up with two status vocabularies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwarmAgent {
     pub name: String,
     pub status: activity::SubAgentStatus,
 }
 
-/// Feed an `AgentSpawned` into the transcript's Swarm blocks.
-/// Pure over the block list, so tests pin the grouping without a
-/// live event feed:
-/// - a spawn with a call id joins the block carrying that call id
-///   (created if absent), appending its agent once — the engine +
-///   runtime double-announce collapses here, as it does in the
-///   sidebar registry;
-/// - a spawn with no call id pushes a new single-agent block, as
-///   before (no grouping key exists to join on).
+/// feed an `AgentSpawned` into the Swarm blocks. pure over the block list so
+/// tests can pin grouping without a live feed. call id -> join (or create) the
+/// matching block and append the agent once, which collapses the engine +
+/// runtime double-announce; no call id -> its own single-agent block.
 pub fn swarm_spawn(blocks: &mut Vec<TranscriptBlock>, call_id: Option<String>, agent: &str) {
     let name = agent.trim();
     if name.is_empty() {
@@ -495,11 +436,9 @@ pub fn swarm_spawn(blocks: &mut Vec<TranscriptBlock>, call_id: Option<String>, a
     });
 }
 
-/// Feed an `AgentCompleted` into the transcript's Swarm blocks: flip
-/// the matching agent to Done. A completion with a call id flips
-/// only inside that call's block; without one it flips the most
-/// recent still-running row of that name. Unknown agents are a
-/// no-op, never a new row.
+/// feed an `AgentCompleted` into the Swarm blocks: flip to Done. with a call
+/// id, only that call's block; without one, the newest running row of that
+/// name. unknown agents are a no-op, never a new row.
 pub fn swarm_complete(blocks: &mut [TranscriptBlock], call_id: Option<&str>, agent: &str) {
     let name = agent.trim();
     if name.is_empty() {
@@ -528,10 +467,9 @@ pub fn swarm_complete(blocks: &mut [TranscriptBlock], call_id: Option<&str>, age
     }
 }
 
-/// One selectable row in the /models browser: a provider/model pair plus
-/// the context window the catalog declares (`None` = unknown, shown as ?).
-/// A row with an empty `model_id` is a provider with no curated models;
-/// Enter on it explains how to switch with an explicit id instead.
+/// /models row: provider/model pair + catalog context window (`None` = ?,
+/// unknown). empty `model_id` means a provider with no curated models;
+/// Enter on it explains how to switch with an explicit id.
 #[derive(Debug, Clone)]
 pub struct ModelRow {
     pub provider_id: String,
@@ -540,9 +478,8 @@ pub struct ModelRow {
     pub ctx: Option<u32>,
 }
 
-/// One provider in the `/models` provider picker: the label shown, the
-/// id used to drill into its models, and how many curated models it
-/// carries (0 = provider with no catalog entries yet).
+/// /models provider picker row: label, id to drill into its models, and
+/// curated model count (0 = nothing in the catalog yet).
 #[derive(Debug, Clone)]
 pub struct ProviderRow {
     pub provider_id: String,
@@ -575,8 +512,8 @@ pub struct ActiveGoal {
     pub max_iterations: u32,
 }
 
-/// An `ask_user` question parked on a run: what the clarify card shows
-/// and what the answer keys resolve.
+/// parked `ask_user` question: what the clarify card shows and what
+/// the answer keys resolve.
 #[derive(Debug, Clone)]
 pub struct ClarifyRequest {
     pub call_id: String,
@@ -584,9 +521,8 @@ pub struct ClarifyRequest {
     pub options: Vec<String>,
 }
 
-/// An in-progress form fill: the operator answers a published form's
-/// fields one at a time in the composer. `values` accumulates validated
-/// entries; `index` is the field being answered.
+/// form fill in progress: operator answers the fields one at a time in the
+/// composer. `values` holds validated entries; `index` is the current field.
 pub struct FormFill {
     pub ui_id: String,
     pub revision: u64,
@@ -603,8 +539,7 @@ impl FormFill {
         self.fields.get(self.index)
     }
 
-    /// Human-readable prompt for the current field, shown above the
-    /// composer while filling.
+    /// prompt above the composer for the current field
     fn prompt(&self) -> String {
         match self.current() {
             None => "form complete".to_string(),
@@ -639,21 +574,20 @@ impl FormFill {
     }
 }
 
-/// A parked approval: (scope, tool name, tool args). The scope is
-/// `call_id:tool:args`; the name/args are parsed out of it so a
-/// re-entered session can render the card without the live `last_tool`.
+/// parked approval: (scope, tool name, tool args). scope is
+/// `call_id:tool:args`; name/args are parsed out so a re-entered session
+/// can render the card without the live `last_tool`.
 pub type ApprovalInfo = (String, String, String);
 
-/// A destructive slash command awaiting confirmation (`/clear`).
-/// Reuses the approval decision-card pattern: amber card, `[a]`/`[d]`.
+/// destructive slash awaiting confirmation (`/clear`), same amber
+/// decision card as approvals with `[a]`/`[d]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     ClearTranscript,
 }
 
-/// Which card the sidebar's bottom half shows. Auto-switches by
-/// context (Plan mode / fresh todo updates open the todo view, Build
-/// mode the agent view); manual toggle (`^g`) flips it on demand.
+/// sidebar bottom card. auto-switches by context (Plan / new todos open
+/// the todo view, Build the agent view); `^g` flips it manually.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SidebarView {
     #[default]
@@ -661,48 +595,39 @@ pub enum SidebarView {
     Todo,
 }
 
-/// Runtime state for the TUI session.
+/// TUI session runtime state
 pub struct TuiState {
     pub session_id: String,
     pub model: String,
     pub elapsed: Duration,
     pub start_time: Instant,
-    /// Authoritative cumulative tokens (snapped on each Usage event).
+    /// authoritative cumulative tokens (snapped on each Usage event)
     pub tokens_used: u32,
-    /// Live estimate of THIS turn's streamed tokens (chars / 4).
-    /// Added to tokens_used for the live counter; snapped away when Usage lands.
+    /// live estimate of this turn's streamed tokens (chars / 4), added to
+    /// tokens_used for the counter; snapped away when Usage lands
     pub turn_estimate: u32,
     pub tokens_max: u32,
-    /// Context-warning threshold in percent, from `[tui]
-    /// context_warn_pct` (default 80). The composer's `ctx NN%`
-    /// element and the sidebar context meter share this one
-    /// threshold — there is no second, different split.
+    /// context warning threshold %, from `[tui] context_warn_pct` (80).
+    /// composer `ctx NN%` and the sidebar meter share this one threshold.
     pub context_warn_pct: f64,
     pub cost_cents: u32,
     pub blocks: Vec<TranscriptBlock>,
     pub input: String,
-    /// Non-vim composer cursor: char index into `input` (never a byte
-    /// index, so multi-byte text cannot split a character). The composer
-    /// was append-only, which made Left/Right/Home/End dead keys; the
-    /// cursor is what makes them work. Always clamped on use, so a
-    /// direct `input = …` assignment elsewhere can only park it at the
-    /// end, never out of range. Vim mode keeps its own cursor and
-    /// ignores this field.
+    /// composer cursor as a char index into `input` (never bytes, so
+    /// multi-byte text can't split). the composer used to be append-only,
+    /// which made Left/Right/Home/End dead keys. always clamped on use, so
+    /// a bare `input = …` only parks it at the end. vim mode keeps its own.
     pub input_cursor: usize,
-    /// Stored column for vertical cursor moves: Up onto a short line
-    /// then Down must return to the original column, not clamp to the
-    /// short line's length. Set on the first vertical move, cleared
-    /// by any horizontal move or edit. `None` means "use the current
-    /// column".
+    /// saved column for vertical moves: Up onto a short line then Down must
+    /// return to the original column, not the short line's length. set on
+    /// the first vertical move, cleared by any horizontal move/edit.
     pub composer_goal_col: Option<usize>,
-    /// Submitted composer messages, oldest first, for Up/Down recall.
-    /// Capped (see `INPUT_HISTORY_CAP`); consecutive duplicates are
-    /// not stored twice.
+    /// submitted messages, oldest first, for Up/Down recall. capped
+    /// (`INPUT_HISTORY_CAP`); consecutive dupes stored once.
     pub input_history: Vec<String>,
-    /// While recalling: index into `input_history`, or `None` when the
-    /// composer holds a fresh draft. `input_history_draft` is the draft
-    /// that was in the composer when recall started, restored when
-    /// recall walks past the newest entry.
+    /// index into `input_history` while recalling; `None` = fresh draft.
+    /// `input_history_draft` is what was in the composer when recall started,
+    /// restored when recall walks past the newest entry.
     pub input_history_idx: Option<usize>,
     pub input_history_draft: String,
     pub scroll_offset: usize,
@@ -710,279 +635,242 @@ pub struct TuiState {
     pub shutting_down: bool,
     pub status_line: String,
     pub is_inputting: bool,
-    /// Set when a run parks on approval: (run_id, scope/call_id).
-    /// Drives the permission card; cleared by grant/deny.
+    /// set when a run parks on approval: (run_id, scope/call_id). drives the
+    /// permission card; cleared by grant/deny.
     pub pending_approval: Option<(String, String)>,
-    /// Set when a run parks on a UI approval card:
-    /// (run_id, ui_id, call_id). Drives the UI decision card; cleared by
-    /// the operator's submit through `Session::submit_ui_action`.
+    /// set when a run parks on a UI approval card: (run_id, ui_id, call_id).
+    /// cleared by `Session::submit_ui_action`.
     pub pending_ui_approval: Option<(String, String, String)>,
-    /// Open secure secret entry form (`/secrets`): masked input, never
-    /// recorded in the transcript or ledger. Owns the keyboard while open.
+    /// open secret entry form (`/secrets`): masked, never in the transcript
+    /// or ledger. owns the keyboard while open.
     pub secrets_form: Option<crate::secrets_form::SecretsForm>,
-    /// The operator is filling a published form field-by-field in the
-    /// composer. Captures all keys until submit (Enter on last field) or
-    /// cancel (Esc).
+    /// filling a published form field-by-field in the composer. owns all keys
+    /// until submit (Enter on last) or cancel (Esc).
     pub form_fill: Option<FormFill>,
-    /// A retryable provider failure whose chain verdict has not arrived
-    /// yet. Resolved by the next Fallback / Exhausted / Attempt event;
-    /// never rendered on its own, so the card can say whether a
-    /// fallback engaged.
+    /// retryable failure whose chain verdict hasn't arrived. resolved by the
+    /// next Fallback/Exhausted/Attempt event; never rendered on its own, so
+    /// the card can say whether a fallback engaged.
     pending_provider_failure: Option<PendingProviderFailure>,
-    /// Set when a nightly pass finishes with proposals awaiting
-    /// approval. Drives the reflection card; y approves all, n denies all.
+    /// nightly pass finished with proposals pending. drives the reflection
+    /// card; y approves all, n denies all.
     pub pending_reflect: Option<Vec<pantheon_nightly::Proposal>>,
-    /// A nightly pass is running on its worker thread. Guards against
-    /// overlapping passes clobbering the pending-proposals file.
+    /// a nightly pass is running on its worker thread. stops overlapping
+    /// passes from clobbering the pending-proposals file.
     pub reflect_running: bool,
-    /// Last tool that started (name, args) - shown in the permission card
+    /// last tool that started (name, args) - the permission card needs it
     /// because ApprovalRequested only carries the opaque call id.
     pub last_tool: Option<(String, String)>,
-    /// Double-Esc state: None = not interrupting, Some(t) = armed at t.
-    /// The second Esc inside the window actually cancels the run.
+    /// double-Esc: None = not interrupting, Some(t) = armed at t. the second
+    /// Esc inside the window cancels the run.
     pub interrupt_armed_at: Option<Instant>,
-    /// True once the user confirmed; shows the canceled card.
+    /// user confirmed; shows the canceled card
     pub interrupted: bool,
-    /// Open session-history overlay: Some(runs) while /history is open.
-    /// runs: (run_id, status, created_ms, title, project), newest first.
+    /// /history overlay: Some(runs) while open. (run_id, status, created_ms,
+    /// title, project), newest first.
     pub history: Option<Vec<pantheon_storage::RunListing>>,
-    /// Cached ledger runs for the session picker: open
-    /// tabs first, parked (closed but resumable) runs after. Refreshed
-    /// with the tab bar so the sidebar never queries the DB per frame.
-    /// (run_id, status, created_ms, title, project), newest first.
+    /// cached ledger runs for the session picker: open tabs first, parked
+    /// (closed but resumable) after. refreshed with the tab bar so the
+    /// sidebar never hits the DB per frame. newest first.
     pub parked_runs: Vec<pantheon_storage::RunListing>,
-    /// Live filter typed into the history overlay.
+    /// live filter typed into the history overlay
     pub history_input: String,
-    /// Selected index into the filtered history list.
+    /// selected index into the filtered history list
     pub history_sel: usize,
-    /// The project of the session that opened the history picker
-    /// (`None` = unassigned). The picker defaults to showing only this
-    /// project; ctrl+a toggles the all-projects view.
+    /// project of the session that opened the picker (`None` = unassigned).
+    /// defaults to only this project; ctrl+a toggles all-projects.
     pub history_own_project: Option<String>,
-    /// History picker: true = list every project, false = only
-    /// `history_own_project`. Toggled with ctrl+a.
+    /// true = list every project, false = only `history_own_project`
     pub history_all_projects: bool,
-    /// Inline rename in the history picker: Some((run_id, buffer))
-    /// while ctrl+r is editing a row's title. Enter commits, Esc cancels.
+    /// inline rename: Some((run_id, buffer)) while ctrl+r edits a title.
+    /// Enter commits, Esc cancels.
     pub history_rename: Option<(String, String)>,
-    /// Open model-browser overlay: Some(rows) while /models is open.
+    /// /models overlay: Some(rows) while open
     pub models: Option<Vec<ModelRow>>,
-    /// Live filter typed into the models overlay.
+    /// live filter typed into the models overlay
     pub models_input: String,
-    /// Selected index into the filtered models list.
+    /// selected index into the filtered models list
     pub models_sel: usize,
-    /// Open provider picker: Some(rows) while the /models provider list
-    /// is open. Picking a provider drills into `models` scoped to it;
-    /// Esc in models returns here, Esc here closes both.
+    /// provider picker: Some(rows) while the /models provider list is open.
+    /// picking one drills into `models` scoped to it; Esc in models returns
+    /// here, Esc here closes both.
     pub providers: Option<Vec<ProviderRow>>,
-    /// Live filter typed into the provider picker.
+    /// live filter typed into the provider picker
     pub providers_input: String,
-    /// Selected index into the filtered provider list.
+    /// selected index into the filtered provider list
     pub providers_sel: usize,
-    /// Open `@` file-mention picker: while set, keystrokes filter and
-    /// navigate the file list instead of reaching the composer.
+    /// `@` file-mention picker: while set, keystrokes filter the file list
+    /// instead of reaching the composer.
     pub mention: Option<crate::mentions::MentionPicker>,
-    /// Open `/` command palette: type to filter the command list,
-    /// Up/Down to move, Enter to run, Esc to dismiss. While open it owns
-    /// the keyboard like the mention picker.
+    /// `/` palette: same keyboard ownership as the mention picker
     pub palette: Option<PaletteState>,
-    /// Pre-tool file snapshots keyed by tool call id, for inline diffs.
-    /// Snapshots are taken at ToolStarted and consumed at ToolCompleted.
+    /// pre-tool file snapshots by tool call id, for inline diffs. taken at
+    /// ToolStarted, consumed at ToolCompleted.
     pub pending_snaps: std::collections::HashMap<String, Vec<crate::diffview::FileSnapshot>>,
-    /// The conversation's current title: set by the title auxiliary
-    /// (SessionTitled), by /name, and refreshed when resuming a run.
+    /// current title: set by the title auxiliary (SessionTitled), by /name,
+    /// and on resume.
     pub title: Option<String>,
-    /// Messages typed while a turn was running, keyed by run id. Enter
-    /// queues instead of spawning a second agent loop; each entry fires
-    /// only when its own run's turn ends. A global single slot used to
-    /// leak across tabs: type in busy tab A, switch to B, and B's completion
-    /// would deliver A's text in B's ledger context.
+    /// messages typed while a turn ran, keyed by run id. Enter queues instead
+    /// of spawning a second loop; each fires when its run's turn ends. keying
+    /// by run keeps a busy tab's text out of another tab's ledger.
     pub queued_messages: std::collections::HashMap<String, String>,
-    /// Run id of the turn currently in flight, if any. Esc interrupts this
-    /// run (not the selected session) so a mid-turn resume cannot retarget
-    /// the interrupt at the wrong loop.
+    /// run id of the turn in flight, if any. Esc interrupts this run (not the
+    /// selected session) so a mid-turn resume can't retarget the interrupt.
     pub active_run: Option<String>,
-    /// This turn's input tokens, from the latest Usage event. `None` until
-    /// the provider reports usage - feeds the live status bar.
+    /// this turn's input tokens, latest Usage event. `None` until the provider
+    /// reports - feeds the live status bar.
     pub turn_in: Option<u64>,
-    /// This turn's output tokens, from the latest Usage event.
+    /// this turn's output tokens, latest Usage event
     pub turn_out: Option<u64>,
-    /// When the current turn started; drives tokens/sec. `None` while idle.
+    /// when the current turn started; drives tokens/sec. `None` while idle.
     pub turn_started_at: Option<Instant>,
-    /// When the current thinking block started streaming; `settle_thinking`
+    /// when the current thinking block started streaming; `settle_thinking`
     /// turns it into the block's `duration`. `None` while not reasoning.
     pub thinking_started_at: Option<Instant>,
-    /// Completed turns. The status bar shows this + 1 while a turn runs.
+    /// completed turns; status bar shows this + 1 while a turn runs
     pub turns_completed: u32,
-    /// Active `/goal`: the session objective plus its iteration budget.
-    /// Each `start_turn` consumes one iteration; at the cap the TUI
-    /// refuses new turns until the user raises (`/goal iterations N`)
-    /// or clears (`/goal clear`) the goal. The text is mirrored into
-    /// the runtime session so the model keeps pursuing it across turns.
+    /// active `/goal`: objective + iteration budget. each `start_turn` uses
+    /// one iteration; at the cap the TUI refuses new turns until the user
+    /// raises (`/goal iterations N`) or clears (`/goal clear`) it. mirrored
+    /// into the runtime session so the model keeps pursuing it across turns.
     pub goal: Option<ActiveGoal>,
-    /// Background-turn contract for the tab layer: set when a turn
-    /// finishes while this session's tab is not focused. The tab UI
-    /// renders it as a badge. Cleared by `attention_clear` when the tab
-    /// regains focus. Turn completion never touches `input`/`is_inputting`,
-    /// so a background finish cannot steal input focus.
+    /// background-turn badge: set when a turn finishes while this tab isn't
+    /// focused, cleared by `attention_clear` on refocus. completion never
+    /// touches `input`/`is_inputting`, so a background finish can't steal
+    /// input focus.
     pub attention: bool,
-    /// Human note for the badge, e.g. "turn 3 finished".
+    /// badge text, e.g. "turn 3 finished"
     pub attention_note: Option<String>,
-    /// Open turn-timeline rail: `Some(nav)` while Ctrl+O/F2 is open.
+    /// turn-timeline rail: `Some(nav)` while Ctrl+O/F2 is open
     pub timeline: Option<timeline::TimelineNav>,
-    /// Transcript block to pin to the viewport top on the next render
-    /// (set by timeline Enter). Consumed by `render_transcript`.
+    /// block to pin to the viewport top on the next render (set by timeline
+    /// Enter); consumed by `render_transcript`.
     pub jump_to_block: Option<usize>,
-    /// Open fullscreen draft editor: `Some(ed)` while Ctrl+E is open.
+    /// fullscreen draft editor: `Some(ed)` while Ctrl+E is open
     pub editor: Option<editor::DraftEditor>,
-    /// Pending double-Esc rewind confirmation. `Some` while the operator
-    /// decides; `y` confirms, `n`/Esc dismisses.
+    /// pending double-Esc rewind confirmation. `y` confirms, `n`/Esc dismisses.
     pub rewind_offer: Option<RewindOffer>,
-    /// Session tabs (top bar). Rebuilt from
-    /// `ledger_list_runs`; refreshed on /new, resume, tab switch and turn
-    /// completion so titles and busy badges stay current.
+    /// session tabs, rebuilt from `ledger_list_runs`; refreshed on /new,
+    /// resume, tab switch and turn completion so titles/badges stay current.
     pub tabs: crate::tabs::TabList,
-    /// Per-tab unsent input drafts, keyed by run id. Stashed on every
-    /// tab switch and restored on return - switching tabs never eats a
-    /// draft.
+    /// per-tab unsent drafts by run id. stashed on tab switch, restored on
+    /// return - switching tabs never eats a draft.
     pub drafts: std::collections::HashMap<String, String>,
-    /// Explicit open-tab list (true open-tab model): run ids in display
-    /// order. Opening a tab = opening a session; the ledger is consulted
-    /// for titles only, never for membership. Closing a tab parks the
-    /// run - it stays reopenable via /sessions or the session picker.
+    /// explicit open-tab list (run ids in display order). opening a tab =
+    /// opening a session; the ledger gives titles only, never membership.
+    /// closing a tab parks the run - reopenable via /sessions.
     pub open_tabs: Vec<String>,
-    /// Sidebar visibility (`^b`): at ≥160 cols it toggles the split
-    /// sidebar (wide inspector); below 160 cols the sidebar is hidden
-    /// by default and `^b` opens it as a floating overlay instead. One
-    /// unified session view either way.
+    /// sidebar visibility (`^b`): >=160 cols toggles the split sidebar; below
+    /// it's hidden by default and `^b` opens a floating overlay instead.
     pub show_sidebar: bool,
-    /// Last observed terminal width in columns, refreshed every frame
-    /// before draw. Layout decisions that depend on the real terminal
-    /// size (sidebar split vs. single column, inline todo card) read
-    /// this instead of a stale or partial area.
+    /// last observed terminal width, refreshed every frame before draw.
+    /// layout decisions (split vs single column, inline todo card) read this
+    /// instead of a stale/partial area.
     pub term_width: u16,
-    /// Narrow-terminal sidebar overlay (`^b` below 100 cols). Always
-    /// false unless explicitly toggled on - the single-column view
-    /// never opens it by itself.
+    /// narrow-terminal sidebar overlay (`^b` below 100 cols). always false
+    /// unless toggled on - single-column never opens it by itself.
     pub sidebar_overlay: bool,
-    /// Which card the sidebar's bottom half shows. Manual toggle
-    /// (`^g`): the operator picks whichever serves the moment.
+    /// sidebar bottom card. manual toggle (`^g`) - the operator picks.
     pub sidebar_view: SidebarView,
-    /// The last activity string ("Thinking...", "Reading <path>",
-    /// "Executing <cmd>", ...). Retained as state; it is NOT rendered
-    /// as a status line anywhere — live state belongs in the
-    /// transcript (thought block, tool card header), never in a second
-    /// status line below the composer.
+    /// last activity string ("Thinking...", "Reading <path>", ...). state,
+    /// NOT a status line: live state belongs in the transcript, never in a
+    /// second status line under the composer.
     pub activity_status: String,
-    /// Plan mode (Tab toggle). The sidebar mode tag flips between
-    /// "Build" and "Plan"; while a turn is live the activity state is
-    /// "Planning...". Mirrored into the runtime session via
-    /// [`apply_plan_mode_to_session`], which is what actually gates
-    /// write tools in the agent loop.
+    /// plan mode (Tab). sidebar tag flips Build/Plan; live turn shows
+    /// "Planning...". mirrored into the runtime session via
+    /// [`apply_plan_mode_to_session`], which actually gates write tools.
     pub plan_mode: bool,
-    /// Permission mode (Ask / Smart / AllowAll). A separate axis from
-    /// `plan_mode`: that one refuses mutating tools in Plan, this one
-    /// decides whether an allowed call parks for a human, is judged, or
-    /// runs. Mirrored into the runtime session alongside the plan toggle
-    /// so the two can never drift; cycled with the permission-mode key.
+    /// permission mode (Ask/Smart/AllowAll), separate axis from `plan_mode`:
+    /// that one refuses mutating tools in Plan, this one decides whether an
+    /// allowed call parks, is judged, or runs. mirrored alongside the plan
+    /// toggle so they can't drift; cycled with the permission-mode key.
     pub permission_mode: PermissionMode,
-    /// Every run currently parked on an approval, keyed by run id.
-    /// The decision card renders for the active session; other runs get
-    /// the amber tab dot.
+    /// every run parked on an approval, by run id. active session renders the
+    /// card; others get the amber tab dot.
     pub approvals: std::collections::HashMap<String, ApprovalInfo>,
-    /// Every run currently parked on a clarify question, keyed by run id.
+    /// every run parked on a clarify question, by run id
     pub clarifies: std::collections::HashMap<String, ClarifyRequest>,
-    /// The clarify question the keyboard is answering (the active
-    /// session's). Digits pick an option, Enter sends free text.
+    /// the clarify question the keyboard is answering. digits pick an option,
+    /// Enter sends free text.
     pub pending_clarify: Option<ClarifyRequest>,
-    /// While `Some`, `add_status` lines are captured into the buffer
-    /// instead of the transcript; `handle_slash` flushes them as one
-    /// `Command` block when the command finishes.
+    /// while `Some`, `add_status` lines buffer here instead of the
+    /// transcript; `handle_slash` flushes them as one `Command` block.
     pub cmd_capture: Option<(String, Vec<String>)>,
-    /// Destructive slash command awaiting confirmation. Renders the
-    /// amber decision card; `a` runs it, `d`/Esc dismisses.
+    /// destructive slash awaiting confirmation. `a` runs, `d`/Esc dismisses.
     pub pending_confirm: Option<ConfirmAction>,
-    /// Tool calls completed this session. Feeds the status bar and the
-    /// session sidebar's activity section.
+    /// tool calls completed this session; feeds the status bar + activity
     pub tools_used: u32,
-    /// Frame counter for the working spinner. Bumped by `tick()`.
+    /// frame counter for the working spinner, bumped by `tick()`
     pub spinner_tick: u64,
-    /// Shortcuts overlay (`?`). Fullscreen; owns the keyboard while open.
+    /// shortcuts overlay (`?`); fullscreen, owns the keyboard while open
     pub show_shortcuts: bool,
-    /// Per-block first content line, refreshed every transcript render.
-    /// Backs click-to-toggle on collapsible block headers.
+    /// per-block first content line, refreshed every render; backs
+    /// click-to-toggle on collapsible headers
     pub block_line_starts: Vec<usize>,
-    /// Tab bar geometry + clickable ranges from the last render, for
-    /// tab switching and the `+` new-tab click.
+    /// tab bar geometry + clickable ranges from the last render
     pub tab_bar_area: Option<Rect>,
     pub tab_hits: Vec<(u16, u16, crate::tabs::TabHit)>,
-    /// Modal vim editing state for the composer (`/vim` to toggle).
-    /// Off by default; when off, input behaves exactly as before.
+    /// modal vim composer state (`/vim`). off by default; when off input
+    /// behaves exactly as before.
     pub vim: vim::VimState,
-    /// Active color theme. Every renderer reads its palette from here;
-    /// `/theme` swaps it live.
+    /// active theme; every renderer reads its palette from here, `/theme`
+    /// swaps it live
     pub theme: theme::Theme,
-    /// Cached `⎇ branch[*]` label for the status bar. Refreshed at most
-    /// every [`GIT_REFRESH`]; `None` outside a git checkout.
+    /// cached `⎇ branch[*]` label, refreshed at most every [`GIT_REFRESH`];
+    /// `None` outside a git checkout
     pub git_label: Option<String>,
-    /// Last time `git_label` was recomputed.
+    /// last time `git_label` was recomputed
     pub git_checked_at: Instant,
-    /// Background tasks (`/btw`): lifecycle tracked here; each task owns
-    /// its run id and cancel token, independent of the main turn.
+    /// `/btw` background tasks; each owns its run id and cancel token,
+    /// independent of the main turn
     pub bg_tasks: Vec<bg::BgTask>,
-    /// Monotonic id source for background tasks.
+    /// monotonic id source for background tasks
     pub bg_seq: u64,
-    /// Subagent activity records fed by `AgentSpawned` / `AgentMessage` /
-    /// `AgentCompleted` ledger events. The sidebar activity timeline
-    /// renders the ones whose parent run is the visible session, so
-    /// background tabs keep their own.
+    /// subagent records fed by `AgentSpawned`/`AgentMessage`/`AgentCompleted`.
+    /// the sidebar timeline renders the ones whose parent run is the visible
+    /// session, so background tabs keep their own.
     pub subagents: Vec<activity::SubAgentRecord>,
-    /// Checkpoint names recorded from `CheckpointCreated` events for
-    /// the visible session (see `handle_runtime_event`). This is the
-    /// live-feed view, not the authoritative list: `/checkpoints`
-    /// reads the ledger. Names are deduped; rewound-over checkpoints
-    /// are not removed here because the feed carries no retraction.
+    /// checkpoint names from `CheckpointCreated` for the visible session.
+    /// the live-feed view, not authoritative - `/checkpoints` reads the
+    /// ledger. deduped; rewound-over ones aren't removed here because the
+    /// feed carries no retraction.
     pub checkpoint_names: Vec<String>,
-    /// Inline image state: thumbnail placements recorded during render,
-    /// terminal graphics capability, and the fullscreen preview.
+    /// inline image state: thumbnail placements, terminal graphics
+    /// capability, fullscreen preview
     pub img: crate::richtext::ImagePaintState,
-    /// Open to-dos, owned by the parallel todo track: this field is the
-    /// only todo-related change here. The other track fills it in and
-    /// renders the todo UI; the status bar reads the count.
+    /// open todo count, owned by the parallel todo track - the only
+    /// todo-related change here. the other track fills and renders the todo
+    /// UI; the status bar reads the count.
     pub todo_count: usize,
-    /// Live todo items for the transcript card, synced from the runtime
-    /// session each frame by `refresh_todos`. Rendered inline at
-    /// the transcript tail while non-empty.
+    /// live todo items for the transcript card, synced each frame by
+    /// `refresh_todos`; rendered at the transcript tail while non-empty
     pub todo_items: Vec<crate::todo_card::TodoCardItem>,
-    /// Running shells for the status bar's `{n} shells` segment. A plain
-    /// counter, default 0 - never derived from background tasks, which
-    /// are a different thing.
+    /// running shells for the `{n} shells` segment. plain counter, default 0 -
+    /// never derived from background tasks (different thing).
     pub shell_count: usize,
-    /// Agent profile display name for the status line's
-    /// agent variant segment (" - " when unset).
+    /// agent display name for the status line's agent variant segment
     pub variant: String,
-    /// Reasoning effort level (`/reasoning`), e.g. "xhigh". `None` =
-    /// unknown; the status line renders ` - ` for it, never a guess.
+    /// reasoning effort (`/reasoning`), e.g. "xhigh". `None` = unknown;
+    /// status line renders ` - ` for it, never a guess.
     pub effort: Option<String>,
-    /// Cached MCP servers for the sidebar: (name, status word).
-    /// Refreshed at startup and by `/mcp`.
+    /// cached MCP servers for the sidebar: (name, status word). refreshed at
+    /// startup and by `/mcp`.
     pub mcp_servers: Vec<(String, String)>,
-    /// Loaded capability plugins, for the splash's bottom line.
+    /// loaded capability plugins, for the splash's bottom line
     pub plugin_count: usize,
-    /// Newer release tag found by the background update check; the
-    /// splash shows `pantheon update to install {tag}` when set.
+    /// newer release found by the background update check; splash shows
+    /// `pantheon update to install {tag}` when set
     pub update_hint: Option<String>,
-    /// Swarm ids spawned through the remote swarm backend this session
-    /// (`/swarm new`). The API contract has no list-all endpoint yet, so
-    /// the TUI remembers what it created to answer bare `/swarm`.
+    /// swarm ids spawned via the remote backend (`/swarm new`). the API has
+    /// no list-all endpoint yet, so the TUI remembers what it created to
+    /// answer bare `/swarm`.
     pub remote_swarms: Vec<String>,
 }
 
-/// How often the status bar re-reads git metadata. Coarse on purpose:
-/// `git status` is a subprocess and must never run per frame.
+/// how often the status bar re-reads git metadata. coarse on purpose - `git
+/// status` is a subprocess and must never run per frame.
 const GIT_REFRESH: Duration = Duration::from_secs(5);
 
-/// Cap on submitted-message history for Up/Down recall.
+/// cap on submitted-message history for Up/Down recall
 const INPUT_HISTORY_CAP: usize = 200;
 
 impl Default for TuiState {
@@ -1053,8 +941,7 @@ impl Default for TuiState {
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
             open_tabs: Vec::new(),
-            // Base design: single column; the sidebar is opt-in via
-            // Ctrl+B (toggle_sidebar), never default-on.
+            // single-column base; sidebar is opt-in via ^b, never default-on
             show_sidebar: false,
             term_width: 80,
             sidebar_overlay: false,
@@ -1095,8 +982,8 @@ impl Default for TuiState {
     }
 }
 
-/// Split an approval scope of the form `call_id:tool:args` into its
-/// parts. Returns `None` when the scope doesn't carry all three.
+/// split an approval scope `call_id:tool:args`; `None` if it doesn't carry
+/// all three
 fn parse_scope(scope: &str) -> Option<(&str, &str, &str)> {
     let mut parts = scope.splitn(3, ':');
     let call_id = parts.next()?;
@@ -1105,12 +992,9 @@ fn parse_scope(scope: &str) -> Option<(&str, &str, &str)> {
     Some((call_id, tool, args))
 }
 
-/// Settle one approval card through the supervisor, and only clear the
-/// card on success. A failed grant/deny used to be swallowed with
-/// `let _ =` while the UI still claimed success, cleared the card, and
-/// resumed (or cancelled) a run whose decision never landed. On error
-/// the card stays pending with the failure on the status line, so the
-/// operator can retry instead of watching a still-parked run.
+/// settle one approval card through the supervisor. on error the card stays
+/// pending with the failure on the status line so the operator can retry
+/// instead of staring at a still-parked run.
 fn settle_approval_card(
     state: &mut TuiState,
     supervisor: &pantheon_runtime::Supervisor,
@@ -1180,8 +1064,8 @@ mod approval_card_tests {
 
     #[test]
     fn failed_decision_keeps_the_card_and_names_the_error() {
-        // Never parked: the grant must fail, and the card must survive
-        // with the failure on the status line - never a phantom "granted".
+        // no park: grant fails, card survives with the error on the status line
+        // - no phantom "granted".
         let dir = scratch("grant-fail");
         let sup = Supervisor::open(dir.clone()).expect("supervisor");
         let run = "run-card-fail";
@@ -1209,12 +1093,11 @@ mod approval_card_tests {
     }
 }
 
-/// Plain-language rendering of a pending tool call for the approval
-/// card. Returns `(action sentence, concrete target)`:
-/// "shell wants to delete:" / "~/notes/old.md". The tool details stay
-/// visually calm - the amber card, not the text, carries the urgency.
-/// Best-effort JSON string-field extraction without pulling serde in
-/// here; tool args arrive as JSON-encoded strings.
+/// plain-language rendering of a pending tool call for the approval card:
+/// returns `(action sentence, concrete target)` - "shell wants to delete:" /
+/// "~/notes/old.md". tool details stay calm; the amber card carries the
+/// urgency. best-effort JSON string-field extraction, no serde dependency -
+/// args arrive as JSON-encoded strings.
 fn json_string_field(args: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let start = args.find(&needle)?;
@@ -1226,8 +1109,7 @@ fn json_string_field(args: &str, key: &str) -> Option<String> {
 }
 
 fn describe_tool_action(tool: &str, args: &str) -> (String, String) {
-    // Best-effort JSON field extraction without pulling serde in here;
-    // args is a JSON-encoded string.
+    // best-effort JSON field extraction, no serde here; args is JSON-encoded
     fn field(args: &str, key: &str) -> Option<String> {
         json_string_field(args, key)
     }
@@ -1270,8 +1152,8 @@ fn describe_tool_action(tool: &str, args: &str) -> (String, String) {
 }
 
 impl TuiState {
-    /// Create a fresh session view-state. Public so embedders (and the
-    /// screenshot harness) can drive the renderer directly.
+    /// fresh session view-state. public so embedders (and the screenshot
+    /// harness) can drive the renderer directly.
     pub fn new(session_id: String, model: String, tokens_max: u32) -> Self {
         Self {
             session_id,
@@ -1339,8 +1221,7 @@ impl TuiState {
             tabs: crate::tabs::TabList::default(),
             drafts: std::collections::HashMap::new(),
             open_tabs: Vec::new(),
-            // Base design: single column; the sidebar is opt-in via
-            // Ctrl+B (toggle_sidebar), never default-on.
+            // single-column base; sidebar is opt-in via ^b, never default-on
             show_sidebar: false,
             term_width: 80,
             sidebar_overlay: false,
@@ -1380,10 +1261,9 @@ impl TuiState {
         }
     }
 
-    /// Runs matching the current filter, in list order. Unless the
-    /// all-projects view is on (ctrl+a), only the opener's project is
-    /// shown - `None` (unassigned) matches `None`, so a project-less
-    /// setup behaves exactly like the old unfiltered list.
+    /// matching runs, list order. without ctrl+a only the opener's project
+    /// shows - `None` matches `None`, so a project-less setup still sees
+    /// everything as before.
     pub fn filtered_history(&self) -> Vec<pantheon_storage::RunListing> {
         match &self.history {
             None => Vec::new(),
@@ -1412,7 +1292,7 @@ impl TuiState {
         }
     }
 
-    /// Move the overlay selection by n, clamped to the filtered list.
+    /// move the overlay selection by n, clamped to the filtered list
     pub fn history_move(&mut self, n: isize) {
         let len = self.filtered_history().len();
         if len == 0 {
@@ -1423,7 +1303,7 @@ impl TuiState {
         self.history_sel = sel.clamp(0, len as isize - 1) as usize;
     }
 
-    /// Close the overlay and reset its state.
+    /// close the overlay and reset its state
     pub fn history_close(&mut self) {
         self.history = None;
         self.history_input.clear();
@@ -1433,9 +1313,8 @@ impl TuiState {
         self.history_rename = None;
     }
 
-    /// Rows matching the current filter, in catalog order. Matches
-    /// provider id, provider label, and model id, so `anth` finds the
-    /// provider and `mini` finds the model.
+    /// matching rows, catalog order. matches provider id/label and model id,
+    /// so `anth` finds the provider and `mini` the model.
     pub fn filtered_models(&self) -> Vec<ModelRow> {
         match &self.models {
             None => Vec::new(),
@@ -1457,7 +1336,7 @@ impl TuiState {
         }
     }
 
-    /// Move the overlay selection by n, clamped to the filtered list.
+    /// move the overlay selection by n, clamped to the filtered list
     pub fn models_move(&mut self, n: isize) {
         let len = self.filtered_models().len();
         if len == 0 {
@@ -1468,14 +1347,14 @@ impl TuiState {
         self.models_sel = sel.clamp(0, len as isize - 1) as usize;
     }
 
-    /// Close the overlay and reset its state.
+    /// close the overlay and reset its state
     pub fn models_close(&mut self) {
         self.models = None;
         self.models_input.clear();
         self.models_sel = 0;
     }
 
-    /// Providers matching the current filter, alphabetical by label.
+    /// matching providers, alphabetical by label
     pub fn filtered_providers(&self) -> Vec<ProviderRow> {
         match &self.providers {
             None => Vec::new(),
@@ -1496,7 +1375,7 @@ impl TuiState {
         }
     }
 
-    /// Move the provider-picker selection by n, clamped to the filtered list.
+    /// move the provider-picker selection by n, clamped
     pub fn providers_move(&mut self, n: isize) {
         let len = self.filtered_providers().len();
         if len == 0 {
@@ -1507,7 +1386,7 @@ impl TuiState {
         self.providers_sel = sel.clamp(0, len as isize - 1) as usize;
     }
 
-    /// Close the provider picker and any drilled-in models view.
+    /// close the provider picker and any drilled-in models view
     pub fn providers_close(&mut self) {
         self.providers = None;
         self.providers_input.clear();
@@ -1515,12 +1394,9 @@ impl TuiState {
         self.models_close();
     }
 
-    /// Take the models-picker selection for an Enter press: the
-    /// selected row, closing the pickers. `None` when the filtered
-    /// list is empty - and the pickers stay open, so Enter on "no
-    /// matches" no longer silently closed the whole browser (the
-    /// providers arm already stayed open on empty; the models arm
-    /// closed unconditionally).
+    /// selected row on Enter, closing both pickers. `None` on an empty
+    /// filtered list - pickers stay open, so Enter on "no matches" doesn't
+    /// silently close the browser. (used to close unconditionally.)
     pub fn take_model_selection(&mut self) -> Option<ModelRow> {
         let target = self.filtered_models().get(self.models_sel).cloned();
         if target.is_some() {
@@ -1529,11 +1405,8 @@ impl TuiState {
         target
     }
 
-    /// Take the history-picker selection for an Enter press: the
-    /// selected run id, closing the picker. `None` when the filtered
-    /// list is empty - and the picker stays open, instead of closing
-    /// silently with nothing selected (the old arm closed first and
-    /// then checked).
+    /// selected run id on Enter, closing the picker. empty list -> `None`
+    /// and the picker stays open.
     pub fn take_history_selection(&mut self) -> Option<String> {
         let target = self
             .filtered_history()
@@ -1545,25 +1418,17 @@ impl TuiState {
         target
     }
 
-    /// Live token estimate: ~4 chars per token, updated on every streamed
-    /// delta so the counter ticks smoothly. Snapped to the
-    /// authoritative number when Usage arrives. Counted in chars, not
-    /// bytes: a byte count inflates CJK/emoji text ~3x.
+    /// live token estimate: ~4 chars/token, updated per delta so the counter
+    /// ticks smoothly; snapped to the authoritative number on Usage. chars,
+    /// not bytes - bytes inflate CJK/emoji ~3x.
     fn bump_estimate(&mut self, text: &str) {
         self.turn_estimate += (text.chars().count() as u32).div_ceil(4);
     }
 
-    /// Stamp the trailing thinking block's duration when reasoning
-    /// ends: the first non-reasoning event after a reasoning stream
-    /// settles it, so the collapsed summary can show a measured
-    /// duration. No-op when not reasoning. Robust to intervening
-    /// blocks: a Status line or provider-error card landing between
-    /// the reasoning stream and the next text/tool event used to
-    /// consume `thinking_started_at` while the last block was no
-    /// longer Thinking, losing the duration entirely. Now the most
-    /// recent still-unstamped Thinking block is stamped wherever it
-    /// sits, and the start time is only consumed when a block was
-    /// actually stamped.
+    /// stamp the trailing thinking block's duration when reasoning ends. no-op
+    /// if not reasoning. stamps the most recent still-unstamped Thinking block
+    /// wherever it sits, so a Status line / provider-error card landing in
+    /// between doesn't lose the duration.
     fn settle_thinking(&mut self) {
         let Some(start) = self.thinking_started_at else {
             return;
@@ -1584,17 +1449,17 @@ impl TuiState {
         }
     }
 
-    /// Process a model event into a transcript block or state update.
+    /// process a model event into a transcript block or state update
     pub fn handle_model_event(&mut self, ev: ModelEvent) {
         match ev {
             ModelEvent::Attempt {
                 provider, model, ..
             } => {
-                // A retry's Attempt arrives right after its RetryAttempt
-                // (`retrying` set): same model, but a retry, not a stacked
-                // key rotating. Only a pending failure with no RetryAttempt
-                // in between is a rotation. A dim status line, not an
-                // error card; the stash stays for the chain's verdict.
+                // retry's Attempt comes right after RetryAttempt (`retrying`
+                // set): same model but a retry, not a stacked key rotating.
+                // only a pending failure with no RetryAttempt in between is a
+                // rotation. dim status line, not an error card; stash stays
+                // for the chain's verdict.
                 let is_retry = self
                     .pending_provider_failure
                     .as_ref()
@@ -1625,14 +1490,10 @@ impl TuiState {
                         });
                     }
                 }
-                // Track mid-session model switches (fallback chain).
-                // `state.model` is always in `provider/model` form, so
-                // compare against the full pair, not the bare model
-                // id: comparing bare ids made every Attempt look like
-                // a switch and then overwrote the provider with the
-                // bare model id, so the composer row rendered
-                // "Provider: auto" (the model sitting in the provider
-                // slot) after any fallback.
+                // `state.model` is always `provider/model`, so compare the full
+                // pair. comparing bare ids made every Attempt look like a switch,
+                // overwrote the provider with the model id, and the composer
+                // rendered "Provider: auto" after any fallback.
                 let switched = format!("{provider}/{model}");
                 if self.model != switched {
                     self.blocks.push(TranscriptBlock {
@@ -1695,10 +1556,9 @@ impl TuiState {
                         args: arguments,
                         ok: None,
                         call_id: id,
-                        // The runtime emits the canonical ToolStarted event
-                        // after it has finalized the call id. That event
-                        // fills in the start time and adopts this card,
-                        // avoiding a second live card for the same call.
+                        // runtime emits the canonical ToolStarted event after
+                        // finalizing the call id; it fills in start time and
+                        // adopts this card, avoiding a second live card.
                         started: None,
                         duration: None,
                         error: None,
@@ -1709,23 +1569,22 @@ impl TuiState {
                 });
             }
             ModelEvent::Usage { usage } => {
-                // A zero row is persisted for successful providers that omit
-                // token metadata, so stats can count the call. Keep the live
-                // estimate in that case instead of replacing it with a
-                // misleading authoritative zero.
+                // a zero row is persisted for successful providers that omit
+                // token metadata, so stats can count the call. keep the live
+                // estimate then instead of a misleading authoritative zero.
                 if usage.input_tokens > 0 || usage.output_tokens > 0 || usage.total_tokens > 0 {
                     self.tokens_used = usage.total_tokens as u32;
                     self.turn_estimate = 0;
-                    // Per-turn in/out for the live status bar. A provider
-                    // that reports only totals leaves these at its given split.
+                    // per-turn in/out for the live status bar; providers that
+                    // only report totals leave these at their given split.
                     self.turn_in = Some(usage.input_tokens);
                     self.turn_out = Some(usage.output_tokens);
                 }
                 if let Some(cost) = usage.cost_usd {
                     self.cost_cents = (cost * 100.0) as u32;
                 }
-                // A retry that recovered: flip the live card to
-                // "recovered" instead of leaving a stale "retrying n/3".
+                // retry that recovered: flip the live card to "recovered"
+                // instead of a stale "retrying n/3".
                 self.flip_recovered_card();
                 self.pending_provider_failure = None;
             }
@@ -1744,10 +1603,10 @@ impl TuiState {
             } => {
                 let kind = classify_provider_error(&code, &cause);
                 let message = display_message(&cause);
-                // Carry the live card across the failure: stacked-key
-                // rotation re-stashes per key, and the retry card pushed
-                // by RetryAttempt must not be orphaned by the next
-                // AttemptFailed - refresh kind/message, keep the index.
+                // carry the live card across the failure: stacked-key rotation
+                // re-stashes per key, and the retry card from RetryAttempt must
+                // not be orphaned by the next AttemptFailed - refresh
+                // kind/message, keep the index.
                 let (card_index, last_retry) = match &self.pending_provider_failure {
                     Some(p) if p.provider == provider && p.model == model => {
                         (p.card_index, p.last_retry)
@@ -1758,10 +1617,10 @@ impl TuiState {
                 if let Some(i) = card_index {
                     self.refresh_live_card(i, &provider, &model, kind, &message);
                 } else if !retryable {
-                    // Non-retryable failures render immediately: a TUI
-                    // that attached mid-chain may never see the verdict,
-                    // and a failure must never be silent. A later
-                    // Fallback/Exhausted updates this card in place.
+                    // non-retryable failures render immediately: a TUI
+                    // attached mid-chain may never see the verdict, and a
+                    // failure shouldn't be silent. a later Fallback/Exhausted
+                    // updates this card in place.
                     card_index = Some(self.push_provider_error_card(
                         provider.clone(),
                         model.clone(),
@@ -1770,9 +1629,9 @@ impl TuiState {
                         FallbackOutcome::NotRetryable,
                     ));
                 }
-                // The chain's verdict is still coming (RetryAttempt,
-                // Fallback, Exhausted, or a stacked-key Attempt). Hold
-                // the failure so the card can say what happened next.
+                // chain verdict still coming (RetryAttempt, Fallback,
+                // Exhausted, stacked-key Attempt). hold the failure so the
+                // card can say what happened next.
                 self.pending_provider_failure = Some(PendingProviderFailure {
                     provider,
                     model,
@@ -1792,14 +1651,13 @@ impl TuiState {
                 wait_secs,
                 ..
             } => {
-                // The chain is waiting `wait_secs` before retry
-                // `attempt`/`max_attempts` on the same provider/model.
-                // The first retry pushes the live error card; later
-                // retries update its line in place - "retrying 2/3",
-                // never a frozen screen.
+                // chain is waiting `wait_secs` before retry `attempt`/
+                // `max_attempts` on the same provider/model. first retry
+                // pushes the live card; later ones update its line in place -
+                // "retrying 2/3", never a frozen screen.
                 if self.pending_provider_failure.is_none() {
-                    // Defensive: the TUI attached mid-chain, after the
-                    // AttemptFailed. The retry is all we know.
+                    // defensive: TUI attached mid-chain, after the AttemptFailed.
+                    // the retry is all we know.
                     self.pending_provider_failure = Some(PendingProviderFailure {
                         provider: provider.clone(),
                         model: model.clone(),
@@ -1830,8 +1688,8 @@ impl TuiState {
                 to_model,
                 ..
             } => {
-                // Finalize the live card in place - or push it when the
-                // TUI attached mid-chain, after the AttemptFailed.
+                // finalize the live card in place, or push it if the TUI
+                // attached mid-chain after AttemptFailed.
                 if self.pending_provider_failure.is_none() {
                     self.pending_provider_failure = Some(PendingProviderFailure {
                         provider: from_provider.clone(),
@@ -1844,10 +1702,9 @@ impl TuiState {
                         last_retry: None,
                     });
                 }
-                // The fallback model is active now; the Attempt that
-                // follows must not print the old "routing:" line on top
-                // of this card. Keep `provider/model` form: a bare
-                // model id here lost the provider (see Attempt above).
+                // fallback model is active now; the Attempt that follows must
+                // not print the old "routing:" line on top of the card. keep
+                // `provider/model` form - a bare model id lost the provider.
                 self.model = format!("{to_provider}/{to_model}");
                 self.render_live_card(FallbackOutcome::Engaged {
                     provider: to_provider,
@@ -1857,8 +1714,8 @@ impl TuiState {
             }
             ModelEvent::Exhausted { code } => {
                 if self.pending_provider_failure.is_none() {
-                    // Defensive: the TUI attached after the failure. The
-                    // chain's code is all we have; never invent the model.
+                    // defensive: attached after the failure. chain's code is
+                    // all we have; never invent the model.
                     self.pending_provider_failure = Some(PendingProviderFailure {
                         provider: String::new(),
                         model: String::new(),
@@ -1876,9 +1733,9 @@ impl TuiState {
         }
     }
 
-    /// Append a provider error card: which provider/model failed, the
-    /// error kind + message, and what the chain did next. Returns the
-    /// block index so verdicts can update the card in place.
+    /// append a provider error card (which failed, kind + message, what the
+    /// chain did next); returns the block index so verdicts can update in
+    /// place.
     fn push_provider_error_card(
         &mut self,
         provider: String,
@@ -1899,9 +1756,8 @@ impl TuiState {
         self.blocks.len() - 1
     }
 
-    /// Refresh the kind/message lines of the live provider-error card at
-    /// `index` (a newer AttemptFailed for the same failure); the outcome
-    /// line is left alone - the verdict owns it.
+    /// refresh the live card's kind/message lines (`index` points at a newer
+    /// AttemptFailed for the same failure); the outcome line is left alone.
     fn refresh_live_card(
         &mut self,
         index: usize,
@@ -1929,10 +1785,9 @@ impl TuiState {
         }
     }
 
-    /// Push the provider-error card for the stashed failure if it isn't
-    /// on screen yet, then set its outcome line. The stashed index is
-    /// verified before every update: rewind can truncate the blocks, in
-    /// which case the card is re-pushed rather than written elsewhere.
+    /// push the card for the stashed failure if it isn't on screen, then set
+    /// its outcome line. the stashed index is verified first: rewind can
+    /// truncate blocks, so re-push rather than write into the wrong place.
     fn render_live_card(&mut self, fallback: FallbackOutcome) {
         let (provider, model, kind, message) = match &self.pending_provider_failure {
             Some(p) => (
@@ -1980,9 +1835,8 @@ impl TuiState {
         }
     }
 
-    /// A retry that recovered: flip the live card's outcome to
-    /// "recovered on retry n/3" instead of leaving a stale "retrying"
-    /// line. No-op unless a retry card is on screen.
+    /// flip the live card to "recovered on retry n/3" instead of a stale
+    /// "retrying". no-op unless a retry card is on screen.
     fn flip_recovered_card(&mut self) {
         let last_retry = self
             .pending_provider_failure
@@ -1998,8 +1852,8 @@ impl TuiState {
     }
 }
 
-/// The run an event belongs to. Every ledger event carries one; `None`
-/// is defensive only (no such variant exists today).
+/// the run an event belongs to. every ledger event carries one; `None` is
+/// defensive only (no such variant exists today).
 fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
     use RuntimeErrorEvent as E;
     match ev {
@@ -2058,11 +1912,11 @@ fn event_run_id(ev: &RuntimeErrorEvent) -> Option<&str> {
     }
 }
 
-/// Find the pending (unstarted) tool card for a `ToolStarted` event,
-/// newest-first. Two identical concurrent calls announce two pending
-/// cards; the runtime start that arrives next belongs to the most
-/// recently announced one, so an oldest-first search adopted the
-/// wrong card (and the second start then rendered a duplicate).
+/// find the pending (unstarted) tool card for a `ToolStarted` event, newest
+/// first. two identical concurrent calls announce two pending cards; the
+/// start that arrives next belongs to the most recently announced one. an
+/// oldest-first search adopted the wrong card (and the second start then
+/// rendered a duplicate).
 fn adopt_pending_card<'a>(
     blocks: &'a mut [TranscriptBlock],
     tool: &str,
@@ -2110,8 +1964,8 @@ mod pending_adoption_tests {
             panic!("adopted block is not a tool call");
         };
         assert_eq!(call_id, "second");
-        // A started card is not pending and is never re-adopted: the
-        // next start falls through to the older identical card.
+        // a started card isn't pending and never gets re-adopted; the next
+        // start falls through to the older identical card.
         if let BlockKind::ToolCall { started, .. } = &mut adopted.kind {
             *started = Some(std::time::Instant::now());
         }
@@ -2123,16 +1977,16 @@ mod pending_adoption_tests {
         if let BlockKind::ToolCall { started, .. } = &mut adopted.kind {
             *started = Some(std::time::Instant::now());
         }
-        // Nothing left pending, and other tools never match.
+        // nothing left pending, and other tools never match
         assert!(adopt_pending_card(&mut blocks, "shell", "ls").is_none());
         assert!(adopt_pending_card(&mut blocks, "read", "ls").is_none());
     }
 }
 
 impl TuiState {
-    /// Whether a submitted UI action was an approval-card decision, by
-    /// the action's kind in the displayed document. Used to clear the
-    /// pending-approval modal only for real decisions.
+    /// whether a submitted UI action was an approval-card decision, by its
+    /// kind in the displayed document. clears the pending-approval modal only
+    /// for real decisions.
     fn ui_action_is_approval(
         &self,
         ui_id: &str,
@@ -2155,39 +2009,32 @@ impl TuiState {
             .is_some_and(|a| matches!(a.kind, pantheon_api::ui::ActionKind::Approval { .. }))
     }
 
-    /// Toggle the session sidebar (`^b`). At ≥160 cols this flips the
-    /// split sidebar; below 160 cols it flips the floating overlay,
-    /// which is never open by default. The overlay is armed ONLY when
-    /// toggled on below 160: arming it unconditionally used to make
-    /// narrowing a wide terminal pop the overlay open unprompted,
-    /// contradicting "never opens by itself".
+    /// toggle the sidebar (`^b`): >=160 cols flips the split sidebar; below
+    /// it flips the floating overlay. overlay only arms when toggled on below
+    /// 160, so narrowing a wide terminal doesn't pop it open unprompted.
     pub fn toggle_sidebar(&mut self) {
         self.show_sidebar = !self.show_sidebar;
         self.sidebar_overlay = self.show_sidebar && self.term_width < 160;
     }
 
-    /// Whether the floating sidebar overlay is open this frame: the
-    /// overlay flag AND a sub-160-col terminal. The single predicate
-    /// for both rendering and Esc dismissal, so the two can never
-    /// drift (Esc used to check <100 while rendering floated below
-    /// 160, leaving 100-159 cols undismissable).
+    /// whether the floating overlay is open this frame: overlay flag AND
+    /// sub-160-col terminal. one predicate for rendering and Esc dismissal so
+    /// they can't drift.
     pub fn sidebar_overlay_open(&self) -> bool {
         self.sidebar_overlay && self.term_width < 160
     }
 
-    /// Whether the sidebar is actually drawn this frame: ≥160 cols
-    /// and not toggled off (base design layer 9: the wide-terminal
-    /// inspector threshold). Below 160 the layout is the single-column
-    /// base; a toggled-on sidebar below 160 renders only as the
-    /// floating overlay in `render_body`. Mirrors the split decision
-    /// in `render_body` — every layout branch that depends on it must
-    /// use this, never a partial area width.
+    /// whether the sidebar is drawn this frame: >=160 cols and not toggled
+    /// off. below 160 the layout is single-column; a toggled-on sidebar
+    /// renders only as the floating overlay. mirrors the split decision in
+    /// `render_body` - every layout branch must use this, never a partial
+    /// area width.
     pub fn sidebar_visible(&self) -> bool {
         self.term_width >= 160 && self.show_sidebar
     }
 
-    /// Flip the sidebar's bottom card: activity timeline | todo list.
-    /// `^g`. Manual by design - the operator picks what the moment needs.
+    /// flip the sidebar's bottom card (activity | todo), `^g`. manual by
+    /// design - the operator picks.
     pub fn toggle_sidebar_view(&mut self) {
         self.sidebar_view = match self.sidebar_view {
             SidebarView::Agent => SidebarView::Todo,
@@ -2195,13 +2042,10 @@ impl TuiState {
         };
     }
 
-    /// Flip Build/Plan mode (Tab). The sidebar mode tag flips between
-    /// "Build" and "Plan", and a live turn's status becomes
-    /// "Planning...". The sidebar auto-switches: Plan mode opens the
-    /// todo view, Build mode the agent view. Callers must also mirror
-    /// the flip into the runtime session
-    /// ([`apply_plan_mode_to_session`]) - that is what actually gates
-    /// write tools in the agent loop.
+    /// flip Build/Plan (Tab). sidebar tag flips, live turn shows
+    /// "Planning...", and the sidebar auto-switches (Plan -> todo, Build ->
+    /// agent). callers must also mirror into the runtime via
+    /// [`apply_plan_mode_to_session`] - that's what actually gates writes.
     pub fn toggle_plan_mode(&mut self) {
         self.plan_mode = !self.plan_mode;
         self.status_line = if self.plan_mode {
@@ -2210,7 +2054,7 @@ impl TuiState {
             "build mode on"
         }
         .to_string();
-        // Sidebar auto-switch by mode; ^g still toggles manually.
+        // sidebar auto-switch by mode; ^g still toggles manually
         self.sidebar_view = if self.plan_mode {
             SidebarView::Todo
         } else {
@@ -2225,27 +2069,25 @@ impl TuiState {
         }
     }
 
-    /// Mirror the TUI's Build/Plan toggle into the runtime session so Tab
-    /// actually gates tools, not just labels. The runtime reads the mode
-    /// at every tool gate; a flip mid-turn applies from the next tool
-    /// call and never kills a running one.
+    /// mirror the Build/Plan toggle into the runtime session so Tab actually
+    /// gates tools, not just labels. the runtime reads the mode at every
+    /// tool gate; a mid-turn flip applies from the next call, never kills a
+    /// running one.
     fn apply_plan_mode_to_session(&self, session: &Session) {
         session.set_mode(if self.plan_mode {
             AgentMode::Plan
         } else {
             AgentMode::Build
         });
-        // The permission mode rides the same push as the plan toggle, so
-        // every path that syncs one syncs both and they can never drift
-        // apart in the runtime.
+        // permission mode rides the same push as the plan toggle, so any
+        // path syncing one syncs both and they can't drift in the runtime.
         session.set_permission_mode(self.permission_mode);
     }
 
-    /// Cycle the permission mode (Ask -> Smart -> AllowAll -> Ask) and
-    /// mirror it into the runtime session. Drives whether an
-    /// approval-gated call parks, is judged, or runs; the gate reads it
-    /// fresh per batch, so a flip applies from the next tool call and
-    /// never retroactively kills a running one.
+    /// cycle permission mode (Ask -> Smart -> AllowAll -> Ask) and mirror it
+    /// into the runtime. decides whether an approval-gated call parks, is
+    /// judged, or runs; the gate reads it fresh per batch, so a flip applies
+    /// from the next call and never retroactively kills a running one.
     pub fn cycle_permission_mode(&mut self) {
         self.permission_mode = match self.permission_mode {
             PermissionMode::Ask => PermissionMode::Smart,
@@ -2255,22 +2097,21 @@ impl TuiState {
         self.status_line = format!("permissions: {}", self.permission_mode.as_str());
     }
 
-    /// Set the last activity string. It is state, not chrome: nothing
-    /// renders it as a status line — live state lives in the
-    /// transcript (thought block, tool card header).
+    /// set the last activity string. state, not chrome: nothing renders it as
+    /// a status line; live state lives in the transcript.
     pub fn set_activity_status(&mut self, status: String) {
         if status != self.activity_status {
             self.activity_status = status;
         }
     }
 
-    /// Park an approval decision for `run_id`: parse the tool identity
-    /// out of the scope, record it, and raise the amber tab dot. Shared
-    /// by the visible path (which also renders the card) and background
-    /// runs (dot only). Returns the card's (tool, sentence, target).
+    /// park an approval for `run_id`: parse the tool identity from the scope,
+    /// record it, raise the amber tab dot. shared by the visible path (also
+    /// renders the card) and background runs (dot only). returns (tool,
+    /// sentence, target).
     fn park_approval(&mut self, run_id: &str, scope: &str) -> (String, String, String) {
-        // Parse tool identity out of the scope so the card renders even
-        // when the live `last_tool` belongs to another run.
+        // parse tool identity out of the scope so the card renders even when
+        // the live `last_tool` belongs to another run.
         let (tool, args) = parse_scope(scope)
             .map(|(_, t, a)| (t.to_string(), a.to_string()))
             .unwrap_or_else(|| {
@@ -2287,27 +2128,27 @@ impl TuiState {
         (tool, sentence, target)
     }
 
-    /// Park a clarify (`ask_user`) question for `run_id`. Same pattern as
-    /// [`TuiState::park_approval`]: the map holds the truth, the tab dot
-    /// is the background signal.
+    /// park a clarify question for `run_id`, same pattern as
+    /// [`TuiState::park_approval`]: the map holds the truth, the tab dot is
+    /// the background signal.
     fn park_clarify(&mut self, run_id: &str, req: ClarifyRequest) {
         self.clarifies.insert(run_id.to_string(), req);
         self.tabs.set_approval(run_id, true);
     }
 
-    /// Background-run events: the run is not the visible session, so the
-    /// visible transcript, input, and status are untouched. Only the
-    /// run's tab dot and its parked decision state may change.
+    /// background-run events: the run isn't the visible session, so the
+    /// visible transcript/input/status stay untouched. only the run's tab
+    /// dot and parked decision state may change.
     fn handle_background_event(&mut self, ev: &RuntimeErrorEvent, run_id: &str) {
         match ev {
-            // Liveness: the tab dot tracks work the user can't see.
+            // liveness: the tab dot tracks work the user can't see
             RuntimeErrorEvent::TurnStarted { .. } | RuntimeErrorEvent::RunStarted { .. } => {
                 self.tabs.set_busy(run_id, true);
             }
             RuntimeErrorEvent::ToolStarted { tool, call_id, .. } => {
                 self.tabs.set_busy(run_id, true);
-                // Capture the step for the sidebar activity timeline when
-                // this run belongs to a `/btw` background task.
+                // capture the step for the activity timeline when this run
+                // belongs to a `/btw` background task.
                 if let Some(t) = self.bg_tasks.iter_mut().find(|t| t.run_id == run_id) {
                     t.steps.push(activity::BgStep::started(tool, call_id));
                     if t.steps.len() > bg::MAX_BG_STEPS {
@@ -2317,11 +2158,10 @@ impl TuiState {
             }
             RuntimeErrorEvent::ToolCompleted { call_id, .. } => {
                 if let Some(t) = self.bg_tasks.iter_mut().find(|t| t.run_id == run_id) {
-                    // Exact call id only. The old fallback to the
-                    // newest live step for this tool could finish the
-                    // wrong parallel call's step; an unmatched
-                    // completion leaves the step running (its start
-                    // carried no card) rather than misattributing it.
+                    // exact call id only. falling back to the newest live step
+                    // for this tool could finish the wrong parallel call's
+                    // step; unmatched completion leaves it running instead of
+                    // misattributing it.
                     if let Some(s) = t.steps.iter_mut().rev().find(|s| {
                         s.call_id == *call_id && s.status == activity::StepStatus::Running
                     }) {
@@ -2336,9 +2176,9 @@ impl TuiState {
             | RuntimeErrorEvent::TurnFailed { .. } => {
                 self.tabs.set_busy(run_id, false);
             }
-            // Subagent lifecycle on a background tab: recorded against
-            // the parent run so the timeline shows it when that tab is
-            // visible. The visible-session arm dedupes the same events.
+            // subagent lifecycle on a background tab: recorded against the
+            // parent run so the timeline shows it when that tab is visible.
+            // the visible-session arm dedupes the same events.
             RuntimeErrorEvent::AgentSpawned { agent, .. }
             | RuntimeErrorEvent::AgentMessage { agent, .. } => {
                 activity::record_spawned(&mut self.subagents, run_id, agent);
@@ -2346,7 +2186,7 @@ impl TuiState {
             RuntimeErrorEvent::AgentCompleted { agent, .. } => {
                 activity::record_completed(&mut self.subagents, run_id, agent);
             }
-            // Decisions park durably; the card renders on tab switch.
+            // decisions park durably; the card renders on tab switch
             RuntimeErrorEvent::ApprovalRequested { scope, .. } => {
                 self.park_approval(run_id, scope);
             }
@@ -2374,18 +2214,17 @@ impl TuiState {
                 self.clarifies.remove(run_id);
                 self.tabs.set_approval(run_id, false);
             }
-            // Everything else is visible-session UI; a background run has
-            // no business touching it.
+            // everything else is visible-session UI; a background run has no
+            // business touching it
             _ => {}
         }
     }
 
-    /// Process a runtime event into a transcript block.
+    /// process a runtime event into a transcript block.
     ///
-    /// Background-run safety: events for a run that is not the visible
-    /// session only ever update that run's tab dot / parked decision
-    /// the visible transcript, input, and status belong to the active
-    /// session alone.
+    /// background-run safety: events for a run that isn't the visible session
+    /// only touch that run's tab dot / parked decision; the visible
+    /// transcript/input/status belong to the active session alone.
     pub fn handle_runtime_event(&mut self, ev: &RuntimeErrorEvent) {
         if let Some(rid) = event_run_id(ev) {
             if rid != self.session_id {
@@ -2401,18 +2240,16 @@ impl TuiState {
                 ..
             } => {
                 self.last_tool = Some((tool.clone(), args.clone()));
-                // Drive the activity state from the real tool identity:
-                // search tools → Searching, edits → Editing, plan/todo
-                // tools → Planning, everything else → Thinking. In plan
-                // mode the phase stays Planning for the whole turn.
+                // drive activity from the real tool identity: search ->
+                // Searching, edit -> Editing, plan/todo -> Planning, else
+                // Thinking. in plan mode the phase stays Planning the whole turn.
                 self.set_activity_status(if self.plan_mode {
                     "Planning...".to_string()
                 } else {
                     activity::status_for_tool(tool, args)
                 });
-                // Snapshot edit targets for the inline diff rendered at
-                // completion: the tool is about to rewrite these files, so
-                // capture the "before" now.
+                // snapshot edit targets for the inline diff at completion: the
+                // tool is about to rewrite these files, so capture "before" now.
                 let targets = crate::diffview::edit_targets(tool, args);
                 if !targets.is_empty() {
                     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -2425,11 +2262,11 @@ impl TuiState {
                         self.pending_snaps.insert(call_id.clone(), snaps);
                     }
                 }
-                // Provider streaming already announced the call before the
-                // runtime had its stable id. Adopt that pending card by the
-                // call's name and arguments instead of rendering a duplicate.
-                // Newest-first: with two identical concurrent calls the
-                // oldest-first search adopted the wrong card.
+                // provider streaming already announced the call before the
+                // runtime had a stable id. adopt the pending card by
+                // name+args instead of rendering a duplicate. newest-first:
+                // with two identical concurrent calls, oldest-first adopted
+                // the wrong card.
                 let pending = adopt_pending_card(&mut self.blocks, tool, args);
                 if let Some(block) = pending {
                     if let BlockKind::ToolCall {
@@ -2461,11 +2298,10 @@ impl TuiState {
                 }
             }
             RuntimeErrorEvent::ToolCompleted { call_id, .. } => {
-                // Flip the matching still-running card on exact call
-                // id only. The old fallback to the newest still-running
-                // card for this tool flipped the wrong parallel call's
-                // duration/tokens; an unmatched completion now leaves
-                // cards running rather than misattributing it.
+                // flip the matching still-running card, exact call id only.
+                // falling back to the newest still-running card for this tool
+                // flipped the wrong parallel call's duration/tokens; unmatched
+                // completion leaves cards running rather than misattributing.
                 self.tools_used = self.tools_used.saturating_add(1);
                 let target = self.blocks.iter_mut().rev().find(|b| {
                     matches!(&b.kind, BlockKind::ToolCall { call_id: c, ok: None, .. } if c == call_id)
@@ -2484,16 +2320,15 @@ impl TuiState {
                         if let Some(s) = started.take() {
                             *duration = Some(s.elapsed());
                         }
-                        // Done cards auto-collapse to their summary;
-                        // failed cards expand (see the failure arm).
+                        // done cards auto-collapse to their summary; failed
+                        // ones expand (see the failure arm)
                         *expanded = false;
-                        // Freeze the live token count on the card.
+                        // freeze the live token count on the card
                         *tokens = Some(self.tokens_used + self.turn_estimate);
                     }
                 }
-                // Inline diff: compare the pre-tool snapshots with the
-                // files as they are now. Missing/unchanged files produce
-                // no diff and no block.
+                // inline diff: compare the pre-tool snapshots with the files
+                // as they are now. missing/unchanged -> no diff, no block.
                 if let Some(snaps) = self.pending_snaps.remove(call_id) {
                     let mut lines = Vec::new();
                     for snap in snaps.iter().take(crate::diffview::MAX_DIFF_FILES) {
@@ -2512,13 +2347,13 @@ impl TuiState {
                 }
             }
             RuntimeErrorEvent::ToolOutput { .. } => {
-                // Output content rides the ToolMessage into the transcript;
-                // the card itself flips on ToolCompleted.
+                // output content rides the ToolMessage into the transcript;
+                // the card itself flips on ToolCompleted
             }
             RuntimeErrorEvent::ToolMessage { message, .. } => {
-                // Tool result content feeds the shell card: `$ cmd` with
-                // collapsible output, opencode-style. Other tools' results
-                // stay model-side; their cards keep the one-line shape.
+                // tool result feeds the shell card: `$ cmd` with collapsible
+                // output, opencode-style. other tools' results stay
+                // model-side; their cards keep the one-line shape.
                 if !matches!(message.role, pantheon_api::message::Role::Tool) {
                     return;
                 }
@@ -2536,9 +2371,9 @@ impl TuiState {
                 }
             }
             RuntimeErrorEvent::ApprovalRequested { run_id, scope } => {
-                // Park first (map + tab dot), then render the visible card.
-                // The background run_id was filtered above, so this is
-                // always the visible session here.
+                // park first (map + tab dot), then render the visible card.
+                // background runs were filtered above, so this is always
+                // the visible session.
                 let (tool, sentence, target) = self.park_approval(run_id, scope);
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::Approval {
@@ -2552,7 +2387,7 @@ impl TuiState {
                 self.pending_approval = Some((run_id.clone(), scope.clone()));
                 self.status_line = "permission required".into();
             }
-            // A sibling decision, resolved elsewhere (another client, a
+            // sibling decision, resolved elsewhere (another client, a
             // re-entered session): collapse the card instead of leaving it
             // pending.
             RuntimeErrorEvent::ApprovalGranted { run_id, .. } => {
@@ -2568,7 +2403,7 @@ impl TuiState {
                 self.pending_approval = None;
             }
             // ask_user parked the run: same decision pattern as approval,
-            // but cyan and with numbered options plus free text.
+            // but cyan with numbered options plus free text.
             RuntimeErrorEvent::UserInputRequested {
                 run_id,
                 call_id,
@@ -2609,16 +2444,16 @@ impl TuiState {
                 call_id,
                 ..
             } => {
-                // Feed the sidebar activity timeline (dedupe collapses
-                // the engine + runtime double-announce), then the
-                // transcript's Swarm block: same call id joins one
-                // block, so agent rows render once (see swarm_spawn).
+                // feed the activity timeline (dedupe collapses the engine +
+                // runtime double-announce), then the transcript's Swarm
+                // block: same call id joins one block, so agent rows render
+                // once (see swarm_spawn).
                 activity::record_spawned(&mut self.subagents, run_id, agent);
                 swarm_spawn(&mut self.blocks, call_id.clone(), agent);
             }
-            // The parent engine announces the delegation before the
-            // runtime records it; the timeline dedupes against the
-            // AgentSpawned that follows.
+            // parent engine announces the delegation before the runtime
+            // records it; the timeline dedupes against the AgentSpawned
+            // that follows.
             RuntimeErrorEvent::AgentMessage { agent, run_id } => {
                 activity::record_spawned(&mut self.subagents, run_id, agent);
             }
@@ -2632,31 +2467,30 @@ impl TuiState {
                 swarm_complete(&mut self.blocks, call_id.as_deref(), agent);
             }
             RuntimeErrorEvent::CheckpointCreated { name, .. } => {
-                // Inspector sidebar data: deduped, visible session only
+                // inspector sidebar data: deduped, visible session only
                 // (handle_runtime_event already filtered other runs).
                 if !self.checkpoint_names.iter().any(|n| n == name) {
                     self.checkpoint_names.push(name.clone());
                 }
             }
-            // Title generation (aux or /name) lands as a durable event;
-            // the header follows it with no polling.
+            // title generation (aux or /name) lands as a durable event; the
+            // header follows it with no polling.
             RuntimeErrorEvent::SessionTitled { run_id, title, .. } => {
                 self.title = Some(title.clone());
-                // The tab bar shows the id stem until now; sync it so the
+                // the tab bar showed the id stem until now; sync it so the
                 // fresh title appears without waiting for a refresh.
                 self.tabs.set_title(run_id, title);
             }
-            // Mid-turn steering delivered: mark it visibly in the
-            // transcript so the redirect is obvious, distinct from an
-            // ordinary user message.
+            // mid-turn steering delivered: mark it visibly so the redirect is
+            // obvious, distinct from an ordinary user message.
             RuntimeErrorEvent::SteeringProvided { text, .. } => {
                 self.blocks.push(TranscriptBlock {
                     kind: BlockKind::Status(format!("steered: {text}")),
                 });
             }
-            // Structured UI, published by the agent through `render_ui`.
-            // The document is stored raw; `render_block` degrades it to
-            // this client's capabilities at draw time.
+            // agent-published structured UI (`render_ui`). stored raw;
+            // `render_block` degrades it to this client's capabilities at
+            // draw time.
             RuntimeErrorEvent::UiContent {
                 ui_id, document, ..
             } => {
@@ -2671,8 +2505,8 @@ impl TuiState {
                     self.scroll_to_bottom();
                 }
             }
-            // Live revision: replace the block only when the revision is
-            // newer, so out-of-order replays cannot regress the view.
+            // live revision: replace only when newer, so out-of-order replays
+            // can't regress the view.
             RuntimeErrorEvent::UiUpdated {
                 ui_id,
                 revision,
@@ -2701,8 +2535,8 @@ impl TuiState {
                     }
                 }
             }
-            // The turn parked on a UI approval card: modal decision, like
-            // the approval card (a approve, d deny, Esc deny).
+            // turn parked on a UI approval card: modal decision like the
+            // approval card (a approve, d deny, Esc deny).
             RuntimeErrorEvent::UiActionRequested {
                 run_id,
                 ui_id,
@@ -2712,11 +2546,10 @@ impl TuiState {
                 self.status_line = "UI decision required".into();
                 self.scroll_to_bottom();
             }
-            // A UI action resolved elsewhere (another client): clear the
-            // modal only when the submission was an approval DECISION.
-            // Form/tool submissions on the same document must not clear
-            // the pending card (the runtime's park resolution is
-            // classified the same way).
+            // UI action resolved elsewhere (another client): clear the modal
+            // only for an approval DECISION. form/tool submissions on the
+            // same document mustn't clear it (the runtime classifies park
+            // resolution the same way).
             RuntimeErrorEvent::UiActionSubmitted {
                 ui_id,
                 revision,
@@ -2739,8 +2572,7 @@ impl TuiState {
                 });
             }
             RuntimeErrorEvent::ToolInterrupted { call_id, .. } => {
-                // Mark the card interrupted instead of leaving a live
-                // spinner forever (no arm previously).
+                // mark the card interrupted so it doesn't leave a live spinner
                 if let Some(pos) = self.blocks.iter().rposition(|b| {
                     matches!(&b.kind, BlockKind::ToolCall { call_id: cid, .. } if cid == call_id)
                 }) {
@@ -2751,18 +2583,16 @@ impl TuiState {
         }
     }
 
-    /// Collapse the newest still-pending approval card to its resolved
-    /// marker (`● approved` / `● denied`).
+    /// collapse the newest still-pending approval card to its resolved marker
+    /// (`● approved` / `● denied`)
     fn resolve_approval_block(&mut self, decision: Option<bool>) {
         self.resolve_approval_block_for(None, decision);
     }
 
-    /// Collapse a still-pending approval card to its decided marker.
-    /// With a tool name, the newest pending card FOR THAT TOOL
-    /// collapses: resolving purely by recency collapsed the wrong
-    /// card when two runs (parallel/background tabs) had pending
-    /// cards. Without a tool name it falls back to the newest
-    /// pending card, as before.
+    /// collapse a still-pending approval card to its decided marker. with a
+    /// tool name, the newest pending card FOR THAT TOOL collapses - resolving
+    /// purely by recency collapsed the wrong card when two runs (parallel/
+    /// background) had pending cards. no tool name -> newest pending, as before.
     fn resolve_approval_block_for(&mut self, tool: Option<&str>, decision: Option<bool>) {
         if let Some(block) = self.blocks.iter_mut().rev().find(|b| match &b.kind {
             BlockKind::Approval {
@@ -2778,8 +2608,8 @@ impl TuiState {
         }
     }
 
-    /// Collapse the newest still-pending clarify card to its answered
-    /// marker (`● answered: ...`).
+    /// collapse the newest still-pending clarify card to its answered marker
+    /// (`● answered: ...`)
     fn resolve_clarify_block(&mut self, answer: &str) {
         if let Some(block) = self
             .blocks
@@ -2793,7 +2623,7 @@ impl TuiState {
         }
     }
 
-    /// Collapse the newest still-pending confirm card.
+    /// collapse the newest still-pending confirm card
     fn resolve_confirm_block(&mut self, decided: bool) {
         if let Some(block) = self
             .blocks
@@ -2807,21 +2637,19 @@ impl TuiState {
         }
     }
 
-    /// How long the first Esc stays armed. The second Esc inside this
-    /// window is what actually cancels the run.
+    /// how long the first Esc stays armed; the second Esc inside this window
+    /// is what actually cancels the run.
     pub const ARM_WINDOW: Duration = Duration::from_millis(1500);
 
-    /// Handle an Esc press. Returns true when the caller must cancel the
-    /// run in flight, which happens only on a confirmed second Esc.
+    /// handle Esc. returns true when the caller must cancel the run, which
+    /// only happens on a confirmed second Esc.
     ///
-    /// While a turn runs, the second Esc interrupts (existing behavior).
-    /// While idle, the first Esc arms and the second Esc inside the arm
-    /// window offers to rewind the last turn instead of just disarming:
-    /// the confirm prompt is explicit (`y`/`n`), so nothing destructive
-    /// happens on a stray keypress. An idle Esc never interrupts.
+    /// running: second Esc interrupts. idle: first arms, second inside the
+    /// window offers to rewind the last turn (explicit `y`/`n`, so a stray
+    /// keypress does nothing). idle Esc never interrupts.
     ///
-    /// Extracted from the event loop so the arm/confirm/stale rules are
-    /// testable against the shipped code rather than a copy of it.
+    /// extracted from the event loop so the arm/confirm/stale rules are
+    /// testable against the shipped code rather than a copy.
     pub fn press_esc(&mut self) -> bool {
         if !self.ready && !self.interrupted {
             match self.interrupt_armed_at {
@@ -2837,9 +2665,9 @@ impl TuiState {
                 }
             }
         } else if let Some(t) = self.interrupt_armed_at {
-            // Second Esc while idle: inside the window, offer rewind when
-            // there is a turn to roll back to, otherwise disarm as before.
-            // A stale arm re-arms instead of firing.
+            // second Esc while idle: inside the window, offer rewind when
+            // there's a turn to roll back to, otherwise disarm as before.
+            // a stale arm re-arms instead of firing.
             self.interrupt_armed_at = None;
             if t.elapsed() < Self::ARM_WINDOW {
                 match self.rewind_candidate() {
@@ -2855,22 +2683,16 @@ impl TuiState {
                 self.interrupt_armed_at = Some(Instant::now());
             }
         } else if !self.interrupted {
-            // First Esc while idle: arm the rewind offer path. This never
-            // interrupts anything; begin_turn clears the arm.
+            // first Esc while idle: arm the rewind offer path. never
+            // interrupts; begin_turn clears the arm.
             self.interrupt_armed_at = Some(Instant::now());
         }
         false
     }
 
-    /// Begin a turn for `msg`. Returns true when the caller should start
-    /// the agent loop now; returns false and queues the message when a turn
-    /// is already running, so Enter never spawns a second loop on the same
-    /// run. A newer queued message replaces an older one: the single slot
-    /// holds the latest intent, and it drains on the next TurnComplete.
-    ///
-    /// The `/goal` iteration gate. Returns the refusal message when the
-    /// active goal's iteration budget is exhausted, else `None`.
-    /// Extracted so the rule is testable against the shipped code.
+    /// `/goal` iteration gate. returns the refusal message when the active
+    /// goal's budget is exhausted, else `None`. extracted so the rule is
+    /// testable.
     pub fn goal_refusal(&self) -> Option<String> {
         let g = self.goal.as_ref()?;
         if g.iterations_used >= g.max_iterations {
@@ -2883,15 +2705,20 @@ impl TuiState {
         }
     }
 
-    /// Consume one goal iteration. Call when a turn starts under a goal.
+    /// consume one goal iteration. call when a turn starts under a goal
     pub fn consume_goal_iteration(&mut self) {
         if let Some(g) = self.goal.as_mut() {
             g.iterations_used = g.iterations_used.saturating_add(1);
         }
     }
 
-    /// Extracted from the event loop so the guard rules are testable
-    /// against the shipped code rather than a copy of it.
+    /// begin a turn for `msg`. returns true when the caller should start the
+    /// loop; false queues the message because a turn is already running, so
+    /// Enter never spawns a second loop. a newer queued message replaces the
+    /// older one - one slot, latest intent, drained on TurnComplete.
+    ///
+    /// extracted from the event loop so the guard rules are testable against
+    /// the shipped code rather than a copy.
     pub fn begin_turn(&mut self, msg: String) -> bool {
         if !self.ready {
             self.queued_messages.insert(self.session_id.clone(), msg);
@@ -2901,21 +2728,18 @@ impl TuiState {
         self.status_line = "working".to_string();
         self.interrupt_armed_at = None;
         self.interrupted = false;
-        // Fresh working status: Thinking..., or Planning... when plan
-        // mode is on. It is state only — the live indicator is the
-        // transcript's thought block / tool card, not a status line.
+        // fresh working status: Thinking..., or Planning... in plan mode.
+        // state only; the live indicator is the transcript's thought block /
+        // tool card, not a status line.
         self.set_activity_status(if self.plan_mode {
             "Planning...".to_string()
         } else {
             "Thinking...".to_string()
         });
-        // Fresh per-turn telemetry: the last turn's in/out must not leak
-        // into this turn's status bar. The live estimate resets too:
-        // it used to carry the previous turn's total into the new
-        // turn's counter, and a provider that never reports Usage
-        // accumulated it forever. `tokens_used` is overwritten by the
-        // Usage event total (the provider's reported session total,
-        // snapped by Usage, not a per-turn figure).
+        // fresh per-turn telemetry: last turn's in/out must not leak here.
+        // reset the estimate too, so a provider that never reports Usage
+        // doesn't accumulate a previous total forever. `tokens_used` comes
+        // from Usage (the provider's session total, not per-turn).
         self.turn_in = None;
         self.turn_out = None;
         self.turn_estimate = 0;
@@ -2923,13 +2747,11 @@ impl TuiState {
         true
     }
 
-    /// Clear transient modal/overlay state: every piece of UI that
-    /// acts on the visible session and must not survive a tab switch,
-    /// a new tab, or a reset. Durable parked decisions (the
-    /// `approvals`/`clarifies` maps, tab dots) are NOT touched here:
-    /// `switch_to_run` rehydrates the target run's cards from them
-    /// after clearing. Callers that mean "this session's decisions
-    /// are gone" (reset) clear the maps separately.
+    /// clear transient modal/overlay state: UI that acts on the visible
+    /// session and mustn't survive a tab switch, a new tab, or a reset.
+    /// durable parked decisions (`approvals`/`clarifies` maps, tab dots) are
+    /// NOT touched - `switch_to_run` rehydrates the target run's cards from
+    /// them. reset clears the maps separately.
     pub fn clear_transient_modals(&mut self) {
         self.rewind_offer = None;
         self.pending_confirm = None;
@@ -2953,19 +2775,19 @@ impl TuiState {
         self.checkpoint_names.clear();
     }
 
-    /// Take the message queued for the visible run, if any.
+    /// take the message queued for the visible run, if any
     pub fn take_queued(&mut self) -> Option<String> {
         let run_id = self.session_id.clone();
         self.queued_messages.remove(&run_id)
     }
 
-    /// Take the message queued for one specific run. Used when a turn
-    /// completes so other tabs' queued follow-ups stay parked.
+    /// take the message queued for one run. used on turn completion so other
+    /// tabs' queued follow-ups stay parked.
     pub fn take_queued_for(&mut self, run_id: &str) -> Option<String> {
         self.queued_messages.remove(run_id)
     }
 
-    /// Queue or replace a follow-up message for one run.
+    /// queue or replace a follow-up message for one run
     pub fn queue_message(&mut self, run_id: &str, msg: String) {
         if msg.is_empty() {
             self.queued_messages.remove(run_id);
@@ -2974,24 +2796,20 @@ impl TuiState {
         }
     }
 
-    /// The queued follow-up for the visible run, if any. Kept as a
-    /// read-only accessor for renderers and tests.
+    /// queued follow-up for the visible run, if any. read-only, for renderers/tests
     pub fn queued_message(&self) -> Option<&str> {
         self.queued_messages
             .get(&self.session_id)
             .map(String::as_str)
     }
 
-    /// Reset ephemeral turn state without touching the session identity,
-    /// title, or ledger history. Clears the visible transcript (like
-    /// `/clear`), drops any queued message, and releases per-turn state
-    /// (ready flag, active run, telemetry, interrupt arm).
+    /// reset ephemeral turn state, keep session identity/title/ledger.
+    /// clears the transcript like `/clear`, drops any queued message,
+    /// releases per-turn state.
     ///
-    /// Returns true when a turn was in flight: the caller should cancel
-    /// it cooperatively (same path as double-Esc).
-    ///
-    /// Pure state transition, extracted so the reset rules are testable
-    /// against the shipped code rather than a copy of it.
+    /// returns true when a turn was in flight; the caller cancels it
+    /// cooperatively, same path as double-Esc. pure, so reset rules are
+    /// testable.
     pub fn reset_ephemeral(&mut self) -> bool {
         let was_running = !self.ready;
         self.blocks.clear();
@@ -3005,11 +2823,9 @@ impl TuiState {
         self.turn_in = None;
         self.turn_out = None;
         self.turn_estimate = 0;
-        // A reset used to clear the transcript while leaving every
-        // decision modal armed, so keys stayed in approval mode with
-        // no card on screen. Clear all transient modal state, and
-        // drop this session's parked decisions + tab dot with it:
-        // the card is gone, so the decision point is gone too. The
+        // clear all transient modal state: a reset mustn't leave approval
+        // keys with no card on screen. drop this session's parked decisions
+        // and tab dot too - card's gone, so the decision point is gone. the
         // token meter resets with the transcript.
         self.clear_transient_modals();
         let id = self.session_id.clone();
@@ -3021,16 +2837,15 @@ impl TuiState {
         was_running
     }
 
-    /// Which run an interrupt should cancel: the in-flight turn's run when
-    /// there is one, else the selected session. Pure, tested below.
+    /// which run an interrupt should cancel: the in-flight turn's run when
+    /// there is one, else the selected session. pure, tested below.
     pub fn interrupt_target(&self) -> &str {
         self.active_run.as_deref().unwrap_or(&self.session_id)
     }
 
-    /// Recompute the visible turn gate from the ledger lease. This is
-    /// the only place tab switching may repair `ready`/`active_run`:
-    /// durable leases—not the previous tab's in-memory flags—are the
-    /// source of truth for whether the visible run is still busy.
+    /// recompute the visible turn gate from the ledger lease. the only place
+    /// tab switching repairs `ready`/`active_run`: durable leases, not the
+    /// previous tab's in-memory flags, decide whether the visible run is busy.
     pub fn sync_turn_state_from_lease(&mut self, busy: bool) {
         self.ready = !busy;
         self.active_run = if busy {
@@ -3047,14 +2862,13 @@ impl TuiState {
         self.interrupt_armed_at = None;
     }
 
-    /// Mark a turn finished. `focused` tells whether this session's tab is
-    /// the visible one: a background finish raises the tab badge instead
-    /// of touching anything the user is doing.
+    /// mark a turn finished. `focused` says whether the tab is visible: a
+    /// background finish raises the badge instead of touching what the user
+    /// is doing.
     ///
-    /// This deliberately never touches `input` or `is_inputting`: a turn
-    /// completing in the background must not steal input focus. The queued
-    /// message still drains (via `drain_queued_message` in the loop) because
-    /// it belongs to this session's turn machinery, not to the tab.
+    /// never touches `input`/`is_inputting` - a background completion mustn't
+    /// steal focus. the queued message still drains, since it belongs to this
+    /// session's turn machinery, not the tab.
     pub fn on_turn_complete(&mut self, focused: bool) {
         self.ready = true;
         self.status_line = "ready".to_string();
@@ -3076,10 +2890,9 @@ impl TuiState {
         }
     }
 
-    /// A background run finished: only its tab dot and the notification
-    /// badge may change. The visible session's `ready`, status line,
-    /// active run, timing, and turn count belong to the active tab and
-    /// are never touched here.
+    /// a background run finished: only its tab dot and badge may change. the
+    /// visible session's ready/status/active run/timing/turn count belong to
+    /// the active tab and are never touched here.
     pub fn on_background_turn_complete(&mut self, run_id: &str) {
         self.tabs.set_busy(run_id, false);
         self.tabs.set_attention(run_id, true);
@@ -3089,7 +2902,7 @@ impl TuiState {
         }
     }
 
-    /// Clear the background-completion badge: the tab is focused again.
+    /// clear the background-completion badge: the tab is focused again
     pub fn attention_clear(&mut self) {
         self.attention = false;
         self.attention_note = None;
@@ -3097,7 +2910,7 @@ impl TuiState {
         self.tabs.set_attention(&run_id, false);
     }
 
-    /// Whether the visible tab has an unread background-completion badge.
+    /// whether the visible tab has an unread background-completion badge
     pub fn tab_attention(&self) -> bool {
         self.tabs
             .tabs()
@@ -3107,7 +2920,7 @@ impl TuiState {
             .unwrap_or(self.attention)
     }
 
-    /// Toggle the turn-timeline rail. Opening selects the latest turn.
+    /// toggle the turn-timeline rail; opening selects the latest turn
     pub fn toggle_timeline(&mut self) {
         match self.timeline.take() {
             Some(_) => {}
@@ -3118,16 +2931,16 @@ impl TuiState {
         }
     }
 
-    /// Open the fullscreen draft editor, carrying the current input draft.
+    /// open the fullscreen draft editor, carrying the current input draft
     pub fn open_editor(&mut self) {
         let draft = std::mem::take(&mut self.input);
         self.is_inputting = false;
         self.editor = Some(editor::DraftEditor::from_text(&draft));
     }
 
-    /// The turn a rewind would roll back to, or `None` when rewind is not
-    /// available: no turn has completed, a turn is running, an approval is
-    /// pending, or a confirm is already open.
+    /// the turn a rewind would roll back to, `None` when unavailable: no turn
+    /// completed, a turn is running, an approval is pending, or a confirm is
+    /// already open.
     pub fn rewind_candidate(&self) -> Option<RewindOffer> {
         if !self.ready
             || self.pending_approval.is_some()
@@ -3151,9 +2964,9 @@ impl TuiState {
         })
     }
 
-    /// This turn's throughput in tokens/sec. Prefers the authoritative
-    /// Usage numbers; falls back to the live streamed estimate while the
-    /// turn runs; `None` when there is nothing honest to divide.
+    /// this turn's tokens/sec. prefers authoritative Usage numbers; falls
+    /// back to the live estimate while the turn runs; `None` when there's
+    /// nothing honest to divide.
     pub fn turn_rate(&self) -> Option<f64> {
         let elapsed = self.turn_started_at?.elapsed().as_secs_f64();
         if elapsed < 0.5 {
@@ -3166,8 +2979,8 @@ impl TuiState {
         }
     }
 
-    /// The turn number the status bar shows: completed turns + 1 while a
-    /// turn runs; `None` before the first turn so the bar shows ` - `.
+    /// turn number the status bar shows: completed turns + 1 while a turn
+    /// runs; `None` before the first turn so the bar shows ` - `
     pub fn display_turn_no(&self) -> Option<u32> {
         let n = self.turns_completed + if self.ready { 0 } else { 1 };
         if n == 0 {
@@ -3185,9 +2998,9 @@ impl TuiState {
     }
 
     pub fn add_status(&mut self, text: String) {
-        // While a slash command is running, its output lines are captured
-        // into the command buffer instead; `handle_slash` flushes them as
-        // one `Command` block when the command finishes.
+        // while a slash command runs, its output lines capture into the
+        // command buffer instead; `handle_slash` flushes them as one
+        // `Command` block when it finishes.
         if let Some((_, buf)) = self.cmd_capture.as_mut() {
             buf.push(text);
             return;
@@ -3202,28 +3015,23 @@ impl TuiState {
         self.scroll_offset = 0;
     }
 
-    /// Scroll up into history by `lines`. New blocks reset via
-    /// `scroll_to_bottom`; streaming follows the tail while the offset is 0.
-    /// Uncapped on purpose: the renderer clamps the offset against the
-    /// transcript's real length (`max_scroll`), so a hard cap here only
-    /// stranded the top of transcripts longer than the cap.
+    /// scroll up into history by `lines`. new blocks reset via
+    /// `scroll_to_bottom`; streaming follows the tail while offset is 0.
+    /// uncapped on purpose - the renderer clamps against the transcript's
+    /// real length, so a hard cap just stranded the top of long transcripts.
     pub fn scroll_up(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
     }
 
-    /// Scroll back down toward the live tail.
+    /// scroll back down toward the live tail
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(lines);
     }
 
     // --- Non-vim composer cursor + history (arrow keys) -----------------
-    // The composer used to be append-only (`input.push` / `input.pop`),
-    // so Left/Right/Home/End/Up/Down were dead keys in the main loop.
-    // These helpers are the whole cursor model: char indices, never
-    // byte indices. Vim mode keeps its own cursor and never uses them.
-    // Any direct `input = …` assignment elsewhere leaves the cursor
-    // clamped by `composer_cursor`, i.e. parked at the end — never out
-    // of range, never splitting a character.
+    // The whole cursor model: char indices, never bytes. Vim mode keeps its own
+    // cursor and doesn't use these. Any direct `input = ...` elsewhere leaves the
+    // cursor clamped by `composer_cursor`, parked at the end.
 
     /// Submitted-message history cap: enough for a session's recall,
     /// bounded so a long session cannot grow it without limit.
@@ -3295,8 +3103,7 @@ impl TuiState {
         self.input_history_draft.clear();
     }
 
-    /// Delete the char under the cursor (Delete key); at the end, a
-    /// no-op. Previously Delete was not handled in the composer at all.
+    /// Delete the char under the cursor (Delete key); at the end, a no-op.
     pub fn composer_delete(&mut self) {
         let cur = self.composer_cursor();
         let len = self.input.chars().count();
@@ -3331,15 +3138,10 @@ impl TuiState {
         self.input_cursor = self.input.chars().count();
     }
 
-    /// Move the cursor one line up/down within a multi-line draft,
-    /// keeping the column where the target line allows it. The column
-    /// is the stored goal column once set, so Up onto a short line
-    /// then Down returns to the original column instead of clamping
-    /// to the short line (the old code recomputed the column from
-    /// the current position on every move and lost it). Returns
-    /// true when the draft is multi-line (i.e. the key was a cursor
-    /// move); single-line drafts return false so the caller can use
-    /// Up/Down for history recall instead.
+    /// Move the cursor one line up/down in a multi-line draft, keeping the column
+    /// where the target line allows. The column is the stored goal column, so Up onto
+    /// a short line then Down returns to where you were. Returns true when the draft
+    /// is multi-line; single-line drafts return false so Up/Down can do history.
     pub fn composer_move_vertical(&mut self, dy: isize) -> bool {
         let text = self.input.clone();
         let lines: Vec<&str> = text.split('\n').collect();
@@ -3476,16 +3278,14 @@ mod icon {
 
 /// Render the full TUI frame: tabs, transcript, composer box.
 ///
-/// Takes `&mut` because a timeline jump pins the viewport to a turn's
-/// first block during this render (consuming `jump_to_block`); nothing
-/// else about the transcript is mutated.
-/// Rebuild the session tab bar from the run ledger. Cheap local query;
-/// called on loop start, /new, resume, tab switch and turn completion so
-/// titles and busy badges stay current.
-/// Rebuild the tab bar from the explicit open-tab list. The ledger is
-/// consulted for titles only, never for membership: opening a tab opens
-/// a session, closing parks it. Parked runs stay reopenable via
-/// /sessions or the session picker.
+/// Takes `&mut` because a timeline jump pins the viewport to a turn's first block
+/// during this render (consuming `jump_to_block`); nothing else mutates.
+/// Rebuilds the session tab bar from the run ledger - cheap local query, called on
+/// loop start, /new, resume, tab switch and turn completion so titles and busy
+/// badges stay current.
+/// Rebuilds from the explicit open-tab list. The ledger supplies titles only, never
+/// membership: opening a tab opens a session, closing parks it. Parked runs reopen
+/// via /sessions or the picker.
 fn refresh_tabs(state: &mut TuiState, session: &Arc<Session>) {
     let active = state.session_id.clone();
     // A visible run is an open tab by definition: pin it even if the
@@ -3727,17 +3527,15 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
         state.sync_turn_state_from_lease(busy);
         return;
     }
-    // Transient modals act on the visible session; a mouse click that
-    // switches tabs used to leave them armed over the new tab's
-    // transcript (and acting on the wrong session). Clear first so
-    // the hydrate below only re-arms the target run's own decisions.
+    // Transient modals act on the visible session, so clear them first: a click that
+    // switches tabs must not leave them armed over the new tab's transcript (and
+    // acting on the wrong session). The hydrate below re-arms only the target run's
+    // own decisions.
     state.clear_transient_modals();
-    // The context meter belongs to the visible tab: the previous
-    // tab's tokens used to keep showing after a switch. Tabs carry
-    // no stored model/profile (model is global session config, not
-    // per-tab state), so the meter resets rather than reloading a
-    // per-tab model that does not exist; it re-fills from the new
-    // tab's Usage events and its context limit below.
+    // The context meter belongs to the visible tab, so it resets on switch rather
+    // than showing the previous tab's tokens. Tabs carry no stored model/profile
+    // (model is global session config), so there's nothing per-tab to reload; it
+    // re-fills from the new tab's Usage events and its context limit below.
     state.tokens_used = 0;
     state.turn_estimate = 0;
     state.turn_in = None;
@@ -3867,12 +3665,11 @@ fn switch_to_run(state: &mut TuiState, session: &Arc<Session>, id: &str, verb: &
 /// and [`crate::richtext::ImagePaintState::paint`] deletes stale images so
 /// they never ghost over fullscreen UI.
 pub fn render(state: &mut TuiState, f: &mut Frame) {
-    // Reset per frame; render_transcript / render_image_preview set these
-    // when they actually draw. Tab geometry resets here too: the
-    // fullscreen-overlay branches of `render_main` return before
-    // drawing a tab bar, and stale geometry from the previous frame
-    // used to let tab-bar clicks switch sessions behind /history
-    // and friends. Normal frames re-set both below.
+    // Reset per frame; render_transcript / render_image_preview set these when they
+    // actually draw. Tab geometry resets here too: the fullscreen-overlay branches of
+    // `render_main` return before drawing a tab bar, so geometry left from the previous
+    // frame would let tab-bar clicks switch sessions behind /history. Normal frames
+    // re-set both below.
     state.img.view = None;
     state.img.preview_area = None;
     state.tab_bar_area = None;
@@ -4075,7 +3872,7 @@ fn render_palette(f: &mut Frame, area: Rect, state: &TuiState) {
 /// background tint than the surrounding #121212/#1E1E1E. No glyphs
 /// the box-drawing ban still stands. The tint itself lives in the
 /// theme module ([`theme::DIVIDER_BG`]).
-/// Session body: single-column base — transcript + input block. At
+/// Session body: single-column base, transcript + input block. At
 /// ≥160 cols with the sidebar toggled on, a 25% sidebar appears on
 /// the right (wide inspector); below 160 cols the body is a single
 /// column and the sidebar (while toggled on) floats as a right-side
@@ -4117,16 +3914,14 @@ fn render_body(state: &mut TuiState, f: &mut Frame, area: Rect) {
     }
 }
 
-/// Left column: transcript above, the unified 4-row composer box
-/// below (top border, prompt row, provider row, bottom border). The
-/// reflect card owns the input row while it is open. A pending rewind
-/// confirmation takes one row of its own directly above the composer
-/// — it used to take over the footer, and there is no footer anymore
-/// — so the question stays impossible to miss without adding chrome.
+/// Left column: transcript above, the unified 4-row composer box below (top
+/// border, prompt row, provider row, bottom border). The reflect card owns the
+/// input row while open. A pending rewind confirmation takes a row of its own
+/// directly above the composer, so the question is impossible to miss without
+/// adding chrome.
 fn render_left(state: &mut TuiState, f: &mut Frame, area: Rect) {
-    // A form fill takes one extra row above the composer for its
-    // prompt (`form [n/total] ... pick 1-N ... [default]`), which
-    // used to live only in the never-rendered `status_line`.
+    // A form fill takes one extra row above the composer for its prompt
+    // (`form [n/total] ... pick 1-N ... [default]`).
     let input_h = if state.form_fill.is_some() { 6 } else { 5 };
     if state.rewind_offer.is_some() {
         let [transcript_area, rewind_area, input_area] = Layout::vertical([
@@ -4639,8 +4434,8 @@ fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
             Style::default().fg(th.dim),
         )));
     }
-    // Window around the selection, not the tail: the old tail window
-    // left a selection moved above it selected-but-invisible.
+    // Window around the selection, not the tail: a tail-only window leaves a
+    // selection moved above it selected but invisible.
     let inner = w.saturating_sub(4) as usize;
     let rows = panel.height.saturating_sub(5) as usize;
     let start = timeline::window_start(sel, turns.len(), rows);
@@ -4787,7 +4582,7 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     let key_style = Style::default().fg(th.primary).add_modifier(Modifier::BOLD);
-    // Note: plain `[`/`]` are deliberately absent here. The main-view key
+    // Note: plain `[`/`]` are absent here. The main-view key
     // handler gates them out of tab_key_action, so they always type into
     // the composer; tab switching is Ctrl+Tab / Ctrl+Shift+Tab / Alt+1..9.
     let rows: &[(&str, &str)] = &[
@@ -4843,9 +4638,8 @@ fn render_shortcuts(f: &mut Frame, area: Rect, state: &TuiState) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Empty-draft placeholder, shared by the composer box and the
-/// tiny-terminal fallback row: the two used to disagree ("Ask
-/// anything, ..." vs "Ask anything, 'Fix broken tests'").
+/// Empty-draft placeholder, shared by the composer box and the tiny-terminal
+/// fallback row so the two can't drift.
 const COMPOSER_PLACEHOLDER: &str = "Ask anything, 'Fix broken tests'";
 
 /// Draw the input box at the bottom.
@@ -4888,9 +4682,8 @@ fn composer_text(state: &TuiState) -> String {
         }
         out
     } else if state.is_inputting {
-        // Non-vim cursor: the `_` sits at the cursor char index, not
-        // at the end. When idle there is no cursor to show, so the
-        // trailing space of the old behaviour is kept below.
+        // Non-vim cursor: the `_` sits at the cursor char index, not at the end.
+        // When idle there is no cursor to show, so the trailing space is kept.
         let at = state.composer_cursor();
         let mut chars: Vec<char> = state.input.chars().collect();
         chars.insert(at.min(chars.len()), '_');
@@ -5007,14 +4800,10 @@ fn bordered_row(
     Line::from(spans)
 }
 
-/// Prompt row spans: the draft's cursor line (with cursor marker),
-/// or the dim placeholder when the draft is empty. The old code
-/// always showed the first line clipped to the box, so multi-line
-/// drafts were blind past line 1 and a cursor past the right edge
-/// was invisible despite multi-line editing existing. Now the row
-/// follows the cursor: the cursor's line, horizontally scrolled so
-/// the cursor column stays in view, plus a dim `L{row}/{n}` marker
-/// on multi-line drafts.
+/// Prompt row spans: the draft's cursor line (with cursor marker), or the dim
+/// placeholder when the draft is empty. The row follows the cursor - its line,
+/// horizontally scrolled so the cursor column stays in view, plus a dim
+/// `L{row}/{n}` marker on multi-line drafts.
 fn composer_prompt_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> Vec<Span<'static>> {
     if state.input.is_empty() {
         let mut spans = vec![Span::styled(
@@ -5081,7 +4870,7 @@ fn capitalise_first(s: &str) -> String {
 /// first-letter rule cannot produce: a custom provider's registry
 /// label is its id, so "exoseed" would otherwise display as
 /// "Exoseed", not the brand's "ExoSeed". This map is the one place
-/// that knows brand spellings — the composer row (and every other
+/// that knows brand spellings: the composer row (and every other
 /// `provider_display` caller) just asks for the label, never
 /// special-cases an id. Display only: routing ids are never changed.
 const PROVIDER_DISPLAY_OVERRIDES: &[(&str, &str)] = &[("exoseed", "ExoSeed")];
@@ -5090,7 +4879,7 @@ const PROVIDER_DISPLAY_OVERRIDES: &[(&str, &str)] = &[("exoseed", "ExoSeed")];
 /// exists, else the catalog/registry label when one exists and
 /// differs from the id (e.g. a cataloged "OpenAI" for id "openai"),
 /// otherwise the id with its first letter capitalised. Display
-/// only — the id used for routing is never changed.
+/// only; the id used for routing is never changed.
 fn provider_display(provider_id: &str) -> String {
     if provider_id.is_empty() {
         return String::new();
@@ -5113,7 +4902,7 @@ fn provider_display(provider_id: &str) -> String {
 /// in body bold (when a profile is active), provider in blue bold,
 /// model in body, effort in orange. The model string is
 /// `provider/model`; the provider segment is the provider, never the
-/// model — `state.model` stays in `provider/model` form through
+/// model: `state.model` stays in `provider/model` form through
 /// fallbacks and `/model` switches (see `handle_model_event`). The
 /// profile segment is the active `[agents.<name>]` table name
 /// (`state.variant`, set at startup and by `/agent <name>`); with
@@ -5127,7 +4916,7 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
         Some((p, rest)) => (p, rest),
         None => ("", state.model.as_str()),
     };
-    // Design format: `Provider: <Provider>: <Model> • Build` — a
+    // Design format: `Provider: <Provider>: <Model> • Build`: a
     // colon, not a dot, between provider and model. Display names
     // only: `auto` shows as `Auto`, the routing id stays `auto`.
     let provider_shown = provider_display(provider);
@@ -5196,8 +4985,8 @@ fn composer_variant_spans(state: &TuiState, th: &theme::Theme, max_w: usize) -> 
 /// <model> • <effort> • <Build|Plan>`, with the effort element omitted
 /// when off. Reuses `composer_variant_spans` (profile · provider:
 /// model · effort) and appends the mode word. This row lives INSIDE
-/// the composer box, below the input line — it is not a separate
-/// footer. There is no footer row in the main view at all.
+/// the composer box, below the input line. There is no footer row in the main
+/// view at all.
 fn composer_provider_spans(
     state: &TuiState,
     th: &theme::Theme,
@@ -5236,8 +5025,8 @@ fn resolve_context_warn_pct(cfg: Option<&crate::config::Config>) -> f64 {
 /// at or above the configured context-warning threshold, default
 /// 80% of the context window). Vim mode, when on, leads the row
 /// in dim text. When the left side does not fit, the right hint is
-/// shed first and the left side clips — the row never wraps and
-/// never grows the box.
+/// shed first and the left side clips; the row never wraps and never grows the
+/// box.
 ///
 /// Live token count: `tokens_used + turn_estimate`, where
 /// `turn_estimate` is bumped on every streamed delta (~4 chars per
@@ -5247,9 +5036,8 @@ fn resolve_context_warn_pct(cfg: Option<&crate::config::Config>) -> f64 {
 /// `turn_estimate` is 0 and the same element shows the FINAL number
 /// with no `~`. The estimate is never presented as a final number.
 fn composer_provider_row(state: &TuiState, th: &theme::Theme, budget: usize) -> Vec<Span<'static>> {
-    // ONE threshold, shared with the sidebar meter
-    // (`build_agent_view_lines`): `[tui] context_warn_pct`, 80 by
-    // default. The old 78% (row) vs 80% (meter) split is gone.
+    // ONE threshold, shared with the sidebar meter (`build_agent_view_lines`):
+    // `[tui] context_warn_pct`, 80 by default.
     let mut left: Vec<Span<'static>> = Vec::new();
     if let Some(mode) = state.vim.status_label() {
         left.push(Span::styled(
@@ -5311,7 +5099,7 @@ fn composer_provider_row(state: &TuiState, th: &theme::Theme, budget: usize) -> 
 }
 
 /// Token line directly below the composer box, part of the composer
-/// area (not a footer, alert strip, or sweep): `N toks • N / N ctx` —
+/// area (not a footer, alert strip, or sweep): `N toks • N / N ctx`,
 /// live tokens (`tokens_used + turn_estimate`, estimate marked `~`
 /// while `turn_estimate` is nonzero, settling to the final number
 /// once the provider's `Usage` event lands), then context used /
@@ -5346,8 +5134,7 @@ fn composer_token_line(state: &TuiState, th: &theme::Theme) -> Option<Line<'stat
 /// unified bordered box, exactly 4 rows (top border, prompt row,
 /// provider row, bottom border), plus the token line directly below
 /// the box when tokens are nonzero. The provider line lives INSIDE
-/// the box, below the input — there is no separate footer row beneath
-/// it. The prompt row reuses `bordered_row`'s language from the
+/// the box, below the input. There is no separate footer row beneath it. The prompt row reuses `bordered_row`'s language from the
 /// splash `render_composer_box`, not a second border implementation;
 /// the box is full-width here, not centred at 64 cols. Below 4 rows
 /// (cramped terminal) it falls back to the prompt line alone so the
@@ -5437,15 +5224,12 @@ fn render_input_block(f: &mut Frame, area: Rect, state: &TuiState) {
     }
 }
 
-/// Right sidebar (inspector, >=160 cols only): the switchable card
-/// (agent view | todo view, `^g`) filling the whole rect. The whole
-/// rect is painted with the panel wash first; column separation is
-/// the divider column's bg tint - zero borders, zero box-drawing.
-/// No title/mode header: those already live in the tab bar and the
-/// composer's provider row. The agent view is top-anchored (see
-/// `render_agent_card`: the header stays and middle lines drop when
-/// the card overflows, so the latest activity wins) - it does not pin
-/// to the bottom, despite what this comment used to claim.
+/// Right sidebar (inspector, >=160 cols): the switchable card (agent view |
+/// todo view, `^g`) filling the whole rect. Painted with the panel wash;
+/// separation is the divider column's bg tint, no borders. No title or mode
+/// header - those live in the tab bar and composer's provider row. The agent
+/// view is top-anchored (header stays, middle lines drop) so the latest activity
+/// wins; it does not pin to the bottom.
 fn render_sidebar(f: &mut Frame, area: Rect, state: &TuiState) {
     let th = &state.theme;
     // Panel wash over the whole rect: this fill IS the column separation.
@@ -5637,11 +5421,10 @@ fn health_alerts(
     alerts
 }
 
-/// The splash's bottom line: the active model's context limit only.
-/// MCP, plugin, and version metadata used to live here; they now live
-/// in the sidebar (see `activity::build_agent_view_lines`), never in
-/// the main view. When no context limit is known yet (`tokens_max` is
-/// 0), the line renders nothing rather than an invented number.
+/// The splash's bottom line: the active model's context limit only. MCP, plugin and
+/// version metadata live in the sidebar (see
+/// `activity::build_agent_view_lines`). With no known limit (`tokens_max` is 0) the
+/// line renders nothing rather than an invented number.
 fn render_splash_bottom(f: &mut Frame, area: Rect, state: &TuiState) {
     if area.height == 0 || area.width == 0 || state.tokens_max == 0 {
         return;
@@ -5769,15 +5552,13 @@ fn render_splash(f: &mut Frame, area: Rect, state: &TuiState) {
     }
 }
 
-/// Draw the conversation transcript with visual blocks per event type.
+/// Draw the transcript with visual blocks per event type.
 ///
-/// No border, no title: the transcript is the screen. Consumes
-/// `jump_to_block` (set by the timeline's Enter): the viewport pins so
-/// the target turn's first block sits at the top. Read-only otherwise
-/// jumping never mutates the transcript. When the user scrolled up, a
-/// dim `Jump to latest ↓` marker anchors to the bottom-right.
-/// Resolve a content line to its block index via the per-frame
-/// first-line map. Pure for tests.
+/// No border, no title - the transcript is the screen. Consumes `jump_to_block`
+/// (set by the timeline's Enter) so the viewport pins the target turn's first
+/// block to the top; read-only otherwise. When the user scrolled up, a dim
+/// `Jump to latest ↓` marker anchors bottom-right.
+/// Resolve a content line to its block index via the per-frame first-line map.
 fn block_at_line(starts: &[usize], line: usize) -> Option<usize> {
     match starts.binary_search(&line) {
         Ok(i) => Some(i),
@@ -6013,9 +5794,8 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
     // Line index where each block starts: the timeline jump target.
     let mut block_starts: Vec<usize> = Vec::new();
 
-    // Every block, oldest first. The viewport pins to the bottom (the live
-    // tail) minus how far the user scrolled up: an earlier version rendered
-    // only the oldest block, so every turn after the first was invisible.
+    // Every block, oldest first. The viewport pins to the bottom (the live tail)
+    // minus how far the user scrolled up, so every turn stays reachable.
     let block_count = state.blocks.len();
     {
         // Disjoint field borrows: theme (shared) + image state (mut) +
@@ -6044,15 +5824,12 @@ fn render_transcript(f: &mut Frame, area: Rect, state: &mut TuiState) {
                     agent_label,
                 },
             );
-            // Wrap the line types that used to clip at the viewport
-            // edge: ThoughtView expanded text, tool-card args/output,
-            // shell output, Status / ProviderError / Approval /
-            // Clarify / Confirm lines. Prose already wraps in the
-            // markdown renderer, and rich-text / image-bearing blocks
-            // (User, Assistant, BgResult, Ui), diffs, and todos keep
-            // their own clipping, so they are excluded. Wrapping
-            // here, per block, keeps `block_starts` (timeline jumps,
-            // click-to-toggle) exact.
+            // Wrap the line types that would otherwise clip at the viewport edge:
+            // ThoughtView expanded text, tool-card args/output, shell output, and
+            // Status / ProviderError / Approval / Clarify / Confirm lines. Prose
+            // already wraps in the markdown renderer, and rich-text/image blocks,
+            // diffs and todos keep their own clipping. Wrapping per block keeps
+            // `block_starts` (timeline jumps, click-to-toggle) exact.
             if matches!(
                 block.kind,
                 BlockKind::Thinking { .. }
@@ -6170,7 +5947,7 @@ fn render_rich_text(
                 // routes each text segment there. Wrapped at the
                 // transcript's current width (`term_width`, which is
                 // the transcript area width, so it shrinks when the
-                // sidebar opens) — see `render_markdown_wrapped` for
+                // sidebar opens); see `render_markdown_wrapped` for
                 // why wrapping happens here and not in the Paragraph.
                 lines.extend(crate::markdown::render_markdown_wrapped(
                     &t,
@@ -6291,7 +6068,7 @@ struct BlockRenderCtx<'a> {
     live_tokens: u32,
     /// Second-speaker label: the active agent profile's name
     /// (`state.variant`, i.e. `profile().name`), or "Pantheon" when
-    /// no profile is active — the pre-redesign fallback.
+    /// no profile is active: the pre-redesign fallback.
     agent_label: &'a str,
 }
 
@@ -6396,16 +6173,12 @@ fn render_block(
             expanded,
             output,
         } => {
-            // Unified tool card (base design): one renderer for shell
-            // and non-shell tools, header first so click-to-toggle on
-            // the block's first line keeps working. Shell cards show
-            // `$ command` + output; other cards show args + error.
-            // The token count ticks live while the call runs and freezes
-            // at completion; cards completed before tracking omit it.
-            // Queued (no start time yet) reads differently from
-            // running; a running card shows live elapsed time, not
-            // "..." — duration is frozen at completion, elapsed is
-            // measured from `started` while it runs.
+            // One renderer for shell and non-shell tools, header first so
+            // click-to-toggle on the block's first line keeps working. Shell shows
+            // `$ command` + output; others show args + error. The token count ticks
+            // while the call runs and freezes at completion; cards completed before
+            // tracking omit it. Queued reads differently from running, and a running
+            // card shows live elapsed time while duration stays frozen.
             let status = match ok {
                 None if interrupted => crate::transcript::ToolStatus::Interrupted,
                 None if started.is_none() => crate::transcript::ToolStatus::Queued,
@@ -6596,15 +6369,12 @@ fn render_block(
             target,
             decision,
         } => {
-            // Base design layer 4 (prose-first rule, documented, not a
-            // new widget): agent-proposed destructive actions are asked
-            // in prose in the transcript and answered in prose in the
-            // composer. This gate card is only for capability-gated
-            // tools, and it renders inline in transcript flow here —
-            // never as a modal overlay covering the transcript.
-            // Decision point: resolved cards collapse to a dim one-line
-            // marker; the pending card is the amber surface. The tool
-            // intent above it stays visually calm.
+            // Prose-first rule: agent-proposed destructive actions are asked in
+            // prose in the transcript and answered in prose in the composer. This
+            // gate card is only for capability-gated tools, and it renders inline in
+            // transcript flow - never as a modal over it.
+            // Resolved cards collapse to a dim one-line marker; the pending card is
+            // the amber surface, and the tool intent above stays calm.
             match decision {
                 Some(true) => lines.push(Line::from(vec![
                     Span::styled(
@@ -6914,13 +6684,10 @@ enum TuiEvent {
         result: Result<String, String>,
     },
     /// A reflection pass finished on its worker thread (manual `/reflect`,
-    /// automatic after N turns, or scheduled). Carries the human summary
-    /// and any proposals awaiting approval; the loop sets
-    /// `pending_reflect` when the latter is non-empty so the reflection
-    /// card appears. `from_command` routes the summary into the
-    /// originating command's result block instead of bare status lines,
-    /// so late async output is never orphaned. Never touches the main
-    /// turn's state.
+    /// automatic after N turns, or scheduled). Carries the summary and any
+    /// proposals awaiting approval; the loop sets `pending_reflect` when the latter
+    /// is non-empty so the card appears. `from_command` routes the summary into the
+    /// originating command's result block instead of bare status lines.
     ReflectDone {
         summary: String,
         pending: Vec<pantheon_nightly::Proposal>,
@@ -6950,10 +6717,9 @@ pub fn run_tui_session_with(
     let file_cfg = config::Config::load_or_report(&data_dir);
     let model_policy = build_model_policy(file_cfg.as_ref(), None, None);
 
-    // The header states the model this session is actually running. It used to
-    // be the literal "opus-4.1", so a session on a local llama displayed a
-    // frontier model it never called. Read here, before the policy is moved
-    // into the Session below.
+    // The header states the model this session is actually running, read before the
+    // policy moves into the Session below. A hardcoded name would show a frontier model
+    // a local llama session never called.
     let header_model = if model_policy.default.model.trim().is_empty() {
         "no model configured".to_string()
     } else {
@@ -7739,15 +7505,12 @@ fn do_set(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
     state.add_status(format!("{label} = {shown} (this session)"));
 }
 
-/// `/nightly [on|off|status]` - the unified self-improvement pass,
-/// Overnight-dreaming style. Bare `/nightly` runs a manual one-shot
-/// pass on a worker thread (eval-gating and replay can take minutes; the
-/// TUI never blocks). `on`/`off` persist the explicit `[nightly] enabled`
-/// flag to config.toml (the same flag the dashboard toggle and a manual
-/// config edit write); `status` shows the resolved state with the
-/// reason, the model-pin presence, and the next scheduled run.
-/// `/reflect` and `/consolidate` are kept as aliases: both run the same
-/// unified pass.
+/// `/nightly [on|off|status]` - the unified self-improvement pass. Bare `/nightly`
+/// runs a one-shot pass on a worker thread (eval-gating and replay take minutes,
+/// the TUI never blocks). `on`/`off` persist `[nightly] enabled` to config.toml,
+/// the same flag the dashboard toggle writes; `status` shows the resolved state,
+/// reason, model pin and next run. `/reflect` and `/consolidate` are aliases for
+/// the same pass.
 fn do_nightly(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEvent>, cmd: &str) {
     let data_dir = crate::terminal::data_dir();
     let arg = cmd
@@ -7880,17 +7643,13 @@ fn maybe_auto_reflect(state: &mut TuiState, tx: &std::sync::mpsc::Sender<TuiEven
     );
 }
 
-/// `/bg` lists background tasks with their states; `/bg <id>` shows one
-/// task's full output.
-/// `/design` — Pantheon's design-system command: show the bound system,
-/// list available Drafthouse packages, bind one, or run the verify pass.
+/// `/bg` lists background tasks; `/bg <id>` shows one task's output.
+/// `/design` - show the bound design system, list available Drafthouse packages,
+/// bind one, or run the verify pass.
 ///
-/// This is the TUI entry point for the Drafthouse integration: the design
-/// systems live under `~/.hermes/design-systems/` (the `pantheon` package
-/// is Pantheon's own), and the verify step shells to the Drafthouse
-/// lint/verify tools when they are on PATH. Bare `/design` shows the
-/// current binding plus the available packages; the subcommands drive the
-/// workflow.
+/// Design systems live under `~/.hermes/design-systems/` (`pantheon` is Pantheon's
+/// own). Verify shells to the Drafthouse lint/verify tools when they're on PATH.
+/// Bare `/design` shows the binding plus available packages.
 fn do_design(state: &mut TuiState, cmd: &str) {
     let arg = cmd.strip_prefix("/design").map(str::trim).unwrap_or("");
     // Discover the design-systems root: project-local first, then the
@@ -8846,14 +8605,13 @@ fn do_rewind(state: &mut TuiState, session: &Arc<Session>) {
     );
 }
 
-/// Shared rewind core used by double-Esc rewind and `/restore`.
+/// Shared rewind core for double-Esc rewind and `/restore`.
 ///
-/// Emits the `TurnRewound` marker for `turn_id`, then truncates the live
-/// view at `drop_block` (the block index of the first dropped user
-/// message), restoring that message as the input draft. `turns_dropped`
-/// adjusts the completed-turn counter and `label` names the rewind in the
-/// status line. The marker write gates the truncation: on failure the
-/// view is untouched and the error is reported.
+/// Emits the `TurnRewound` marker, then truncates the live view at `drop_block`
+/// (the first dropped user message) and restores that message as the input draft.
+/// `turns_dropped` adjusts the completed-turn counter, `label` names the rewind in
+/// the status line. The marker write gates the truncation: on failure the view is
+/// untouched and the error reported.
 pub(crate) fn rewind_to_turn(
     state: &mut TuiState,
     session: &Arc<Session>,
@@ -9014,21 +8772,15 @@ fn handle_mention_key(state: &mut TuiState, code: KeyCode) -> bool {
     false
 }
 
-/// Arrow keys in the main composer (and, via the Ctrl block, Ctrl+arrows).
-/// Returns true when the key was an arrow key owned here, even when it
-/// was a no-op at an edge — the caller must not let it fall through to
-/// anything else. Overlays (palette, mention, models, history, timeline,
-/// image preview, editor) own the keyboard while open and never reach
-/// this: they handle arrows themselves, above the main match.
+/// Arrow keys in the main composer (and Ctrl+arrows via the Ctrl block). Returns
+/// true when an arrow was owned here, even at an edge - the caller must not let it
+/// fall through. Overlays own the keyboard while open and handle their own arrows.
 ///
-/// Behaviour:
-/// - Vim on + inputting: arrows move the vim cursor (either mode).
-/// - Vim on + not inputting: untouched, as today (arrows do not wake
-///   the composer).
-/// - Vim off: Left/Right/Home/End/Delete move/edit at the composer
-///   cursor; Up/Down move the cursor vertically in a multi-line draft,
-///   otherwise recall submitted messages (Up older, Down newer, past
-///   the newest entry restores the saved draft).
+/// - Vim on + inputting: arrows move the vim cursor, either mode.
+/// - Vim on + not inputting: untouched, arrows don't wake the composer.
+/// - Vim off: Left/Right/Home/End/Delete move the cursor; Up/Down move vertically
+///   in a multi-line draft, otherwise recall submitted messages (past the newest
+///   entry restores the saved draft).
 fn handle_composer_arrow(state: &mut TuiState, code: KeyCode) -> bool {
     if state.vim.enabled {
         if !state.is_inputting {
@@ -9373,16 +9125,15 @@ fn tui_loop(
                 {
                     continue;
                 }
-                // Popups drawn over the transcript (timeline, mention
-                // picker, palette) own the mouse while open: a click
-                // on them used to toggle the transcript block behind
-                // them, because `img.view` still held the body
-                // geometry. They are keyboard-driven, so swallow.
+                // Popups drawn over the transcript (timeline, mention picker,
+                // palette) own the mouse while open, so a click on them must not
+                // toggle the transcript block behind them - `img.view` still holds the
+                // body geometry. They are keyboard-driven, so swallow.
                 if state.timeline.is_some() || state.mention.is_some() || state.palette.is_some() {
                     continue;
                 }
-                // Mouse wheel: the handler used to accept only Left
-                // Down, so wheel events fell through and were ignored.
+                // Mouse wheel scrolls the transcript; other event kinds fall through
+                // to the blocks below.
                 match me.kind {
                     MouseEventKind::ScrollUp => {
                         state.scroll_up(3);
@@ -9862,12 +9613,10 @@ fn tui_loop(
                 }
                 if key.modifiers.contains(KeyModifiers::CONTROL) {
                     match key.code {
-                        // Ctrl+arrows used to be swallowed by this
-                        // block's unconditional `continue` below: they
-                        // never reached the main match. Route them to
-                        // the same composer-arrow handling as plain
-                        // arrows (Ctrl+Left/Right do not word-jump;
-                        // that would be a new binding, not a fix).
+                        // Route Ctrl+arrows to the same composer-arrow handling as
+                        // plain arrows. The unconditional `continue` below would swallow
+                        // them before the main match (Ctrl+Left/Right do not word-jump;
+                        // that would be a new binding).
                         KeyCode::Left
                         | KeyCode::Right
                         | KeyCode::Up
@@ -10420,16 +10169,12 @@ fn tui_loop(
                             }
                         }
                     }
-                    // Arrow keys in the composer. Previously this
-                    // match had no arrow arms at all, so Up/Down/
-                    // Left/Right/Home/End/Delete fell to `_` and did
-                    // nothing in the most common TUI state. PageUp/
-                    // PageDown below still scroll the transcript.
-                    // Ctrl+End jumps to the live tail: plain End is
-                    // the composer cursor key (see handle_composer_arrow),
-                    // so scrolled-up users previously had no key at all
-                    // that reached scroll_to_bottom - only the clickable
-                    // hint, which itself was not clickable.
+                    // Arrow keys in the composer. Without these arms Up/Down/Left/
+                    // Right/Home/End/Delete fall to `_` and do nothing in the most
+                    // common state. PageUp/Down still scroll the transcript. Ctrl+End
+                    // jumps to the live tail: plain End is the composer key, so
+                    // scrolled-up users would otherwise have no key reaching
+                    // scroll_to_bottom except the clickable hint.
                     KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         state.scroll_to_bottom();
                     }
@@ -10737,12 +10482,11 @@ fn apply_model_switch(state: &mut TuiState, session: &Arc<Session>, provider: &s
             "model → {provider}/{model} for this session; save failed: {e}"
         )),
     }
-    // Key warning against the *resolved* key env var, not only a
-    // catalog row's explicit `key_env`: the default
-    // `PANTHEON_KEY_<ID>` and custom-provider keys previously got no
-    // warning before the first 401. `<data_dir>/.env` counts as set:
-    // the runtime loads it at startup, so a key that lives only
-    // there is not missing just because the process env lacks it.
+    // Key warning against the *resolved* key env var, not only a catalog row's
+    // explicit `key_env`: the default `PANTHEON_KEY_<ID>` and custom-provider keys get
+    // the same warning before the first 401. `<data_dir>/.env` counts as set - the
+    // runtime loads it at startup, so a key living only there isn't missing just
+    // because the process env lacks it.
     let key_env = pantheon_providers::catalog::provider(provider)
         .map(|p| {
             if p.key_env.trim().is_empty() {
@@ -11029,19 +10773,15 @@ fn persist_reasoning(
     cfg.save(dd).map_err(|e| e.cause.clone())
 }
 
-/// Copy the last assistant message - or its nth fenced code block - to
-/// the system clipboard. `/yank` copies the whole message, `/yank 2` the
-/// second code block. Best-effort: reports which backend was used, or
-/// that none is installed.
-/// `/steer <guidance>`: redirect the running turn without canceling it
-/// and without waiting for it to end. The guidance lands in the turn at
-/// the next boundary as a marked `SteeringProvided` event the model
+/// Copy the last assistant message - or its nth fenced code block - to the
+/// clipboard. `/yank` copies the whole message, `/yank 2` the second block.
+/// Best-effort: reports which backend was used, or that none is installed.
+/// `/steer <guidance>`: redirect the running turn without canceling it. The
+/// guidance lands at the next boundary as a `SteeringProvided` event the model
 /// reads on its next step.
 ///
-/// When no turn is running there is nothing to redirect, so the text
-/// is sent as an ordinary message (a fresh turn starts). Steering never
-/// queues: a queued message waits for the turn to end, steering
-/// deliberately does not.
+/// With no turn running there's nothing to redirect, so it's sent as an ordinary
+/// message. Steering never queues - a queued message waits for the turn to end.
 fn do_steer(
     state: &mut TuiState,
     session: &Arc<Session>,
@@ -11242,16 +10982,13 @@ fn do_yank(state: &mut TuiState, arg: &str) {
     }
 }
 
-/// Slash command entry: every command echoes, and its status output is
-/// captured into one `Command` transcript block (titled result; `/help`
-/// as a two-column table). Commands that open an overlay (/history,
-/// /models, the editor) or push their own decision card skip the block.
-/// Append late async output to a slash command's result block. Finds the
-/// most recent `Command` block whose command starts with `cmd_prefix`
-/// (`/reflect` covers `/reflect`, `/consolidate`, `/nightly`) and
-/// extends its lines; when the block is gone (e.g. `/clear` ran while
-/// the worker was out), a fresh result block is pushed so the output is
-/// never silently dropped.
+/// Slash command entry: every command echoes, and its status output lands in one
+/// `Command` block (titled result; `/help` as a two-column table). Commands that
+/// open an overlay or push their own decision card skip the block.
+/// Append late async output to a slash command's result block. Finds the most
+/// recent `Command` block whose command starts with `cmd_prefix` (`/reflect`
+/// covers `/reflect`, `/consolidate`, `/nightly`) and extends it; when the block is
+/// gone (e.g. `/clear` ran), a fresh one is pushed so output isn't dropped.
 fn append_cmd_output(state: &mut TuiState, cmd_prefix: &str, lines: Vec<String>) {
     if lines.is_empty() {
         return;
@@ -11618,9 +11355,8 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/clear" {
-        // No running-turn guard used to let a mid-turn confirm wipe
-        // in-flight tool cards while the turn kept streaming. Refuse
-        // while a turn runs; /reset cancels a turn, /clear does not.
+        // Refuse while a turn runs: a mid-turn confirm would wipe in-flight tool cards
+        // while the turn kept streaming. /reset cancels a turn, /clear does not.
         if !state.ready {
             state.add_status(
                 "clear refused: a turn is running - wait for it, or /reset to cancel it".into(),
@@ -11904,13 +11640,11 @@ fn handle_slash_inner(
 
     if let Some(id) = cmd.strip_prefix("/resume ") {
         let id = id.trim();
-        // Prove the run exists before switching, then route through
-        // the shared tab-switch hygiene: the old arm rebuilt blocks
-        // directly, skipping decision hydration, checkpoint clearing,
-        // draft restore, and transient-modal clearing, so the
-        // previous run's pending approval could survive into the
-        // resumed run. `switch_to_run` does all of that (and pushes
-        // the same "resumed <id>" status line).
+        // Prove the run exists before switching, then go through the shared
+        // tab-switch hygiene (`switch_to_run`). Rebuilding blocks directly skips
+        // decision hydration, checkpoint clearing, draft restore and transient-modal
+        // clearing, so the previous run's pending approval survives into the resumed
+        // run. `switch_to_run` also pushes the "resumed <id>" status line.
         match supervisor.ledger_status(id) {
             Ok(Some(_)) => {
                 switch_to_run(state, session, id, "resumed");
@@ -12016,13 +11750,11 @@ fn handle_slash_inner(
             Some(title) => state.add_status(format!("run {id} ({status}) - {title}")),
             None => state.add_status(format!("run {id} ({status})")),
         }
-        // Diagnostics live here and only here: health alerts (failing
-        // MCP, dead gateway, overdue jobs) and tool-registration
-        // diagnostics (unknown providers, registration failures) are
-        // computed fresh on demand. They used to occupy a strip above
-        // a footer in the main view; the main view now carries neither.
-        // A missing optional capability (web-search key, driver binary)
-        // is silent by policy and appears here as nothing at all.
+        // Diagnostics live here and only here: health alerts (failing MCP, dead
+        // gateway, overdue jobs) and tool-registration diagnostics (unknown providers,
+        // registration failures), computed fresh on demand. A missing optional
+        // capability (web-search key, driver binary) is silent by policy and appears
+        // here as nothing at all.
         refresh_mcp_segment(state, session);
         let gw = crate::gateway::gateway_status();
         let now_ms = std::time::SystemTime::now()
@@ -12079,10 +11811,9 @@ fn handle_slash_inner(
         return;
     }
     if let Some(rest) = cmd.strip_prefix("/model ") {
-        // Provider is the first token; the model id is the remainder,
-        // slashes included: OpenRouter-style ids like
-        // `anthropic/claude-...` were rejected by the old exactly-2-
-        // parts check. This matches ACP `set_model`, which splits on
+        // Provider is the first token; the model id is the remainder, slashes
+        // included: an exactly-2-parts check rejects OpenRouter-style ids like
+        // `anthropic/claude-...`. This matches ACP `set_model`, which splits on
         // the first `/` only.
         let rest = rest.trim();
         let (provider, model) = match rest.split_once(char::is_whitespace) {
@@ -12536,14 +12267,11 @@ fn handle_slash_inner(
         return;
     }
     if cmd == "/oauth" || cmd.starts_with("/oauth ") {
-        // The registry lists /oauth and the CLI verb exists, but the
-        // TUI had no dispatch branch, so it fell through to "unknown
-        // command" (and, since it IS builtin, shadowed any custom
-        // command or skill named oauth). Status/logout run in-TUI
-        // through the non-exiting helpers; login needs a browser
-        // loopback flow outside the alternate screen, so it says so
-        // instead of hanging the loop or exiting the process (the
-        // CLI form prints and calls process::exit on error).
+        // The registry lists /oauth and the CLI verb exists, but the TUI had no
+        // dispatch branch, so it fell through to "unknown command" - and since it is
+        // builtin, it shadowed any custom command named oauth. Status/logout run
+        // in-TUI; login needs a browser loopback outside the alternate screen, so it
+        // says so instead of hanging the loop or exiting.
         let rest = cmd.strip_prefix("/oauth").unwrap_or("").trim();
         let mut parts = rest.split_whitespace();
         match parts.next() {
@@ -12687,9 +12415,9 @@ fn handle_slash_inner(
     }
     // --- approvals ------------------------------------------------------
     if cmd == "/approvals" {
-        // A ledger failure used to read as "no pending approvals"
-        // (unwrap_or_default): report it instead of claiming the list
-        // is empty when it was never read.
+        // A ledger failure must not read as "no pending approvals"
+        // (unwrap_or_default): report it rather than claiming the list is empty when it
+        // was never read.
         let pending = match supervisor.pending_approvals(&state.session_id) {
             Ok(p) => p,
             Err(e) => {
@@ -13073,11 +12801,10 @@ fn handle_slash_inner(
         }
         return;
     }
-    // Bare-only built-ins with trailing words used to fall through to
-    // "unknown command" (e.g. bare `/env set`, `/mcp bogus`,
-    // `/sessions extra`): every word above is a built-in, so no custom
-    // command or skill can claim it, and the honest answer is usage,
-    // not an unknown-command error with a did-you-mean.
+    // Bare-only built-ins with trailing words are usage errors, not "unknown command"
+    // (e.g. bare `/env set`, `/mcp bogus`, `/sessions extra`): every word above is a
+    // built-in, so no custom command or skill can claim it, and usage is the honest
+    // answer rather than a did-you-mean.
     {
         let word = cmd.split_whitespace().next().unwrap_or(cmd);
         let usage: Option<String> = match word {
@@ -13623,8 +13350,8 @@ mod picker_tests {
 
     #[test]
     fn picker_enter_on_empty_list_keeps_picker_open() {
-        // Enter on "no matches" used to close the models browser and
-        // the history picker silently, with nothing selected.
+        // Enter on "no matches" leaves the models browser and the history picker open
+        // rather than closing silently with nothing selected.
         let mut s = test_state();
         s.providers = Some(provider_rows(&[model_row("a", "A", "m")]));
         s.models = Some(vec![model_row("a", "A", "m")]);
@@ -14016,7 +13743,7 @@ mod picker_render_tests {
     #[test]
     fn live_turn_shows_no_sweep_or_status_line() {
         // While a turn is live, the only live indicator is the
-        // transcript's tool card header — no travelling sweep text, no
+        // transcript's tool card header; no travelling sweep text, no
         // ready/awaiting status line anywhere in the frame.
         let mut s = test_state();
         s.variant = "coder".to_string();
@@ -14067,8 +13794,7 @@ mod picker_render_tests {
 
     #[test]
     fn failing_mcp_shows_no_alert_strip_in_main_view() {
-        // Health that used to occupy a strip above the footer must not
-        // appear anywhere in the main frame; it lives in `/status`.
+        // Health must not appear anywhere in the main frame; it lives in `/status`.
         let mut s = test_state();
         s.tabs.refresh_from_explicit(
             &[("r1".to_string(), Some("Session 1".to_string()))],
@@ -14405,8 +14131,8 @@ mod picker_render_tests {
     #[test]
     fn provider_survives_fallback_and_renders_provider_colon_model() {
         // The bug: after a fallback, `state.model` became the bare
-        // model id ("auto"), so the row rendered "Provider: auto" —
-        // the model sitting in the provider slot. After the fix the
+        // model id ("auto"), so the row rendered "Provider: auto": the model sitting in the
+        // provider slot. After the fix the
         // provider must survive fallback and `/model`-style switches,
         // and the row must read `Provider: <Provider>: <Model> •
         // Build`. "exoseed" has no catalog label distinct from its id
@@ -14487,7 +14213,7 @@ mod picker_render_tests {
     fn composer_ctx_appears_only_at_nearly_full() {
         // The `ctx NN%` element in the provider row appears only at
         // or above the single shared threshold (default 80%, from
-        // `[tui] context_warn_pct` — the same value the sidebar
+        // `[tui] context_warn_pct`, the same value the sidebar
         // meter warns at). The token line below the box always shows
         // the ctx ratio (`N / N ctx`) once tokens are nonzero, so
         // this test checks the percentage element specifically, not
@@ -14753,9 +14479,9 @@ mod streaming_response_tests {
 
     #[test]
     fn thinking_settles_across_intervening_status_line() {
-        // A Status line landing between reasoning and the next text
-        // event used to consume `thinking_started_at` while the last
-        // block was no longer Thinking, losing the duration.
+        // A Status line landing between reasoning and the next text event must not
+        // consume `thinking_started_at` while the last block is no longer Thinking, or
+        // the duration is lost.
         let mut state = TuiState::new("run-thinking".into(), "test-model".into(), 0);
         state.handle_model_event(ModelEvent::ReasoningDelta { text: "hmm".into() });
         state.blocks.push(TranscriptBlock {
@@ -15288,10 +15014,8 @@ mod slash_help_tests {
 
     #[test]
     fn help_lists_every_dispatched_command_and_true_key_hints() {
-        // /help used to omit /approve, /deny, /oauth, /plugins, /quit
-        // and /exit even though all six dispatch, and its key hints
-        // claimed Shift+Tab was "previous session" when Shift+Tab
-        // cycles the permission mode (previous session is
+        // /help lists /approve, /deny, /oauth, /plugins, /quit and /exit, and its key
+        // hints say Shift+Tab cycles the permission mode (previous session is
         // Ctrl+Shift+Tab).
         let lines = help_lines();
         let joined = lines.join("\n");
@@ -15575,8 +15299,8 @@ mod palette_tests {
 
     #[test]
     fn palette_offers_angle_bracket_commands_but_not_dynamic_skill() {
-        // The old filter dropped every entry containing '<', so /team,
-        // /send, /tasks and friends were unpickable in the palette.
+        // Entries with '<...>' usage in their display string stay pickable, so /team,
+        // /send and /tasks are reachable in the palette.
         let team = palette("team").filtered();
         assert!(
             team.iter().any(|(n, _)| n.starts_with("/team")),

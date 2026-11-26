@@ -1,20 +1,18 @@
-//! Agent/subagent activity timeline for the right sidebar.
+//! agent/subagent activity timeline for the right sidebar.
 //!
-//! The sidebar's bottom card tracks what the agent is doing right now:
-//! the current task (latest user turn) with its tool-call steps, one
-//! section per spawned subagent, and one per `/btw` background task.
+//! the sidebar's bottom card tracks what the agent is doing right now: the
+//! current task (latest user turn) with its tool-call steps, one section per
+//! spawned subagent, and one per `/btw` background task.
 //!
-//! Everything shown is real runtime data:
+//! everything shown is real runtime data:
 //! - main-task steps come from the transcript's tool-call blocks,
-//! - subagents from `AgentSpawned` / `AgentMessage` / `AgentCompleted`
-//!   ledger events,
-//! - background-task steps from the tool lifecycle events of each task's
-//!   own run id, captured in [`BgTask::steps`].
+//! - subagents from `AgentSpawned` / `AgentMessage` / `AgentCompleted` ledger events,
+//! - background-task steps from the tool lifecycle events of each task's own
+//!   run id, captured in [`BgTask::steps`].
 //!
-//! Step detail finer than that - e.g. a delegated subagent's inner tool
-//! calls - runs in another session and never reaches this process, so
-//! subagent sections honestly show spawn / running / done instead of
-//! fabricated checklists.
+//! detail finer than that - e.g. a delegated subagent's inner tool calls - runs
+//! in another session and never reaches this process, so subagent sections
+//! honestly show spawn / running / done instead of fabricated checklists.
 
 use ratatui::{
     layout::Rect,
@@ -26,10 +24,9 @@ use ratatui::{
 
 use super::{bg, BlockKind, TuiState};
 
-/// Presentable tool names for the UI: `shell`/`exec` → "Execute",
-/// `read_file` → "Read file". Unknown registry ids fall back to a
-/// title-cased snake_case form so plugin tools still read fine. Pure,
-/// so tests pin the mapping.
+/// presentable tool names: `shell`/`exec` → "Execute", `read_file` → "Read file".
+/// unknown registry ids fall back to a title-cased snake_case form so plugin
+/// tools still read fine. pure, so tests pin the mapping
 pub fn tool_display_name(name: &str) -> String {
     match name {
         "shell" | "exec" | "bash" | "command" => "Execute".to_string(),
@@ -74,18 +71,18 @@ pub fn tool_display_name(name: &str) -> String {
     }
 }
 
-/// Build the dynamic footer status string from a real tool call: a verb
-/// plus the target taken from the actual call arguments.
+/// dynamic footer status string from a real tool call: a verb + the target
+/// taken from the actual call args
 ///
 /// - `read_file {"path": "src/main.rs"}` → `Reading src/main.rs`
 /// - `shell {"command": "cargo test -p pantheon-tui"}` → `Executing cargo test -p pantheon-tui`
 /// - `write_file {"path": "x.rs"}` → `Editing x.rs`
 /// - `grep {"pattern": "ripgrep alias"}` → `Searching ripgrep alias`
 /// - plan / todo tools → `Planning...`
-/// - anything else, or a call with no readable target → `Working...`
+/// - anything else, or no readable target → `Working...`
 ///
-/// These strings describe the current step for the last-activity
-/// state; they are not rendered as a status line anywhere.
+/// describes the current step for the last-activity state; not rendered as a
+/// status line anywhere
 pub fn status_for_tool(tool: &str, args: &str) -> String {
     let t = tool.to_ascii_lowercase();
     let has = |subs: &[&str]| subs.iter().any(|s| t.contains(s));
@@ -111,9 +108,9 @@ pub fn status_for_tool(tool: &str, args: &str) -> String {
     }
 }
 
-/// Pull a short human target from tool-call args JSON: the first
-/// non-empty `path` / `file` / `command` / `cmd` / `query` / `pattern` /
-/// `url` value, first line only, truncated to 56 chars.
+/// pull a short human target from tool-call args JSON: the first non-empty
+/// `path` / `file` / `command` / `cmd` / `query` / `pattern` / `url` value,
+/// first line only, truncated to 56 chars
 fn tool_target(args: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(args).ok()?;
     let obj = v.as_object()?;
@@ -135,7 +132,7 @@ fn tool_target(args: &str) -> Option<String> {
     None
 }
 
-/// `42.7s` / `850ms` - compact duration for captured background steps.
+/// `42.7s` / `850ms` - compact duration for captured background steps
 pub fn fmt_ms(ms: u64) -> String {
     if ms >= 1000 {
         format!("{:.1}s", ms as f64 / 1000.0)
@@ -144,7 +141,7 @@ pub fn fmt_ms(ms: u64) -> String {
     }
 }
 
-/// Lifecycle of one captured step.
+/// lifecycle of one captured step
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepStatus {
     Running,
@@ -152,7 +149,7 @@ pub enum StepStatus {
     Failed,
 }
 
-/// One tool call captured from a background task's run.
+/// one tool call captured from a background task's run
 #[derive(Debug, Clone)]
 pub struct BgStep {
     pub name: String,
@@ -189,16 +186,16 @@ impl BgStep {
     }
 }
 
-/// Lifecycle of a spawned subagent, as seen from the parent session.
+/// lifecycle of a spawned subagent, as seen from the parent session
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubAgentStatus {
     Running,
     Done,
 }
 
-/// One delegated subagent. The task text is deliberately absent: the
-/// ledger's spawn/completion events don't carry it, and inventing step
-/// text would be fabrication.
+/// one delegated subagent. the task text is absent: the ledger's
+/// spawn/completion events don't carry it, and inventing step text would be
+/// fabrication
 #[derive(Debug, Clone)]
 pub struct SubAgentRecord {
     pub name: String,
@@ -216,12 +213,12 @@ impl SubAgentRecord {
     }
 }
 
-/// Cap on retained records; the oldest finished ones drop first.
+/// cap on retained records; oldest finished ones drop first
 pub const MAX_SUBAGENTS: usize = 8;
 
-/// Feed an `AgentSpawned` / `AgentMessage` event. Duplicate signals for
-/// the same live delegation (the engine and the runtime both announce
-/// it) collapse into one record.
+/// feed an `AgentSpawned` / `AgentMessage` event. duplicate signals for the
+/// same live delegation (engine and runtime both announce it) collapse into
+/// one record
 pub fn record_spawned(records: &mut Vec<SubAgentRecord>, parent_run_id: &str, agent: &str) {
     let name = agent.trim();
     if name.is_empty() {
@@ -252,9 +249,9 @@ pub fn record_spawned(records: &mut Vec<SubAgentRecord>, parent_run_id: &str, ag
     }
 }
 
-/// Live subagent count for the chrome (footer/tab): only Running
-/// records count. Callers render nothing at 0 — never a permanent
-/// empty indicator (base design layer 2).
+/// live subagent count for the chrome (footer/tab): only Running records count.
+/// callers render nothing at 0 - no permanent empty indicator (base design
+/// layer 2)
 pub fn active_subagent_count(records: &[SubAgentRecord]) -> usize {
     records
         .iter()
@@ -262,8 +259,8 @@ pub fn active_subagent_count(records: &[SubAgentRecord]) -> usize {
         .count()
 }
 
-/// Feed an `AgentCompleted` event: the newest live record for this
-/// agent under this parent flips to done.
+/// feed an `AgentCompleted` event: the newest live record for this agent under
+/// this parent flips to done
 pub fn record_completed(records: &mut [SubAgentRecord], parent_run_id: &str, agent: &str) {
     if let Some(r) = records.iter_mut().rev().find(|r| {
         r.parent_run_id == parent_run_id
@@ -279,10 +276,10 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// Activity status for the sidebar agent view: muted text only, no
-/// solid badge. `("In progress", amber)` while a turn is live,
-/// `("Complete", green)` once a task finished, `("Idle", dim)`
-/// otherwise. It heads the task list, sitting under the Context meter.
+/// activity status for the sidebar agent view: muted text only, no solid
+/// badge. `("In progress", amber)` while a turn is live, `("Complete", green)`
+/// once a task finished, `("Idle", dim)` otherwise. heads the task list,
+/// sitting under the Context meter
 pub fn activity_status(state: &TuiState) -> (&'static str, Style) {
     let th = &state.theme;
     let dim = Style::default().fg(th.dim);
@@ -301,13 +298,12 @@ pub fn activity_status(state: &TuiState) -> (&'static str, Style) {
     }
 }
 
-/// Build the AGENT VIEW lines for a card `width` wide: the context
-/// meter, the activity status, timeline/checkpoint metadata, the
-/// selected-tool detail section, and subagent sections. It is
-/// deliberately NOT a second transcript: tool steps that merely repeat
-/// transcript cards were removed; the tool section shows detail for
-/// the one running/expanded tool only. Pure function of state, so
-/// tests can assert the layout without a backend.
+/// build the AGENT VIEW lines for a card `width` wide: the context meter, the
+/// activity status, timeline/checkpoint metadata, the selected-tool detail
+/// section, and subagent sections. it is NOT a second transcript: tool steps
+/// that merely repeat transcript cards were removed; the tool section shows
+/// detail for the one running/expanded tool only. pure function of state, so
+/// tests can assert the layout without a backend
 pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'static>> {
     let th = &state.theme;
     let dim = Style::default().fg(th.dim);
@@ -316,24 +312,24 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Context meter: `Context [████░░░░] 153.0k / 76% used`. The fill
-    // blends with the #121212/#1E1E1E theme; the track is a dark solid.
+    // context meter: `Context [████░░░░] 153.0k / 76% used`. fill blends with
+    // the #121212/#1E1E1E theme; track is a dark solid
     let live = state.tokens_used + state.turn_estimate;
     let raw_pct = if state.tokens_max > 0 {
         100.0 * live as f64 / state.tokens_max as f64
     } else {
         0.0
     };
-    // The bar is clamped to full, but the suffix keeps the raw number
-    // past 100% so an over-limit context reads as over, not as 100%.
-    // The warn threshold is the one shared threshold
-    // (`state.context_warn_pct`, from `[tui] context_warn_pct`, 80 by
-    // default) — the same value the composer row's `ctx NN%` uses.
+    // bar clamps to full, but the suffix keeps the raw number past 100% so an
+    // over-limit context reads as over, not as 100%
+    // warn threshold is the one shared threshold (`state.context_warn_pct`, from
+    // `[tui] context_warn_pct`, 80 by default) - same value the composer row's
+    // `ctx NN%` uses
     let pct = raw_pct.clamp(0.0, 100.0);
     let over = pct >= state.context_warn_pct;
     lines.push(Line::from(Span::styled("Context", dim)));
-    // Adaptive bar: the suffix text is fixed first, the bar takes what
-    // fits so the line never overflows narrow cards.
+    // adaptive bar: suffix text fixed first, bar takes what fits so the line
+    // never overflows narrow cards
     let suffix = format!(
         "{} / {:.0}% used",
         super::statusbar::fmt_count(live as u64),
@@ -349,7 +345,7 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
         let (ch, color) = if i < filled {
             ('█', if over { th.failure } else { th.success })
         } else {
-            // Solid dark track, blended with the panel wash.
+            // dark track, blended with the panel wash
             ('█', super::theme::METER_TRACK)
         };
         bar.push(Span::styled(ch.to_string(), Style::default().fg(color)));
@@ -362,15 +358,15 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     lines.push(Line::from(bar));
     lines.push(Line::from(""));
 
-    // Activity status heads the task list: it describes the steps
-    // below it, so it sits under Context rather than in the top card.
+    // activity status heads the task list: it describes the steps below it, so
+    // it sits under Context, not in the top card
     let (status_text, status_style) = activity_status(state);
     lines.push(Line::from(Span::styled(status_text, status_style)));
     lines.push(Line::from(""));
 
-    // Timeline: turn count + latest turn preview. This is metadata
-    // (how many turns, where the conversation is), not transcript
-    // lines: the transcript itself stays in the left column.
+    // timeline: turn count + latest turn preview. metadata (how many turns,
+    // where the conversation is), not transcript lines - the transcript stays
+    // in the left column
     let turns = super::timeline::build_turns(&state.blocks);
     lines.push(Line::from(Span::styled(
         format!("Turns: {}", turns.len()),
@@ -393,11 +389,10 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     }
     lines.push(Line::from(""));
 
-    // Selected-tool details (the inspector's core): the running tool
-    // call if one is live, else the most recently expanded one.
-    // Detail lives here so the transcript card can stay one line;
-    // the section is omitted entirely when no tool is running or
-    // expanded, rather than showing an empty frame.
+    // selected-tool details (the inspector's core): the running tool call if one
+    // is live, else the most recently expanded one. detail lives here so the
+    // transcript card can stay one line; the section is omitted entirely when no
+    // tool is running or expanded, rather than showing an empty frame
     let selected = state
         .blocks
         .iter()
@@ -483,13 +478,10 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
         }
     }
 
-    // Subagent sections, in spawn order, Running only: the sidebar is
-    // the live view, and done agents used to linger here (crowding
-    // live ones out). Done agents still render in the transcript's
-    // Swarm block, where history belongs. The live count
-    // (`active_subagent_count`, Running only, hidden at 0) already
-    // feeds the composer row. The sidebar shows the same cap as the
-    // record store ([`MAX_SUBAGENTS`]), not a second magic number.
+    // subagent sections, in spawn order, Running only: the sidebar is the live
+    // view, and done agents render in the transcript's Swarm block where history
+    // belongs. the live count (`active_subagent_count`, hidden at 0) feeds the
+    // composer row; the sidebar uses [`MAX_SUBAGENTS`] rather than a second number
     let subs: Vec<&SubAgentRecord> = state
         .subagents
         .iter()
@@ -514,8 +506,8 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
         ]));
     }
 
-    // System metadata, moved here from the splash bottom line: it is
-    // available when the sidebar comes out, never in the main view.
+    // system metadata, moved here from the splash bottom line: available when
+    // the sidebar comes out, never in the main view
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("System", dim)));
     lines.push(Line::from(Span::styled(
@@ -538,9 +530,8 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
     lines
 }
 
-/// Paint the bottom sidebar card: the agent view. Top-anchored: the
-/// header always stays, and the latest activity wins when the card
-/// overflows.
+/// paint the bottom sidebar card: the agent view. top-anchored - the header
+/// always stays, and the latest activity wins when the card overflows
 pub fn render_agent_card(f: &mut Frame, area: Rect, state: &TuiState) {
     if area.width < 12 || area.height == 0 {
         return;
@@ -567,8 +558,8 @@ pub fn render_agent_card(f: &mut Frame, area: Rect, state: &TuiState) {
     if h == 0 {
         return;
     }
-    // Top-anchored: the card fills downward from the top of its area so
-    // the context meter and latest activity sit high, not sunk.
+    // top-anchored: the card fills downward from the top of its area so the
+    // context meter and latest activity sit high, not sunk
     f.render_widget(
         Paragraph::new(shown.into_iter().take(h).collect::<Vec<_>>())
             .style(Style::default().bg(th.panel)),
@@ -711,9 +702,8 @@ mod tests {
 
     #[test]
     fn context_meter_warns_at_the_shared_threshold() {
-        // The sidebar meter warns at the same threshold as the
-        // composer row: `[tui] context_warn_pct`, 80 by default —
-        // not a second, different value.
+        // sidebar meter warns at the same threshold as the composer row:
+        // `[tui] context_warn_pct`, 80 by default, not a second different value
         let mut s = state();
         s.tokens_max = 1000;
         let suffix_style = |s: &TuiState| {
@@ -735,7 +725,7 @@ mod tests {
             Some(s.theme.failure),
             "meter must warn at 80%"
         );
-        // A configured threshold moves the meter with it.
+        // a configured threshold moves the meter with it
         s.context_warn_pct = 50.0;
         s.tokens_used = 500;
         assert_eq!(

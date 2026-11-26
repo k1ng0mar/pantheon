@@ -1,23 +1,7 @@
-//! config_group: config, config_schema, config_verb, migrate, reset, uninstall, update, worktree, richtext, gateway, mcp, notify, fallback, init, pipeline, plugin_toggle, plugins_verb, logs in one file.
-
 pub mod config {
-    //! Client-side config resolution for the TUI.
-    //!
-    //! The `config.toml` **document** (all section structs, `Config`,
-    //! load/save/validate) lives in [`pantheon_api::config`] - the shared,
-    //! client-agnostic home. This module re-exports it so existing
-    //! `crate::config::...` paths keep working, and adds what only the TUI
-    //! (as a client) needs:
-    //!
-    //! * resolution of document sections into runtime/agent types
-    //!   ([`resolve_budget_section`], [`resolve_browser_section`],
-    //!   [`resolve_websearch_section`], [`resolve_mcp_section`],
-    //!   [`config_budget`]) - inherent impls can't live here because the
-    //!   structs are foreign now;
-    //! * auxiliary-model wiring, secrets-broker construction, and the other
-    //!   composition helpers below.
-    //!
-    //! [`pantheon_api::config`]: https://docs.rs/pantheon-api
+    //! TUI-only config wiring. The document types live in
+    //! `pantheon_api::config`; this module resolves them into runtime values
+    //! and builds the client-side helpers.
 
     pub use pantheon_api::config::*;
 
@@ -29,15 +13,11 @@ pub mod config {
         value.filter(|&v| v > 0).unwrap_or(default)
     }
 
-    /// Resolve config `[mcp.servers.<name>]` headers. Literal values pass
-    /// through; `env:NAME` refs are kept as refs, NOT resolved here, so
-    /// the manager can resolve them at connect time through its
-    /// broker-first env resolver (a vault-only token never reaches the
-    /// server if it is resolved from process env only at load time, and
-    /// a header whose variable is unset must not be silently dropped -
-    /// that surfaces only as a later 401/backoff). An unset process-env
-    /// variable still earns a warning: the broker may supply it at
-    /// connect, but if it does not, connect fails loudly there.
+    /// Resolve `[mcp.servers.<name>]` headers. Literals pass through; `env:NAME`
+    /// refs stay refs, because the manager resolves them at connect time through
+    /// its broker-first resolver. Resolving from process env at load would miss a
+    /// vault-only token, and dropping a header whose variable is unset only
+    /// surfaces later as a 401/backoff. An unset process-env var still warns.
     fn resolve_headers(
         headers: &std::collections::HashMap<String, String>,
     ) -> std::collections::HashMap<String, String> {
@@ -106,15 +86,11 @@ pub mod config {
         tool_enablement(cfg).is_enabled(group)
     }
 
-    /// Thread the `[budget]` tiers into a freshly built session: the live
-    /// run budget (`set_budget`, from [`config_budget`]), the kept-apart
-    /// configured token cap (`set_budget_max_tokens`), so `/tokens off`
-    /// falls back to the config value instead of forgetting it, and the
-    /// live `[budget]` section itself (`set_budget_section`), so `delegate`
-    /// turns resolve delegation knobs exactly as configured. Call on every
-    /// `Session::new` that serves turns - the interactive TUI startup, the
-    /// /agui, gateway, and scheduled-run paths use this helper so they
-    /// cannot drift apart.
+    /// Thread `[budget]` into a fresh session: the live run budget, the kept-apart
+    /// configured token cap (so `/tokens off` falls back to config rather than
+    /// forgetting it), and the section itself so `delegate` turns resolve their
+    /// knobs. Call on every `Session::new` that serves turns - TUI startup, /agui,
+    /// gateway, scheduled runs - so they can't drift apart.
     pub fn apply_budget_tiers(session: &pantheon_runtime::session::Session, cfg: Option<&Config>) {
         session.set_budget(cfg.map(config_budget).unwrap_or_default());
         session.set_budget_max_tokens(
@@ -125,16 +101,12 @@ pub mod config {
         session.set_budget_section(cfg.and_then(|c| c.budget.clone()).unwrap_or_default());
     }
 
-    /// Thread the `[memory]` section into a freshly built session, so the
-    /// user-facing config is authoritative: on load, `[memory] backend`
-    /// wins over `memory-backend.toml`, and the resolved selection is
-    /// synced back to that file so the two never drift silently. A
-    /// conflict logs a warning (the message names both backends). Call
-    /// BEFORE `Session::new`: the session reads the selection file at
-    /// construction, so syncing after it would take effect one session
-    /// late. Absent/blank backend = no opinion, the file wins untouched.
-    /// Call alongside `apply_budget_tiers` on every `Session::new` that
-    /// serves turns.
+    /// Thread `[memory]` into a fresh session so config is authoritative: on load
+    /// `[memory] backend` wins over `memory-backend.toml`, and the resolved
+    /// selection syncs back so the two don't drift. A conflict logs a warning
+    /// naming both. Call before `Session::new` - the session reads the selection
+    /// file at construction, so syncing after takes effect a session late. Absent
+    /// or blank backend means no opinion, and the file wins untouched.
     pub fn sync_memory_selection(data_dir: &std::path::Path, cfg: Option<&Config>) {
         if let Some(section) = cfg.and_then(|c| c.memory.as_ref()) {
             if let Some(warning) = pantheon_memory::sync_selection_from_config(
@@ -159,13 +131,12 @@ pub mod config {
         }
     }
 
-    /// All three config wirings for a fresh turn-serving session, as one
-    /// call: [tools] enablement, [budget] tiers, and the [delegation]
-    /// section. Every `Session::new` that serves turns must call this
-    /// before the first turn; calling the three applies piecemeal is how
-    /// headless paths silently drifted from the interactive session (the
-    /// delivered `run` path applied none of them, swarm children missed
-    /// the budget tiers, pipeline sessions missed budget + delegation).
+    /// All three config wirings for a fresh turn-serving session, as one call:
+    /// [tools] enablement, [budget] tiers, and the [delegation] section. Every
+    /// `Session::new` that serves turns must call this before the first turn;
+    /// applying the three piecemeal is how headless paths drift from the
+    /// interactive one (a delivered `run` with no budget cap, swarm children with
+    /// no budget tiers, pipeline sessions with neither).
     pub fn apply_session_config(
         session: &pantheon_runtime::session::Session,
         cfg: Option<&Config>,
@@ -247,15 +218,11 @@ pub mod config {
         // by provider id at the use site, so one provider's URL can never
         // follow a provider switch into another provider's requests.
         cfg.base_urls = s.base_urls.clone();
-        // SearXNG chain (env-wins is the project convention for overrides):
-        // `SEARXNG_URL` > `[websearch.base_urls.searxng]` > legacy global
-        // `base_url` as a searxng-only compatibility shim. The env var is
-        // never applied to other providers, so a stray SEARXNG_URL cannot
-        // redirect a hosted provider's keyed calls; and the legacy shim is
-        // scoped to searxng alone, so it cannot leak anywhere else either.
-        // The session warns on any legacy value so operators move it to
-        // `[websearch.base_urls.searxng]`; the shim only keeps self-hosted
-        // instances working until they do.
+        // SearXNG chain, env wins: `SEARXNG_URL` > `[websearch.base_urls.searxng]`
+        // > legacy global `base_url` as a searxng-only shim. The env var never
+        // applies to other providers, and the shim is scoped to searxng alone. The
+        // session warns on a legacy value so operators move it, and the shim keeps
+        // self-hosted instances working until they do.
         if cfg.provider.eq_ignore_ascii_case("searxng") {
             if let Ok(u) = std::env::var(pantheon_web::websearch::searxng_url_env()) {
                 if !u.trim().is_empty() {
@@ -366,18 +333,8 @@ pub mod config {
         })
     }
 
-    /// Resolve the reflection auxiliary model (`AuxiliaryKind::Reflection`).
-    /// `PANTHEON_REFLECTION_PROVIDER`/`PANTHEON_REFLECTION_MODEL` win, then
-    /// the `[reflect]` pin, else `auto` (the run's default model). Each field
-    /// inherits independently: `provider = "default"` (or absent) inherits
-    /// the default provider, an absent/empty `model` inherits the default
-    /// model. Reflection keeps its own row outside `AUX_SLOTS` because
-    /// `[reflect]` is a combined behavior + model-pin table, not a pure
-    /// [`AuxSection`]; the resolution order is identical.
-    ///
-    /// Every LLM call the reflection pipeline makes resolves through this
-    /// slot - never the chat model directly - so pinning a cheap model here
-    /// keeps background self-improvement off the interactive model's bill.
+    /// Reflection aux model. Env wins, then the `[reflect]` pin, else `auto`.
+    /// Own row outside `AUX_SLOTS` because `[reflect]` also carries behavior.
     pub fn reflect_aux_model(
         cfg: Option<&Config>,
         default: &pantheon_api::model::DefaultModel,
@@ -419,20 +376,13 @@ pub mod config {
         }
     }
 
-    /// Resolve the consolidation auxiliary model
-    /// (`AuxiliaryKind::Consolidation`). `PANTHEON_CONSOLIDATION_PROVIDER` /
-    /// `PANTHEON_CONSOLIDATION_MODEL` win, then the `[consolidation]` pin,
-    /// else `auto` (the run's default model). Each field inherits
-    /// independently: `provider = "default"` (or absent) inherits the
-    /// default provider, an absent/empty `model` inherits the default model.
-    /// Consolidation keeps its own resolver outside `AUX_SLOTS` because
-    /// `[consolidation]` is a combined behavior + model-pin table, not a
-    /// pure [`AuxSection`]; the resolution order is identical.
+    /// Consolidation aux model (`AuxiliaryKind::Consolidation`).
+    /// `PANTHEON_CONSOLIDATION_PROVIDER`/`_MODEL` win, then the `[consolidation]`
+    /// pin, else `auto`. Fields inherit independently, same as reflection, and it
+    /// has its own resolver outside `AUX_SLOTS` for the same reason.
     ///
-    /// Every LLM call the consolidation pipeline makes resolves through
-    /// this slot - never the chat model directly - so pinning a cheap model
-    /// here keeps nightly memory consolidation off the interactive model's
-    /// bill.
+    /// Every consolidation LLM call resolves through this slot, so pinning a cheap
+    /// model keeps nightly memory work off the interactive bill.
     pub fn consolidation_aux_model(
         cfg: Option<&Config>,
         default: &pantheon_api::model::DefaultModel,
@@ -474,20 +424,17 @@ pub mod config {
         }
     }
 
-    /// Master gate for the nightly pass over a whole [`Config`]: the pass
-    /// pipeline and repair loop - runs iff this is true.
+    /// Master gate for the nightly pass over a whole [`Config`]: the pass pipeline
+    /// and repair loop run iff this is true.
     ///
-    /// `[nightly]` present → the single enable rule
-    /// ([`pantheon_api::config::nightly_enabled`]): explicit flag wins, else
-    /// the model pin (table or `PANTHEON_NIGHTLY_*` env) implies on. Absent →
-    /// deprecated migration fallback: the legacy `[reflect]` /
-    /// `[consolidation]` `enabled` flags were explicit opt-ins, honored
-    /// field-by-field. Absent everything = off (nightly is off by default).
+    /// With `[nightly]` present, the single enable rule applies - explicit flag
+    /// wins, else the model pin (table or `PANTHEON_NIGHTLY_*` env) implies on.
+    /// Without it, the deprecated fallback honors the legacy `[reflect]` /
+    /// `[consolidation]` `enabled` flags field-by-field. Neither = off.
     pub fn nightly_pass_enabled(cfg: Option<&Config>) -> bool {
-        // A partial [nightly] table (cron only) no longer switches a
-        // previously enabled legacy pass off: see
+        // A partial [nightly] table (cron only) defers to the legacy flags: see
         // `nightly_enabled_with_legacy` - only an explicit flag or pin in
-        // [nightly] overrides the legacy flags.
+        // [nightly] overrides them.
         let legacy = cfg.is_some_and(|c| {
             c.reflect.as_ref().is_some_and(|s| s.enabled)
                 || c.consolidation.as_ref().is_some_and(|s| s.enabled)
@@ -498,16 +445,13 @@ pub mod config {
         }
     }
 
-    /// `[nightly]` → [`pantheon_nightly::NightlyConfig`].
+    /// `[nightly]` -> [`pantheon_nightly::NightlyConfig`].
     ///
-    /// `[nightly]` is the single authoritative section. When it is present,
-    /// the legacy `[reflect]` / `[consolidation]` tables are ignored
-    /// entirely for the pass; when it is absent they are honored
-    /// field-by-field as a deprecated migration fallback - `llm_enabled` =
-    /// either legacy flag, `auto_turns` from `[reflect]`, `min_sessions` /
-    /// `cron` from `[consolidation]`. `max_age_days` has no legacy equivalent
-    /// (the decay curve is gone), so it always takes the `[nightly]` value or
-    /// the default.
+    /// `[nightly]` is authoritative: when present the legacy tables are ignored
+    /// entirely. When absent they're honored field-by-field as a migration
+    /// fallback - `llm_enabled` from either legacy flag, `auto_turns` from
+    /// `[reflect]`, `min_sessions` / `cron` from `[consolidation]`. `max_age_days`
+    /// has no legacy equivalent, so it's always `[nightly]` or the default.
     pub fn nightly_config(
         cfg: Option<&Config>,
         data_dir: &std::path::Path,
@@ -515,12 +459,10 @@ pub mod config {
         let n = cfg.and_then(|c| c.nightly.as_ref());
         let r = cfg.and_then(|c| c.reflect.as_ref());
         let c = cfg.and_then(|c| c.consolidation.as_ref());
-        // Authoritative-when-present, except for enablement: an explicit
-        // `[nightly]` flag or pin overrides legacy, but a `[nightly]`
-        // table that decides nothing (cron only) defers to the legacy
-        // flags instead of silently switching a previously enabled pass off.
-        // A legacy `enabled = true` still never overrides an explicit
-        // `[nightly] enabled = false`.
+        // Authoritative when present, except for enablement: an explicit
+        // `[nightly]` flag or pin overrides legacy, while a `[nightly]` table that
+        // decides nothing (cron only) defers to the legacy flags. A legacy
+        // `enabled = true` never overrides an explicit `[nightly] enabled = false`.
         let legacy_llm =
             r.map(|s| s.enabled).unwrap_or(false) || c.map(|s| s.enabled).unwrap_or(false);
         let llm_enabled = match n {
@@ -652,9 +594,8 @@ pub mod config {
                     Mode::Gemini => "gemini".into(),
                 },
                 key_env: Some(key_env.to_string()),
-                // Preserve whatever the operator has already named on this
-                // endpoint. Replacing the whole row used to drop them, so
-                // re-picking a provider silently emptied its model list.
+                // Keep whatever the operator has already named on this endpoint, so
+                // re-picking a provider doesn't empty its model list.
                 models: cfg
                     .custom_providers
                     .get(name)
@@ -667,14 +608,12 @@ pub mod config {
         Ok(shadow)
     }
 
-    /// Record a model the operator named by hand on a custom endpoint.
+    /// Record a model the operator named by hand on a custom endpoint. The only
+    /// thing that adds a row to `[custom_providers.*].models`.
     ///
-    /// This is the only thing that ever adds a row to `[custom_providers.*].models`.
-    /// A model list harvested from another agent's config is deliberately *not*
-    /// written: it is a snapshot of a third-party endpoint and goes stale. This
-    /// records a name a human actually chose, which stays true.
-    ///
-    /// Idempotent, and preserves any limits already known for that model.
+    /// A model list harvested from another agent's config is not written - it's a
+    /// snapshot of a third-party endpoint and goes stale. This records a name a
+    /// human chose. Idempotent, and keeps any limits already known.
     pub fn remember_custom_model(
         data_dir: &std::path::Path,
         provider: &str,
@@ -863,16 +802,9 @@ pub mod config {
         }
     }
 
-    /// The one secrets broker every session-builder site constructs: the chat
-    /// model key (config-named env var, else `PANTHEON_API_KEY`), then every
-    /// aux key (judge, compression, title, embeddings, search synthesis,
-    /// vision, scheduled, MCP synthesis), environment fallback last.
-    ///
-    /// Session, gateway, pipeline, and `chat --key` all share this so a key
-    /// configured once resolves identically on every path. An explicit `--key`
-    /// flag is layered on top with
-    /// [`SecretsBroker::with_vault_front`](pantheon_secrets::SecretsBroker::with_vault_front)
-    /// so the flag beats config and environment.
+    /// The broker every session-builder site builds: chat key, then every aux key,
+    /// environment last. Shared so a key configured once resolves the same
+    /// everywhere; an explicit `--key` is layered on top and beats both.
     pub fn chat_secrets(cfg: Option<&Config>) -> pantheon_secrets::SecretsBroker {
         let broker = with_aux_keys(
             pantheon_secrets::SecretsBroker::from_system_env_with_api_key(
@@ -933,12 +865,10 @@ pub mod config {
         policy
     }
 
-    /// Effective serve port for a `[server]` section: the configured port,
-    /// except 0 (the documented "auto") and absence both resolve to the
-    /// 18789 default. A literal 0 used to bind an ephemeral port nobody
-    /// reported - remotes refused it (`port 0 => None`), GenUI blob URLs
-    /// baked in `:0`, and nothing printed the bound port - so "auto" now
-    /// means "the default port", addressable by everything downstream.
+    /// Effective serve port for a `[server]` section: the configured port, with 0
+    /// (the documented "auto") and absence both resolving to 18789. "auto" means the
+    /// default port, so everything downstream (remotes, GenUI blob URLs) has a real
+    /// address to use.
     pub fn server_port(server: Option<&ServerSection>) -> u16 {
         match server.map(|s| s.port).unwrap_or(0) {
             0 => 18789,
@@ -946,30 +876,20 @@ pub mod config {
         }
     }
 
-    /// Resolve the model policy for one session: explicit override >
-    /// `config.toml` > the hardcoded local default, plus the configured
-    /// fallback chain and every auxiliary slot. The process environment
-    /// is not consulted: config is the single source of truth.
-    ///
-    /// This lives here, not in an interface module, because it is a property of
-    /// the config document rather than of any surface. The TUI, the AG-UI
-    /// session factory, and the scheduler all resolve a session the same way, and
-    /// a resolution rule that lives beside a UI keeps drifting from the one
-    /// beside the verb that replaced it.
+    /// Model policy for one session: explicit override > `config.toml` > the local
+    /// default, plus fallback chain and aux slots. Env isn't consulted.
     pub fn build_model_policy(
         cfg: Option<&Config>,
         provider: Option<String>,
         model: Option<String>,
     ) -> pantheon_api::model::ModelPolicy {
-        // Canonical precedence, delegated to the single resolver in
-        // pantheon-api (`config_resolve`): explicit argument > `[model]`
-        // section > hardcoded local default, with empty/whitespace values
-        // ignored at every level. Config is the single source: the
-        // process environment is not consulted, so a stale
-        // `PANTHEON_PROVIDER`/`PANTHEON_MODEL` in a shell cannot shadow
-        // it. The fallback chain is resolved by the same single
-        // resolver, so the TUI, the dashboard, and the runtime can no
-        // longer disagree.
+        // Precedence comes from the single resolver in pantheon-api
+        // (`config_resolve`): explicit argument > `[model]` > hardcoded local
+        // default, with empty and whitespace values ignored at every level. The
+        // process env isn't consulted, so a stale
+        // `PANTHEON_PROVIDER`/`PANTHEON_MODEL` can't shadow it. The fallback chain
+        // resolves through the same place, so TUI, dashboard and runtime can't
+        // disagree.
         let default = pantheon_api::config_resolve::resolve_default_model(cfg, provider, model);
         let chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
         pantheon_api::model::ModelPolicy {
@@ -981,21 +901,9 @@ pub mod config {
         }
     }
 
-    /// Build the model policy for a scheduled job run.
-    ///
-    /// Model rule for scheduled work, in precedence order:
-    ///
-    /// 1. **Explicit pin** - `--model`/`--provider` on `schedule create`, or a
-    ///    template's `model` var (which becomes a pin). Always wins.
-    /// 2. **Scheduled auxiliary** - the `[scheduled]` config section (or
-    ///    `PANTHEON_SCHEDULED_PROVIDER`/`PANTHEON_SCHEDULED_MODEL`). This is the
-    ///    default for unpinned jobs.
-    /// 3. **Never the interactive default** - unless the `[scheduled]` slot
-    ///    itself resolves to it (`auto` with no pin configured).
-    ///
-    /// Scheduled work is background work: it burns cheap tokens by default.
-    /// Before this, an unpinned job silently used the interactive chat model,
-    /// so configuring `[scheduled]` changed nothing at fire time.
+    /// Model policy for a scheduled job: explicit pin > `[scheduled]` > the
+    /// interactive default only if `[scheduled]` itself resolves to it.
+    /// Background work, so it shouldn't silently burn the chat model.
     pub fn build_scheduled_model_policy(
         cfg: Option<&Config>,
         provider: Option<String>,
@@ -1050,20 +958,9 @@ pub mod config {
             .unwrap_or_default()
     }
 
-    /// Every auxiliary for this host with a resolved target: an explicit
-    /// `[judge]` / `[compression]` / `[title_gen]` / `[search_synthesis]` /
-    /// `[vision]` / `[scheduled]` / `[mcp_synthesis]` / `[extraction]` /
-    /// `[rerank]` / `[planner]` / `[repair]` / `[verify]` section (or its env
-    /// override) wins; otherwise `auto` - the run's default model. Aux
-    /// models default to auto, so an absent section never switches a
-    /// capability off, it just means "use what you already use for chat".
-    ///
-    /// The documented exceptions are `Embeddings`, `Repair`, and `Verify`:
-    /// absent = the local hashing embedder (never the chat model), the
-    /// repair slot OFF (fix-loop draft revision unavailable - plain
-    /// retries, then escalation), and the verifier OFF (never
-    /// auto-verified) - so an entry appears only when `[embeddings]` /
-    /// `[repair]` / `[verify]` (or their env) actually pins a target.
+    /// Every auxiliary with a resolved target: an explicit section or its env
+    /// override wins, else `auto`. `Embeddings`, `Repair` and `Verify` default off
+    /// instead, so they appear only when something pins them.
     pub fn auxiliaries(
         cfg: Option<&Config>,
         default: &pantheon_api::model::DefaultModel,
@@ -1118,19 +1015,12 @@ pub mod config {
         out
     }
 
-    /// Resolve `[mcp]` plus imported declarations into the runtime
-    /// [`pantheon_runtime::tool_config::McpToolConfig`].
+    /// `[mcp]` plus imported declarations -> `McpToolConfig`. Malformed entries are
+    /// skipped with a warning; declarations in `<data_dir>/mcp/*.json` fill in
+    /// missing names and their `requires_env` become `env:` refs.
     ///
-    /// The config section is primary: entries that are disabled or
-    /// malformed (stdio without a command, remote without a url, unknown
-    /// transport) are skipped with a stderr warning. Migration declarations
-    /// (`<data_dir>/mcp/*.json`) fill in names the section does not define;
-    /// a declaration's `requires_env` names become `env:` refs so the
-    /// session's secrets broker resolves them at launch time.
-    ///
-    /// The launcher is on when the `[mcp]` section is present (its
-    /// `enabled`, default true) or when declarations exist; absent both =
-    /// off. `PANTHEON_MCP_ENABLED=0` forces it off.
+    /// On when the section exists or declarations do. `PANTHEON_MCP_ENABLED=0`
+    /// forces it off.
     pub fn resolve_mcp_section(
         section: Option<&McpSection>,
         declarations: &[pantheon_migration::McpDeclaration],
@@ -1311,8 +1201,7 @@ pub mod config {
             assert_eq!(policy.default.provider, "cfg-provider");
             assert_eq!(policy.default.model, "cfg-model");
 
-            // Env is ignored: config wins even when env vars are set
-            // (single source of truth is config).
+            // Env is ignored here: config wins even when env vars are set.
             std::env::set_var("PANTHEON_PROVIDER", "env-provider");
             std::env::set_var("PANTHEON_MODEL", "env-model");
             let policy = build_model_policy(Some(&cfg), None, None);
@@ -1408,9 +1297,9 @@ pub mod config_schema {
             if let Some(preset) = PolicyPreset::parse(&p) {
                 return preset.to_policy();
             }
-            // Unknown values used to fall through silently to the coder
-            // default, so a typo (`PANTHEON_POLICY=coder_memroy`) looked
-            // like it worked while doing nothing. Warn loudly instead.
+            // Warn on an unknown value instead of falling through to the coder
+            // default, where a typo (`PANTHEON_POLICY=coder_memroy`) would look like
+            // it worked.
             eprintln!(
                 "[pantheon] unknown PANTHEON_POLICY value '{p}' (expected reader, coder, or coder_memory); falling back to the coder default"
             );
@@ -1427,26 +1316,15 @@ pub mod config_schema {
 }
 
 pub mod config_verb {
-    //! `pantheon config` verbs: read and write `config.toml` from the terminal.
+    //! `pantheon config`: read and write `config.toml`.
     //!
-    //! - `pantheon config set <dotted.key> <value>` writes one value, creating
-    //!   intermediate tables as needed. Edits are format-preserving: comments and
-    //!   layout elsewhere in the file are left alone.
-    //! - `pantheon config get <dotted.key>` prints one value.
-    //! - `pantheon config edit` opens the file in `$VISUAL`/`$EDITOR` (falling
-    //!   back to `vi`, then `nano`), the way you would edit any file by hand.
-    //! - `pantheon config path` prints the file location.
+    //! `set` is format-preserving (comments elsewhere survive), `get` prints one
+    //! value, `edit` opens `$VISUAL`/`$EDITOR`, `path` prints the location. Values
+    //! are type-inferred; quote to force a string. Arrays and tables need `edit`.
     //!
-    //! Values are type-inferred: `true`/`false` become booleans, `100` an
-    //! integer, `1.5` a float, anything else a string. Surround with quotes to
-    //! force a string (`'"100"'` stays the text "100"). Arrays and tables cannot
-    //! be set from the command line; the error tells you to use `config edit`.
-    //!
-    //! Every key is validated against the real [`pantheon_api::config::Config`]
-    //! schema before anything is written: a typo like `goal.max_iterationz`
-    //! fails loudly instead of persisting a dead key. Writes are atomic
-    //! (temp file + fsync + rename), and `config edit` validates the edited
-    //! text before replacing the file, keeping a `config.toml.bak` backup.
+    //! Keys validate against the real config schema before anything is written, so a
+    //! typo fails loudly instead of persisting a dead key. Writes are atomic and
+    //! `edit` keeps a backup.
 
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -1501,7 +1379,7 @@ pub mod config_verb {
     }
 
     /// Atomically replace `path` with `doc`: write to a temp file in the same
-    /// directory, fsync, rename. A crash mid-write leaves either the old file
+    /// directory, fsync, rename. A crash mid-write leaves either the previous file
     /// or the new one, never a torn file. Temp leftovers are cleaned up on
     /// every error path.
     fn write_doc_atomic_at(path: &Path, doc: &DocumentMut) -> Result<(), String> {
@@ -1584,15 +1462,13 @@ pub mod config_verb {
         Ok(Value::from(t))
     }
 
-    /// Check that `key` names a real field of the [`pantheon_api::config::Config`]
-    /// schema, without hardcoding the field list.
+    /// Check that `key` names a real field of the config schema, without hardcoding
+    /// the field list.
     ///
-    /// The edited document is round-tripped through the `Config` type: TOML
-    /// text -> `toml::Value` -> `Config` -> `toml::Value`. Serde silently drops
-    /// unknown keys on deserialize, so if a path segment present in the input
-    /// is missing from the output, that segment is not a real field. Type
-    /// mismatches (e.g. a string where the schema wants an integer) fail the
-    /// deserialization itself, so they fail loudly too.
+    /// The document round-trips TOML -> `toml::Value` -> `Config` -> `toml::Value`.
+    /// Serde drops unknown keys on deserialize, so a path segment present in the
+    /// input but missing from the output isn't a real field. Type mismatches fail
+    /// the deserialization itself.
     fn validate_key_against_schema(
         doc: &DocumentMut,
         key: &str,
@@ -1708,14 +1584,12 @@ pub mod config_verb {
         }
     }
 
-    /// Set one key in the config file at `path`. Pure core of `config set`:
-    /// no process exits, so tests can drive it against a temp dir.
-    /// Does a [`Config::validate`] problem name exactly the key being set?
-    /// Problems are sentences starting with the dotted path (`model.reasoning
-    /// ... is not ...`, `model.api_key_env: ...`), so a prefix match on the
-    /// key plus a separator is precise. Only the set key gates the write:
-    /// a full-document rejection would block e.g. `config set
-    /// goal.max_iterations` on every config that lacks a `[model]` section.
+    /// Set one key at `path`. Pure core of `config set`: no process exits, so tests
+    /// can drive it against a temp dir.
+    /// Does a [`Config::validate`] problem name exactly the key being set? Problems
+    /// start with the dotted path, so a prefix match plus separator is precise. Only
+    /// the set key gates the write - a full-document rejection would block `config
+    /// set goal.max_iterations` on every config lacking a `[model]` section.
     fn problem_names_key(problem: &str, key: &str) -> bool {
         problem == key
             || problem.starts_with(&format!("{key} "))
@@ -1729,10 +1603,10 @@ pub mod config_verb {
         let parts = split_key(key)?;
         set_dotted(&mut doc, key, value.clone())?;
         validate_key_against_schema(&doc, key, &parts)?;
-        // `config set` used to run no `Config::validate()` at all, so a value
-        // the schema accepts but the document rejects (bad reasoning level,
-        // empty provider, zero aux timeout) was written and only surfaced
-        // later in doctor. Reject when validation implicates the key itself.
+        // `config set` runs `Config::validate()` and rejects when validation
+        // implicates the key being set. Otherwise a value the schema accepts but the
+        // document rejects (bad reasoning level, empty provider, zero aux timeout)
+        // lands on disk and only surfaces later in doctor.
         let cfg: pantheon_api::config::Config = toml::from_str(&doc.to_string())
             .map_err(|e| format!("config: cannot parse edited config as TOML: {e}"))?;
         let problems: Vec<String> = cfg
@@ -1765,8 +1639,8 @@ pub mod config_verb {
     }
 
     fn cmd_set(rest: &[String]) {
-        // Extra arguments used to be silently ignored (`[k, v, ..]`), so a
-        // typo'd extra word vanished instead of failing the set.
+        // Extra arguments are an error, not silently dropped: a typo'd extra word
+        // should fail the set.
         let (key, raw) = match rest {
             [k, v] => (k.as_str(), v.as_str()),
             [k, v, extra, ..] => {
@@ -1967,10 +1841,8 @@ pub mod config_verb {
             Some("get") => cmd_get(&args[3..]),
             Some("edit") => cmd_edit(),
             Some("path") => println!("{}", config_path().display()),
-            // `--help` used to fall through to the usage-error branch (exit
-            // 2); help is not an error. It also used to print to stderr;
-            // help text goes to stdout so `pantheon config --help | head`
-            // and friends work.
+            // `--help` exits 0 and prints to stdout, so `pantheon config --help |
+            // head` works. It's not a usage error and it isn't stderr.
             Some("--help") | Some("-h") => {
                 config_help(true);
                 std::process::exit(0);
@@ -2136,9 +2008,8 @@ pub mod config_verb {
 
         #[test]
         fn set_model_provider_on_fresh_config_works() {
-            // Used to fail with "missing field 'model'": the `[model]`
-            // table was created but its sibling field was absent, so the
-            // schema round-trip died on a field the user never touched.
+            // Create the sibling field alongside the `[model]` table so the schema
+            // round-trip doesn't die on a field the user never touched.
             let path = scratch_config("model-fresh");
             set_config_value(&path, "model.provider", "openai").unwrap();
             assert_eq!(get_config_value(&path, "model.provider").unwrap(), "openai");
@@ -2219,7 +2090,7 @@ pub mod config_verb {
 
         #[test]
         fn validate_config_text_accepts_good_and_rejects_bad() {
-            // Note: Config::validate requires a [model] section.
+            // Config::validate requires a [model] section.
             let good =
                 "[model]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n[goal]\nmax_iterations = 25\n";
             assert!(validate_config_text(good).is_ok());
@@ -2309,21 +2180,15 @@ pub mod config_verb {
 }
 
 pub mod migrate {
-    //! `pantheon migrate`: the section 23 pipeline, exposed.
+    //! `pantheon migrate`: detect (what's on this machine), plan (dry run), apply
+    //! (backup, import, validate - the only writer), validate.
     //!
-    //!   detect    - which sources are on this machine, and where
-    //!   plan      - dry run: what would import, what archives, what is a secret
-    //!   apply     - backup, then import, then validate (the only writer)
-    //!   validate  - re-check the current targets without writing
+    //! Everything is read-only by default. `apply` is the one verb that touches the
+    //! data dir and it won't run without `--yes` or a typed confirmation.
     //!
-    //! The default for every verb is read-only. `apply` is the single verb that
-    //! touches the data dir, and it refuses to run without either an explicit
-    //! `--yes` or a typed confirmation, because it overwrites existing targets.
-    //!
-    //! Secrets are never a candidate for import. A `.env`, `auth.json`,
-    //! `models.yml`, `agent.db`, `broker.token`, or any `*.pem` / `*.key` is
-    //! reported and skipped - archiving a credential would turn this verb into
-    //! an exfil path, so it does not.
+    //! Secrets are never imported. `.env`, `auth.json`, `models.yml`, `agent.db`,
+    //! `broker.token`, `*.pem`, `*.key` are reported and skipped - archiving a
+    //! credential would make this an exfil path.
 
     use crate::terminal::data_dir;
     use pantheon_migration::{
@@ -2760,17 +2625,11 @@ pub mod migrate {
         }
     }
 
-    /// Make a migrated history actually searchable.
-    ///
-    /// The quarantine copy is otherwise a file nobody reads. This indexes it into
-    /// the same `session_search` store the live runtime writes, under a
-    /// `migrated:<source>:<session>` run id so a hit can never be mistaken for a
-    /// real ledger event. Idempotent: `chunk_id` is derived from
-    /// (source, file, line), so re-running converges instead of duplicating.
-    ///
-    /// Part of the migration contract: an import is not complete until the
-    /// imported sessions are searchable. A failure here exits 1 - the
-    /// transcripts are on disk but not findable, and the operator must see it.
+    /// Index the quarantine copy into `session_search` so migrated history is
+    /// findable, under a `migrated:<source>:<session>` run id so a hit can't be
+    /// mistaken for a real ledger event. `chunk_id` comes from (source, file, line),
+    /// so re-running converges. Exits 1 on failure - transcripts on disk but not
+    /// findable is a migration that isn't done.
     fn index_imported_sessions(t: &Targets, root: &Path, kind: SourceKind) {
         let index_path = t.data_dir.join("ledger.db");
         let index = match pantheon_storage::search::SessionSearch::open(&index_path) {
@@ -2811,10 +2670,9 @@ pub mod migrate {
     /// Which carried keys pantheon's catalog will actually pick up.
     ///
     /// The credential carry moves any provider/channel/mcp key whose name looks
-    /// right, and pantheon's catalog names each provider's `key_env` after the
-    /// same `<PROVIDER>_API_KEY` convention. That alignment usually works, but
-    /// nothing verified it - so a key that matches no catalog entry used to look
-    /// identical to one that does. This is that check.
+    /// right, and the catalog names each provider's `key_env` after the same
+    /// `<PROVIDER>_API_KEY` convention. That alignment usually holds, and this is
+    /// the check for a key that matches no catalog entry.
     fn print_key_reconciliation(t: &Targets) {
         let Ok(text) = std::fs::read_to_string(pantheon_migration::pantheon_env_path(&t.data_dir))
         else {
@@ -3086,9 +2944,9 @@ pub mod reset {
             println!("  --yes         skip the 'type reset to confirm' prompt");
             return;
         }
-        // An unknown flag used to be swallowed whenever a scope flag was
-        // also present, so `reset --config --bogus` deleted config while
-        // looking like it had honored something else.
+        // An unknown flag is rejected even when a scope flag is also present, so
+        // `reset --config --bogus` doesn't delete config while looking like it
+        // honored something else.
         for a in args.iter().skip(2) {
             if a.starts_with('-')
                 && !matches!(
@@ -3518,13 +3376,11 @@ pub mod update {
         archive: &std::path::Path,
         dest_dir: &std::path::Path,
     ) -> Result<PathBuf, String> {
-        // List first and reject traversal before extracting anything: a
-        // hostile archive must not carry absolute paths or `..` members
-        // out of the temp dir. Then extract ONLY the single member whose
-        // basename is exactly the wanted binary (fail on zero or on
-        // ambiguity) and require it to be a regular file, never a symlink.
-        // The old code extracted the whole archive and walked the tree,
-        // which let a symlink member become the installed binary.
+        // List first and reject traversal before extracting: a hostile archive must
+        // not carry absolute paths or `..` members out of the temp dir. Then extract
+        // only the single member whose basename matches the wanted binary (fail on
+        // zero or ambiguity) and require a regular file, so a symlink member can't
+        // become the installed binary.
         let list = std::process::Command::new("tar")
             .arg("-tf")
             .arg(archive)
@@ -3569,9 +3425,9 @@ pub mod update {
             ));
         }
         let member = candidates.into_iter().next().unwrap();
-        // NOTE: `-C dest` must precede the member name: tar applies -C
-        // to the arguments that follow it, so `-C` after the member
-        // would extract into the process cwd instead of dest.
+        // `-C dest` must precede the member name: tar applies -C to the
+        // arguments that follow it, so `-C` after the member extracts into the
+        // process cwd.
         let st = std::process::Command::new("tar")
             .arg("-xf")
             .arg(archive)
@@ -3608,13 +3464,11 @@ pub mod update {
     /// (fail closed) rather than the first token, which might belong to
     /// another file.
     ///
-    /// NOTE: a checksum only proves the bytes match the publisher's
-    /// published digest when the digest itself is authentic. The
-    /// `.sha256` file is fetched from the same origin as the binary, so
-    /// a compromised release can serve a matching pair. Real
-    /// authentication needs signatures (see NEEDS DECISION in the
-    /// security fix report); until then this is a corruption check, not
-    /// a trust anchor.
+    /// A checksum only proves the bytes match the published digest when the
+    /// digest itself is authentic. The `.sha256` file comes from the same origin
+    /// as the binary, so a compromised release can serve a matching pair. Real
+    /// authentication needs signatures; until then this is a corruption check,
+    /// not a trust anchor.
     ///
     /// Returns Ok(true) on match, Ok(false) when the text carries no usable
     /// digest, Err on mismatch.
@@ -3653,7 +3507,7 @@ pub mod update {
     }
 
     /// Gate a verification outcome: only a digest match installs.
-    /// Ok(false) — checksum file exists but carries no usable digest — is
+    /// Ok(false), checksum file exists but carries no usable digest, is
     /// an error here, not a silent skip: the caller must not treat "no
     /// digest found" as "verified". Pure, for testing.
     fn require_verified(verified: Result<bool, String>) -> Result<(), String> {
@@ -3805,12 +3659,10 @@ pub mod update {
         println!("✓ Rolled back to {}", backup.display());
         println!("  Binary: {}", current_exe.display());
         // Roll the helper back too: the update backs it up to
-        // `pantheon-helper.prev` before swapping. A rollback that restores
-        // only the main binary leaves a new helper driving an old main.
-        // No helper backup (updates from before this fix) is a note, not
-        // a failure; a failed helper restore is a warning, since the main
-        // binary - the thing that runs - is restored and the helper
-        // self-heals on the next update.
+        // `pantheon-helper.prev` before swapping, and restoring only the main binary
+        // leaves a new helper driving an old main. No helper backup is a note, not a
+        // failure; a failed helper restore is a warning, since the main binary runs
+        // and the helper self-heals on the next update.
         let helper_exe = current_exe.with_file_name("pantheon-helper");
         let helper_backup = helper_exe.with_extension("prev");
         if helper_backup.is_file() {
@@ -3857,13 +3709,11 @@ pub mod update {
             println!("{}", usage());
             return;
         }
-        // Unknown flags used to fall through to a network fetch: `update
-        // --bogus` cheerfully replaced the binary while ignoring whatever
-        // the operator thought they had asked for.
-        // --version/--repo take a value (`--version v1.2.3` or
-        // `--version=v1.2.3`, as `flag_val` reads them), so the value
-        // token is consumed here, not mistaken for a stray positional.
-        // --check/--rollback are boolean switches.
+        // Unknown flags are rejected rather than falling through to a network fetch:
+        // `update --bogus` must not replace the binary.
+        // --version/--repo take a value (`--version v1.2.3` or `=v1.2.3`, as
+        // `flag_val` reads them), so the value token is consumed here. --check and
+        // --rollback are switches.
         let rest: &[String] = args.get(2..).unwrap_or(&[]);
         let mut i = 0;
         while i < rest.len() {
@@ -4085,9 +3935,8 @@ pub mod update {
 
         #[test]
         fn verification_gate_rejects_digest_less_and_failed_checks() {
-            // Only a digest match installs. A checksum file with no usable
-            // digest used to pass through as Ok(false) in the helper
-            // download path; require_verified closes that hole.
+            // Only a digest match installs: a checksum file with no usable digest is
+            // a failure, not a pass.
             assert!(require_verified(Ok(true)).is_ok());
             assert!(require_verified(Ok(false)).is_err());
             assert_eq!(
@@ -6107,7 +5956,7 @@ pub mod gateway {
     ///
     /// `gateway` on every method is the *channel name* (`telegram`/`discord`
     /// in the legacy single-bot shape, any slug for explicit multi-bot
-    /// channels) - never the platform. Thread ids are namespaced per channel
+    /// channels), never the platform. Thread ids are namespaced per channel
     /// before they touch the thread map: two bots on the same platform hand
     /// out overlapping thread ids, and the raw id would let bot B pick up bot
     /// A's conversation (and answer it from the wrong agent).
@@ -6117,10 +5966,9 @@ pub mod gateway {
         /// the agent's resolved preset (see [`RuntimeSink::policy_for`]).
         policy: Policy,
         threads: Mutex<HashMap<String, String>>,
-        /// One outbound queue per surface ("telegram"/"discord"). Each
-        /// surface's daemon drains only its own queue, so a Telegram reply
-        /// can never be picked up by the Discord daemon and vice versa - the
-        /// old single shared queue let each daemon grab the other's replies.
+        /// One outbound queue per surface ("telegram"/"discord"). Each surface's
+        /// daemon drains only its own queue, so a Telegram reply can never be picked
+        /// up by the Discord daemon or the reverse.
         queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>>,
         /// Allowed platform sender ids (Telegram user id, Discord user id).
         /// None = allowlist disabled (local testing); Some(empty) denies
@@ -6187,10 +6035,9 @@ pub mod gateway {
         /// resolved preset; otherwise the config default. Anonymous channels
         /// get exactly today's behavior.
         fn policy_for(&self, channel: &str) -> Policy {
-            // The historical spellings ("researcher") plus the preset
-            // spellings ("reader", "coder_memory"): the old match honoured
-            // only researcher/coder, so coder_memory and typos silently
-            // fell through to the channel default.
+            // Every known spelling, historical ("researcher") and preset ("reader",
+            // "coder_memory"). Anything else is a typo and falls through to the
+            // channel default.
             if let Ok(v) = std::env::var("PANTHEON_GATEWAY_POLICY") {
                 match v.as_str() {
                     "researcher" | "reader" => return Policy::researcher_readonly(),
@@ -6741,11 +6588,9 @@ pub mod gateway {
                     );
                 }
                 "discord" => {
-                    // The Discord channel owns both directions: the gateway
-                    // websocket feeds its inbox, the daemon drains it, and replies
-                    // go out over Discord REST. (It used to be a MemoryChannel
-                    // whose outbox nobody read - replies accumulated in RAM and
-                    // the user got silence.)
+                    // The Discord channel owns both directions: the gateway websocket
+                    // feeds its inbox, the daemon drains it, and replies go out over
+                    // Discord REST.
                     let discord = Arc::new(
                         pantheon_gateway::DiscordChannel::rest(&spec.token).with_voice(voice),
                     );
@@ -6784,7 +6629,7 @@ pub mod gateway {
     /// Persistent watchdog report: the failure record for a channel that
     /// hung twice. The operator (and the agent, when asked about gateway
     /// health) reads `gateway/watchdog-<channel>.json`; the file is the
-    /// report - the supervisor deliberately does not restart a third time
+    /// report - the supervisor does not restart a third time
     /// or fabricate a conversation the channel cannot deliver to.
     fn write_watchdog_report(state_dir: &Path, channel: &str, last_heartbeat_ms: u64) {
         let body = format!(
@@ -6832,18 +6677,17 @@ pub mod gateway {
         // winning when both are set.
         let (discord_token, telegram_token, allow) =
             pantheon_gateway::read_channel_tokens(&data_dir);
-        // The gateway runs the same policy the config names. It used to read
-        // PANTHEON_GATEWAY_POLICY only, so a user with a working `policy =
-        // "reader"` config still got coder on Discord and Telegram.
+        // The gateway runs the policy the config names, not
+        // PANTHEON_GATEWAY_POLICY alone, so a `policy = "reader"` config applies on
+        // Discord and Telegram too.
         let gw_cfg = crate::config::Config::load_or_report(&data_dir);
-        // One poller per channel: in explicit mode several channels can share
-        // a platform (two Telegram bots, two profiles); in legacy mode this is
-        // exactly the old telegram/discord pair.
+        // One poller per channel: in explicit mode several channels can share a
+        // platform (two Telegram bots, two profiles); in legacy mode it is the
+        // telegram/discord pair.
         let specs = channel_specs(&gw_cfg, &data_dir, discord_token, telegram_token, &allow);
-        // One outbound queue per channel. The old single shared queue let the
-        // Telegram daemon grab Discord replies (send fails → infinite requeue)
-        // and the Discord daemon swallow Telegram ones; keyed queues make
-        // cross-channel pickup impossible.
+        // One outbound queue per channel. A shared queue lets one daemon take
+        // another channel's replies, and the send fails into an endless requeue;
+        // keyed queues make cross-channel pickup impossible.
         let mut queues: HashMap<String, Arc<Mutex<Vec<pantheon_gateway::OutboundMessage>>>> =
             HashMap::new();
         for spec in &specs {
@@ -7355,7 +7199,7 @@ pub mod gateway {
                     std::process::exit(1);
                 }
             },
-            // Restart used to install a missing unit too; keep that.
+            // Restart installs a missing unit too.
             ServiceAction::Restart => match pantheon_gateway::restart_service() {
                 pantheon_gateway::RestartOutcome::Restarted { mechanism } => {
                     println!("gateway: restarted ({}).", mechanism.as_str());
@@ -7728,8 +7572,8 @@ pub mod mcp {
     /// `pub(crate)` so the nightly repair adapter can drive the same manager
     /// the sessions use. Configured, not connected: no servers are launched.
     ///
-    /// Policy note (operator-direct exception): this manager installs no
-    /// capability policy (`policy = None`), unlike a session manager.
+    /// Operator-direct exception: this manager installs no capability policy
+    /// (`policy = None`), unlike a session manager.
     /// A session's policy is its agent preset's, and there is no preset
     /// for a bare CLI verb; a CLI operator invoking `pantheon mcp ...`
     /// directly is the consenting party, and approval still gates every
@@ -7797,9 +7641,8 @@ pub mod mcp {
                 }
             })
             .collect();
-        // Config entries the resolver skipped (disabled, unknown transport /
-        // auth, missing command/url) still show in `list`, marked with their
-        // blocker - previously they vanished with only an eprintln.
+        // Config entries the resolver skipped (disabled, unknown transport or auth,
+        // missing command/url) still show in `list`, marked with their blocker.
         if let Some(sec) = cfg.as_ref().and_then(|c| c.mcp.as_ref()) {
             for (name, e) in &sec.servers {
                 if rows.iter().any(|r| r.name == *name) {
@@ -7922,8 +7765,7 @@ pub mod mcp {
 
     pub fn cmd_mcp(args: &[String]) {
         let verb = args.first().map(|s| s.as_str()).unwrap_or("list");
-        // Help is not an unknown verb: `mcp --help` used to exit 2 with
-        // an "unknown verb" error.
+        // Help is not an unknown verb: `mcp --help` exits 0.
         if matches!(verb, "help" | "--help" | "-h") {
             println!("usage: pantheon mcp <list|status|health|approve|enable|disable|resources|templates|read|prompts|prompt|login|logout|auth> [--json]");
             return;
@@ -8784,17 +8626,16 @@ pub mod fallback {
             }
         };
 
-        // A fallback chain is meaningless without a default to fall back
-        // from, and creating `[model]` here with empty provider/model used
-        // to poison resolution: the empty config values beat the environment
-        // and the local default in `build_model_policy`. So nothing here
-        // ever creates a `[model]` section: `list` reads the existing chain
-        // (or nothing), `remove` without a section is an out-of-range
-        // error, and `add`/`insert` refuse until a real default model
-        // exists. Named `section` not `model`: the `add`/`insert` arms bind
-        // a `model` string parameter, which would otherwise shadow this.
-        // The write arms take their `&mut` borrow inside the arm, after
-        // argument validation, so a bad invocation never mutates `cfg`.
+        // A fallback chain is meaningless without a default to fall back from, and
+        // a `[model]` section created here with an empty provider/model poisons
+        // resolution: the empty config values beat the environment and the local
+        // default in `build_model_policy`. So nothing here creates a `[model]`
+        // section: `list` reads the existing chain (or nothing), `remove` without a
+        // section is an out-of-range error, and `add`/`insert` refuse until a real
+        // default model exists. Named `section` not `model`: the `add`/`insert` arms
+        // bind a `model` string parameter, which would otherwise shadow this. The
+        // write arms take their `&mut` borrow inside the arm, after argument
+        // validation, so a bad invocation never mutates `cfg`.
         match sub {
             "list" => {
                 let chain = cfg
@@ -8921,13 +8762,11 @@ pub mod fallback {
         }
     }
 
-    /// Warnings for a fallback that would burn retries at runtime:
-    /// unknown provider, a duplicate of an earlier entry, an entry
-    /// identical to the default (a fallback to itself), or a provider
-    /// whose key env var is unset in both the process env and
-    /// `<data_dir>/.env`. Warnings, not refusals: the chain walk still
-    /// decides at runtime, but adding a dead entry silently used to cost
-    /// 3 retries per turn before anyone noticed.
+    /// Warnings for a fallback that would burn retries at runtime: unknown provider,
+    /// a duplicate of an earlier entry, an entry identical to the default (a fallback
+    /// to itself), or a provider whose key env var is unset in both the process env
+    /// and `<data_dir>/.env`. Warnings, not refusals: the chain walk still decides at
+    /// runtime, but a dead entry costs 3 retries per turn before anyone notices.
     fn warn_about(dd: &Path, section: &crate::config::ModelSection, provider: &str, model: &str) {
         let known = pantheon_providers::catalog::provider(provider).is_some()
             || provider.starts_with("http://")
@@ -9190,9 +9029,9 @@ pub mod pipeline {
     pub fn cmd_pipeline(args: &[String]) {
         let parsed = crate::args::Args::parse(&args[2.min(args.len())..]);
         if parsed.has("help") || parsed.has("h") {
-            // Help goes to stdout like every other verb's help, not stderr:
-            // the old stderr print exited 0, so `pipeline --help` looked
-            // like a failed run to anything capturing streams separately.
+            // Help goes to stdout like every other verb's help, not stderr: on stderr
+            // with exit 0, `pipeline --help` looks like a failed run to anything
+            // capturing the streams separately.
             println!(
                 "usage: pantheon pipeline [--spec \"task\"] | <run_id> --approve <stage> | <run_id> --deny <stage>"
             );
@@ -9399,11 +9238,10 @@ pub mod plugin_toggle {
     /// One rendered row: `[*] name  kind  version  status  description`.
     /// Pure so it is unit-testable without a TTY.
     ///
-    /// Every manifest-derived field is control-stripped before it is placed
-    /// in the row. This screen runs in raw mode with no alternate screen, so
-    /// an unescaped CSI or OSC in a third-party `description` could clear the
-    /// screen, move the cursor, or retitle the terminal while the operator
-    /// believes they are looking at a list.
+    /// Every manifest-derived field is control-stripped before it is placed in the
+    /// row: an unescaped CSI or OSC in a third-party `description` could move the
+    /// cursor, rewrite the window title, or garble the list the operator thinks
+    /// they are reading.
     pub(crate) fn format_row(row: &PluginRow, selected: bool) -> String {
         let marker = if selected { ">" } else { " " };
         let check = if row.enabled { "[*]" } else { "[ ]" };
@@ -10012,11 +9850,8 @@ pub mod plugins_verb {
             assert_eq!(names, sorted);
         }
 
-        // The bundled-catalog row tests (dedup across bundled sources, the
-        // `[plugins]` config toggle round-trip) were removed with the catalog
-        // itself: time-gap went native (`[temporal]`), and until the next
-        // bundled plugin ships there is no catalog row to drive them. The
-        // config-enablement logic stays pinned in pantheon-extensions' tests.
+        // No bundled-catalog row tests here: the config-enablement logic is pinned
+        // in pantheon-extensions' tests.
 
         #[test]
         fn toggle_manifest_flag_for_third_party_tool() {
@@ -10073,10 +9908,7 @@ pub mod plugins_verb {
 pub mod logs {
     //! `pantheon logs` - read the runtime's log files.
     //!
-    //! The runtime had no logs at all until `pantheon_api::logging` landed, so
-    //! this verb was briefly a run trace wearing the name of a log reader. It is
-    //! now what its name says: it reads `<data_dir>/logs/*.log`, and the run trace
-    //! is back to being a run trace.
+    //! Reads `<data_dir>/logs/*.log`. The run trace is a separate verb.
     //!
     //! The shape follows `hermes_cli/logs.py` - named files, `--level`, `--follow`,
     //! `--since`, `logs list` - because that reader is the thing being matched. Two
@@ -10185,11 +10017,10 @@ pub mod logs {
         let mut i = 2;
         while i < args.len() {
             let a = args[i].as_str();
-            // Each flag that takes a value refuses a missing one by name, rather
-            // than consuming the next flag and failing somewhere unrelated.
-            // A flag-like next token is not a value either: `logs --grep
-            // --level error` used to swallow `--level` as the grep pattern
-            // and then treat `error` as the log name.
+            // Each flag that takes a value refuses a missing one by name, rather than
+            // consuming the next flag. A flag-like next token isn't a value either:
+            // `logs --grep --level error` must reject rather than take `--level` as
+            // the pattern.
             let mut need = |what: &str| -> String {
                 i += 1;
                 match args.get(i) {
@@ -10235,12 +10066,10 @@ pub mod logs {
                     eprintln!("logs: unknown flag '{other}'\n{}", usage());
                     std::process::exit(2);
                 }
-                // The file name is the one bare positional. Tracking it as an
-                // Option rather than defaulting to "agent" up front is what makes
-                // `logs agent --level error` work: with a string default, naming
-                // the default explicitly looked like a second argument and was
-                // rejected, so the documented spelling of the default silently
-                // did nothing.
+                // The file name is the one bare positional. Tracking it as an Option rather
+                // than defaulting to "agent" up front is what makes `logs agent --level error`
+                // work: with a string default, naming the default explicitly looks like a
+                // second argument.
                 other => {
                     if name.is_none() {
                         name = Some(other.to_string());

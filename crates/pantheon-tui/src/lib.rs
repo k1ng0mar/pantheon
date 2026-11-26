@@ -1,48 +1,9 @@
-//! Pantheon's terminal product: the one terminal application.
+//! terminal app for pantheon: interactive sessions and one-shot commands in the
+//! same crate, business logic in the lower-level crates
 //!
-//! Bare `pantheon` opens the interactive session. With a verb (`setup`,
-//! `doctor`, `run --say ...`) it runs one non-interactive command instead.
-//! Both live here now: there is no second terminal crate and no line-based
-//! fallback. If there is no terminal, `pantheon` says so and exits rather
-//! than degrading into a different product.
-//!
-//! # Layering
-//!
-//! ```text
-//! terminal   argv dispatch + non-interactive command modules (agui, doctor,
-//!            setup, model, memory via terminal, ...). thin: parses args,
-//!            calls into crates, never owns business logic.
-//! entry      interactive entrypoint: configured? → session : setup wizard
-//! session    the conversation view: transcript state, overlays, slash
-//!            commands, streaming event handling, permission card
-//! app        the screen-stack event loop (setup wizard, pickers)
-//!   widget   Select / MultiSelect / TextInput / Confirm
-//!   render   the same widgets, drawn. no terminal imports in widget.rs
-//!   commands the slash-command registry (metadata; handlers live in session)
-//!   setup_graph the setup section graph
-//!   setup_wizard the interactive setup screens over app/widget
-//!   setup    flag parsing + config writer (`pantheon setup`)
-//!   prompt   run one widget on the real terminal, return the answer
-//!       |
-//!       v
-//!   pantheon-runtime / exec / memory / providers / storage / ...
-//! ```
-//!
-//! The dependency arrow only points one way. A widget never touches a
-//! `Session`, and `widget.rs` never touches crossterm: it is exercised by
-//! calling `handle_key` with a [`Key`] value, so every component test runs
-//! without a TTY. Anything that cannot be tested that way is doing too much.
-//!
-//! # Why one product and not several
-//!
-//! An earlier shape had a TUI, a REPL, a model picker, a session picker, and
-//! a text setup wizard, with two of them able to answer the same command
-//! differently - and for a while a whole second terminal crate
-//! (`pantheon-cli`) holding a duplicate session implementation. That crate
-//! is gone: its dispatch and command modules moved here unchanged in
-//! behavior, and its session implementation became `session.rs`. What
-//! survives a migration is a module inside this crate; what does not earn
-//! one is deleted.
+//! widgets don't know about crossterm - keys come in as values so they can be
+//! tested without a terminal. `terminal` dispatches, `session` owns the
+//! conversation view, `app` runs the screen stack.
 
 mod account_group;
 mod cli_group;
@@ -130,19 +91,17 @@ pub use render_group::widget::{
     Confirm, Item, Key, KeyResult, MultiSelect, Select, Selection, TextInput,
 };
 
-// Terminal command modules: argv dispatch and the non-interactive verbs.
-// Private: the binary calls `terminal::run()`; nothing outside this crate
-// reaches past it.
+// argv dispatch + the non-interactive verbs. private on purpose: the binary
+// only calls `terminal::run()`
 
 pub use pantheon_api::dotenv;
 pub mod logo;
 mod markdown;
 pub mod terminal;
 
-// TUI-A: session tab bar model + rendering (startup splash lives in terminal).
+// TUI-A: session tab bar (startup splash still lives in terminal)
 
-// Agent todo card: "Working on N to-dos" widget, rendered
-// with ratatui only. The visual track wires it into the transcript.
+// agent todo card ("Working on N to-dos"), ratatui only; the visual track wires it in
 
-// Native ratatui renderers for the UI protocol (`pantheon_api::ui`):
-// each component lowers to transcript lines in the current theme.
+// native ratatui renderers for `pantheon_api::ui` - each component becomes
+// transcript lines in the current theme

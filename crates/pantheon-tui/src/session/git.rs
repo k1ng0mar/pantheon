@@ -1,16 +1,15 @@
-//! Cached git metadata for the status bar.
+//! cached git metadata for the status bar.
 //!
-//! [`git_label`] shells out to git only when the caller asks - the TUI
-//! refreshes it on a coarse interval, never per frame. Anything
-//! unexpected (no git binary, not a checkout, unborn HEAD) yields `None`
-//! and the status bar simply omits the segment.
+//! [`git_label`] shells out to git only when asked - the TUI refreshes it on
+//! a coarse interval, never per frame. anything unexpected (no git binary, not
+//! a checkout, unborn HEAD) yields `None` and the bar just omits the segment.
 
 use std::path::Path;
 use std::process::Command;
 
-/// `⎇ <branch>[*]` for `cwd`, or `None` outside a git checkout.
-/// `*` marks a dirty working tree. A detached HEAD falls back to the
-/// short SHA so the segment still says where the tree is.
+/// `⎇ <branch>[*]`, or `None` outside a git checkout. `*` means dirty tree.
+/// detached HEAD falls back to the short SHA so the segment still says where
+/// the tree is
 pub fn git_label(cwd: &Path) -> Option<String> {
     let branch = git_out(cwd, &["branch", "--show-current"])?;
     let name = if branch.is_empty() {
@@ -28,8 +27,8 @@ pub fn git_label(cwd: &Path) -> Option<String> {
     Some(format!("⎇ {}{}", name, if dirty { "*" } else { "" }))
 }
 
-/// Run git and return trimmed stdout; `None` on any failure: missing
-/// binary, bad cwd, non-zero exit.
+/// run git, return trimmed stdout; `None` on any failure (missing binary,
+/// bad cwd, non-zero exit)
 fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")

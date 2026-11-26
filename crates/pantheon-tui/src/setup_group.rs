@@ -1,5 +1,3 @@
-//! setup_group: setup, setup_wizard, setup_graph in one file.
-
 pub mod setup {
     //! `pantheon setup`: first-run configuration wizard.
     //!
@@ -377,7 +375,7 @@ pub mod setup {
             policy: Some(policy),
             // Setup never picks a permission mode: a fresh install starts on
             // the conservative `Ask` default, and the operator opts into
-            // `smart` or `allow_all` deliberately afterwards.
+            // `smart` or `allow_all` afterwards.
             permission_mode: None,
             memory: memory_section(&memory),
             server: Some(crate::config::ServerSection {
@@ -441,23 +439,18 @@ pub mod setup {
             voice: None,
         };
 
-        // Merge, don't clobber: the wizard manages a fixed set of sections
-        // (model, the tool/provider sections, policy, server, skill_deps).
-        // Everything the operator may have added by hand - [budget],
-        // [nightly], [agents.*], [custom_providers.*], aux model pins,
-        // [gateway], [voice], [plugins] - survives a re-run of setup, and
-        // the wizard names what it kept on stderr. Previously run_setup
-        // built a fresh Config and saved it, wiping all of the above every
-        // time the wizard ran.
+        // Merge, don't clobber: the wizard manages a fixed set of sections (model, the
+        // tool/provider sections, policy, server, skill_deps). Everything else the
+        // operator added by hand - [budget], [nightly], [agents.*],
+        // [custom_providers.*], aux model pins, [gateway], [voice], [plugins] -
+        // survives a setup re-run, and the wizard names what it kept on stderr.
         //
-        // stt/tts use explicit-clear semantics: the Voice screen always
-        // resolves them (defaults, answers, or explicit skips), so the
-        // wizard's value - including None for "group off / backend
-        // skipped" - is authoritative and overwrites.
+        // stt/tts use explicit-clear semantics: the Voice screen always resolves them
+        // (defaults, answers, or explicit skips), so its value - including None for
+        // "group off" - is authoritative and overwrites.
         //
-        // A config that exists but does not parse aborts setup outright: the
-        // old `unwrap_or_default()` fell back to a fresh default and the
-        // save below silently wiped the user's file.
+        // A config that exists but doesn't parse aborts setup, so a bad file is never
+        // replaced by a fresh default.
         let mut cfg = match Config::load(data_dir) {
             Ok(c) => c,
             Err(e) if e.code == "CONFIG_OPEN" => Config::default(),
@@ -524,11 +517,9 @@ pub mod setup {
         cfg.server = fresh.server;
         cfg.tools = fresh.tools;
         cfg.skill_deps = fresh.skill_deps;
-        // The wizard only ever ADDS a custom endpoint row; existing rows
-        // are preserved above, never cleared. Models the operator named on
-        // this endpoint are kept, mirroring `upsert_custom_row` (the
-        // `pantheon provider add` path) - replacing the row used to empty
-        // its model list on a re-pick.
+        // The wizard only adds a custom endpoint row; existing rows are preserved.
+        // Models the operator named on this endpoint are kept, mirroring
+        // `upsert_custom_row`, so a re-pick doesn't empty its model list.
         if let Some(spec) = &answers.custom_provider {
             let models = cfg
                 .custom_providers
@@ -883,15 +874,14 @@ pub mod setup {
     /// `pantheon setup`: flag parsing over the wizard.
     pub fn cmd_setup(args: &[String]) {
         let raw: &[String] = &args[1.min(args.len())..];
-        // `--help` used to fall into the wizard and prompt for a provider;
-        // help is not a setup run.
+        // `--help` prints help and exits 0 instead of entering the wizard; help is not
+        // a setup run.
         if raw.iter().any(|a| a == "--help" || a == "-h") {
             setup_help();
             std::process::exit(0);
         }
-        // Unknown flags used to vanish into Args::parse: `setup --bogus`
-        // ran the wizard (or the text path, on a pipe) as if nothing had
-        // been asked for. A stray positional is the same class of error.
+        // Unknown flags and stray positionals are errors, not a silent wizard run as if
+        // nothing was asked for.
         {
             let known = [
                 "provider",
@@ -1083,7 +1073,7 @@ pub mod setup_wizard {
     //! installs as an always-on service only on explicit confirmation.
     //! Blank Slate provisions the runtime without configuring an agent at all.
     //!
-    //! Auxiliary model pins are deliberately not asked here: they are managed
+    //! Auxiliary model pins are not asked here: they are managed
     //! anytime with `pantheon model`, which the done summary mentions.
     //!
     //! Screen 3 (model) merges the catalog's curated entries with the
@@ -1121,7 +1111,7 @@ pub mod setup_wizard {
     /// Where Esc from `step` goes: `None` on the first screen cancels
     /// the wizard outright; any later screen steps back one screen.
     /// Scoped to this wizard: the shared pickers still just return
-    /// `None` on Esc, and only this loop decides what that means — no
+    /// `None` on Esc, and only this loop decides what that means; no
     /// global picker behaviour changes.
     fn esc_step(step: SetupStep) -> Option<SetupStep> {
         match step {
@@ -1136,7 +1126,7 @@ pub mod setup_wizard {
     /// Esc on the first screen cancels with nothing committed (the
     /// entry point re-checks usability before opening a session); Esc
     /// on a later screen steps back one screen instead of aborting the
-    /// run. A cancelled run writes no config — only key values already
+    /// run. A cancelled run writes no config; only key values already
     /// pasted to `.env` persist, as before.
     pub fn run_setup_flow(data_dir: &Path) {
         // --- Mode → provider → key → model, with back navigation --------
@@ -1363,10 +1353,9 @@ pub mod setup_wizard {
         custom: Option<CustomProviderSpec>,
         api_key_env: Option<String>,
     ) {
-        // Skip is offered in the follow-ups: a skipped group comes off the
-        // toolset, so no section is written and the runtime never registers
-        // the tool. A cancelled follow-up keeps the old behavior (the shared
-        // setup path resolves the recommended default).
+        // Skip is offered in the follow-ups: a skipped group comes off the toolset, so
+        // no section is written and the runtime never registers the tool. A cancelled
+        // follow-up falls back to the shared setup path's recommended default.
         let mut tools = recommended_tools();
         let mut skipped: Vec<ToolGroup> = Vec::new();
         let websearch_pick = setup_providers::complete_recommended(
@@ -1506,10 +1495,9 @@ pub mod setup_wizard {
         let branch: Vec<Section> = sections(&answers);
         let wants = |s: Section| branch.contains(&s);
 
-        // The Tools screen replaces the old Permissions screen: one
-        // multi-select over every capability instead of a policy preset.
-        // Policy stays the default coder preset - there is no permissions
-        // screen anymore. Session search is default-on and hidden from the
+        // The Tools screen is one multi-select over every capability instead of a
+        // policy preset; Policy stays the default coder preset, and there is no
+        // permissions screen. Session search is default-on and hidden from the
         // options.
         let tools = if wants(Section::Tools) {
             pick_tools()
@@ -1571,11 +1559,10 @@ pub mod setup_wizard {
             None
         };
 
-        // Speech is one tool group with two backends: STT first, then TTS.
-        // Skip is granular per backend - a skipped backend writes no
-        // section; the Voice group only comes off when both are skipped.
-        // A cancelled pick keeps the old behavior (the shared setup path
-        // resolves the recommended default).
+        // Speech is one tool group with two backends: STT first, then TTS. Skip is per
+        // backend - a skipped backend writes no section, and the Voice group only comes
+        // off when both are skipped. A cancelled pick falls back to the recommended
+        // default.
         let voice = if wants(Section::Tts) {
             let stt_pick = setup_providers::pick_provider(
                 "Speech to text",
@@ -1706,7 +1693,7 @@ pub mod setup_wizard {
         // Auxiliary model pins are not asked in the wizard: they are managed
         // anytime with `pantheon model`.
         println!("pantheon: manage auxiliary models anytime with `pantheon model`");
-        // The tools the user deliberately left unconfigured. Empty → omit.
+        // The tools the user left unconfigured. Empty → omit.
         if !skipped.is_empty() {
             println!("pantheon: skipped: {}", skipped.join(", "));
         }
@@ -1723,7 +1710,7 @@ pub mod setup_wizard {
 
     /// The mode screen. `None` means Esc: the user changed their mind
     /// about being here, so the wizard cancels instead of inventing an
-    /// answer — proceeding with a default mode the user never picked
+    /// answer: proceeding with a default mode the user never picked
     /// would write a config they did not ask for.
     fn pick_mode() -> Option<Mode> {
         let items = vec![
@@ -1833,21 +1820,17 @@ pub mod setup_wizard {
         item.desc(hint)
     }
 
-    /// Pick a model provider. Returns the provider id plus, for the Custom
-    /// row or an edited preset URL, the endpoint spec `run_setup` persists
-    /// to `[custom_providers.<id>]` - the in-memory registration alone does
-    /// not survive the process, so the wizard used to write a config
-    /// pointing at an endpoint only it remembered.
+    /// Pick a model provider. Returns the provider id plus, for the Custom row or an
+    /// edited preset URL, the endpoint spec `run_setup` persists to
+    /// `[custom_providers.<id>]` - the in-memory registration doesn't survive the
+    /// process, so the config has to carry the endpoint.
     ///
-    /// Existing custom endpoints appear as ordinary rows below the presets
-    /// (no separate section); the Custom row creates a new one without
-    /// overwriting an existing `custom` id.
+    /// Existing custom endpoints appear as ordinary rows below the presets; the
+    /// Custom row creates a new one without overwriting an existing `custom` id.
     ///
-    /// The first screen is a shortlist with a "Show all providers..." row;
-    /// a first-run user should not face 35 rows. Expanding lists every
-    /// selectable provider. `router` is filtered out of the full list (a
-    /// dev endpoint), a product decision that belongs here, not in the
-    /// widget.
+    /// The first screen is a shortlist with a "Show all providers..." row, so a
+    /// first-run user doesn't face 35 rows. `router` is filtered out of the full list
+    /// as a dev endpoint.
     fn pick_provider(step: &str) -> Option<(String, Option<CustomProviderSpec>)> {
         let subtitle = format!("{step} · Choose a model provider");
         let mut items: Vec<Item> = provider_shortlist()
@@ -1969,9 +1952,8 @@ pub mod setup_wizard {
         Some((chosen, None))
     }
 
-    /// First free custom id: `custom`, then `custom-2`, .... The wizard
-    /// used to always write `custom`, silently overwriting a previous custom
-    /// endpoint with the same id.
+    /// First free custom id: `custom`, then `custom-2`, .... Picking an unused id keeps
+    /// a new endpoint from overwriting an existing one.
     fn free_custom_name() -> String {
         if pantheon_providers::catalog::provider("custom").is_none() {
             return "custom".to_string();
@@ -2304,7 +2286,7 @@ pub mod setup_wizard {
     /// (`<data_dir>/gateway.env`), never into config.toml, never printed or
     /// logged; a process env var always wins at runtime.
     ///
-    /// There is deliberately no `SetupAnswers` field for these: secrets bypass
+    /// There is no `SetupAnswers` field for these: secrets bypass
     /// the shared answer struct the same way the setup `key` bypasses
     /// config.toml, so the screen writes them the moment they are entered.
     fn pick_gateways(data_dir: &Path) {

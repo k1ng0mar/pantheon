@@ -1,52 +1,48 @@
-//! The Pantheon lockup drawn as a terminal dot-matrix.
+//! Pantheon's lockup drawn as a terminal dot-matrix.
 //!
-//! The artwork is the brand lockup, the temple-with-P mark over the `PANTHEON`
-//! wordmark, stored as a 1-bit raster (`assets/logo-lockup.bin`, 236x209) so the
-//! terminal draws the same outlines as the brand artwork instead of a re-derived
-//! approximation of them. Braille patterns pack 2x4 dots into one character
-//! cell, the densest portrait grid that needs nothing beyond a monospace font
-//! and the UTF-8 Braille block, so the default splash works in an ordinary
-//! terminal with no Kitty graphics and no Sixel.
+//! it's the brand lockup - temple-with-P over the `PANTHEON` wordmark - stored
+//! as a 1-bit raster (`assets/logo-lockup.bin`, 236x209) so the terminal draws
+//! the real outlines instead of a re-derived approximation. braille packs 2x4
+//! dots into one char, the densest portrait grid that needs only a monospace
+//! font + the UTF-8 braille block, so the splash works in a plain terminal, no
+//! Kitty graphics, no Sixel.
 //!
-//! The splash opens the way the brand loop does: a top-to-bottom sweep resolved
-//! by an 8x8 ordered dither, a diagonal glint, then a dissolve, on a loop.
+//! splash opens like the brand loop: top-to-bottom sweep resolved by an 8x8
+//! ordered dither, a diagonal glint, then a dissolve, on a loop.
 //! `PANTHEON_LOGO=static` holds the finished lockup, `=block` uses half-block
-//! cells for fonts missing the Braille patterns, `=off` drops the artwork.
+//! cells for fonts missing braille, `=off` drops the artwork.
 //!
-//! Nothing here touches the composer, the transcript, or the status bar: the
-//! lockup is only drawn on the new-session splash.
+//! nothing here touches the composer, transcript, or status bar - the lockup
+//! only shows on the new-session splash.
 
 use ratatui::style::Color;
 use std::sync::OnceLock;
 
-// ---------------------------------------------------------------------------
-// The raster
-// ---------------------------------------------------------------------------
+// --- raster
 
-/// Lockup width in dots (the raster's own pixel grid).
+/// lockup width in dots (the raster's own pixel grid)
 const LOCKUP_W: usize = 236;
-/// Lockup height in dots.
+/// lockup height in dots
 const LOCKUP_H: usize = 209;
-/// Bits are packed MSB first and every row is padded to a whole byte.
+/// bits packed MSB first, each row padded to a whole byte
 const ROW_BYTES: usize = LOCKUP_W.div_ceil(8);
 const LOCKUP: &[u8] = include_bytes!("../assets/logo-lockup.bin");
 
-/// First raster row of the wordmark; every row above it belongs to the mark.
+/// first raster row of the wordmark; rows above it belong to the mark
 const WORDMARK_TOP: usize = 186;
 
-/// Shortest lockup, in cells, that still reads as the brand: below this the
-/// wordmark is a smear, so the splash draws the mark alone instead.
+/// shortest lockup, in cells, that still reads as the brand: below this the
+/// wordmark is a smear, so the splash draws the mark alone instead
 const MIN_LOCKUP_ROWS: usize = 18;
-/// Narrowest lockup, in cells, before the P stops reading as a P.
+/// narrowest lockup, in cells, before the P stops reading as a P
 const MIN_LOCKUP_COLS: usize = 28;
-/// Smallest mark-only fallback, in cells.
+/// smallest mark-only fallback, in cells
 const MIN_MARK_COLS: usize = 14;
 
 const DOT_BITS: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
 const BRAILLE_BASE: u32 = 0x2800;
 
-/// 8x8 ordered-dither thresholds: the matrix that breaks the reveal sweep into
-/// dots instead of a hard edge.
+/// 8x8 ordered dither; breaks the sweep into dots instead of a hard edge
 const BAYER8: [[f64; 8]; 8] = [
     [
         0.0078, 0.5078, 0.1328, 0.6328, 0.0391, 0.5391, 0.1641, 0.6641,
@@ -74,9 +70,7 @@ const BAYER8: [[f64; 8]; 8] = [
     ],
 ];
 
-// ---------------------------------------------------------------------------
-// Reveal timeline (seconds, looping)
-// ---------------------------------------------------------------------------
+// --- reveal timeline (seconds, looping)
 
 const LOOP: f64 = 9.0;
 const SWEEP_START: f64 = 0.5;
@@ -90,14 +84,12 @@ const GLINT_SPAN: f64 = 2.1;
 const DISSOLVE_START: f64 = 7.2;
 const DISSOLVE_END: f64 = 8.6;
 
-/// The lockup's colours: violet down the mark, pale lavender for the wordmark.
+/// lockup colours: violet down the mark, pale lavender for the wordmark
 const MARK_TOP: (u8, u8, u8) = (185, 156, 255);
 const MARK_MID: (u8, u8, u8) = (123, 77, 255);
 const MARK_BOTTOM: (u8, u8, u8) = (92, 50, 232);
 
-// ---------------------------------------------------------------------------
-// Modes
-// ---------------------------------------------------------------------------
+// --- modes
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -117,7 +109,7 @@ fn mode() -> Mode {
     })
 }
 
-/// Dots per character cell: Braille is 2 wide by 4 tall, half-block 1 by 2.
+/// dots per cell: braille 2 wide x 4 tall, half-block 1 x 2
 fn dots_per_cell() -> (usize, usize) {
     match mode() {
         Mode::Block => (1, 2),
@@ -125,16 +117,14 @@ fn dots_per_cell() -> (usize, usize) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Sampling
-// ---------------------------------------------------------------------------
+// --- sampling
 
 fn lockup_bit(x: usize, y: usize) -> bool {
     let index = y * ROW_BYTES + (x >> 3);
     index < LOCKUP.len() && LOCKUP[index] & (0x80 >> (x & 7)) != 0
 }
 
-/// A rectangle of the raster, inclusive on every edge.
+/// a rectangle of the raster, inclusive on every edge
 #[derive(Clone, Copy)]
 struct Band {
     x0: usize,
@@ -152,7 +142,7 @@ impl Band {
         self.y1 - self.y0 + 1
     }
 
-    /// The lockup in full.
+    /// the whole lockup
     fn lockup() -> Self {
         Self {
             x0: 0,
@@ -162,8 +152,8 @@ impl Band {
         }
     }
 
-    /// The mark's ink box, so the fallback path spends the room the wordmark
-    /// gave up rather than leaving the mark small and centred in it.
+    /// the mark's ink box, so the fallback uses the room the wordmark gave up
+    /// instead of leaving the mark small and centred in it
     fn mark() -> Self {
         static BOX: OnceLock<Band> = OnceLock::new();
         *BOX.get_or_init(|| {
@@ -188,9 +178,9 @@ impl Band {
     }
 }
 
-/// Cell size for a band given the rows the splash can spare. Both packings keep
-/// the same cell aspect, so the mode does not change how much room the artwork
-/// takes, only how finely it is drawn.
+/// cell size for a band given the rows the splash can spare. both packings keep
+/// the same cell aspect, so the mode changes how finely it's drawn, not how
+/// much room it takes
 fn fit(term_w: usize, available_rows: usize, band: &Band) -> Option<(usize, usize)> {
     let aspect = 2.0 * band.width() as f64 / band.height() as f64;
     let cols = ((available_rows as f64 * aspect).floor() as usize).min(term_w.saturating_sub(4));
@@ -198,11 +188,9 @@ fn fit(term_w: usize, available_rows: usize, band: &Band) -> Option<(usize, usiz
     (cols >= 2 && rows >= 2).then_some((cols, rows))
 }
 
-// ---------------------------------------------------------------------------
-// Reveal
-// ---------------------------------------------------------------------------
+// --- reveal
 
-/// Deterministic per-dot jitter, so a dot keeps the same threshold every frame.
+/// deterministic per-dot jitter, so a dot keeps the same threshold every frame
 fn hash2(x: usize, y: usize) -> f64 {
     let mut n = (x as u64)
         .wrapping_mul(374_761_393)
@@ -220,7 +208,7 @@ fn ease(p: f64) -> f64 {
     }
 }
 
-/// How far each stage of the loop has run at `t` seconds.
+/// how far each stage of the loop has run at `t` seconds
 struct Phase {
     sweep: f64,
     word: f64,
@@ -251,8 +239,8 @@ impl Phase {
         }
     }
 
-    /// Is the dot lit? `wordmark` picks the wordmark's own late, jittered fade
-    /// instead of the sweep that carries the mark down the lockup.
+    /// is the dot lit? `wordmark` picks the wordmark's own late, jittered fade
+    /// instead of the sweep that carries the mark down the lockup
     fn lit(&self, x: usize, y: usize, ny: f64, wordmark: bool) -> bool {
         let jitter = hash2(x, y);
         let reached = if wordmark {
@@ -268,8 +256,8 @@ impl Phase {
         reached >= BAYER8[y & 7][x & 7] * 0.7 + jitter * 0.3
     }
 
-    /// Glint strength at a dot: a diagonal band that lifts the colour toward
-    /// white as it crosses the lockup.
+    /// glint strength at a dot: diagonal band lifting the colour toward white
+    /// as it crosses the lockup
     fn glint_at(&self, nx: f64, ny: f64) -> f64 {
         let d = nx * 0.7 + (1.0 - ny) * 0.7;
         (-((d - self.glint).powi(2)) / 0.015).exp() * 0.55
@@ -288,11 +276,11 @@ fn mark_colour(ny: f64) -> (u8, u8, u8) {
     (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
-/// Cell colour. The mark carries the brand gradient; the wordmark is text, so
+/// cell colour. the mark carries the brand gradient; the wordmark is text, so
 /// it keeps the colour the caller passed (the active theme's heading) and is
-/// lifted toward white by the glint only where that colour has channels. Text
+/// lifted toward white by the glint only where that colour has channels. text
 /// also skips the quantiser: the band is a handful of rows, so the exact hue
-/// matters more there than the span count.
+/// matters more there than the span count
 fn cell_colour(nx: f64, ny: f64, wordmark: bool, word: Color, phase: &Phase) -> Color {
     let k = (phase.glint_at(nx, ny) * 1.6).clamp(0.0, 1.0);
     let base = if wordmark {
@@ -312,13 +300,11 @@ fn cell_colour(nx: f64, ny: f64, wordmark: bool, word: Color, phase: &Phase) -> 
     }
 }
 
-// ---------------------------------------------------------------------------
-// Drawing
-// ---------------------------------------------------------------------------
+// --- drawing
 
-/// The splash artwork. `Lockup` is the whole brand mark; `Mark` is the mark
-/// alone, for terminals too short for the wordmark, and the caller adds the
-/// plain wordmark line beneath it.
+/// the splash artwork. `Lockup` is the whole mark; `Mark` is the mark alone,
+/// for terminals too short for the wordmark - caller adds the plain wordmark
+/// line beneath it
 pub enum Splash {
     Lockup(Vec<Vec<(String, Color)>>),
     Mark(Vec<Vec<(String, Color)>>),
@@ -326,7 +312,7 @@ pub enum Splash {
 }
 
 impl Splash {
-    /// The artwork rows, if any.
+    /// artwork rows, if any
     pub fn rows(&self) -> Option<&Vec<Vec<(String, Color)>>> {
         match self {
             Splash::Lockup(rows) | Splash::Mark(rows) => Some(rows),
@@ -334,17 +320,16 @@ impl Splash {
         }
     }
 
-    /// Whether the wordmark is part of the artwork, so the caller knows not to
-    /// print a second one.
+    /// whether the wordmark is part of the artwork, so the caller knows not to
+    /// print a second one
     pub fn has_wordmark(&self) -> bool {
         matches!(self, Splash::Lockup(_))
     }
 }
 
-/// The splash for a terminal `term_w` by `term_h`. `zone_rows` is the composer's
-/// height, reserved before the artwork takes what is left; `t` is seconds and
-/// drives the reveal loop; `word` is the wordmark's colour, taken from the
-/// active theme.
+/// splash for a terminal `term_w` x `term_h`. `zone_rows` is the composer's
+/// height, reserved before the artwork takes the rest; `t` is seconds and
+/// drives the reveal loop; `word` is the wordmark colour from the active theme
 pub fn splash(term_w: usize, term_h: usize, zone_rows: usize, t: f64, word: Color) -> Splash {
     if mode() == Mode::Off {
         return Splash::None;
@@ -371,7 +356,7 @@ pub fn splash(term_w: usize, term_h: usize, zone_rows: usize, t: f64, word: Colo
     }
 }
 
-/// Sample the band, apply the reveal, pack it into cells, and colour it.
+/// sample the band, apply the reveal, pack into cells, colour it
 fn draw(
     band: &Band,
     cols: usize,
@@ -408,7 +393,7 @@ fn draw(
     colour(cells, cols, rows, dot_h, wordmark_from, word, phase)
 }
 
-/// Braille packs 2x4 dots into one cell.
+/// braille: 2x4 dots per cell
 fn pack_braille(dots: &[Vec<bool>], cols: usize) -> Vec<Vec<char>> {
     dots.chunks(4)
         .map(|band| {
@@ -429,7 +414,7 @@ fn pack_braille(dots: &[Vec<bool>], cols: usize) -> Vec<Vec<char>> {
         .collect()
 }
 
-/// Half-block packs two vertical dots into one cell: `▀`, `▄`, `█` or blank.
+/// half-block: two vertical dots per cell - `▀`, `▄`, `█` or blank
 fn pack_blocks(dots: &[Vec<bool>]) -> Vec<Vec<char>> {
     dots.chunks(2)
         .map(|pair| {
@@ -447,7 +432,7 @@ fn pack_blocks(dots: &[Vec<bool>]) -> Vec<Vec<char>> {
         .collect()
 }
 
-/// Colour each cell by its position, before the spans are merged.
+/// colour each cell by position, before spans get merged
 fn colour(
     cells: Vec<Vec<char>>,
     cols: usize,
@@ -475,8 +460,8 @@ fn colour(
     group(coloured)
 }
 
-/// Drop blank edges, then merge neighbouring cells that share a colour into one
-/// span so a gradient row costs a handful of spans rather than one per cell.
+/// drop blank edges, then merge neighbouring cells that share a colour into one
+/// span - a gradient row costs a handful of spans, not one per cell
 fn group(mut cells: Vec<Vec<(char, Color)>>) -> Vec<Vec<(String, Color)>> {
     for line in cells.iter_mut() {
         while line.last().is_some_and(|&(ch, _)| ch == ' ') {
@@ -508,7 +493,7 @@ fn group(mut cells: Vec<Vec<(char, Color)>>) -> Vec<Vec<(String, Color)>> {
 mod tests {
     use super::*;
 
-    /// A wordmark colour that survives the cell quantiser unchanged.
+    /// a wordmark colour that survives the cell quantiser unchanged
     const WORD: Color = Color::Rgb(104, 152, 200);
 
     fn revealed(
@@ -575,8 +560,8 @@ mod tests {
 
     #[test]
     fn wordmark_takes_the_colour_it_is_given() {
-        // The wordmark is text, so it follows the theme like every other
-        // heading; the mark keeps its brand gradient either way.
+        // the wordmark is text, so it follows the theme like every other
+        // heading; the mark keeps its brand gradient either way
         let rows = splash(120, 40, 5, 0.0, WORD)
             .rows()
             .expect("artwork")
@@ -657,8 +642,8 @@ mod tests {
 
     #[test]
     fn off_mode_draws_nothing() {
-        // mode() is process-global and defaults to Braille, so assert the enum
-        // plumbing rather than mutating the environment.
+        // mode() is process-global and defaults to braille, so assert the enum
+        // plumbing rather than mutating the environment
         assert!(Splash::None.rows().is_none());
         assert!(!Splash::None.has_wordmark());
         assert!(Splash::Lockup(Vec::new()).has_wordmark());

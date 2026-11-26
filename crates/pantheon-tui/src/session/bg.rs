@@ -1,28 +1,26 @@
-//! Background tasks (`/btw`): fire-and-forget turns that run beside the
-//! main session without interrupting it.
+//! background tasks (`/btw`): fire-and-forget turns that run beside the main
+//! session without interrupting it.
 //!
-//! Lifecycle: queued → running → done | failed. The TUI owns the task
-//! list; each task executes its turn on a worker thread against its own
-//! run id with its own cancel token, so double-Esc on the main turn never
-//! touches a background task and vice versa. Completion arrives as
-//! `TuiEvent::BgDone` and lands in the transcript as a labeled
-//! `BlockKind::BgResult` block.
+//! lifecycle: queued → running → done | failed. the TUI owns the task list;
+//! each task runs its turn on a worker thread against its own run id with its
+//! own cancel token, so double-Esc on the main turn never touches a background
+//! task and vice versa. completion arrives as `TuiEvent::BgDone` and lands in
+//! the transcript as a labeled `BlockKind::BgResult` block.
 
 use std::sync::{atomic::AtomicBool, Arc};
 
-/// Max background tasks alive (queued + running) at once.
+/// max background tasks alive (queued + running) at once
 pub const MAX_BG_TASKS: usize = 4;
 
-/// Wall-clock milliseconds since the Unix epoch, as `u64`.
+/// wall-clock milliseconds since the Unix epoch, as `u64`.
 ///
-/// Public: `crate::session::bg::now_ms` is read by the activity renderer.
-/// A thin widening wrapper over the canonical
-/// `pantheon_api::logging::now_ms` keeps that signature intact.
+/// `crate::session::bg::now_ms` is read by the activity renderer. just a
+/// widening wrapper over `pantheon_api::logging::now_ms` to keep that signature.
 pub fn now_ms() -> u64 {
     pantheon_api::logging::now_ms() as u64
 }
 
-/// Max chars of the prompt shown in labels and lists.
+/// max chars of the prompt shown in labels and lists
 pub const LABEL_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,19 +56,19 @@ pub struct BgTask {
     pub started_ms: u64,
     pub finished_ms: Option<u64>,
     pub output: Option<String>,
-    /// Independent cancel token: the main turn's double-Esc writes the
-    /// session token, never this one.
+    /// own cancel token: the main turn's double-Esc writes the session token,
+    /// never this one
     pub cancel: Arc<AtomicBool>,
-    /// Tool calls captured from this task's own run id, for the sidebar
-    /// activity timeline. Bounded; see [`MAX_BG_STEPS`].
+    /// tool calls captured from this task's own run id, for the sidebar
+    /// activity timeline. bounded, see [`MAX_BG_STEPS`]
     pub steps: Vec<super::activity::BgStep>,
 }
 
-/// Max captured tool steps per background task (timeline display cap).
+/// max captured tool steps per background task (timeline display cap)
 pub const MAX_BG_STEPS: usize = 12;
 
-/// Short, secret-free label for lists and result blocks: first line of
-/// the prompt, run through the log redactor, capped at `LABEL_CHARS`.
+/// short, secret-free label for lists and result blocks: first line of the
+/// prompt through the log redactor, capped at `LABEL_CHARS`
 pub fn task_label(prompt: &str) -> String {
     let first = prompt.lines().next().unwrap_or("").trim();
     let redacted = pantheon_api::logging::redact(first);
@@ -125,17 +123,17 @@ impl BgTask {
     }
 }
 
-/// How many tasks are still alive (queued or running).
+/// how many tasks are still alive (queued or running)
 pub fn active_count(tasks: &[BgTask]) -> usize {
     tasks.iter().filter(|t| t.status.is_active()).count()
 }
 
-/// True when another background task may start.
+/// true when another background task may start
 pub fn can_spawn(tasks: &[BgTask]) -> bool {
     active_count(tasks) < MAX_BG_TASKS
 }
 
-/// First line of a result, capped - for notification summaries.
+/// first line of a result, capped - for notification summaries
 pub fn summary_line(output: &str) -> String {
     output
         .lines()
@@ -147,15 +145,15 @@ pub fn summary_line(output: &str) -> String {
         .collect()
 }
 
-/// Spinner frame for the status bar, driven by wall-clock millis.
-/// Pure in the clock value, so tests can pin it.
+/// spinner frame for the status bar, driven by wall-clock millis. pure in the
+/// clock value so tests can pin it
 pub fn spinner_frame(now_ms: u64) -> char {
     const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     FRAMES[(now_ms as usize / 200) % FRAMES.len()]
 }
 
-/// Status-bar segment, e.g. `"bg 2 ⠋"`; `None` when nothing is alive so
-/// the bar stays quiet for operators who never use `/btw`.
+/// status-bar segment, e.g. `"bg 2 ⠋"`; `None` when nothing is alive, so the
+/// bar stays quiet for operators who never use `/btw`
 pub fn status_segment(tasks: &[BgTask]) -> Option<String> {
     let n = active_count(tasks);
     if n == 0 {
@@ -165,7 +163,7 @@ pub fn status_segment(tasks: &[BgTask]) -> Option<String> {
     }
 }
 
-/// Header line for the transcript result block.
+/// header line for the transcript result block
 pub fn result_header(task: &BgTask) -> String {
     match task.status {
         BgStatus::Done => format!("◈ background result bg-{} · \"{}\"", task.id, task.label),

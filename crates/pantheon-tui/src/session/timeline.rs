@@ -1,28 +1,27 @@
-//! Turn timeline: a navigable rail of conversation turns.
+//! turn timeline: a navigable rail of conversation turns.
 //!
-//! One entry per user turn, in conversation order. Navigation is strictly
-//! read-only: moving the selection and jumping the transcript viewport
-//! never mutates the transcript. (dsh-TUI's TimelineRail was the
-//! inspiration; this is a keyboard-driven reimplementation, not a port.)
+//! one entry per user turn, in conversation order. read-only: moving the
+//! selection and jumping the transcript viewport never mutates the transcript.
+//! (dsh-TUI's TimelineRail was the inspiration; keyboard-driven reimplementation,
+//! not a port.)
 
 use super::{BlockKind, TranscriptBlock};
 
-/// One turn in the rail: the user message that opened it plus where its
-/// blocks start in the transcript.
+/// one turn in the rail: the user message that opened it + where its blocks
+/// start in the transcript
 #[derive(Debug, Clone)]
 pub struct TimelineTurn {
-    /// 1-based turn number in conversation order.
+    /// 1-based turn number, in conversation order
     pub turn_no: usize,
-    /// Index of the turn's first block (the user message) in
-    /// `TuiState::blocks`.
+    /// index of the turn's first block (the user message) in `TuiState::blocks`
     pub block_start: usize,
-    /// First line of the user message, truncated for the rail.
+    /// first line of the user message, truncated for the rail
     pub preview: String,
 }
 
-/// Build the rail from the transcript. A turn opens at every user message;
-/// status/assistant/tool blocks belong to the turn above them. Blocks
-/// before the first user message (welcome status lines) are not turns.
+/// build the rail from the transcript. a turn opens at every user message;
+/// status/assistant/tool blocks belong to the turn above them. blocks before
+/// the first user message (welcome status lines) aren't turns
 pub fn build_turns(blocks: &[TranscriptBlock]) -> Vec<TimelineTurn> {
     let mut turns = Vec::new();
     for (i, block) in blocks.iter().enumerate() {
@@ -38,9 +37,9 @@ pub fn build_turns(blocks: &[TranscriptBlock]) -> Vec<TimelineTurn> {
     turns
 }
 
-/// First visible row of the rail for a given selection: the window
-/// follows the selection, not the tail, so a selection moved above
-/// the tail window stays visible. Pure, so tests cover it directly.
+/// first visible row of the rail for a given selection: the window follows the
+/// selection, not the tail, so moving the selection above the tail window keeps
+/// it visible. pure, so tests cover it directly
 pub fn window_start(sel: usize, total: usize, rows: usize) -> usize {
     let rows = rows.max(1);
     if total <= rows || sel < rows {
@@ -50,16 +49,15 @@ pub fn window_start(sel: usize, total: usize, rows: usize) -> usize {
     }
 }
 
-/// Selection state for the open rail. The selection is an index into the
-/// `build_turns` list; it clamps, never wraps, so arrowing past either end
-/// is a harmless no-op.
+/// selection state for the open rail. index into the `build_turns` list; it
+/// clamps, never wraps, so arrowing past either end is a harmless no-op
 #[derive(Debug, Clone)]
 pub struct TimelineNav {
     sel: usize,
 }
 
 impl TimelineNav {
-    /// Open with the selection on the latest turn (the live tail).
+    /// open with the selection on the latest turn (the live tail)
     pub fn open(turn_count: usize) -> Self {
         Self {
             sel: turn_count.saturating_sub(1),
@@ -70,7 +68,7 @@ impl TimelineNav {
         self.sel
     }
 
-    /// Move the selection by `n`, clamped to the turn list.
+    /// move the selection by `n`, clamped to the turn list
     pub fn move_sel(&mut self, n: isize, turn_count: usize) {
         if turn_count == 0 {
             self.sel = 0;

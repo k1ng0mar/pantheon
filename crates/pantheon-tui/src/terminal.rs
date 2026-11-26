@@ -281,9 +281,9 @@ fn run_delivered_task(
     }
     let model_policy =
         crate::config::build_routed_model_policy(file_cfg.as_ref(), None, None, Some("chat"));
-    // Policy preset honored verbatim: a Reader config must stay
-    // read-only here, not silently widen to coder (the old
-    // CoderMemory-only boolean did exactly that on this path).
+    // Policy preset honored verbatim: a Reader config must stay read-only here,
+    // not silently widen to coder (a CoderMemory-only boolean does exactly that on
+    // this path).
     let policy = crate::config_schema::policy_for_config(&file_cfg);
     let secrets = crate::config::chat_secrets(file_cfg.as_ref());
     let session =
@@ -454,7 +454,7 @@ pub(crate) fn outcome_text(outcome: &pantheon_agent::LoopOutcome) -> String {
 }
 
 /// Canonical `pantheon --help`: the twelve nouns a user needs, with the
-/// historic top-level verbs deliberately left out of the advertisement.
+/// historic top-level verbs left out of the advertisement.
 pub(crate) fn usage() -> String {
     let mut s = String::new();
     s.push_str("pantheon - a durable agent runtime\n\n");
@@ -538,11 +538,9 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 /// Guard for verbs that take a positional argument (`audit <run_id>`,
-/// `runs [<run_id>]`): the hand-rolled dispatch used to treat `--*`
-/// tokens as the positional value, so `doctor --ping` ran the plugin
-/// doctor on a directory literally named "--ping" and `runs --frobnicate`
-/// looked up a run literally named "--frobnicate". `--help`/`-h` prints
-/// the verb help and exits 0; any other flag-looking token that is not
+/// `runs [<run_id>]`): a `--*` token is never taken as the positional value, so
+/// `doctor --ping` doesn't run the plugin doctor on a directory named "--ping".
+/// `--help`/`-h` prints the verb help and exits 0; any other flag-like token not
 /// in `allowed_flags` is a usage error (exit 2).
 fn reject_flag_positional(
     verb: &str,
@@ -568,15 +566,14 @@ fn reject_flag_positional(
 fn audit_help() {
     eprintln!("usage: pantheon audit <run_id> [OUT.jsonl]");
     eprintln!("  sequence-validated JSONL trajectory for one run;");
-    // The implementation writes `<run_id>.jsonl` when OUT is omitted
-    // (never stdout): the old text promised stdout, which was false.
+    // The implementation writes `<run_id>.jsonl` when OUT is omitted, never
+    // stdout.
     eprintln!("  writes OUT.jsonl when given, <run_id>.jsonl otherwise");
 }
 
-/// Pure parse for `pantheon memory recall [--ns <name>] <query...>`:
-/// returns `(namespaces, query)`. `args` is the full argv; args[2] is
-/// the literal verb "recall". Kept pure so the off-by-one that used to
-/// join "recall" into the query stays testable.
+/// Pure parse for `pantheon memory recall [--ns <name>] <query...>`: returns
+/// `(namespaces, query)`. `args` is the full argv; args[2] is the literal verb
+/// "recall". Pure so the indexing stays testable.
 fn parse_memory_recall(args: &[String], default_namespace: &str) -> (Vec<String>, String) {
     if args.get(3).map(String::as_str) == Some("--ns") {
         let ns = args.get(4).cloned().unwrap_or_else(|| "*".to_string());
@@ -705,15 +702,13 @@ fn write_seen(keys: &HashSet<(String, String, String)>) {
     }
 }
 
-/// CLI hook fire, routed by hook class - the old code called only
-/// `mgr.fire` (the context path) for every hook, so a gate hook's deny
-/// had no effect and an unwired hook fired live while `pantheon doctor`
-/// on the same plugin said its handler "will not run".
+/// CLI hook fire, routed by hook class. Calling only `mgr.fire` for every hook
+/// meant a gate hook's deny had no effect and an unwired hook fired live while
+/// `pantheon doctor` said its handler would not run.
 /// - Unwired hooks are refused (same as `compat::map_hook`).
 /// - Gate hooks go through `fire_gate` and report deny/allow.
-/// - Transform hooks have no payload on the CLI, so they are refused
-///   with a clear error instead of silently doing nothing.
-/// - Context/observer hooks use the context path as before.
+/// - Transform hooks have no CLI payload, so they error instead of doing nothing.
+/// - Context and observer hooks use the context path.
 ///
 /// Returns `Err` for refused hooks so the caller can exit non-zero.
 fn cli_fire(hook: Hook, session: &str, platform: &str) -> Result<Option<String>, String> {
@@ -816,18 +811,14 @@ fn resolve_say_stdin(say: Option<String>) -> Option<String> {
     Some(text)
 }
 
-/// Delivered and synthetic `run` flags are disjoint, and the mismatch
-/// used to be silent in both directions: --tool/--fail/--ext seed
-/// synthetic ledger events and have no meaning on a real turn, while
-/// --resume/--mode/--agent/--verdict-tool only shape a delivered turn
-/// and were swallowed by the synthetic writer (a resumed plan-mode run
-/// that never resumed). Pure so the dispatch arm's exit-2 cases stay
-/// testable without spawning a process.
+/// Delivered and synthetic `run` flags are disjoint. --tool/--fail/--ext seed
+/// synthetic ledger events and mean nothing on a real turn, while
+/// --resume/--mode/--agent/--verdict-tool only shape a delivered turn. A
+/// mismatch is an error rather than silently ignored. Pure so the exit-2 cases
+/// stay testable without spawning a process.
 #[allow(clippy::too_many_arguments)]
-/// Reject flag combinations that would silently do something other than what
-/// was asked. Both cases below used to be accepted: `--resume` with no id
-/// minted a brand-new run (so a "resume" that resumed nothing), and
-/// `--no-resume` outside the approval path was silently ignored.
+/// Reject flag combinations that would do something other than what was asked:
+/// `--resume` with no id, and `--no-resume` outside the approval path.
 fn check_run_flag_mix(
     has_id: bool,
     resume: bool,
@@ -945,10 +936,8 @@ impl OutputFormat {
     }
 }
 
-/// Parsed `pantheon run` flags. Extracted from the dispatch arm so the
-/// flag surface is unit-testable: a swallowed or mistyped flag used to
-/// vanish into `_ => {}` (the dashboard's `--resume`/`--mode` resume
-/// children died with exit 2 while the dashboard still reported ok).
+/// Parsed `pantheon run` flags. Extracted so the flag surface is unit-testable: a
+/// swallowed or mistyped flag is an error, not a `_ => {}` fallthrough.
 struct RunArgs {
     id: Option<String>,
     say: Option<String>,
@@ -1066,8 +1055,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
                     "run: unknown flag {other:?} (see `pantheon run --help`)"
                 ));
             }
-            // A stray positional used to vanish too; it is not a
-            // documented `run` argument, so it is an error as well.
+            // A stray positional is an error too: it isn't a documented `run`
+            // argument.
             other => return Err(format!("run: unexpected argument {other:?}")),
         }
         i += 1;
@@ -1213,16 +1202,13 @@ pub fn run() {
                         eprintln!("memory recall: backend: {e}");
                         std::process::exit(1);
                     });
-                    // Recalls the same namespace `put` writes to, so the
-                    // roundtrip is symmetric: `memory put k v` then
-                    // `memory recall k` finds it. The verb layout is
-                    // `memory recall [--ns <name>] <query...>`: args[2]
-                    // is always the literal verb "recall", so the
-                    // `--ns` flag lives at args[3] and the query starts
-                    // at args[4] (or args[3] without the flag). Reading
-                    // args[2] as the flag/query used to join the word
-                    // "recall" into every query and sent `--ns` searches
-                    // to the agent namespace instead of the named one.
+                    // Recalls the same namespace `put` writes to, so `memory put k v`
+                    // then `memory recall k` finds it. The layout is
+                    // `memory recall [--ns <name>] <query...>`: args[2] is always the
+                    // literal verb, so `--ns` sits at args[3] and the query starts at
+                    // args[4] (or args[3] without the flag). Reading args[2] as the
+                    // flag/query joins "recall" into every query and sends `--ns`
+                    // searches to the agent namespace.
                     //
                     // `--ns <name>` (or `--ns '*'`) is the explicit way to
                     // read another agent's memory. Nothing defaults to it.
@@ -1848,13 +1834,10 @@ timeout_ms = 5000
                     let pending = pending_list.iter().find(|p| p.name == name);
                     match pending {
                         Some(p) => {
-                            // Same pattern as `pantheon mcp approve`: show
-                            // the privilege warning and require the
-                            // operator to type the name, unless --yes.
-                            // `record_approval_for` requires the caller to
-                            // have shown the warning and obtained explicit
-                            // consent first; the old code recorded with
-                            // neither, printing only `approved <name>`.
+                            // Same as `pantheon mcp approve`: show the privilege
+                            // warning and require the operator to type the name, unless
+                            // --yes. `record_approval_for` expects the caller to have
+                            // shown the warning and obtained explicit consent.
                             println!("{}", pantheon_api::approval::warning_text(&p.name));
                             println!();
                             println!("plugin: {} (v{}) at {}", p.name, p.version, p.dir.display());

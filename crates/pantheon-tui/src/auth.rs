@@ -1,9 +1,8 @@
-//! `pantheon auth` — manage provider API keys without hand-editing `.env`.
+//! `pantheon auth` - manage provider keys without hand-editing `.env`
 //!
-//! Keys live once per provider under `PANTHEON_KEY_<PROVIDER>` (comma
-//! separated when stacked). Aux slots and fallbacks pick providers and
-//! models from the catalog; they never own keys, so this verb is the
-//! single place keys are managed.
+//! one key set per provider under `PANTHEON_KEY_<PROVIDER>` (comma separated
+//! when stacked). aux slots and fallbacks only pick providers/models from the
+//! catalog, they don't own keys, so this is the only place keys get managed.
 
 use std::path::Path;
 

@@ -1,5 +1,3 @@
-//! cli_group: args, cli_surface, consolidate_cli, entry, custom_commands, commands, prompt, mentions, acp, agui in one file.
-
 pub mod args {
     //! Shared CLI argument helpers. One parser for every verb: `--flag value`
     //! and `--flag=value` both work, positional args are those that do not
@@ -65,7 +63,7 @@ pub mod cli_surface {
     //! compatibility router: the public surface is a small set of nouns, and
     //! the historic verbs remain accepted as hidden aliases. Canonical routes
     //! are rewritten to the legacy argv shape before the existing dispatcher
-    //! sees them, so command implementations do not move in this pass.
+    //! sees them, so command implementations stay put.
 
     /// Commands shown by `pantheon --help`.
     pub const PUBLIC_VERBS: &[&str] = &[
@@ -108,7 +106,7 @@ pub mod cli_surface {
     ];
 
     /// Historic top-level verbs. They still dispatch, but help no longer
-    /// advertises them. This list is deliberately kept beside the public one so
+    /// advertises them. This list is kept beside the public one so
     /// the known-verb guard cannot drift again.
     pub const LEGACY_VERBS: &[&str] = &[
         "audit",
@@ -358,8 +356,8 @@ pub mod cli_surface {
         }
     }
 
-    /// Help for the namespaces that did not exist before this pass. Existing
-    /// groups keep their richer command-specific help.
+    /// Help for newer namespace groups; older ones keep their richer
+    /// command-specific help.
     pub fn group_help(group: &str) -> Option<&'static str> {
         match group {
             "session" => Some(SESSION_HELP),
@@ -684,12 +682,11 @@ pub mod cli_surface {
 pub mod consolidate_cli {
     //! `pantheon consolidate` - compatibility shim over the unified nightly pass.
     //!
-    //! The old standalone consolidation pipeline is merged into
-    //! [`crate::nightly_cli`]: `pantheon consolidate` now runs the full
-    //! nightly pass (single ledger scan → memory promotion + proposals →
-    //! gates → audit). Every function here keeps its old name and shape so
-    //! the TUI, the scheduler, and scripts keep working; new code should
-    //! call `nightly_cli` directly.
+    //! `pantheon consolidate` runs the full nightly pass in
+    //! [`crate::nightly_cli`] (single ledger scan → memory promotion +
+    //! proposals → gates → audit). The functions here keep their names and
+    //! shapes because the TUI, the scheduler and scripts call them; new code
+    //! should call `nightly_cli` directly.
 
     use std::path::Path;
 
@@ -796,7 +793,7 @@ pub mod entry {
     /// A missing config file, an unreadable one, or one without a model all mean
     /// the same thing to a user on first run: nothing is set up.
     ///
-    /// This deliberately does not treat a *malformed* config as "not configured".
+    /// This does not treat a *malformed* config as "not configured".
     /// Overwriting a file the user broke would destroy the evidence of what went
     /// wrong, and the entry point's job is to decide what to open, not to repair
     /// anything. A malformed config is reported by `doctor` and by the reader that
@@ -907,7 +904,7 @@ pub mod entry {
     /// name fails here with a clear error, because the session path folds
     /// resolution failures into the anonymous fallback and would otherwise
     /// open the wrong agent silently. The validated name is installed as the
-    /// process-lifetime override, which `Config::resolve_profile` consults
+    /// process-lifetime override that `Config::resolve_profile` consults, so
     /// session construction needs no new parameter.
     pub fn run_with_profile(name: &str) {
         let data_dir = crate::terminal::data_dir();
@@ -933,21 +930,17 @@ pub mod entry {
         run();
     }
 
-    /// Fail fast with Ollama guidance when the configured provider is
-    /// `local` and nothing answers at its base URL.
+    /// Fail fast with Ollama guidance when the configured provider is `local` and
+    /// nothing answers at its base URL.
     ///
-    /// `local` is Ollama. A bare `pantheon` with Ollama down used to open a
-    /// session whose first message died with a bare PROVIDER_HTTP network
-    /// error - no mention of Ollama, no fix. Probing before the TUI opens
-    /// turns that into the fix: start Ollama and pull the model.
+    /// `local` is Ollama. Probing before the TUI opens turns a bare PROVIDER_HTTP
+    /// network error into the fix: start Ollama and pull the model.
     ///
-    /// `local` only appears in config when the user chose it: the installer
-    /// writes no config, and setup never defaults to `local`. So an
-    /// unreachable `local` is a deliberate provider that is momentarily
-    /// down, not an install that guessed. It is reported with the start hint
-    /// and a non-zero exit - never by hijacking the user back into setup,
-    /// which would silently discard their choice. Only `local` is probed: a
-    /// cloud endpoint hiccup at launch must not refuse to open the session.
+    /// `local` only appears in config when the user chose it (the installer writes no
+    /// config and setup never defaults to it), so an unreachable `local` is a
+    /// deliberate provider that's momentarily down. It exits non-zero with the start
+    /// hint; it never sends the user back into setup, which would discard their
+    /// choice. Only `local` is probed - a cloud hiccup must not refuse to open.
     fn check_local_provider(data_dir: &std::path::Path) {
         let model = match crate::config::Config::load(data_dir) {
             Ok(cfg) => match cfg.model {
@@ -1827,9 +1820,8 @@ pub mod commands {
 
         #[test]
         fn registry_covers_every_dispatched_command_including_project() {
-            // /project is dispatched by handle_slash_inner but used to be
-            // missing here, so completion never suggested it and the
-            // built-in-vs-skill check did not treat it as built-in.
+            // /project needs to be listed here too, so completion suggests it and the
+            // built-in-vs-skill check treats it as built-in.
             let reg = registry();
             assert!(reg.contains_key("project"), "registry lacks /project");
             assert!(is_builtin("project"));
@@ -2412,7 +2404,7 @@ pub mod acp {
     //!   next `session/prompt` (the run is parked, so the text is routed through
     //!   `Supervisor::answer_input`, not treated as a fresh user turn).
     //!
-    //! The server is deliberately one prompt at a time. `Session` already owns a
+    //! The server is one prompt at a time. `Session` already owns a
     //! single run lease and process-global working directory; pretending to run
     //! concurrent ACP prompts would let two clients race those resources.
     //!
@@ -3940,8 +3932,8 @@ pub mod agui {
             if args[i] == name && i + 1 < args.len() {
                 return Some(args[i + 1].clone());
             }
-            // `--port=8080` is the same flag, not an unknown one: the old
-            // exact-match-only read silently served the default port.
+            // `--port=8080` is the same flag, not an unknown one: an
+            // exact-match-only read serves the default port and says nothing.
             if let Some(v) = args[i].strip_prefix(&format!("{name}=")) {
                 return Some(v.to_string());
             }
@@ -4001,12 +3993,11 @@ pub mod agui {
         use crate::config::build_model_policy;
         use std::sync::Arc;
 
-        // Resolve the Session exactly as the terminal interface does: the
-        // config document, its key names, and its auxiliary models. The AG-UI
-        // surface used to translate a subset of config.toml into environment
-        // variables and let the runtime read those, which silently dropped
-        // every auxiliary section and any key name the runtime does not know.
-        // A builder keeps one definition of "what a turn runs on".
+        // Resolve the Session exactly as the terminal interface does: the config
+        // document, its key names, and its auxiliary models. Translating config.toml
+        // into environment variables instead drops every auxiliary section and any key
+        // name the runtime doesn't know. A builder keeps one definition of "what a
+        // turn runs on".
         let file_cfg = config::Config::load_or_report(data_dir);
         let startup_cfg = file_cfg.clone();
         pantheon_runtime::agui::set_session_factory(Arc::new(move |dir: &std::path::PathBuf| {
@@ -4109,14 +4100,12 @@ pub mod agui {
             return;
         }
 
-        // Unknown flags are an error, not a default serve: `serve --bogus`
-        // used to start the server anyway, ignoring whatever the operator
-        // thought they had configured.
-        // All three flags take a value (`--port 8080` or `--port=8080`,
-        // as `flag()` reads them), so the value token is consumed here,
-        // not mistaken for a stray positional. A value flag with no
-        // value is not the default: `serve --port` at the end used to
-        // bind the configured port while looking like an explicit choice.
+        // Unknown flags are an error, not a default serve: `serve --bogus` must not
+        // start the server ignoring what the operator configured.
+        // All three flags take a value (`--port 8080` or `--port=8080`, as `flag()`
+        // reads them), so the value token is consumed here. A value flag with no value
+        // is an error, not the default, so `serve --port` can't look like an explicit
+        // choice.
         let rest: &[String] = args.get(2..).unwrap_or(&[]);
         let mut i = 0;
         while i < rest.len() {

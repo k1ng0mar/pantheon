@@ -1,10 +1,7 @@
-//! account_group: secrets, secrets_form, oauth, backup, checkpoint in one file.
-
 pub mod secrets {
-    //! `pantheon secrets migrate`: move plaintext dotenv stores into the encrypted vault.
-    //!
-    //! Backup first, migrate, verify by reopening, never delete plaintext.
-    //! Deleting plaintext is a separate human approved step after restart.
+    //! `pantheon secrets migrate`: move plaintext dotenv stores into the vault.
+    //! backup first, migrate, verify by reopening, never delete plaintext. deleting
+    //! plaintext is a separate human-approved step after restart.
 
     use std::path::PathBuf;
 
@@ -76,26 +73,22 @@ pub mod secrets {
 }
 
 pub mod secrets_form {
-    //! Secure secret entry form for the TUI.
+    //! secure secret entry form. plain data state machine so it's testable
+    //! without a terminal; the session maps crossterm keys onto [`FormKey`]
+    //! and renders [`SecretsForm::render_lines`] into an overlay.
     //!
-    //! The form is a small state machine over plain data, so it is testable
-    //! without a terminal. The session layer maps crossterm keys onto
-    //! [`FormKey`] and renders [`SecretsForm::render_lines`] into an overlay.
-    //!
-    //! Security contract, enforced here and nowhere else:
-    //!
-    //! * The value is held only as a [`pantheon_secrets::SecretValue`]
-    //!   (zeroizing, `Debug` shows `***`).
-    //! * [`MaskedInput::render`] shows one bullet per character and never the
-    //!   value. [`SecretsForm::render_lines`] never includes the value.
-    //! * The value is never written to the transcript, the status line, or a
-    //!   log: the session submits it straight to
-    //!   [`pantheon_secrets::SecureFormStore`] and the form drops it on
-    //!   close, cancel, or submit.
+    //! security contract, enforced here and nowhere else:
+    //! * value only ever held as a [`pantheon_secrets::SecretValue`] (zeroizing,
+    //!   `Debug` prints `***`)
+    //! * [`MaskedInput::render`] shows one bullet per char, never the value;
+    //!   [`SecretsForm::render_lines`] never includes it
+    //! * value never hits the transcript, status line, or a log - the session
+    //!   submits it straight to [`pantheon_secrets::SecureFormStore`] and the
+    //!   form drops it on close/cancel/submit
 
     use pantheon_secrets::{SecretScope, SecretValue};
 
-    /// One key, in form terms. The session maps crossterm events onto this.
+    /// one key in form terms; the session maps crossterm events onto this
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FormKey {
         Char(char),
@@ -108,7 +101,7 @@ pub mod secrets_form {
         Down,
     }
 
-    /// Masked single-line input. Rendering shows bullets only.
+    /// masked single-line input; renders bullets only
     pub struct MaskedInput {
         value: SecretValue,
         len: usize,
@@ -158,12 +151,12 @@ pub mod secrets_form {
             self.len == 0
         }
 
-        /// Bullets only. Never the value, never a prefix of it.
+        /// bullets only. never the value, never a prefix of it
         pub fn render(&self) -> String {
             "•".repeat(self.len)
         }
 
-        /// Consume the value for submission. The input is empty afterwards.
+        /// consume the value for submission; the input is empty afterwards
         pub fn take(&mut self) -> SecretValue {
             let v = std::mem::replace(&mut self.value, SecretValue::new(String::new()));
             self.len = 0;
@@ -171,18 +164,18 @@ pub mod secrets_form {
         }
     }
 
-    /// Which field the form is on.
+    /// which field the form is on
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FormStep {
         Name,
         Scope,
         Value,
-        /// Verification ran; the form shows the outcome and offers retry
-        /// (back to Value) or done. Set by the session after submission.
+        /// verification ran; form shows outcome and offers retry (back to Value)
+        /// or done. set by the session after submission
         Outcome,
     }
 
-    /// Outcome the session reports back into the form after submitting.
+    /// outcome the session reports back after submitting
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum SubmitOutcome {
         Verified,
@@ -191,15 +184,15 @@ pub mod secrets_form {
         Error(String),
     }
 
-    /// The secure entry form itself.
+    /// the secure entry form itself
     pub struct SecretsForm {
         pub name: String,
         pub scope_index: usize,
         pub value: MaskedInput,
         pub step: FormStep,
         pub outcome: Option<SubmitOutcome>,
-        /// Set when the user confirms submission; the session reads the
-        /// value out with [`SecretsForm::take_submission`] and clears it.
+        /// set when the user confirms submission; the session reads the value
+        /// out with [`SecretsForm::take_submission`] and clears it
         pub submit_ready: bool,
     }
 
@@ -232,8 +225,8 @@ pub mod secrets_form {
             }
         }
 
-        /// A form prefilled for rotating an existing secret: the name and
-        /// scope are already set, so the user only types the new value.
+        /// prefilled for rotating an existing secret - name and scope are set,
+        /// user only types the new value
         pub fn prefilled(name: &str, scope: SecretScope) -> Self {
             let mut form = Self::new();
             form.name = name.to_string();
@@ -267,8 +260,7 @@ pub mod secrets_form {
             };
         }
 
-        /// Handle one key. Returns true when the form should close
-        /// (Esc, or Enter on the outcome step).
+        /// true when the form should close (Esc, or Enter on outcome step)
         pub fn on_key(&mut self, key: FormKey) -> bool {
             match key {
                 FormKey::Esc => return true,
@@ -339,8 +331,8 @@ pub mod secrets_form {
             false
         }
 
-        /// Take the submission out of the form. Returns None unless Enter
-        /// was pressed on the Value step with a non-empty value.
+        /// take the submission out; None unless Enter was pressed on Value step
+        /// with a non-empty value
         pub fn take_submission(&mut self) -> Option<(String, SecretScope, SecretValue)> {
             if !self.submit_ready {
                 return None;
@@ -354,23 +346,22 @@ pub mod secrets_form {
             ))
         }
 
-        /// Feed a verification outcome back into the form for display.
+        /// feed a verification outcome back in for display
         pub fn set_outcome(&mut self, outcome: SubmitOutcome) {
             self.outcome = Some(outcome);
             self.step = FormStep::Outcome;
         }
 
-        /// Retry after a failed verification: back to the Value step with a
-        /// cleared value, so the failed value is never re-submitted by
-        /// accident and never displayed.
+        /// retry after failed verification: back to Value with a cleared value,
+        /// so the failed value is never re-submitted or displayed
         pub fn retry(&mut self) {
             self.value.clear();
             self.outcome = None;
             self.step = FormStep::Value;
         }
 
-        /// Render lines for the overlay. The value never appears: only
-        /// bullets, and only its length in bullet form.
+        /// overlay lines. value never appears: bullets only, and only its length
+        /// in bullet form
         pub fn render_lines(&self) -> Vec<String> {
             let mut lines = vec![
                 "Secure secret entry (values are never shown or recorded)".to_string(),
@@ -498,22 +489,19 @@ pub mod secrets_form {
 pub mod oauth {
     //! `pantheon oauth`: connect hosted apps via local OAuth2.
     //!
-    //! Tokens live in the local durable vaults (OS keychain, else the
-    //! encrypted file vault): there is no server side. Client IDs come from
-    //! `PANTHEON_OAUTH_<APP>_CLIENT_ID`; every flow is the RFC 8252
-    //! public-client loopback flow with PKCE S256, so no client secret is
-    //! needed (Notion additionally honors `PANTHEON_OAUTH_NOTION_CLIENT_SECRET`
-    //! for confidential integrations).
+    //! tokens live in local durable vaults (OS keychain, else the encrypted file
+    //! vault) - no server side. client ids come from `PANTHEON_OAUTH_<APP>_CLIENT_ID`;
+    //! every flow is the RFC 8252 public-client loopback flow with PKCE S256, so
+    //! no client secret is needed (notion additionally honors
+    //! `PANTHEON_OAUTH_NOTION_CLIENT_SECRET` for confidential integrations).
     //!
-    //! Nothing here prints token material: status shows presence, scopes and
-    //! expiry only.
+    //! nothing here prints token material - status shows presence, scopes, expiry only.
 
     use pantheon_secrets::{oauth, SecretsBroker};
     use std::time::{Duration, SystemTime};
 
-    /// `pantheon oauth <login|status|logout> [app]`. `args[0]` is argv[0],
-    /// `args[1]` the verb, `args[2]` the subcommand - same shape as
-    /// `cmd_gateway`.
+    /// `pantheon oauth <login|status|logout> [app]`; `args[0]` argv[0],
+    /// `args[1]` verb, `args[2]` subcommand - same shape as `cmd_gateway`
     pub fn cmd_oauth(args: &[String]) {
         match args.get(2).map(String::as_str) {
             Some("login") => cmd_login(args.get(3).map(String::as_str)),
@@ -534,10 +522,10 @@ pub mod oauth {
         })
     }
 
-    /// Non-exiting variants for the TUI: the CLI helpers above print and
-    /// `process::exit` on error, which would kill (or corrupt the screen
-    /// of) a running TUI. The TUI dispatch arm uses these and reports
-    /// through transcript status lines instead.
+    /// non-exiting variants for the TUI: the CLI helpers above print and
+    /// `process::exit` on error, which would kill (or corrupt the screen of) a
+    /// running TUI. the TUI dispatch arm uses these and reports via transcript
+    /// status lines instead
     fn broker_result() -> Result<SecretsBroker, String> {
         SecretsBroker::durable(&crate::terminal::data_dir())
             .map_err(|e| format!("cannot open secret store: {e}"))
@@ -550,8 +538,8 @@ pub mod oauth {
         })
     }
 
-    /// One status line per provider, or an error string. Shared by the
-    /// CLI `status` (which prints) and the TUI `/oauth status` arm.
+    /// one status line per provider, or an error string. shared by the CLI
+    /// `status` (which prints) and the TUI `/oauth status` arm
     pub fn status_lines() -> Result<Vec<String>, String> {
         let broker = broker_result()?;
         let store = oauth::OAuthStore::new(&broker);
@@ -577,7 +565,7 @@ pub mod oauth {
         Ok(out)
     }
 
-    /// Disconnect one app, returning the report line or an error string.
+    /// disconnect one app, returning the report line or an error string
     pub fn logout_line(app: Option<&str>) -> Result<String, String> {
         let prov = resolve_app_result(app)?;
         let broker = broker_result()?;
@@ -596,9 +584,8 @@ pub mod oauth {
         })
     }
 
-    /// Per-app client registration hints: where the OAuth client comes from
-    /// and which redirect URI to allowlist (any 127.0.0.1 port works for the
-    /// loopback flow; the exact URI is printed at login time).
+    /// where the oauth client comes from and which redirect URI to allowlist
+    /// (any 127.0.0.1 port works for loopback; exact URI printed at login)
     fn registration_hint(prov: oauth::OAuthProvider) -> &'static str {
         match prov.id {
             "github" => "GitHub Settings > Developer settings > OAuth Apps (Authorization callback URL: http://127.0.0.1)",
@@ -698,15 +685,15 @@ pub mod oauth {
 }
 
 pub mod backup {
-    //! `pantheon backup`: atomic snapshots of every SQLite database Pantheon
-    //! owns, plus restore.
+    //! `pantheon backup`: atomic snapshots of every SQLite db pantheon owns,
+    //! plus restore.
     //!
-    //! Snapshots go to `<data_dir>/backups/<UTC-timestamp>/` (overridable with
-    //! `--dir`), one file per database plus a `manifest.json`. Each snapshot
-    //! is taken with SQLite `VACUUM INTO`, so it is transactionally consistent
-    //! even while the gateway or a session is writing.
+    //! snapshots go to `<data_dir>/backups/<UTC-timestamp>/` (`--dir`
+    //! overrides), one file per db plus `manifest.json`. each snapshot is
+    //! `VACUUM INTO`, so it's transactionally consistent even while the
+    //! gateway or a session is writing.
     //!
-    //! Recommended schedule (a scheduled job runs agent task text, so the job
+    //! recommended schedule (a scheduled job runs agent task text, so the job
     //! is a task that runs the verb):
     //!   pantheon schedule "run `pantheon backup` in the shell" --every 24h --deliver log
 
@@ -730,12 +717,12 @@ pub mod backup {
     }
 
     fn utc_stamp() -> String {
-        // No chrono in this crate; UTC from the system clock, formatted by hand.
+        // no chrono in this crate; UTC from the system clock, formatted by hand
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        // Days since epoch -> civil date (Howard Hinnant's algorithm).
+        // days since epoch -> civil date (Howard Hinnant's algorithm)
         let days = (secs / 86400) as i64;
         let z = days + 719468;
         let era = z.div_euclid(146097);
@@ -816,8 +803,8 @@ pub mod backup {
             eprintln!("then re-run with --yes to confirm.");
             std::process::exit(2);
         }
-        // Refuse while a live database looks open-for-write by someone else:
-        // a best-effort guard, not a lock - the operator stops the processes.
+        // refuse while a live db looks open-for-write by someone else:
+        // best-effort guard, not a lock - operator stops the processes
         let manifest_text = std::fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
             eprintln!("backup: cannot read {}: {e}", manifest_path.display());
             std::process::exit(1);
@@ -843,7 +830,7 @@ pub mod backup {
             std::process::exit(1);
         }
         for name in &names {
-            // Stay inside the backup dir: manifest names are plain file names.
+            // stay inside the backup dir: manifest names are plain file names
             if name.contains('/') || name.contains('\\') || name == "manifest.json" {
                 eprintln!("backup: refusing suspicious manifest entry {name:?}");
                 std::process::exit(1);
@@ -940,14 +927,14 @@ pub mod backup {
 pub mod checkpoint {
     //! `/checkpoint`, `/checkpoints`, `/restore` - named durable session snapshots.
     //!
-    //! A checkpoint is a `CheckpointCreated { run_id, turn_id, name }` ledger
+    //! a checkpoint is a `CheckpointCreated { run_id, turn_id, name }` ledger
     //! event: append-only and durable across restarts, following the
     //! `TurnRewound` pattern. `/restore` rewinds to a checkpoint by emitting
     //! `TurnRewound` at the first turn *after* the checkpoint's turn, reusing
     //! the same marker-then-truncate path as double-Esc rewind.
     //!
-    //! The pure cores (`effective_turn_ids`, `list_checkpoints`, `plan_restore`)
-    //! operate on replayed ledger entries so they are directly testable.
+    //! the pure cores (`effective_turn_ids`, `list_checkpoints`, `plan_restore`)
+    //! operate on replayed ledger entries so they're directly testable.
 
     use pantheon_api::events::Event;
     use pantheon_storage::LedgerEntry;
@@ -956,11 +943,11 @@ pub mod checkpoint {
     use crate::session::{BlockKind, TuiState};
     use pantheon_runtime::session::Session;
 
-    /// One checkpoint as listed by `/checkpoints`.
+    /// one checkpoint as listed by `/checkpoints`
     ///
     /// `turn_no` is 1-based in the effective (post-rewind) turn order; `0`
     /// means the checkpoint's turn is no longer in the effective history
-    /// (it was rewound over) and the checkpoint cannot be restored.
+    /// (it was rewound over) and it cannot be restored
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct CheckpointInfo {
         pub name: String,
@@ -968,7 +955,7 @@ pub mod checkpoint {
         pub turn_no: usize,
     }
 
-    /// A validated restore: what to rewind and where to truncate the view.
+    /// a validated restore: what to rewind and where to truncate the view
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct RestorePlan {
         pub name: String,
@@ -976,14 +963,14 @@ pub mod checkpoint {
         pub keep_turn_no: usize,
         /// 1-based turn number of the first dropped turn.
         pub drop_from_turn_no: usize,
-        /// Turn id to name in the `TurnRewound` marker: the first turn after
-        /// the checkpoint. Naming it (rather than the checkpoint turn)
-        /// keeps the checkpoint turn itself in the replay.
+        /// turn id to use in the `TurnRewound` marker: the first turn after the
+        /// checkpoint. naming it (rather than the checkpoint turn) keeps the
+        /// checkpoint turn itself in the replay
         pub rewind_target: String,
         pub dropped: usize,
     }
 
-    /// Turn ids of the effective history, in order (1-based by position).
+    /// turn ids of the effective history, in order (1-based by position)
     pub fn effective_turn_ids(entries: &[LedgerEntry]) -> Vec<String> {
         entries
             .iter()
@@ -994,17 +981,15 @@ pub mod checkpoint {
             .collect()
     }
 
-    /// All checkpoints in the effective history, oldest first.
+    /// all checkpoints in the effective history, oldest first
     ///
-    /// `turn_no == 0` means the checkpoint's turn is not in the supplied
-    /// entries. That happens only for raw (un-replayed) entries: on the
-    /// `/checkpoints` path the entries come from `replay()`, which applies
-    /// `TurnRewound` by truncating at the rewound turn - so a checkpoint
-    /// rewound over vanishes from the list entirely instead of appearing
-    /// with `turn_no == 0`. The `0` branch stays as the honest answer for
-    /// raw-entry callers (and for `plan_restore`'s error path); it is not
-    /// reachable via `/checkpoints` today, and the old doc claiming it was
-    /// is corrected here.
+    /// `turn_no == 0` means the checkpoint's turn is not in the supplied entries.
+    /// only happens for raw (un-replayed) entries: on `/checkpoints` the entries
+    /// come from `replay()`, which applies `TurnRewound` by truncating at the
+    /// rewound turn - so a checkpoint rewound over vanishes from the list instead
+    /// of showing `turn_no == 0`. the `0` branch stays as the honest answer for
+    /// raw-entry callers (and for `plan_restore`'s error path); `/checkpoints`
+    /// cannot reach it
     pub fn list_checkpoints(entries: &[LedgerEntry]) -> Vec<CheckpointInfo> {
         let turns = effective_turn_ids(entries);
         entries
@@ -1027,12 +1012,12 @@ pub mod checkpoint {
             .collect()
     }
 
-    /// True when a checkpoint with this name already exists in the effective history.
+    /// true when a checkpoint with this name exists in the effective history
     pub fn checkpoint_exists(entries: &[LedgerEntry], name: &str) -> bool {
         list_checkpoints(entries).iter().any(|c| c.name == name)
     }
 
-    /// Next free auto-name: `cp-1`, `cp-2`, ... (skips names already taken).
+    /// next free auto-name: `cp-1`, `cp-2`, ... (skips taken names)
     pub fn next_auto_name(entries: &[LedgerEntry]) -> String {
         let mut n = list_checkpoints(entries).len() + 1;
         loop {
@@ -1044,8 +1029,8 @@ pub mod checkpoint {
         }
     }
 
-    /// Validate a restore: resolve the checkpoint, ensure its turn is still in
-    /// the effective history and that there is at least one later turn to drop.
+    /// validate a restore: resolve the checkpoint, ensure its turn is still in
+    /// the effective history and there's at least one later turn to drop
     pub fn plan_restore(entries: &[LedgerEntry], name: &str) -> Result<RestorePlan, String> {
         let turns = effective_turn_ids(entries);
         let cp = list_checkpoints(entries)
@@ -1068,7 +1053,7 @@ pub mod checkpoint {
         })
     }
 
-    /// Block index of the Nth (1-based) user message in the live view.
+    /// block index of the Nth (1-based) user message in the live view
     fn user_message_block(
         blocks: &[crate::session::TranscriptBlock],
         turn_no: usize,
@@ -1095,7 +1080,7 @@ pub mod checkpoint {
         }
     }
 
-    /// `/checkpoint [name]` - snapshot the current turn under a durable name.
+    /// `/checkpoint [name]` - snapshot the current turn under a durable name
     pub fn cmd_checkpoint(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         if !state.ready || state.active_run.is_some() {
             state.add_status("/checkpoint: wait for the turn to finish".into());
@@ -1136,7 +1121,7 @@ pub mod checkpoint {
         state.add_status(format!("checkpoint '{name}' saved at turn {turn_no}"));
     }
 
-    /// `/checkpoints` - list checkpoints for this session.
+    /// `/checkpoints` - list checkpoints for this session
     pub fn cmd_checkpoints(state: &mut TuiState, session: &Arc<Session>) {
         let entries = match replay_entries(state, session) {
             Some(e) => e,
@@ -1160,7 +1145,7 @@ pub mod checkpoint {
         }
     }
 
-    /// `/restore <name>` - rewind the session to a checkpoint.
+    /// `/restore <name>` - rewind the session to a checkpoint
     pub fn cmd_restore(state: &mut TuiState, session: &Arc<Session>, cmd: &str) {
         if !state.ready || state.active_run.is_some() || state.pending_approval.is_some() {
             state.add_status("/restore: wait for the turn to finish".into());
@@ -1182,9 +1167,9 @@ pub mod checkpoint {
                 return;
             }
         };
-        // Resolve the view truncation BEFORE emitting the marker: the marker
-        // write gates the truncation, and a view that cannot be mapped must
-        // not leave the ledger ahead of what the operator sees.
+        // resolve the view truncation BEFORE emitting the marker: the marker
+        // write gates the truncation, and a view that can't be mapped must not
+        // leave the ledger ahead of what the operator sees
         let Some(drop_block) = user_message_block(&state.blocks, plan.drop_from_turn_no) else {
             state.add_status(format!(
                 "/restore: turn {} not found in view; ledger untouched",
@@ -1255,8 +1240,8 @@ pub mod checkpoint {
 
         #[test]
         fn list_checkpoints_zero_for_turn_missing_from_raw_entries() {
-            // Raw entries (no replay truncation): a checkpoint whose turn
-            // is absent reports turn_no == 0 instead of being dropped.
+            // raw entries (no replay truncation): checkpoint whose turn is absent
+            // reports turn_no == 0 instead of being dropped
             let entries = vec![entry(1, checkpoint("cp-orphan", "t9"))];
             let cps = list_checkpoints(&entries);
             assert_eq!(cps.len(), 1);
@@ -1277,15 +1262,14 @@ pub mod checkpoint {
             let orphan = vec![entry(1, checkpoint("cp-orphan", "t9"))];
             assert!(plan_restore(&orphan, "cp-orphan").is_err());
             assert!(plan_restore(&history(), "nope").is_err());
-            // cp-b sits on t2 with t3 after it, so restoring it is valid
-            // and drops exactly t3 (an earlier draft of this test wrongly
-            // claimed cp-b was at the tip).
+            // cp-b sits on t2 with t3 after it, so restoring it is valid and
+            // drops exactly t3 (an earlier draft wrongly claimed it was at the tip)
             let plan = plan_restore(&history(), "cp-b").unwrap();
             assert_eq!(plan.keep_turn_no, 2);
             assert_eq!(plan.drop_from_turn_no, 3);
             assert_eq!(plan.rewind_target, "t3");
             assert_eq!(plan.dropped, 1);
-            // A checkpoint on the last turn has nothing later to drop.
+            // a checkpoint on the last turn has nothing later to drop
             let mut at_tip = history();
             at_tip.push(entry(6, checkpoint("cp-c", "t3")));
             assert!(plan_restore(&at_tip, "cp-c").is_err());

@@ -1,15 +1,13 @@
-//! render_group: render, widget, todo_card, tabs, diffview, transcript, ui_render, desktop, yank, sanitize, send, session_summary, skills, stats, app, codebase in one file.
+//! Rendering and the small widgets used by the TUI.
 
 pub mod render {
     //! Turning widgets into pixels.
     //!
-    //! `widget.rs` holds state and key handling and imports no terminal types,
-    //! which is what makes it testable without a tty. This file is the other
-    //! half: the same widgets, rendered. Keeping the two apart is why a widget
-    //! test can assert on `rows[0].selected` instead of scraping ANSI.
-    //!
-    //! Every list widget renders through [`rows_for`], so the selected row looks
-    //! the same whether it is a provider, a tool group, or a session.
+    //! `widget.rs` holds state and key handling and imports no terminal types, so
+    //! it's testable without a tty; this file renders the same widgets. That split is
+    //! why a widget test asserts on `rows[0].selected` instead of scraping ANSI.
+    //! Every list renders through [`rows_for`], so the selected row looks the same
+    //! whatever it is.
 
     use ratatui::layout::{Constraint, Layout, Rect};
     use ratatui::style::{Color, Modifier, Style};
@@ -242,29 +240,16 @@ pub mod render {
 }
 
 pub mod widget {
-    //! The TUI component layer.
+    //! The TUI component layer. Every interactive element is one of these five
+    //! widgets; setup, `/models`, `/sessions` and the palette compose them.
     //!
-    //! Every interactive element in the Pantheon terminal product is one of these
-    //! five widgets. Setup, `/models`, `/sessions`, and the command palette are
-    //! compositions of them, not separate implementations.
+    //! A widget is a value, not an object: a plain struct with `handle_key` that
+    //! mutates in place and returns a [`KeyResult`]. The screen stack owns widgets
+    //! and focus; a widget never reaches for a terminal, a clock or a session.
     //!
-    //! # Design rules
-    //!
-    //! **A widget is a value, not an object.** No trait objects, no interior
-    //! mutability, no framework. A widget is a plain struct with a `handle_key`
-    //! that mutates it in place and returns a [`KeyResult`]. The screen stack in
-    //! [`crate::app`] owns the widgets and the focus; a widget never reaches for
-    //! a terminal, a clock, or a session.
-    //!
-    //! **No crossterm in this file.** Key handling is expressed in terms of the
-    //! [`Key`] enum below, and the event loop translates crossterm events into it.
-    //! That is what lets every widget be tested by calling `handle_key` directly
-    //! with no TTY, no alternate screen, and no escape-sequence timing.
-    //!
-    //! **Filtering is part of the widget, not a mode.** Every list filters as you
-    //! type, because the spec's `/` completion and the setup provider browser are
-    //! the same behavior. A widget that could not filter would be a second
-    //! implementation wearing a different hat.
+    //! No crossterm here - key handling uses the [`Key`] enum and the event loop
+    //! translates, so widgets are testable with no TTY. Filtering is part of every
+    //! list widget, not a separate mode.
 
     use std::fmt;
 
@@ -436,7 +421,7 @@ pub mod widget {
         }
 
         /// Does this row match the filter? Substring, case-insensitive, across
-        /// every visible column. Deliberately naive: this is a handful of dozen
+        /// every visible column. Naive: this is a handful of dozen
         /// rows and a user typing, not a search index.
         fn matches(&self, needle: &str) -> bool {
             if needle.is_empty() {
@@ -1103,19 +1088,15 @@ pub mod widget {
 }
 
 pub mod todo_card {
-    //! Todo card for the transcript.
-    //!
-    //! Standalone by design: it renders [`TodoCardItem`]s with ratatui only.
-    //! The backend maps `pantheon_api::todo::TodoItem` onto [`TodoCardItem`]
-    //! at the integration point. Its palette comes from the theme module
-    //! (see `session::theme`), not from literals here.
+    //! Todo card for the transcript. Renders [`TodoCardItem`]s with ratatui only;
+    //! the backend maps `pantheon_api::todo::TodoItem` onto them at the integration
+    //! point. Palette comes from `session::theme`.
     //!
     //! ```text
     //! ⬢ Working on 2 to-dos
     //!   ☒ Made new things
     //!   ⊞ Read files
     //!   ☐ Edit files
-    //!   ☐ Give summary
     //! ```
 
     use ratatui::layout::Rect;
@@ -1200,16 +1181,13 @@ pub mod todo_card {
         lines
     }
 
-    /// Render the card into `area`: a bold "⬢ Working on N to-dos" header
-    /// (N = not-yet-done), then one row per item - ☒ dimmed for done, ⊞
-    /// highlighted for in-progress, ☐ dimmed for pending.
+    /// Render the card: bold "⬢ Working on N to-dos" header (N = not-yet-done), then
+    /// one row per item - ☒ dimmed for done, ⊞ highlighted for in-progress, ☐ dimmed
+    /// for pending. Takes `1 + items.len()` rows; taller is blank, shorter clips from
+    /// the bottom.
     ///
-    /// The card takes `1 + items.len()` rows; anything taller is left blank,
-    /// anything shorter clips from the bottom.
-    ///
-    /// Widget form of [`todo_card_lines`]. The session sidebar embeds
-    /// `todo_card_lines` directly (see `render_sidebar_todos`) and does
-    /// not call this; it exists for standalone embedding.
+    /// The sidebar embeds `todo_card_lines` directly and doesn't call this; it's for
+    /// standalone embedding.
     pub fn render_todo_card(frame: &mut Frame, area: Rect, items: &[TodoCardItem]) {
         let lines = todo_card_lines(items);
         let card = Paragraph::new(lines).style(Style::default().bg(NEAR_BLACK));
@@ -1252,27 +1230,17 @@ pub mod todo_card {
 }
 
 pub mod tabs {
-    //! Session tab bar: one tab per open session across the
-    //! top of the TUI.
+    //! Session tab bar: one tab per open session.
     //!
-    //! This module owns the *model* and the *rendering* of the tab bar, plus the
-    //! pure keybinding map. It does not own the event loop or the session switch
-    //! itself - that stays in `session.rs`, which drives this module the way it
-    //! drives the /history overlay: build a [`TabList`] from
-    //! `supervisor.ledger_list_runs` (the existing /sessions machinery, no new
-    //! store), render it at the top of each frame, and route
-    //! [`tab_key_action`] results through the existing session-selection path
-    //! (`state.session_id = id` + `ledger_reopen_run` + `replay`).
+    //! This owns the model, the rendering and the keybinding map, not the event loop
+    //! or the switch itself - `session.rs` builds a [`TabList`] from
+    //! `supervisor.ledger_list_runs`, renders it, and routes [`tab_key_action`]
+    //! through the existing selection path.
     //!
-    //! Rules the driver must keep:
-    //! * Only ONE session is interactive at a time. Switching tabs changes the
-    //!   *selected* session; turns keep running on their own threads in the
-    //!   background (plumbing owned elsewhere).
-    //! * Never force `state.ready = true` on a switch. The Enter guard in
-    //!   session.rs (`begin_turn`) is per-selection and must keep applying; a
-    //!   queued message or a running turn follows the selection at send time via
-    //!   `resolve_send_run_id`.
-    //! * The /sessions overlay stays the detailed view; this bar is the switcher.
+    //! Rules the driver keeps: one session is interactive at a time, and switching
+    //! only changes selection while turns keep running on their threads. Never force
+    //! `state.ready` on a switch - the `begin_turn` guard is per-selection. The
+    //! /sessions overlay stays the detailed view.
 
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::{
@@ -1515,22 +1483,15 @@ pub mod tabs {
         CloseTab,
     }
 
-    /// Map a crossterm key event to a tab action. Pure, no terminal needed.
+    /// Map a key event to a tab action. Pure.
     ///
-    /// Ctrl+Tab/BackTab cycle, Ctrl+T/W open/close, Alt+1..9 jump.
-    /// Plain `[`/`]` always type into the chat input (the caller gates them
-    /// out); Shift+BackTab falls back to Prev.
+    /// Ctrl+Tab/BackTab cycle, Ctrl+T/W open/close, Alt+1..9 jump. Plain `[`/`]` type
+    /// into the input (the caller gates them out); Shift+BackTab falls back to Prev.
     ///
-    /// What terminals actually send:
-    /// - Ctrl+Tab usually arrives as `Tab` + CONTROL; some send plain Tab or
-    ///   swallow it, and those users still have `[`/`]` and Alt+1..9.
-    /// - Ctrl+Shift+Tab usually arrives as `BackTab` + CONTROL; plain Shift+Tab
-    ///   arrives as `BackTab` + SHIFT and is mapped to Prev as a fallback.
-    /// - Alt+digit arrives as `Char` + ALT on most setups. A few send ESC
-    ///   followed by the digit instead; the driver can add an ESC-prefix peek
-    ///   if it wants that path, and this mapper only handles the ALT form.
-    /// - `[`/`]` are also the image-preview cyclers, but the preview overlay
-    ///   owns the keyboard while open, so there is no conflict.
+    /// What terminals actually send: Ctrl+Tab usually arrives as Tab+CONTROL and some
+    /// send plain Tab or swallow it; Ctrl+Shift+Tab as BackTab+CONTROL; Alt+digit as
+    /// Char+ALT, though a few send ESC then the digit (only the ALT form is handled
+    /// here).
     pub fn tab_key_action(code: KeyCode, mods: KeyModifiers) -> Option<TabAction> {
         if mods.contains(KeyModifiers::CONTROL) {
             return match code {
@@ -1547,13 +1508,11 @@ pub mod tabs {
             }
             return None;
         }
-        // BackTab+SHIFT deliberately maps to NOTHING here: it is the
-        // permission-mode cycle key (handled by the main loop's BackTab
-        // arm). It used to map to previous-tab, which made the cycle
-        // unreachable on terminals that report Shift+Tab as BackTab+SHIFT
-        // (most of them). Previous-tab remains via Ctrl+Shift+Tab
-        // (Ctrl+BackTab, handled in the CONTROL branch above) and
-        // Ctrl+Tab cycling.
+        // BackTab+SHIFT maps to NOTHING here: it's the permission-mode cycle key,
+        // handled by the main loop's BackTab arm. Mapping it to previous-tab would make
+        // the cycle unreachable on terminals that report Shift+Tab that way (most of
+        // them). Previous-tab remains on Ctrl+Shift+Tab (Ctrl+BackTab) and Ctrl+Tab
+        // cycling.
         if mods.is_empty() {
             // `[` steps left (previous), `]` steps right (next) - the same
             // direction as the image-preview cyclers.
@@ -1589,17 +1548,14 @@ pub mod tabs {
         NewTab,
     }
 
-    /// Render the tab bar into `area` (expects a single row).
+    /// Render the tab bar into `area` (one row). Browser-style: the active tab on a
+    /// subtle wash with bright bold text and a dim `×`, inactive tabs plain dim. A
+    /// dot leads each tab (green running, amber parked approval) and `+` opens a new
+    /// session. When the bar overflows, a window around the active tab keeps it
+    /// visible.
     ///
-    /// Browser-style: the active tab sits on a subtle wash with bright bold
-    /// text and a dim `×`; inactive tabs are plain dim text. A colored dot
-    /// leads each tab - green for a running turn, amber for a parked
-    /// approval - and `+` at the end opens a new session. When the bar is
-    /// wider than the area, a window around the active tab is shown so the
-    /// selected tab is never the one clipped away.
-    ///
-    /// Returns the clickable x-ranges (tabs and `+`) for the mouse handler.
-    /// An empty tab list still renders the `+` so the bar never vanishes.
+    /// Returns clickable x-ranges for the mouse handler. An empty list still renders
+    /// `+`.
     pub fn render_tab_bar(
         f: &mut Frame,
         area: Rect,
@@ -1877,10 +1833,10 @@ pub mod tabs {
                 tab_key_action(KeyCode::BackTab, KeyModifiers::CONTROL),
                 Some(TabAction::Prev)
             );
-            // Shift+Tab no longer falls back to Prev: it is the
-            // permission-mode cycle key (most terminals report Shift+Tab
-            // as BackTab+SHIFT, and the old mapping made the cycle
-            // unreachable). Previous-tab stays on Ctrl+Shift+Tab, i.e.
+            // Shift+Tab does not fall back to Prev: it is the permission-mode
+            // cycle key (most terminals report Shift+Tab as BackTab+SHIFT, and
+            // mapping it to Prev would make the cycle unreachable). Previous-tab
+            // stays on Ctrl+Shift+Tab, i.e.
             // Ctrl+BackTab above; Ctrl+Shift+Tab also carries SHIFT but
             // the CONTROL branch wins.
             assert_eq!(tab_key_action(KeyCode::BackTab, KeyModifiers::SHIFT), None);
@@ -1900,14 +1856,11 @@ pub mod tabs {
 }
 
 pub mod diffview {
-    //! Inline unified diffs for file-editing tool calls.
-    //!
-    //! The TUI snapshots files named by `apply_files` at `ToolStarted` and
-    //! diffs them at `ToolCompleted`, so the transcript shows what actually
-    //! changed - red `-` lines, green `+` lines, `@@` hunk headers - instead
-    //! of just the tool's argument summary. New files render all-`+`,
-    //! deletions all-`-`, binaries are skipped, and large diffs truncate with
-    //! an honest "N more lines" marker.
+    //! Inline unified diffs for file-editing tool calls. The TUI snapshots files
+    //! named by `apply_files` at `ToolStarted` and diffs at `ToolCompleted`, so the
+    //! transcript shows what changed instead of the arg summary. New files are all
+    //! `+`, deletions all `-`, binaries skipped, large diffs truncate with a line
+    //! count.
 
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -1919,15 +1872,11 @@ pub mod diffview {
     pub const MAX_DIFF_LINES: usize = 60;
     /// A single file is never snapshotted past this.
     pub const MAX_SNAP_BYTES: usize = 1024 * 1024;
-    /// LCS table budget in cells: (n+1)x(m+1) u32. The byte cap does not
-    /// bound lines, so a 1MB file of short lines used to demand
-    /// gigabytes for the table. 4M cells is ~16MB and fast; beyond it
-    /// the diff degrades to an honest "too large" marker instead of
-    /// allocating. Diffing stays synchronous on the UI thread (it runs
-    /// at ToolCompleted), but bounded this way it cannot stall the UI
-    /// on a pathological file; moving it off-thread would need the
-    /// snapshot/diff pipeline to become async, which is out of scope
-    /// for this fix.
+    /// LCS table budget in cells, (n+1)x(m+1) u32. The byte cap doesn't bound lines,
+    /// so a 1MB file of short lines would demand gigabytes for the table. 4M cells is
+    /// ~16MB and fast; past that the diff degrades to "too large" instead of
+    /// allocating. It runs on the UI thread at ToolCompleted, bounded so it can't
+    /// stall.
     pub const MAX_LCS_CELLS: usize = 4_000_000;
 
     /// Content of one file captured at `ToolStarted`.
@@ -2272,9 +2221,9 @@ pub mod diffview {
 
         #[test]
         fn huge_line_count_diffs_degrade_to_marker_not_gigabytes() {
-            // 3000 x 3000 lines would need a ~36MB table at minimum and
-            // grows quadratically; the old code allocated it unconditionally
-            // (a 1MB file of 1-char lines is ~500k lines: trillions of cells).
+            // 3000 x 3000 lines would need a ~36MB table at minimum and grows
+            // quadratically (a 1MB file of 1-char lines is ~500k lines), so the budget
+            // is checked before allocating.
             let old: String = (0..3000).map(|i| format!("old line {i}\n")).collect();
             let new: String = (0..3000).map(|i| format!("new line {i}\n")).collect();
             let out = unified_diff(&old, &new);
@@ -2410,7 +2359,7 @@ pub mod transcript {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ToolStatus {
         /// Queued, not yet started: `◐` in dim. A card with no start
-        /// time is queued, not running — the two must not read the same.
+        /// time is queued, not running; the two must not read the same.
         Queued,
         /// Still running: `›` in the success color, the "live" signal.
         Running,
@@ -2561,7 +2510,7 @@ pub mod transcript {
     /// `× <name>`, `■ <name>`. Body lines carry a dim left border
     /// (`│ `) instead of a full rectangle: transcript lines are
     /// width-agnostic, so a full-width top/bottom border cannot be drawn
-    /// here — the Frame-rendered composer gets the full border, the
+    /// here: the Frame-rendered composer gets the full border, the
     /// transcript card gets the left border. Shell cards show `$ command`
     /// + output (last [`SHELL_VISIBLE_LINES`] when collapsed); non-shell
     ///   cards show args (capped at 6 when collapsed) + error detail.
@@ -3218,7 +3167,7 @@ pub mod transcript {
     /// Condensed activity row for a burst of read-only tool calls:
     /// `→ Explored: 1 search`, `→ Explored: 3 reads`.
     ///
-    /// The `→` is dim; the row is deliberately quieter than a tool card
+    /// The `→` is dim; the row is quieter than a tool card
     /// it summarizes, it does not announce.
     pub fn activity_summary_line(count: usize, object: &str, th: &Theme) -> Line<'static> {
         Line::from(vec![
@@ -3267,7 +3216,7 @@ pub mod ui_render {
     //! Native TUI rendering for the UI protocol (`pantheon_api::ui`).
     //!
     //! Each component lowers to `Vec<Line>` in the current theme, honoring
-    //! the terminal width. This module is deliberately dumb: no interaction
+    //! the terminal width. This module is dumb: no interaction
     //! state, no ledger access - it renders one document. Degradation for
     //! unsupported components happens in the protocol (`degrade_for`) before
     //! anything reaches here.
@@ -4379,7 +4328,7 @@ pub mod ui_render {
 }
 
 pub mod desktop {
-    //! `pantheon desktop` — build (when needed) and launch the desktop app, and
+    //! `pantheon desktop`: build (when needed) and launch the desktop app, and
     //! register it with the desktop environment so app pickers can open it.
     //!
     //! The desktop app lives in `<repo>/desktop` (Tauri 2; own workspace, excluded
@@ -4463,11 +4412,9 @@ pub mod desktop {
             std::process::exit(2);
         }
 
-        // An explicit `--register` is a registration request, not a launch:
-        // a failed registration must exit non-zero (the old code printed
-        // "registration skipped" and still exited 0, so scripts could not
-        // tell). The default path (register-then-launch) keeps the softer
-        // behaviour: registration is best-effort there and launch proceeds.
+        // An explicit `--register` is a registration request, not a launch: a failed
+        // registration exits non-zero so scripts can tell. The default path
+        // (register-then-launch) stays best-effort and launches anyway.
         let mut registration_failed = false;
         if !no_register {
             match register_desktop_entry(&dir, &binary) {
@@ -5725,12 +5672,10 @@ pub mod skills {
 pub mod stats {
     //! `pantheon stats`: token/spend aggregation from the event ledger.
     //!
-    //! Usage rows are persisted as `Event::UsageRecorded` (the provider-plane
-    //! `Usage` event used to be dropped before reaching the ledger). This
-    //! command folds them over a time window - default today - and breaks
-    //! the totals down by model, by session (run), and by day. Usage measures
-    //! provider work actually completed, so rewinding a turn hides its transcript
-    //! but does not subtract the tokens or spend already incurred.
+    //! Usage rows are `Event::UsageRecorded`. This command folds them over a time
+    //! window (default today) and breaks totals down by model, by run, and by day.
+    //! Usage measures provider work actually completed, so rewinding a turn hides
+    //! its transcript without subtracting tokens or spend already incurred.
 
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -6246,11 +6191,11 @@ pub mod stats {
 
         #[test]
         fn short_id_cuts_on_char_boundaries() {
-            // 22 ASCII bytes plus a 3-byte char: 25 bytes, so the old
-            // `&id[..23]` byte slice landed inside the euro sign and panicked
-            // (byte 23 is the start of the char, and the slice end must be a
-            // boundary). 24+ ASCII avoids the panic only by accident of where
-            // the boundary falls, so the test uses the genuinely-panicking 22.
+            // 22 ASCII bytes plus a 3-byte char: 25 bytes, so an `&id[..23]`
+            // byte slice lands inside the euro sign and panics (byte 23 is the
+            // start of the char, and the slice end must be a boundary). 24+ ASCII
+            // avoids the panic only by accident of where the boundary falls, so
+            // the test uses the genuinely-panicking 22.
             let id = "a".repeat(22) + "€";
             assert!(short_id(&id).ends_with("..."), "long ids get the dots");
             // 22 ASCII bytes plus a 4-byte char: 26 bytes, also crosses the
@@ -6296,7 +6241,7 @@ pub mod app {
         /// Popped without a value. Either the user backed out, or the screen has
         /// nothing to return (a cancelled `Select` still produced a filter).
         Back,
-        /// Quit the app. Only a screen may ask for this, and only deliberately:
+        /// Quit the app. Only a screen may ask for this, and only on purpose:
         /// a widget cannot, because a widget has no business ending the process.
         Quit,
     }

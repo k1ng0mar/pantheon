@@ -1,5 +1,4 @@
-//! The `pantheon` binary: one thin shim over the terminal application.
-//! All dispatch, command handling, and session behavior live in the library.
+//! the `pantheon` binary is just a shim; everything lives in the library
 fn main() {
     pantheon_tui::terminal::run();
 }

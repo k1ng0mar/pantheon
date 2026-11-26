@@ -1,5 +1,3 @@
-//! remote_group: swarm, swarm_remote, swarm_view, team_remote, plugin_remote in one file.
-
 pub mod swarm {
     //! `pantheon swarm` - spawn a real headless multi-agent run.
     //!
@@ -868,10 +866,9 @@ pub mod swarm {
 
         #[test]
         fn delivery_without_a_value_is_an_error_not_a_silent_default() {
-            // The old parse left `delivery` as None when --delivery was
-            // the last token, so `swarm 2 task --delivery` silently ran
-            // with session delivery instead of the channel the operator
-            // thought they had chosen.
+            // Leaving `delivery` as None when --delivery is the last token lets
+            // `swarm 2 task --delivery` run with session delivery instead of the
+            // channel the operator thought they had chosen.
             let err =
                 parse_swarm_spawn(&spawn_argv(&["2", "do the thing", "--delivery"])).unwrap_err();
             assert!(err.contains("--delivery needs"), "{err}");
@@ -1019,7 +1016,7 @@ pub mod swarm_remote {
             }
         }
         // Statuses arrive as responses; >=400 becomes the short-body error
-        // exactly like the old Error::Status arm.
+        // exactly like the `Error::Status` arm.
         let resp = match body {
             Some(b) => req
                 .header("Content-Type", "application/json")
@@ -1360,10 +1357,8 @@ pub mod swarm_remote {
         }
     }
 
-    /// The id for a `/swarm <id>` show invocation: exactly one token.
-    /// Extra words used to be silently dropped (only the first token was
-    /// shown), so a typo like `/swarm abc status` looked up `abc` and
-    /// never said the rest was ignored.
+    /// The id for a `/swarm <id>` show invocation: exactly one token. Extra words are
+    /// an error rather than dropped, so a typo like `/swarm abc status` says so.
     pub fn show_id(rest: &str) -> Result<&str, String> {
         let mut words = rest.split_whitespace();
         let id = words.next().unwrap_or("");
@@ -1929,7 +1924,7 @@ pub mod team_remote {
     //!   (`POST /api/teams/:id/use` {task, judge: true}); the reply names the
     //!   swarm id and its agents so the user can follow it with `/swarm <id>`.
     //!
-    //! HTTP plumbing deliberately duplicates `swarm_remote.rs` rather than
+    //! HTTP plumbing duplicates `swarm_remote.rs` rather than
     //! importing it: that module's helpers are private and this one must not
     //! reshape another agent's in-flight work (same rationale as
     //! `plugin_remote.rs`).
@@ -2021,7 +2016,7 @@ pub mod team_remote {
             }
         }
         // Statuses arrive as responses; >=400 becomes the short-body error
-        // exactly like the old Error::Status arm.
+        // exactly like the `Error::Status` arm.
         let resp = match body {
             Some(b) => req
                 .header("Content-Type", "application/json")
@@ -2291,20 +2286,15 @@ pub mod team_remote {
 }
 
 pub mod plugin_remote {
-    //! Remote plugin import + registry search against the dashboard
-    //! HTTP API.
+    //! Remote plugin import + registry search against the dashboard HTTP API.
     //!
-    //! Plugin install/approve/disable already exist as local `pantheon
-    //! plugins ...` CLI verbs (`terminal.rs`) and as dashboard endpoints
-    //! (`pantheon-dashboard/src/plugins.rs`), but the interactive TUI had no
-    //! `/plugins` slash command at all - only the splash footer's hint named
-    //! it. This module adds it.
+    //! Plugin install/approve/disable also exist as local `pantheon plugins ...`
+    //! CLI verbs (`terminal.rs`) and as dashboard endpoints
+    //! (`pantheon-dashboard/src/plugins_group.rs`); this is the TUI's `/plugins`
+    //! slash command.
     //!
-    //! The import + registry endpoints (`POST /api/plugins/import`,
-    //! `GET /api/plugins/registry/search`) are still in flight on the
-    //! dashboard side, so every call is built against the contracted shapes
-    //! and fails with a one-line "backend unreachable / not found" note
-    //! rather than a stack trace:
+    //! Every call is built against the contracted shapes below and fails with a
+    //! one-line "backend unreachable / not found" note rather than a stack trace:
     //!
     //! - `POST /api/plugins/import` {url|spec, ref?} → 200
     //!   {name, kind, version, detected_capabilities, scan_report:
@@ -2320,7 +2310,7 @@ pub mod plugin_remote {
     //! HTTP plumbing mirrors `swarm_remote.rs` (dashboard `[server]`
     //! host/port, `X-Pantheon-Token` from `PANTHEON_SERVE_TOKEN`, ureq 2.x
     //! without its `json` feature → `send_string` +
-    //! `serde_json::from_str`). It is deliberately duplicated here rather
+    //! `serde_json::from_str`). It is duplicated here rather
     //! than imported: that module's helpers are private and this one must
     //! not reshape another agent's in-flight work.
 
@@ -2409,7 +2399,7 @@ pub mod plugin_remote {
             }
         }
         // Statuses arrive as responses; >=400 becomes the short-body error
-        // exactly like the old Error::Status arm.
+        // exactly like the `Error::Status` arm.
         let resp = match body {
             Some(b) => req
                 .header("Content-Type", "application/json")
@@ -2561,10 +2551,8 @@ pub mod plugin_remote {
             .unwrap_or("?")
             .to_string();
         let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
-        // "Staged", not "imported": the first line used to claim the plugin
-        // was imported even for a malicious scan verdict, before any
-        // approval. Approval still blocks server-side, but the wording must
-        // not imply a quarantined plugin is live.
+        // "Staged", not "imported": the verdict can be a malicious scan, before any
+        // approval. The wording must not imply a quarantined plugin is live.
         lines.push(format!(
             "staged {name} v{version} ({kind}), pending scan/approval"
         ));

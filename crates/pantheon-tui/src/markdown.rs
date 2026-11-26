@@ -1,56 +1,9 @@
-//! Markdown rendering for the transcript's left panel.
+//! Markdown rendering for the transcript panel.
 //!
-//! Pure functions: markdown text in, styled [`Line`]s out. No I/O, no
-//! terminal access - fully unit-testable.
-//!
-//! GFM 0.29 implementation (https://github.github.com/gfm/), adapted to
-//! a terminal transcript:
-//!
-//! Blocks: ATX headings (incl. empty headings, closing hashes, inline
-//! formatting), setext headings (multi-line text, inline formatting),
-//! indented code blocks, fenced code blocks (``` and ~~~, fence-length
-//! and info-string rules), HTML blocks (types 1-7, rendered literally),
-//! link reference definitions (full/collapsed/shortcut, titles, first
-//! definition wins), tables (header/delimiter alignment, cell inline
-//! formatting, escaped pipes), block quotes (nested, lazy continuation,
-//! other blocks inside), lists (bullet/ordered, `.` and `)` markers,
-//! start numbers, loose/tight, continuation lines, nested lists, task
-//! lists), thematic breaks, paragraphs.
-//!
-//! Inlines: backslash escapes, entity/numeric references, code spans
-//! (multi-backtick runs, space-stripping rule), emphasis/strong emphasis
-//! (delimiter runs, left/right flanking, can-open/can-close, the
-//! odd-match rule of 3, nesting, rules 9-17), strikethrough, links
-//! (inline with titles and balanced destinations, reference
-//! full/collapsed/shortcut), images (inline/reference, alt as plain
-//! text), autolinks (<scheme:...>, <email>), autolink extension
-//! (www., bare email, bare scheme URLs with balanced-paren and
-//! trailing-punctuation rules), raw HTML (literal), disallowed raw HTML
-//! (blocklist tags literal, never parsed as markup).
-//!
-//! Terminal adaptations (deliberate, not spec bugs):
-//! - No HTML output: heading levels all use the heading style, link
-//!   destinations and titles are dropped (only the link text is shown,
-//!   in primary), image URLs are dropped (only alt text, primary),
-//!   horizontal rules render as a dim `· · ·` separator.
-//! - Raw HTML other than autolinks is left literal on purpose:
-//!   stripping `<…>` would mangle generics like `Vec<T>`.
-//! - Soft and hard line breaks both render as line breaks: a paragraph's
-//!   input lines are kept as separate output lines (not joined and
-//!   re-flowed), so intentional line breaks in a message survive.
-//!   A trailing backslash or two trailing spaces therefore needs no
-//!   special output — the line break is already there.
-//! - Pantheon extensions kept from before: bare section headers (a
-//!   short plain line between blanks becomes a heading) and tag lines
-//!   (`+ Thought · 8.9s`); fenced/indented code bodies are indented
-//!   two spaces in theme code; tables drop pipes/rule lines and align
-//!   columns with two-space gaps (no box-drawing anywhere).
-//! - Wrapping: prose, headings, blockquotes and list bodies wrap at
-//!   the transcript width (see `render_markdown_wrapped`); fenced
-//!   code, indented code and tables never wrap.
-//!
-//! All styling uses semantic [`Theme`] fields only; no literal colors
-//! appear here.
+//! The parser is pure and follows GFM block and inline rules. Terminal output
+//! keeps source line breaks, renders raw HTML literally, and drops link/image
+//! destinations. Pantheon’s headings, tags, tables, and wrapping rules are
+//! handled here rather than by the terminal widgets.
 
 use std::collections::HashMap;
 
@@ -158,7 +111,7 @@ pub fn render_markdown(text: &str, th: &Theme) -> Vec<Line<'static>> {
 /// indented to the body column. Wrapping happens here, before the
 /// transcript builds its line list, so scroll offsets, jump targets,
 /// click-to-toggle rows, and image placements all stay in wrapped
-/// coordinates — a ratatui `Paragraph::wrap()` on the whole transcript
+/// coordinates: a ratatui `Paragraph::wrap()` on the whole transcript
 /// would break those, because the transcript measures scroll in
 /// unwrapped lines.
 pub fn render_markdown_wrapped(text: &str, th: &Theme, width: usize) -> Vec<Line<'static>> {
@@ -524,7 +477,7 @@ impl<'a> Renderer<'a> {
             // split back at the original line boundaries, so layout is
             // exactly the per-line rendering and only the span styling
             // crosses the break. Full paragraph joining would re-flow
-            // soft breaks and is deliberately not done.
+            // soft breaks and is not done.
             if let Some((joined, next)) = self.joined_span_lines(lines, i) {
                 for spans in joined {
                     self.push_wrapped(&mut out, Line::from(spans), 0);
@@ -545,7 +498,7 @@ impl<'a> Renderer<'a> {
     /// following plain-body lines until the run closes and parse the
     /// group as one logical paragraph, split back into one span list
     /// per source line. Returns `None` when line `i` has no unclosed
-    /// run, or when the run never closes inside the paragraph — the
+    /// run, or when the run never closes inside the paragraph; the
     /// caller then renders the lines one by one exactly as before
     /// (backticks literal), so a never-closed span changes nothing.
     fn joined_span_lines(
@@ -572,7 +525,7 @@ impl<'a> Renderer<'a> {
         }
         // Split the parsed spans back at the join boundaries. Every
         // '\n' in span content came from a join (source lines contain
-        // none), and it sits inside the code span it belongs to — the
+        // none), and it sits inside the code span it belongs to; the
         // join boundary itself renders as the line break, not as a
         // visible space, so it is dropped.
         let spans = inline(&joined, self.th, self.defs);
@@ -1255,10 +1208,10 @@ fn html_block_end(lines: &[&str], i: usize, last_was_paragraph: bool) -> Option<
     }
     // Type 7: the whole line is just the tag (open or close), possibly
     // with attributes, and nothing else. Its end condition is the
-    // same as types 1/6: a blank line (GFM 4.6) — it is NOT a single
+    // same as types 1/6: a blank line (GFM 4.6); it is not a single
     // line, so following lines stay literal until a blank line.
     // (Type 7 may not interrupt a paragraph; that is enforced by the
-    // caller passing last_was_paragraph — see render_blocks.)
+    // caller passing last_was_paragraph; see render_blocks.)
     let _ = trimmed;
     // Types 1/6/7: to blank line.
     let mut j = i + 1;
@@ -1339,7 +1292,7 @@ fn unclosed_backtick_run(text: &str) -> bool {
 /// swallowing a heading, fence, list item, or other block start
 /// would eat structure that belongs to the next block. Indented
 /// lines count (indented code cannot interrupt a paragraph), and
-/// the list check is deliberately blanket — a non-interrupting list
+/// the list check is blanket: a non-interrupting list
 /// line simply ends the join instead of risking a wrong one.
 fn is_plain_body_continuation(lines: &[&str], j: usize) -> bool {
     let line = lines[j];
@@ -1385,7 +1338,7 @@ fn collect_quote(lines: &[&str], start: usize) -> (Vec<String>, usize) {
     while i < n {
         let line = lines[i];
         if is_blank(line) {
-            // Blank line: look ahead — if a quote line follows, the
+            // Blank line: look ahead; if a quote line follows, the
             // blank belongs to the quote (as an empty inner line).
             let mut k = i + 1;
             while k < n && is_blank(lines[k]) {
@@ -1624,8 +1577,8 @@ fn parse_title(s: &str) -> Option<usize> {
                     idx += 1;
                     // Skip the escaped char below via char iteration
                     // bookkeeping: we advance by its length separately.
-                    // Simpler: iterate by byte index in the caller path
-                    // — handled by the loop below (see parse_title_bytes).
+                    // Simpler: iterate by byte index in the caller path, handled by the
+                    // loop below (see parse_title_bytes).
                     let _ = idx;
                     break;
                 }
@@ -2673,7 +2626,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
                 }
                 // Advance char index past `end` bytes, counting
                 // from the current position (not from the start of
-                // the text — counting from zero per link was O(n^2)).
+                // the text; counting from zero per link was O(n^2)).
                 let mut consumed = i;
                 let mut bi2 = bi;
                 while bi2 < end && consumed < chars.len() {
@@ -2888,7 +2841,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
                             )
                     })
                     .unwrap_or(rest_str.len());
-                // Email words may contain ':'? No — keep the simple
+                // Email words may contain ':'? No: keep the simple
                 // scan: if the word contains '@' and validates, and
                 // the previous char is not a word char, link it.
                 let word = &rest_str[..word_end];
@@ -2919,7 +2872,7 @@ fn parse_inline_nodes(text: &str, th: &Theme, defs: &Defs, allow_links: bool) ->
     // Recursively resolve emphasis inside link texts that were parsed
     // with allow_links=false: their nodes still contain delimiters.
     // parse_inline_nodes already calls process_emphasis at its end, so
-    // link inner nodes are resolved — but only if parse_inline_nodes
+    // link inner nodes are resolved, but only if parse_inline_nodes
     // was used for them (it was, via parse_link_at).
     nodes
 }
@@ -3182,7 +3135,7 @@ mod tests {
             .unwrap_or(false)
     }
 
-    // --- previously covered behaviour (regression) ---
+    // --- regression coverage ---
     #[test]
     fn strikethrough_drops_tildes_and_marks_crossed_out() {
         let lines = render_markdown("a ~~gone~~ b", &theme());
@@ -3610,8 +3563,8 @@ mod tests {
         assert!(!unclosed_backtick_run("`` ` ``"));
         assert!(!unclosed_backtick_run("a \\` b"));
         // The span closes on the next line: backticks drop, both
-        // halves keep code styling, and the line break stays put —
-        // no re-flow, no paragraph joining. (The first line is long
+        // halves keep code styling, and the line break stays put: no re-flow, no
+        // paragraph joining. (The first line is long
         // on purpose: a short first line is a section header, which
         // parses inline per line and never reaches the body join.)
         assert_eq!(
