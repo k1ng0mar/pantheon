@@ -103,84 +103,59 @@ test('goal workflow keeps edits through goal events and reports failed changes',
   expect((await page.evaluate(() => (window as any).__goalTask('session-2'))).goalState.objective).toBe('Build and verify a keyboard-accessible game');
 });
 
-test('goal workflow plan and fast commands persist task-specific settings without sending a prompt', async ({ page }) => {
-  await command(page, '/plan on');
-  await expect(page.locator('#toast')).toContainText('Plan mode enabled');
-  await command(page, '/fast on');
-  await expect(page.locator('#toast')).toContainText('Fast service tier enabled');
-  await page.locator('.task-item[data-id="session-1"]').click();
-  await page.locator('.task-item[data-id="session-2"]').click();
-  const task = await page.evaluate(() => (window as any).__goalTask('session-2'));
-  expect(task.codexSettings).toEqual({ collaborationMode: { mode: 'plan' }, serviceTier: 'fast' });
-  await command(page, '/plan off');
-  await expect(page.locator('#toast')).toContainText('Plan mode disabled');
-  await command(page, '/fast off');
-  await expect(page.locator('#toast')).toContainText('Fast service tier disabled');
-  expect((await calls(page, 'set_task_preference')).map((entry: any) => entry.args)).toEqual([
-    { sessionId: 'session-2', request: { action: 'plan', enabled: true } }, { sessionId: 'session-2', request: { action: 'fast', enabled: true } },
-    { sessionId: 'session-2', request: { action: 'plan', enabled: false } }, { sessionId: 'session-2', request: { action: 'fast', enabled: false } },
-  ]);
+test('goal workflow rejects commands absent from Pantheon without sending a prompt', async ({ page }) => {
+  for (const value of ['/plan on', '/fast on', '/plan off', '/fast off']) {
+    await command(page, value);
+    await expect(page.locator('#toast')).toContainText('This command is not available in Pantheon yet.');
+  }
+  expect(await calls(page, 'set_task_preference')).toHaveLength(0);
   expect(await calls(page, 'send_message')).toHaveLength(0);
 });
 
-test('goal workflow opens usage, imports selected setup, and resumes a chosen conversation', async ({ page }) => {
+test('goal workflow opens usage and resumes a chosen conversation', async ({ page }) => {
   await command(page, '/usage');
-  await expect(page.getByRole('heading', { name: 'Codex usage' })).toBeVisible();
-  await expect(page.getByRole('progressbar', { name: '5-hour limit usage' })).toHaveAttribute('value', '28');
+  await expect(page.getByRole('heading', { name: 'Usage', exact: true })).toBeVisible();
+  await expect(page.getByText('Pantheon ledger · Preview window')).toBeVisible();
+  await expect(page.getByText('Total tokens')).toBeVisible();
   await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await command(page, '/import');
-  await page.getByRole('checkbox', { name: /Project instructions/ }).check();
-  await page.getByRole('button', { name: 'Import selected', exact: true }).click();
-  await expect(page.getByRole('dialog')).toContainText('1 selected item');
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
-  const imported = (await calls(page, 'codex_command')).find((entry: any) => entry.args.request.action === 'importSelected');
-  expect(imported.args.request.ids).toEqual(['preview-instructions']);
   await command(page, '/resume');
-  await page.getByRole('radio', { name: /Review project architecture/ }).check();
+  await page.getByRole('radio', { name: /Make search feel instant/ }).check();
   await page.getByRole('button', { name: 'Resume conversation', exact: true }).click();
-  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Review project architecture');
-  await expect(page.getByRole('log')).toContainText('sample imported conversation');
-  expect((await calls(page, 'fork_codex_task')).at(-1).args).toEqual({ sessionId: 'session-2', remoteId: 'preview-remote-conversation' });
+  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   expect(await calls(page, 'send_message')).toHaveLength(0);
 });
 
-test('goal workflow harness console inserts the exact command only after a click and never submits it', async ({ page }) => {
+test('goal workflow opens a workspace console for a slash command without sending a prompt', async ({ page }) => {
   await command(page, '/raw on');
-  const insert = page.getByRole('button', { name: 'Insert /raw on in the harness console', exact: true });
-  await expect(insert).toBeEnabled();
-  expect(await calls(page, 'start_harness_terminal')).toHaveLength(1);
+  await expect(page.locator('#terminal-drawer')).toBeVisible();
+  await expect.poll(async () => (await calls(page, 'start_terminal')).length).toBe(1);
   expect(await calls(page, 'write_terminal')).toHaveLength(0);
-  await insert.click();
-  await expect(insert).toHaveText('Inserted · press Enter');
-  const writes = await calls(page, 'write_terminal');
-  expect(writes).toHaveLength(1);
-  expect(writes[0].args.data).toBe('\u001b[200~/raw on\u001b[201~');
-  expect(writes[0].args.data).not.toMatch(/[\r\n]/);
   expect(await calls(page, 'send_message')).toHaveLength(0);
+  await expect(page.locator('#terminal-drawer').getByRole('button', { name: /^Insert / })).toHaveCount(0);
 });
 
-test('goal workflow prevents a competing harness console while the goal is running', async ({ page }) => {
+test('goal workflow prevents a competing console while the goal is running', async ({ page }) => {
   await startGoal(page);
   await expect(page.getByRole('log')).toContainText('sample goal');
   await page.getByRole('button', { name: 'Task actions', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Open harness console', exact: true }).click();
-  await expect(page.locator('#toast')).toContainText('Stop this task before opening its harness console');
-  expect(await calls(page, 'start_harness_terminal')).toHaveLength(0);
+  await expect(page.locator('#toast')).toContainText('Stop this task before opening its console.');
+  expect(await calls(page, 'start_terminal')).toHaveLength(0);
   await expect(banner(page)).toContainText('Working toward goal');
 });
 
-test('goal workflow honors command arguments and rejects invalid fast settings without losing the draft', async ({ page }) => {
+test('goal workflow rejects invalid fast settings, keeps the draft, and reads usage', async ({ page }) => {
   await command(page, '/fast turbo');
-  await expect(page.locator('#toast')).toContainText('Use /fast, /fast on, or /fast off.');
+  await expect(page.locator('#toast')).toContainText('This command is not available in Pantheon yet.');
   await expect(page.locator('#prompt')).toHaveValue('/fast turbo ');
   expect(await calls(page, 'set_task_preference')).toHaveLength(0);
   await command(page, '/worktree feature/game');
   await expect(page.getByRole('textbox', { name: 'Branch name', exact: true })).toHaveValue('feature/game');
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await command(page, '/resume architecture');
-  await expect(page.getByRole('radio', { name: /Review project architecture/ })).toBeVisible();
-  const lookup = (await calls(page, 'codex_command')).find((entry: any) => entry.args.request.action === 'conversations');
-  expect(lookup.args.request.search).toBe('architecture');
+  await command(page, '/resume search');
+  await expect(page.getByRole('radio', { name: /Make search feel instant/ })).toBeVisible();
+  const lookup = (await calls(page, 'command_panel')).find((entry: any) => entry.args.request.action === 'conversations');
+  expect(lookup.args.request.search).toBe('search');
   await page.getByRole('button', { name: 'Done', exact: true }).click();
   await command(page, '/usage daily');
   await expect(page.getByRole('listbox', { name: 'Daily token use' })).toBeFocused();

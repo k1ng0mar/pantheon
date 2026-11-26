@@ -90,24 +90,21 @@ test('saved diff evidence is previewed locally, escaped, and opens its original 
   expect(await page.evaluate(()=>(window as any).__assistDiff)).toEqual({changeId:'change-1',path:'src/app.ts'});
 });
 
-test('task menu and saved-diff entry use the current task and disappear when disabled', async ({page}) => {
+test('task menu uses the current task and disappears when disabled', async ({page}) => {
   await setup(page);
   await page.getByRole('button',{name:'Task actions',exact:true}).click();
   await page.getByRole('menuitem',{name:'Jev assistance',exact:true}).click(); await prepared(page);
   expect((await calls(page,'jev_assist_prepare'))[0].args.sessionId).toBe('session-1');
   await page.locator('[data-assist-close]').click();
-  await page.evaluate(()=>{(window as any).__assistChangeFixture=true;});
   await page.locator('.task-item[data-id="session-2"]').click();
-  await page.getByRole('button',{name:'Open diff',exact:true}).click();
-  await page.getByRole('button',{name:'Review with Jev',exact:true}).click(); await prepared(page);
-  expect((await calls(page,'jev_assist_prepare')).at(-1).args).toEqual({sessionId:'session-2',request:{kind:'review',changeId:'change-1'}});
+  await page.getByRole('button',{name:'Task actions',exact:true}).click();
+  await page.getByRole('menuitem',{name:'Jev assistance',exact:true}).click(); await prepared(page);
+  expect((await calls(page,'jev_assist_prepare')).at(-1).args.sessionId).toBe('session-2');
   await page.locator('[data-assist-close]').click();
   await page.evaluate(()=>{(window as any).__assistConfig.decisionsEnabled=false;window.dispatchEvent(new CustomEvent('pantheon:jev-settings',{detail:(window as any).__assistConfig}));});
   await page.getByRole('button',{name:'Task actions',exact:true}).click();
   await expect(page.getByRole('menuitem',{name:'Jev assistance',exact:true})).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await page.getByRole('button',{name:'Open diff',exact:true}).click();
-  await expect(page.getByRole('button',{name:'Review with Jev',exact:true})).toHaveCount(0);
 });
 
 test('team entry suggests configured workers and worker review uses the worker task', async ({page}) => {

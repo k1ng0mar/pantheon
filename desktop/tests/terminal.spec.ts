@@ -254,37 +254,19 @@ test.describe('terminal', () => {
     await expect.poll(async () => (await calls(page, 'close_terminal')).map((call: any) => call.args.terminalId)).toEqual(['terminal-2']);
   });
 
-  test('reuses a harness console and offers the newly requested command without submitting it', async ({ page }) => {
+  test('opens a workspace console for each slash command without sending a prompt', async ({ page }) => {
     await open(page); await select(page, 'session-2');
     const prompt = page.locator('#prompt');
     await prompt.fill('/raw on '); await prompt.press('Enter');
     await expect(screen(page)).toContainText('Ready terminal-2');
-    const original = await screen(page).elementHandle();
-    const insertOn = drawer(page).getByRole('button', { name: 'Insert /raw on in the harness console', exact: true });
-    await expect(insertOn).toBeEnabled();
+    expect(await calls(page, 'start_terminal')).toHaveLength(2);
     expect(await calls(page, 'write_terminal')).toHaveLength(0);
-    await page.evaluate(() => { (window as any).__holdTerminalWrite = true; });
-    await insertOn.click();
-    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseTerminalWrite)).toBe('function');
     await drawer(page).getByRole('button', { name: 'Minimize terminal', exact: true }).click();
     await prompt.fill('/raw off '); await prompt.press('Enter');
-    const insertOff = drawer(page).getByRole('button', { name: 'Insert /raw off in the harness console', exact: true });
-    await expect(insertOff).toBeEnabled();
-    await expect(insertOn).toHaveCount(0);
-    expect(await calls(page, 'start_harness_terminal')).toHaveLength(1);
-    expect(await calls(page, 'write_terminal')).toHaveLength(1);
-    expect(await original!.evaluate(node => node === document.querySelector('#terminal-host .terminal-tab-surface:not([hidden]) .xterm-screen'))).toBe(true);
-    await prompt.focus();
-    await page.evaluate(() => (window as any).__releaseTerminalWrite());
-    await expect(screen(page)).toContainText('/raw on');
-    await expect(insertOff).toHaveText('Insert /raw');
-    await expect(insertOff).toBeEnabled();
-    await expect(prompt).toBeFocused();
-    await insertOff.click();
-    await expect.poll(async () => (await calls(page, 'write_terminal')).map((call: any) => call.args)).toEqual([
-      { terminalId: 'terminal-2', data: '\u001b[200~/raw on\u001b[201~' },
-      { terminalId: 'terminal-2', data: '\u001b[200~/raw off\u001b[201~' },
-    ]);
+    await expect(screen(page)).toContainText('Ready terminal-3');
+    expect(await calls(page, 'start_terminal')).toHaveLength(3);
+    expect(await calls(page, 'write_terminal')).toHaveLength(0);
+    await expect(drawer(page).getByRole('button', { name: /^Insert / })).toHaveCount(0);
     expect(await calls(page, 'send_message')).toHaveLength(0);
     expect(await calls(page, 'close_terminal')).toHaveLength(0);
   });
@@ -310,7 +292,7 @@ test.describe('terminal', () => {
     await expect(screen(page)).toContainText('Other terminal output 139');
   });
 
-  test('replaces an exited harness console when opening another native slash command', async ({ page }) => {
+  test('opens a new console for another slash command after the previous one exits', async ({ page }) => {
     await open(page); await select(page, 'session-2');
     const prompt = page.locator('#prompt');
     await prompt.fill('/raw on '); await prompt.press('Enter');
@@ -320,15 +302,10 @@ test.describe('terminal', () => {
     await drawer(page).getByRole('button', { name: 'Minimize terminal', exact: true }).click();
     await prompt.fill('/raw off '); await prompt.press('Enter');
     await expect(screen(page)).toContainText('Ready terminal-3');
-    await expect(drawer(page).getByRole('tab')).toHaveCount(1);
-    const insert = drawer(page).getByRole('button', { name: 'Insert /raw off in the harness console', exact: true });
-    await expect(insert).toBeEnabled();
-    expect(await calls(page, 'start_harness_terminal')).toHaveLength(2);
-    await expect.poll(async () => (await calls(page, 'close_terminal')).map((call: any) => call.args.terminalId)).toEqual(['terminal-2']);
-    await insert.click();
-    await expect.poll(async () => (await calls(page, 'write_terminal')).map((call: any) => call.args)).toEqual([
-      { terminalId: 'terminal-3', data: '\u001b[200~/raw off\u001b[201~' },
-    ]);
+    await expect(drawer(page).getByRole('tab')).toHaveCount(2);
+    await expect(drawer(page).getByRole('button', { name: /^Insert / })).toHaveCount(0);
+    expect(await calls(page, 'start_terminal')).toHaveLength(3);
+    expect(await calls(page, 'write_terminal')).toHaveLength(0);
     expect(await calls(page, 'send_message')).toHaveLength(0);
   });
 });
