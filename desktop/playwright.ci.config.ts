@@ -26,6 +26,10 @@ import base from './playwright.config';
 export default defineConfig({
   ...base,
   workers: Number(process.env.PW_WORKERS ?? 2),
+  // Hosted runners occasionally stall one animation or async bridge long
+  // enough to fail a single timing-sensitive spec. Retry those once; a real
+  // regression still fails all attempts.
+  retries: 1,
   // The base config's 5s expect timeout is calibrated for an idle dev box. A
   // shared CI runner is slower, and at 5s the contention shows up as spurious
   // toBeVisible/toHaveAttribute failures in specs that pass locally. 15s still
