@@ -23,6 +23,12 @@ The terminal app is a full screen interface, not a chat box in a shell. Pick a p
 |:---:|:---:|:---:|
 | Setup chooser | Provider picker | Model picker |
 
+Pantheon Desktop puts the same agent in a workspace with a task board, a file view and a diff review.
+
+| [![Pantheon Desktop conversation](desktop/docs/screenshots/conversation.webp)](desktop/docs/screenshots/conversation.webp) | [![Pantheon Desktop board](desktop/docs/screenshots/board.webp)](desktop/docs/screenshots/board.webp) |
+|:---:|:---:|
+| Desktop conversation | Task board |
+
 ## Who it is for
 
 Pantheon is not only a coding tool. Four groups tend to recognize themselves in it:
