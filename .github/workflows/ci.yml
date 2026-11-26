@@ -32,12 +32,12 @@ jobs:
       # never drift apart (the audit-F9 failure mode).
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
+          toolchain: 1.99.1
           # rust-analyzer: the LSP tests drive the real server, and a
           # rustup shim with no installed component is on PATH but exits
           # during initialize, which reads as LSP_DEAD.
           components: rustfmt, clippy, rust-analyzer
 
-      # Dependency cache. Keyed on the lockfile so an unchanged manifest
       # reuses the compiled deps.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: fmt
@@ -73,6 +73,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
@@ -100,6 +102,8 @@ jobs:
       # job. `@stable` here meant the release smoke test ran on a different
       # compiler than the artifacts actually ship with.
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --release --workspace
       # The installer promises a working binary. Prove the artifact runs,
@@ -133,6 +137,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: test the platform-branching crates
         run: cargo test -p pantheon-helper -p pantheon-exec -p pantheon-api
@@ -161,6 +167,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # The harness drives the real binary, so it needs a build. Debug is
       # enough and much faster than release.
@@ -220,8 +228,8 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
+          toolchain: 1.99.1
           components: clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: desktop/src-tauri
       - name: install Linux native dependencies

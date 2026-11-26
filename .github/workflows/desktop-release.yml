@@ -89,6 +89,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
+          toolchain: 1.99.1
           targets: ${{ matrix.triple }}
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'

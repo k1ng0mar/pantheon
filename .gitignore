@@ -4,7 +4,7 @@
 *.db-journal
 *.log
 .env
-data/
+/data/
 .pantheon/
 .pantheon-data/
 web/node_modules/

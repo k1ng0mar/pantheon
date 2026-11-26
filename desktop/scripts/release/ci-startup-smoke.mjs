@@ -156,9 +156,27 @@ async function main() {
       // WebView2 bootstrap may download its runtime on a clean runner.
       await observeProcess(installer, installArguments(destination), { env, cwd: directory, durationMs: 120_000, expectExit: true, windowsVerbatimArguments: true });
       const names = await readdir(destination);
-      const binaries = names.filter(name => name.toLowerCase() === 'pantheon.exe');
-      if (names.length > 100 || binaries.length !== 1) throw new Error('NSIS did not install the expected app executable.');
-      await observeProcess(join(destination, binaries[0]), [], { env, cwd: directory, durationMs: 30_000 });
+      // Tauri's NSIS layout can place the binary one directory below the /D
+      // root. Search a bounded tree for the exact product executable instead
+      // of assuming it sits at the root.
+      let binary = null;
+      const pending = [destination];
+      let visited = 0;
+      while (pending.length && visited < 200) {
+        const current = pending.pop();
+        for (const entry of await readdir(current, { withFileTypes: true })) {
+          visited++;
+          if (visited > 200) break;
+          const path = join(current, entry.name);
+          if (entry.isDirectory()) pending.push(path);
+          else if (entry.isFile() && entry.name.toLowerCase() === 'pantheon.exe') {
+            if (binary) throw new Error('NSIS installed more than one Pantheon executable.');
+            binary = path;
+          }
+        }
+      }
+      if (!binary) throw new Error(`NSIS did not install the expected app executable (${names.join(', ')}).`);
+      await observeProcess(binary, [], { env, cwd: directory, durationMs: 30_000 });
     }
     console.log(`${target}: packaged app stayed alive during the startup check (no GUI or agent behavior asserted).`);
   } finally {
