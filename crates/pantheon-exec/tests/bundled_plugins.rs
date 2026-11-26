@@ -182,6 +182,7 @@ fn self_improving_agent_hook_manifest_is_opt_in() {
 /// run.sh must be directly executable (shebang + exec bit): the supervisor
 /// spawns the manifest's runner path, not `python3 runner.py`.
 #[test]
+#[cfg(unix)]
 fn run_sh_executes() {
     for plugin in ["doc-pack", "skill-vetter"] {
         let run_sh = plugin_dir(plugin).join("run.sh");
@@ -703,6 +704,12 @@ fn hook_names(m: &HookManifest) -> Vec<&str> {
 /// Run a plugin's stdlib Python test script; skip gracefully when
 /// python3 is missing, fail loudly on any test failure.
 fn run_python_tests(plugin: &str, script: &str) {
+    // These bundled scripts use fcntl and other POSIX modules; they are
+    // Unix-only. Windows CI proves the manifests and Rust wiring instead.
+    if !cfg!(unix) {
+        eprintln!("SKIP: {plugin} python tests are POSIX-only");
+        return;
+    }
     let py = match Command::new("python3").arg("--version").output() {
         Ok(o) if o.status.success() => "python3",
         _ => {

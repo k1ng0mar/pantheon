@@ -4393,6 +4393,23 @@ pub mod supervisor {
         use std::os::unix::fs::MetadataExt;
         use std::sync::atomic::AtomicBool;
 
+        struct NoWrapper(Option<std::ffi::OsString>);
+        impl NoWrapper {
+            fn install() -> Self {
+                let previous = std::env::var_os("PANTHEON_SANDBOX_PATH");
+                std::env::set_var("PANTHEON_SANDBOX_PATH", "/nonexistent");
+                Self(previous)
+            }
+        }
+        impl Drop for NoWrapper {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("PANTHEON_SANDBOX_PATH", v),
+                    None => std::env::remove_var("PANTHEON_SANDBOX_PATH"),
+                }
+            }
+        }
+
         const GOOD_SCRIPT: &[u8] = b"#!/bin/sh\necho SEALED_OK\n";
         const EVIL_SCRIPT: &[u8] = b"#!/bin/sh\necho PWNED\n";
 
@@ -4437,6 +4454,12 @@ pub mod supervisor {
 
         #[test]
         fn spawn_verified_never_executes_unapproved_bytes_under_rewrite_race() {
+            // This test proves the pinned-bytes approval path, not host
+            // namespace behavior. Pin wrapper lookup away from a hosted
+            // runner's half-working bwrap: it can spawn a child that dies
+            // before printing, which is a sandbox artifact, not a byte-pin
+            // violation. The plugin manifest keeps fail-closed defaults.
+            let _no_wrapper = NoWrapper::install();
             let tmp = tempfile::tempdir().unwrap();
             let data_dir = tmp.path().join("data");
             std::fs::create_dir_all(&data_dir).unwrap();
