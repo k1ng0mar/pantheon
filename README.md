@@ -15,6 +15,14 @@ Pantheon turns a model you choose into an agent you control. Connect a provider,
 
 No cloud account. No server to keep alive. One binary and a config file in your home directory.
 
+## Inside the app
+
+The terminal app is a full screen interface, not a chat box in a shell. Pick a provider, pick a model, get to work.
+
+| [![Pantheon setup chooser](docs/feature-shots/tui-setup-chooser-20260930a.png)](docs/feature-shots/tui-setup-chooser-20260930a.png) | [![Pantheon provider picker](docs/feature-shots/tui-provider-picker-20260930a.png)](docs/feature-shots/tui-provider-picker-20260930a.png) | [![Pantheon model picker](docs/feature-shots/tui-model-picker-20260930a.png)](docs/feature-shots/tui-model-picker-20260930a.png) |
+|:---:|:---:|:---:|
+| Setup chooser | Provider picker | Model picker |
+
 ## Who it is for
 
 Pantheon is not only a coding tool. Four groups tend to recognize themselves in it:
@@ -85,6 +93,20 @@ pantheon run --taskID t1 --say "summarize these logs" --deliver session
 ## Under the hood
 
 Pantheon is a Rust workspace that ships as one binary. The runtime owns the session lifecycle, approvals, recovery and event ledger. Providers are replaceable. Tools, memory, plugins and the TUI sit at the edges. The architecture doc explains the crate boundaries and the decisions behind them: [docs/developer/architecture.md](docs/developer/architecture.md).
+
+```mermaid
+flowchart LR
+  you[You] --> surface[TUI, CLI, web, chat]
+  surface --> runtime[Session runtime]
+  runtime --> model[Model provider]
+  model -->|tool call| gate{Capability gate}
+  gate -->|allow| tools[Tools and sandbox]
+  gate -->|ask| approval[Your approval]
+  approval --> gate
+  gate -->|deny| blocked[Blocked]
+  tools --> ledger[(SQLite event ledger)]
+  runtime --> ledger
+```
 
 Pantheon Desktop lives in [desktop/](desktop/README.md) as a first-party client.
 
