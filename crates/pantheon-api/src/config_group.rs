@@ -863,9 +863,9 @@ pub mod dotenv {
     ///
     /// line-preserving like [`upsert_dotenv`]: comments, order, and unrelated
     /// keys survive; duplicates collapse (last-wins). values are quoted so they
-    /// round-trip losslessly through [`parse_dotenv`]; they must be single-line
-    /// - `\n` or `\r` is rejected rather than written in a form the parser
-    /// would read back differently.
+    /// round-trip losslessly through [`parse_dotenv`]; they must be single-line.
+    /// `\n` or `\r` is rejected rather than written in a form the parser would
+    /// read back differently.
     ///
     /// holds the full cross-process write exclusion (process mutex + exclusive
     /// flock on the sidecar) for the whole read-modify-write, so concurrent
