@@ -135,7 +135,7 @@ pub struct Worker {
 #[serde(rename_all = "camelCase")]
 pub struct TeamSnapshot {
     pub session_id: String,
-    /// Codex persists the architect tool schema in its native context.
+    /// The architect tool schema is pinned to the session context version.
     #[serde(default)]
     pub tool_catalog_version: u32,
     pub config: TeamConfig,
@@ -554,7 +554,7 @@ fn rules(store: &Store, team: &TeamSnapshot, sid: &str) -> Result<(String, Strin
         let staffing = if team.config.roster_only {
             format!("You lead {} with your own model ({} via {}). Use only these models for workers, never any other: set profileId to one of these entries in each assignment{}. Team: {}.", team.config.name.as_deref().map_or_else(|| "this agent team".to_string(), |name| format!("the {name} team")), lead.model, lead.provider, if team.config.workers.iter().any(|p| p.provider == lead.provider && p.model == lead.model) { ", or omit it to use your own model" } else { "" }, profiles)
         } else if team.config.auto {
-            format!("You lead this team with your own model ({} via {}). Choose each worker's model yourself: if the user's request names models or harnesses to orchestrate with (for example \"use Sonnet workers\" or \"have Codex review\"), use those; otherwise pick the best fit per assignment, such as a strong model for hard implementation and a faster or cheaper one for simple edits, tests, or review. In each assignment either set profileId to a roster entry, or set provider and model directly (provider is one of {}); omit all three to use your own model. Installed model roster: {}.", lead.model, lead.provider, HARNESSES.join(", "), profiles)
+            format!("You lead this team with your own model ({} via {}). Choose each worker's model yourself: if the user's request names models or harnesses to orchestrate with (for example \"use Sonnet workers\" or \"have a worker review\"), use those; otherwise pick the best fit per assignment, such as a strong model for hard implementation and a faster or cheaper one for simple edits, tests, or review. In each assignment either set profileId to a roster entry, or set provider and model directly (provider is one of {}); omit all three to use your own model. Installed model roster: {}.", lead.model, lead.provider, HARNESSES.join(", "), profiles)
         } else {
             format!("Worker profiles are reusable: several assignments may use the same profile, and profile count does not limit parallel workers. Available profiles: {}.", profiles)
         };
@@ -705,10 +705,8 @@ pub(super) fn configure_state(
             [session_id],
         )
         .map_err(|e| e.to_string())?;
-        // Codex persists its dynamic-tool catalog with the native thread. A
-        // different catalog needs a new context, with the transcript carried
-        // forward. Claude and Kimi reload MCP tools when resuming, so their
-        // existing context remains valid. Saving ordinary mode is a no-op.
+        // A different dynamic-tool catalog needs a fresh context, with the
+        // transcript carried forward. Saving ordinary mode is a no-op.
         if existing.is_some() && session.provider == "pantheon" {
             crate::context_recovery::queue_on(&tx, session_id)?;
             tx.execute("UPDATE sessions SET resume_id=NULL,goal_state=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",[session_id]).map_err(|e|e.to_string())?;

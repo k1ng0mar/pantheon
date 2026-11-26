@@ -1,55 +1,36 @@
-# Goals and harness command workflows
+# Goals and command workflows
 
-Pantheon uses the installed harness's protocol and native command registry. Public Codex operations have task-scoped controls; commands that belong to a terminal interface open that real harness in the embedded terminal. Terminal commands are inserted only when the user presses the insert button and are never passed as model prompts. The user submits them in the visible terminal, after authentication/trust screens have finished.
+Pantheon carries a goal in the session's system prompt. The desktop registers it
+through the `_pantheon/goal` extension before a turn, then keeps the state
+locally. Reading, pausing, resuming and clearing a goal answer from the store
+and never start an agent.
 
-## Goals
+`/goal` opens an editor with an objective and an optional token budget, and the
+task menu exposes the same control while a task runs. Status is `active`,
+`paused`, `blocked`, `usageLimited`, `budgetLimited` or `complete`. The banner
+shows the reported state, token use, elapsed time and budget. Setting a goal
+stores it and starts a turn so the model begins the work. Pause before opening
+a Pantheon console. Goals cannot run inside an architect team; use the team
+controls instead.
 
-`/goal` opens a goal editor with an objective and optional token budget. The task menu exposes the same control while a task is running. The retained goal banner shows provider-reported state, token usage, and elapsed work time. Pause, resume, edit, and clear use `thread/goal/*` APIs.
+Goal state is validated against the saved task ID and stored separately from
+the transcript. A task keeps at most one goal, and a goal needs an objective
+under 32 KiB with a positive token budget when one is set. An interrupted
+session recovers with the goal unchanged.
 
-Codex itself schedules initial and subsequent turns. Pantheon keeps one connection alive while the goal is active and streams each turn through the existing transcript path. It does not inject continuation prompts or treat a completed turn as a completed goal. Active, blocked, paused, and limited goals remain in progress on the board; only completed goals can advance to review automatically.
+## Command panels and slash commands
 
-An explicit stop pauses the goal before interrupting the turn. Interrupted app sessions recover with a paused goal, allowing the user to resume deliberately. Before loading an existing Codex thread, the adapter reads its goal and pauses any active goal before continuing; merely inspecting, pausing, or clearing a saved goal does not load it and cannot accidentally start work. Goal state is validated against the saved provider thread ID and persisted separately from transcript text.
+The panels answer from local Pantheon sources. Usage comes from `pantheon stats
+--json` over a one-year window; plugins come from `pantheon plugins list`; hooks
+come from the data directory's `config.toml`; conversations come from this
+app's own task list. The native caller supplies the workspace. The webview
+cannot choose the workspace or supply an import body. Each panel caps its rows
+at 200.
 
-Goals share the four-agent concurrency limit. The adapter bounds outstanding control requests, response sizes, and acknowledgment times. An idle continuation watchdog surfaces a stalled harness and pauses the goal. There is no app-level inference polling loop.
-
-## Command controls
-
-- `/usage`: account limits, reset times, and available usage history.
-- `/goal`: persistent objectives and optional budgets.
-- `/plan`: actual Codex collaboration mode; independent of approval policy.
-- `/fast`: a Fast tier advertised by the selected model's installed catalog.
-- `/personality`, `/experimental`, `/memories`: supported Codex preferences, with only allowed fields exposed.
-- `/import`: a preview of detected agent setup; imports only explicitly selected, unchanged candidates.
-- `/hooks`, `/plugins`: sanitized installed inventories. Native hook commands and credentials do not enter the renderer.
-- `/resume`: existing Codex conversations in the current checkout; selected history is imported into the task view.
-- `/fork`, `/side`, `/btw`: a separate task with copied context under the same project.
-- `/ps`, `/stop`, `/clean`: inspect and stop individual background commands while their Codex process is alive.
-- `/archive`, `/rename`, `/export`, `/worktree`, `/mention`, `/cd`: actual conversation or workspace controls.
-- `/console`: the selected native harness's terminal interface. Terminal-specific commands, including guardian retry and deletion, use its own workflow and confirmations.
-
-Only platform-inapplicable and internal diagnostic commands remain unavailable. Unknown command names fail explicitly. Claude and Kimi headless commands retain their provider dispatcher, with terminal-specific commands routed to their own consoles. Native authentication and integration availability remain prerequisites.
-
-## Storage and process boundaries
-
-Schema version 10 adds nullable goal snapshots and per-task Codex settings, preserving existing tasks, messages, worktrees, and theme preferences. Goal updates use the same retained UI elements rather than replacing the composer for each event. Settings merge individual fields to avoid lost updates. Running tasks and open harness consoles cannot concurrently own the same provider conversation.
-
-Control requests derive the checkout and provider thread from saved task state. The frontend cannot submit arbitrary JSON-RPC methods, remote goal IDs, configuration paths, or import descriptors. Imports expire and are rediscovered before being applied. Native processes are bounded and reaped; no persistent server is introduced for idle tasks.
-
-## Protocol references
-
-Verified against installed Codex 0.154.0 schemas and its version-matched source:
-
-- [App-server protocol](https://learn.chatgpt.com/docs/app-server)
-- [Native goal runtime](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/ext/goal/src/runtime.rs)
-- [Native goal lifecycle](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/ext/goal/src/extension.rs)
-- [Goal API processor](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/app-server/src/request_processors/thread_goal_processor.rs)
-
-Tests use protocol fixtures and disposable browser contexts, without submitting paid model prompts or changing personal harness authentication/configuration.
-
-Console permissions are displayed and controlled by the native harness. Codex
-and Claude console launches receive explicit approval-mode arguments. Kimi's
-Standard console retains its saved native permissions because its installed CLI
-does not expose a flag to reset that state; the console banner identifies this.
-Terminal-only output remains in the console/native history. Imported Codex
-conversations load bounded text history into Pantheon; Claude/Kimi terminal
-history is not synthesized into app comments.
+Slash commands come from the CLI's advertised catalog. Discovery opens a
+throwaway `pantheon serve acp` session, reads the first
+`available_commands_update` frame and sends no prompt. Names are capped at 128
+characters and the catalog at 512 commands. Terminal-only commands open a
+Pantheon console in the embedded terminal. Commands are inserted only when the
+user presses insert, and the user submits them there after any login or trust
+screens finish.

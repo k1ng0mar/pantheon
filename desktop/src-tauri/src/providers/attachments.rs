@@ -47,9 +47,8 @@ pub(super) async fn load(_provider: &str, paths: &[PathBuf]) -> Result<Vec<Value
         if bytes.len() < 33 || !bytes.starts_with(PNG_SIGNATURE) || &bytes[12..16] != b"IHDR" {
             return Err("A screenshot is not a PNG image. Capture it again.".into());
         }
-        // Codex's installed app-server schema: v2/TurnStartParams, LocalImageUserInput.
-        // Claude: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
-        // Kimi: https://agentclientprotocol.com/protocol/v1/content#image-content
+        // ACP image content: the local-image input shape in the installed agent server.
+        // Protocol reference: https://agentclientprotocol.com/protocol/v1/content#image-content
         // ACP v1 image content block: the only shape the Pantheon agent accepts.
         images.push(json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)}));
     }

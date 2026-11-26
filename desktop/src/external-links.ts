@@ -15,7 +15,7 @@ export function mountExternalLinks(
     try { url = new URL(anchor.href, document.baseURI); }
     catch { return; }
     if (!['http:', 'https:'].includes(url.protocol) || !url.host) {
-      // Guest content never re-homes the app (Hermes' rule): relative,
+      // Guest content never re-homes the app: relative,
       // `file:`, and unknown-scheme links from agent output are inert —
       // neither an OS open nor a webview navigation. Same-page hash jumps
       // from markdown count as guest content too; the app navigates by

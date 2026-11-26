@@ -63,7 +63,7 @@ fn review_supported(_provider: &str, mode: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
+/// Providers that take app instructions as a system prompt.
 pub fn takes_system_instructions(provider: &str) -> bool {
     matches!(provider, "pantheon")
 }
@@ -125,8 +125,7 @@ pub struct RunConfig {
     pub cwd: PathBuf,
     pub resume_id: Option<String>,
     pub prompt: String,
-    /// Fixed app instructions. Claude-family harnesses receive them as an appended system
-    /// prompt, which is cached with the rest of the prefix instead of re-sent in every message.
+    /// Fixed app instructions sent as a system prompt, cached with the prefix.
     pub instructions: String,
     /// Exact skill reference resolved from the provider's native command catalog.
     pub skill: Option<(String, PathBuf)>,
@@ -134,7 +133,7 @@ pub struct RunConfig {
     /// `_pantheon/goal` before the turn. Pantheon carries a goal in the
     /// session's system prompt, so it survives the turn that set it.
     pub goal_objective: Option<String>,
-    /// Validated per-task settings applied before any new Codex turn.
+    /// Validated per-task settings applied before any new turn.
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
 }
@@ -1529,11 +1528,11 @@ pub async fn run_with_tools(
     result
 }
 
-/// Credential paths the Claude-family CLI must never read or edit.
+/// Credential paths the Pantheon CLI must never read or edit.
 ///
 /// The desktop runs shell and file tools inside the provider harness, not in
 /// Pantheon's own sandbox, so `pantheon_exec`'s credential masks (the TUI's
-/// `hidden_paths`) do not apply here. Claude Code has an enforceable equivalent:
+/// `hidden_paths`) do not apply here. Pantheon has an enforceable equivalent:
 fn configure_command(command: &mut Command, config: &RunConfig) {
     // Pantheon speaks standard ACP on `serve acp` (stdio JSON-RPC). The task's
     // mode, model and effort travel over ACP (`session/set_mode`,
@@ -1793,7 +1792,7 @@ mod tests {
     /// Audit DESKTOP-1: the desktop's harness runs outside `pantheon_exec`, so
     /// the TUI's credential masks do not apply. Every Claude-family launch must
     /// carry deny rules for the credential paths, in every mode, and the payload
-    /// must be valid JSON in the shape Claude Code documents.
+    /// must be valid JSON in the shape Pantheon documents.
 
     #[test]
     fn screenshot_only_prompts_do_not_include_invalid_empty_text_blocks() {

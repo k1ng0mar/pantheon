@@ -1,8 +1,7 @@
 //! A team turn that goes silent is stopped, so one hung tool call cannot block the team.
 use super::*;
 
-/// Claude's longest tool timeout is 10 minutes, so a turn with no event for twice that
-/// is stuck. Approvals and questions that wait on the user never count as silence.
+/// A turn with no event for twice the longest tool timeout is stuck. Approvals and questions that wait on the user never count as silence.
 pub(crate) const SILENCE_MINUTES: i64 = 20;
 const SILENCE_LIMIT_MS: i64 = SILENCE_MINUTES * 60 * 1000;
 const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);

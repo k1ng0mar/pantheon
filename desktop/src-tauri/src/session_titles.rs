@@ -87,8 +87,8 @@ pub(crate) struct TitleRun {
 }
 
 /// Keep the tool identity available even when this turn does not request a title.
-/// Claude can retain a ToolSearch tool_reference in resumed history; removing
-/// its definition would invalidate later requests. Eligibility only controls
+/// A resumed turn can retain a tool reference in history; removing its
+/// definition would invalidate later requests. Eligibility only controls
 /// the prompt instruction and whether the callback stages a suggestion.
 pub(crate) fn with_host(
     run: Option<&TitleRun>,

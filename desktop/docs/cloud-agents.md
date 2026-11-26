@@ -1,85 +1,67 @@
 # Cloud agents
 
-A task can run its agent on a cloud machine instead of this computer. In a New task, the
-context bar's computer menu ("This computer", other Connect computers) also lists
-**Cloud** targets: every provider connected in Settings → Cloud (Daytona, Cloudflare,
-AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel,
-Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and sending starts the task there. The
-task then reads like any other task: streaming transcript, approvals, questions, steering,
-queue, model picker. It keeps running when the laptop sleeps or Pantheon quits, and
-catches up when it comes back.
+A task can run on a cloud machine instead of this computer. In a New task, the
+context bar's computer menu lists Cloud targets: every provider connected in
+Settings → Cloud (Daytona, Cloudflare, AWS EC2, Google Cloud, E2B, Modal, Vercel
+Sandbox, CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, Railway, boat and
+InstaBox). Picking one and sending starts the task there. It then reads like any
+other task, keeps running when the laptop sleeps or the app quits, and catches
+up when it comes back.
 
 ## How it works
 
-1. **Machine.** `cloud::sandbox::connected(provider)` returns a `Box<dyn Sandbox>`
-   (`src-tauri/src/cloud/sandbox.rs`: list/create/power/state/exec/keep_alive/spawn/
-   upload/download). One machine per cloud task, named `pc-<first 8 of task id>`. Machine
-   IDs stay `provider:native`, so the VM panel and `pantheon_vm_*` tools see it too.
-2. **Runtime.** `cloud_agents::setup::ensure_runtime` installs what the harness needs
-   (git, Node when needed, the harness CLI) idempotently, with a version marker in
-   `~/.pantheon/runtime/<harness>`. Supported harnesses: `claude`, `glm`, `mimo`
-   (Claude Code relays), `codex`, `opencode`. Others refuse with a clear message.
-3. **Credentials.** `cloud_agents::credentials::push` copies the local logins the harness
-   needs (files written 0600, never logged, re-pushed before every run so the remote copy
-   is fresh) and returns environment variables for the agent process (API keys of keyed
-   relays, `GH_TOKEN` from `gh auth token`, git identity). Claude: a long-lived token
-   from `claude setup-token` stored in Settings → Cloud is preferred
-   (`CLAUDE_CODE_OAUTH_TOKEN`); otherwise the local Claude Code credentials are copied.
-4. **Checkout.** The local task gets its own worktree on branch `pantheon/cloud-<short>`
-   (the "mirror worktree"), created from the current branch, uncommitted changes
-   included as a first commit. `cloud_agents::sync::upload_checkout` sends it as a git
-   bundle to `$HOME/pantheon/<task id>` on the machine. After every run,
-   `sync::pull_changes` commits the machine's changes there, fetches them back as a
-   bundle and fast-forwards the mirror worktree, so the inspector's Changes tab, PR flow
-   and Run script work locally. If the mirror worktree has local edits, the cloud commits
-   stay on `refs/pantheon/cloud/<task id>` and the task says so. Before a run, local
-   commits the machine lacks go up first (`sync::push_local`).
-5. **Run.** The agent runs detached on the machine under a small runner
-   (`cloud_agents/runner.sh`): its stdin is the append-only file `inbox`, its stdout and
-   stderr go to `out` and `err`, and `exit` holds the exit code, in
-   `~/.pantheon/runs/<run id>/`. Locally the run uses the ordinary provider pipeline
-   (`providers::run_with_tools`, the same `Protocol`, sink, persistence, approvals and
-   steering): only the transport differs. Lines Pantheon writes to the agent are
-   appended to `inbox`; `out` is polled from a byte offset (adaptive: fast while output
-   flows, slower when idle, backing off on network errors with a "Reconnecting…"
-   status). Pantheon's local MCP host tools are not offered to cloud runs.
-6. **Sleep, quit, resume.** Closing the laptop pauses only the local poller; the run
-   continues because `keep_alive` asked the provider to keep the machine up (capped by
-   `Info::max_unattended_minutes`). Quitting Pantheon leaves the remote run alone. At
-   startup, and when a poll succeeds again, every cloud task whose run was active
-   re-attaches: the log is replayed from offset 0 into a fresh `Protocol`, lines already
-   in `inbox` are not written again, and the run ends normally (messages saved, queue
-   delivered, changes pulled). Stop kills the remote process group.
-7. **Idle.** After a run ends, `keep_alive(…, 15)` lets the machine stop on its own.
-   The next prompt starts it again (`power start`); a non-persistent machine
-   (`Info::persistent == false`) or a deleted one is recreated and rehydrated from the
-   mirror worktree plus the harness's saved session files
-   (`sync::save_harness_state`/`restore_harness_state`, kept in app data), so
-   `--resume` keeps working.
+1. Machine. `cloud::sandbox::connected(provider)` returns a `Box<dyn Sandbox>`
+   with list, create, power, state, exec, upload and download operations. There
+   is one machine per cloud task, named `pc-<first 8 of task id>`. Its ID stays
+   `provider:native`, so the VM panel sees it too.
+2. Runtime. `cloud_agents::setup::ensure_runtime` uploads the same Linux
+   Pantheon binary the desktop runs locally to `.pantheon/bin/pantheon`, after
+   ensuring git, curl and tar. A marker in `~/.pantheon/runtime/pantheon`
+   records the installed build. Nothing is fetched from npm or a second release,
+   and any other agent name is refused.
+3. Credentials. Pantheon signs in on this computer itself, so no login file is
+   copied. A cloud run gets a git identity from local git config and, when `gh`
+   is signed in, a scoped `GH_TOKEN` with a matching credential helper. Secret
+   values are never logged.
+4. Checkout. The task gets a local mirror worktree on branch
+   `pantheon/cloud-<short>`, including uncommitted work as a first commit.
+   `sync::upload_checkout` sends it as a git bundle to `$HOME/pantheon/<task id>`.
+   After each run `sync::pull_changes` brings the machine's commits back and
+   fast-forwards the mirror, so the Changes tab, PR flow and Run script work
+   locally. Local edits in the mirror keep the cloud commits on
+   `refs/pantheon/cloud/<task id>`.
+5. Run. A small runner (`cloud_agents/runner.sh`) runs the agent detached: its
+   stdin is an append-only `inbox`, and `out`, `err` and `exit` hold output and
+   exit status in `~/.pantheon/runs/<run id>/`. The polling loop uses the same
+   provider pipeline as a local task; only the transport differs. Local MCP host
+   tools are not offered to cloud runs.
+6. Sleep, quit, resume. Sleep pauses only the poller; keep-alive holds the
+   machine up, capped by the provider's `max_unattended_minutes`. Quitting the
+   app leaves the run alone. On startup, or when polling recovers, active cloud
+   tasks replay their log from offset 0 into a fresh protocol without re-sending
+   lines already in `inbox`. Stop kills the remote process group.
+7. Idle. After a run ends, a 15-minute keep-alive lets the machine stop. The next
+   prompt powers it on. A deleted or non-persistent machine is recreated from the
+   mirror worktree and Pantheon's saved session state.
 
 ## State
 
-`sessions.cloud` (schema 27) is a JSON object or NULL:
-`{provider, machine, remoteDir, base, stage, detail, runId, offset, inboxLines}`.
+`sessions.cloud` (schema 27) is a JSON object or NULL with `provider`, `machine`,
+`remoteDir`, `base`, `stage`, `detail`, `runId`, `offset` and `inboxLines`.
 `stage` is one of `creating`, `installing`, `credentials`, `uploading`, `ready`,
-`running`, `reconnecting`, `syncing`, `stopped`, `error`. The session JSON sent to the
-webview carries it as `cloud` (`{provider, label, machine, stage, detail}`), and every
-change emits `cloud-agent://progress` `{sessionId, stage, detail}` plus
-`sessions-changed`.
+`running`, `reconnecting`, `syncing`, `stopped` or `error`. The session sent to
+the webview carries `cloud` (`provider`, `label`, `machine`, `stage`, `detail`),
+and each change emits `cloud-agent://progress` plus `sessions-changed`.
 
 ## IPC
 
-- `cloud_agent_targets() → [{provider, label, ready}]` — providers that can run agents
-  and whether they are connected.
-- `cloud_agent_start({sessionId?, projectId, provider, prompt, harness, model, mode,
-  effort}) → Session` — turns the empty New task draft (or a new row) into a cloud task,
-  answers at once, then prepares the machine in the background (progress events) and
-  sends `prompt` as the first message. Images are refused like Connect mirrors.
-- `cloud_agent_action({sessionId, action})` — `sync` (pull changes now), `retry` (redo a
-  failed preparation), `stop` (stop the machine), `delete` (delete the machine; the task
-  stays and will recreate one on the next prompt), `open` (select the machine in the VM
-  panel).
-- Follow-ups, stop, approvals, input, steering: the ordinary commands.
+- `cloud_agent_targets() → [{provider, label, ready}]` lists connected machines.
+- `cloud_agent_start({sessionId?, projectId, provider, prompt, harness, model,
+  mode, effort})` turns a New task draft into a cloud task, sends the first
+  message at once and prepares the machine in the background. Images are refused.
+- `cloud_agent_action({sessionId, action})` takes `sync`, `retry`, `stop`,
+  `delete` or `open`. Follow-ups, stop, approvals and steering use the ordinary
+  commands.
 
 ## Provider settings
 
@@ -87,24 +69,24 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 
 | Provider | Key | Options |
 | --- | --- | --- |
-| e2b | API key | — |
+| e2b | API key | none |
 | modal | token secret | `tokenId` (required), `environment` |
-| codesandbox | API key | — |
-| runloop | API key | — |
+| codesandbox | API key | none |
+| runloop | API key | none |
 | blaxel | API key | `workspace` (required) |
-| tensorlake | API key | — |
-| freestyle | API key | — |
+| tensorlake | API key | none |
+| freestyle | API key | none |
 | boat | API key | `apiUrl` |
-| instabox | API key | — (machines from the `agent-browser` template; `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 30 unattended minutes) |
-| vercel | (existing deploy token) | `projectId` and `teamId` for Sandbox, saved in `Settings.providers["vercel"]` |
-| railway | (existing deploy token) | `workspace` (existing) |
-| gcloud | (gcloud CLI login) | `zone` for Compute Engine VMs, saved in `Settings.providers["gcloud"]` |
+| instabox | API key | machines from the `agent-browser` template; output is read back from a file because only its first 1 MiB is kept |
+| vercel | existing deploy token | `projectId` and `teamId` for Sandbox |
+| railway | existing deploy token | `workspace` (existing) |
+| gcloud | gcloud CLI login | `zone` for Compute Engine VMs |
 
-Non-secret options live in `cloud::Settings.providers[<id>]`; a `detail` entry there is
-shown in Settings. Secrets use `cloud::set_secret("<id>_key", …)`.
+Non-secret options live in `cloud::Settings.providers[<id>]`, and a `detail`
+entry there is shown in Settings. Secrets use `cloud::set_secret("<id>_key", value)`.
 
 ## Privacy
 
-Nothing is sent anywhere until the user connects a provider and starts a cloud task. A
-cloud task sends the checkout, the prompt, and the harness's login to the chosen
-provider's machine in the user's own account.
+Nothing is sent anywhere until the user connects a provider and starts a cloud
+task. A cloud task sends the checkout, the prompt and a scoped GitHub token to
+the chosen provider's machine in the user's own account.

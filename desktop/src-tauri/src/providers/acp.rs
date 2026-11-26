@@ -513,7 +513,7 @@ const MAX_STEERS: usize = 16;
 /// Request ids for live steering prompts, clear of startup (1-7), cancel (900) and goals (10000+).
 const STEER_IDS: std::ops::Range<u64> = 2000..9000;
 
-/// Steering for ACP runs. OpenCode folds a second `session/prompt` into the running
+/// Steering for ACP runs. A second `session/prompt` can fold into the running
 /// A steer sent into an open turn is `live`; one that arrives before or between
 /// turns is `held` and goes out as the next `session/prompt` on the same session.
 #[derive(Default)]

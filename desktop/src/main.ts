@@ -428,7 +428,7 @@ const attachments = mountPromptAttachments({
     return null;
   },
   otherImages: taskId => (state.browserAttachments.get(taskId) ?? []).filter(item => item.kind === 'screenshot').length,
-  // Grok Build's ACP agent advertises no image input; say so before a send fails.
+  // ACP agents may advertise no image input; say so before a send fails.
   notify: message => notify(message),
   report: error => report(error),
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
