@@ -929,8 +929,6 @@ pub(crate) fn project_ids(store: &Store) -> Result<Vec<String>> {
         .map_err(|e| e.to_string())
 }
 
-// --- Desktop commands -------------------------------------------------------
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BotDetail {

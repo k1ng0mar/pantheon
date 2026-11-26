@@ -3,7 +3,7 @@ dialog.bots-dialog{width:min(960px,calc(100vw - 32px));max-height:90dvh}
 .bots [hidden]{display:none!important}
 .bots[aria-busy=true] .bots-detail{cursor:progress}
 
-/* Bot list */
+
 .bots-list{display:flex;flex-direction:column;min-width:0;padding-right:14px;border-right:1px solid var(--bots-line)}
 .bots-list-head{display:flex;align-items:center;justify-content:space-between;margin:0 0 6px;font-size:.76rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .bots-rows{display:flex;flex-direction:column;gap:2px;overflow-y:auto}
@@ -20,7 +20,7 @@ dialog.bots-dialog{width:min(960px,calc(100vw - 32px));max-height:90dvh}
 .bot-avatar{display:grid;place-items:center;flex:none;width:30px;height:30px;border-radius:50%;background:color-mix(in srgb,var(--accent) 55%,var(--raised));color:var(--bots-on-accent);font-weight:650;font-size:.92rem;line-height:1}
 .bot-avatar.large{width:46px;height:46px;font-size:1.35rem}
 
-/* Detail */
+
 .bots-detail{display:flex;flex-direction:column;min-width:0;overflow-y:auto;padding-right:2px}
 .bots-head{display:flex;align-items:center;gap:14px;margin-bottom:14px}
 .bots-title{flex:1;min-width:0}
@@ -41,7 +41,7 @@ dialog.bots-dialog{width:min(960px,calc(100vw - 32px));max-height:90dvh}
 
 .bots-badge{min-width:17px;height:17px;padding:0 5px;border-radius:4px;background:var(--danger);color:#fff;font-size:.68rem;font-weight:650;line-height:17px;text-align:center}
 
-/* Panels */
+
 .bots-panel{display:flex;flex-direction:column;gap:12px;min-width:0}
 .bots-panel h4{display:flex;align-items:center;gap:6px;margin:8px 0 0;font-size:.78rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .bots-lede{margin:0;color:var(--muted);font-size:.86rem;line-height:1.5}
@@ -62,7 +62,7 @@ p.bots-hint{margin:0}
 .bots-chip.allow{background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--success)}
 .bots-chip.deny{background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)}
 
-/* Forms */
+
 .bots-form,.bots-schedule,.bots-channel-form{display:flex;flex-direction:column;gap:12px}
 .bots-form h3{margin:0;font-size:1.12rem;font-weight:650}
 .bots-field{display:flex;flex-direction:column;gap:5px;min-width:0}
@@ -86,7 +86,7 @@ p.bots-hint{margin:0}
 .bots-when{display:contents}
 .bots-schedule .dialog-footer,.bots-channel-form .dialog-footer{margin-top:0}
 
-/* Channels */
+
 .bots-channel{flex-direction:column;align-items:stretch!important}
 .bots-channel-row{display:flex;align-items:center;gap:8px;min-width:0}
 .bots-kind{display:grid;place-items:center;flex:none;width:28px;height:28px;border-radius:3px;background:var(--raised);font-weight:650;font-size:.8rem;color:var(--muted)}
@@ -105,7 +105,7 @@ html[data-theme=dark] .bots-kind:not([data-kind=web]){background:var(--raised);c
 .bots-switch:checked::before{transform:translateX(.85rem)}
 .bots-switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px;box-shadow:none}
 
-/* Activity */
+
 .bots-activity{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
 .bots-activity>li{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:start;gap:10px;padding:7px 2px;border-top:1px solid var(--bots-line);font-size:.84rem}
 .bots-activity>li:first-child{border-top:0}
@@ -136,7 +136,7 @@ html[data-theme=dark] .bots-kind:not([data-kind=web]){background:var(--raised);c
 .bots-stats b{font-weight:650;color:var(--text);font-variant-numeric:tabular-nums}
 .bot-avatar.huge{width:64px;height:64px;font-size:1.9rem;box-shadow:0 8px 28px color-mix(in srgb,var(--accent) 35%,transparent)}
 
-/* Guided setup */
+
 .bots-kind-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .bots-kind-grid>button{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto auto;column-gap:10px;align-items:center;padding:11px 12px;border-radius:5px;border:1px solid var(--bots-line);background:var(--panel);text-align:left;color:var(--text);transition:border-color 160ms,background-color 160ms}
 .bots-kind-grid>button:hover{border-color:color-mix(in srgb,var(--accent) 60%,var(--border))}

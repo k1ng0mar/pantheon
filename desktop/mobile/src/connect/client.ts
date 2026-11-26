@@ -121,7 +121,7 @@ async function refreshIfDue() {
   }
 }
 
-// ---- Devices and trust ----
+
 
 const validDevice = (d: any): d is Device =>
   d && typeof d.id === 'string' && /^[\x21-\x7e]{1,200}$/.test(d.id) && typeof d.name === 'string' && typeof d.publicKey === 'string';
@@ -163,7 +163,7 @@ async function revokeDevice(deviceId: string): Promise<void> {
   if (deviceId === state().deviceId) return signOut();
 }
 
-// ---- Calls ----
+
 
 function callable(deviceId: string): Device {
   if (!token) throw new Error('Sign in to Pantheon Connect first.');
@@ -195,7 +195,7 @@ async function call<T>(deviceId: string, method: Method, params: unknown, timeou
   return reply as Promise<T>;
 }
 
-// ---- Incoming frames ----
+
 
 function frame(text: string) {
   let value: any;
@@ -266,7 +266,7 @@ async function finished(host: string, data: RunFinished) {
   });
 }
 
-// ---- Subscriptions and messages ----
+
 
 /** Keeps these tasks' events and messages flowing while the UI shows them. */
 function watch(deviceId: string, sessionIds: string[]) {
@@ -329,7 +329,7 @@ function withTitle(s: ConnectState, host: string, sessionId: string, title: unkn
   return { ...s.tasks, [host]: { ...list, tasks: list.tasks.map(t => (t.sessionId === sessionId && t.title !== title ? { ...t, title } : t)) } };
 }
 
-// ---- Typed methods ----
+
 
 async function listTasks(deviceId: string, limit?: number): Promise<TasksList> {
   const reply = await call<TasksList>(deviceId, 'tasks.list', limit === undefined ? {} : { limit });

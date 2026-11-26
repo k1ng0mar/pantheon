@@ -6,7 +6,7 @@ dialog.bot-settings-dialog{width:min(880px,calc(100vw - 32px));max-height:88dvh}
 .bots.bots-single{display:block;min-height:min(520px,70dvh)}
 .bots-detail{display:flex;flex-direction:column;gap:14px;min-width:0}
 
-/* Header */
+
 .bp-bar{display:flex;align-items:center;gap:12px;max-width:830px;min-height:46px;margin:0 auto}
 .bp-ring{width:42px;height:42px}
 .bp-ring>.bot-avatar{width:36px;height:36px;font-size:1.1rem}
@@ -38,7 +38,7 @@ dialog.bot-settings-dialog{width:min(880px,calc(100vw - 32px));max-height:88dvh}
 .bp-open .icon{width:15px;height:15px}
 .bots-detail>:is(.bots-confirm,.bots-error,.bots-banner){margin:0}
 
-/* Sections */
+
 .bots-count{margin-left:2px;font-size:.7rem;font-weight:500;color:var(--muted);font-variant-numeric:tabular-nums}
 .bots-detail .bots-panel{gap:14px}
 .bots-detail .bots-panel h4{margin:6px 0 -4px;font-size:.74rem;font-weight:550;text-transform:none;letter-spacing:0}
@@ -68,7 +68,7 @@ dialog.bot-settings-dialog{width:min(880px,calc(100vw - 32px));max-height:88dvh}
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.bp-menu{backdrop-filter:none;-webkit-backdrop-filter:none;background:var(--panel)}}
 .bots-detail .bp-bar{max-width:none;margin:0}
 
-/* Section list and panel */
+
 .bs-body{display:grid;grid-template-columns:170px minmax(0,1fr);gap:22px;min-width:0}
 .bs-nav{display:flex;flex-direction:column;gap:1px;min-width:0;align-self:start;position:sticky;top:0}
 .bs-nav>button{display:flex;align-items:center;gap:10px;min-height:32px;padding:0 10px;border-radius:3px;text-align:left;font-size:.86rem;color:var(--text);white-space:nowrap;--press:1}
@@ -86,7 +86,7 @@ dialog.bot-settings-dialog{width:min(880px,calc(100vw - 32px));max-height:88dvh}
 .bots .bs-heading{display:flex;align-items:center;gap:6px;margin:12px 2px -4px;font-size:.82rem;font-weight:600;color:var(--muted)}
 .bots .bs-heading>.info-mark{margin-left:0}
 
-/* Grouped rows, like .settings-group and .setting-row */
+
 .bs-group{border:1px solid var(--border);border-radius:.36rem;overflow:hidden;background:var(--panel)}
 .bs-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(10.5rem,20rem);gap:1rem;align-items:center;min-height:3rem;padding:.6rem 1rem;margin:0}
 .bs-row+.bs-row{border-top:1px solid var(--border)}

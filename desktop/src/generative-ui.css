@@ -19,21 +19,21 @@
 .gu-md pre code{padding:0;background:none}
 .gu-md a{color:var(--accent-ink)}
 .gu-md table{border-collapse:collapse}.gu-md td,.gu-md th{padding:4px 8px;border:1px solid var(--border)}
-/* surfaces */
+
 .gu-card,.gu-callout,.gu-table,.gu-tabs,.gu-accordion,.gu-form,.gu-tree,.gu-flow,.gu-checklist,.gu-progress,.gu-sparkline{margin:0;padding:10px 12px;border-radius:8px;background:var(--raised);box-shadow:0 0 0 1px var(--border)}
 .gu-card{display:flex;flex-direction:column;gap:8px}
 .gu-footer{font-size:.76rem;color:var(--muted);border-top:1px solid var(--border);padding-top:6px}
 .gu-callout{border-left:3px solid var(--gu-tone,var(--accent))}
 .gu-tone-info{--gu-tone:var(--accent)}.gu-tone-note{--gu-tone:var(--muted)}.gu-tone-success{--gu-tone:var(--success)}
 .gu-tone-warning{--gu-tone:var(--accent-dim)}.gu-tone-danger{--gu-tone:var(--danger)}
-/* stats */
+
 .gu-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
 .gu-stat{padding:10px 12px;border-radius:8px;background:var(--raised);box-shadow:0 0 0 1px var(--border);min-width:0}
 .gu-stat-label{font-size:.72rem;color:var(--muted)}
 .gu-stat-value{font-size:1.3rem;font-weight:650;font-variant-numeric:tabular-nums}
 .gu-delta{font-size:.74rem}.gu-up{color:var(--success)}.gu-down{color:var(--danger)}.gu-flat{color:var(--muted)}
 .gu-spark{display:block;width:100%;max-width:240px;height:auto;margin-top:4px}
-/* table */
+
 .gu-scroll{overflow:auto;max-height:420px}
 .gu-table table{width:100%;border-collapse:collapse;font-size:.8rem;font-variant-numeric:tabular-nums}
 .gu-table th,.gu-table td{padding:5px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
@@ -43,11 +43,11 @@
 .gu-sort::after{content:" ↕";color:var(--faint)}
 [aria-sort=ascending] .gu-sort::after{content:" ↑";color:var(--accent-ink)}
 [aria-sort=descending] .gu-sort::after{content:" ↓";color:var(--accent-ink)}
-/* progress */
+
 .gu-progress-head{display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:6px}
 .gu-bar{height:8px;border-radius:99px;background:var(--border);overflow:hidden}
 .gu-bar span{display:block;height:100%;background:var(--accent);border-radius:inherit}
-/* steps, plan, timeline */
+
 .gu-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
 .gu-step{display:grid;grid-template-columns:14px 1fr;gap:10px;align-items:start}
 .gu-dot{width:12px;height:12px;margin-top:4px;border-radius:50%;border:2px solid var(--faint)}
@@ -58,13 +58,13 @@
 .gu-step-title{font-size:.84rem;font-weight:550}
 .gu-step-detail{font-size:.8rem;color:var(--muted)}
 .gu-flow{display:flex;flex-direction:column;gap:8px}
-/* checklist */
+
 .gu-checklist ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:.84rem}
 .gu-checklist li{display:flex;gap:8px;align-items:center}
 .gu-check{width:14px;height:14px;flex:none;border-radius:4px;border:1.5px solid var(--faint)}
 .gu-done .gu-check{background:var(--success);border-color:var(--success)}
 .gu-done{color:var(--muted)}
-/* tabs, accordion */
+
 .gu-tablist{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:-4px -4px 8px;padding:0 4px;overflow:auto}
 [role=tab]{font:inherit;font-size:.8rem;color:var(--muted);background:none;border:0;border-bottom:2px solid transparent;padding:6px 10px;cursor:pointer}
 [role=tab][aria-selected=true]{color:var(--text);border-bottom-color:var(--accent)}
@@ -74,14 +74,14 @@
 .gu-accordion details:last-child{border-bottom:0}
 .gu-accordion summary{cursor:pointer;font-size:.84rem;font-weight:550}
 .gu-accordion .gu-panel{padding:6px 0 2px}
-/* tree */
+
 .gu-tree ul{list-style:none;margin:0;padding-left:14px;font:.78rem/1.6 var(--mono)}
 .gu-tree>ul{padding-left:0}
 .gu-folder>.gu-name::before{content:"▾ ";color:var(--faint)}
 .gu-file>.gu-name::before{content:"· ";color:var(--faint)}
 .gu-badge{margin-left:6px;font-size:.66rem;color:var(--muted);text-transform:uppercase}
 .gu-t-added,.gu-t-a{color:var(--success)}.gu-t-deleted,.gu-t-d{color:var(--danger);text-decoration:line-through}.gu-t-modified,.gu-t-m{color:var(--accent-ink)}
-/* code, diff, terminal */
+
 .gu-code{margin:0;border-radius:8px;background:var(--raised);box-shadow:0 0 0 1px var(--border);overflow:hidden}
 .gu-code-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 6px 4px 12px;font:.74rem var(--mono);color:var(--muted);border-bottom:1px solid var(--border)}
 .gu-code pre{margin:0;padding:8px 12px;max-height:420px;overflow:auto;font:.76rem/1.5 var(--mono);white-space:pre}
@@ -91,12 +91,12 @@
 .gu-command{color:var(--accent-ink)}
 .gu-copy{font:inherit;font-size:.72rem;color:var(--muted);background:none;border:0;border-radius:5px;padding:2px 8px;cursor:pointer}
 .gu-copy:hover{background:var(--border);color:var(--text)}
-/* compare */
+
 .gu-compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
 .gu-compare ul{margin:0;padding-left:1.2em;font-size:.8rem}
 .gu-pros li::marker{content:"+ ";color:var(--success)}
 .gu-cons li::marker{content:"− ";color:var(--danger)}
-/* buttons, chips, form */
+
 .gu-actions{display:flex;flex-wrap:wrap;gap:6px}
 .gu-button{font:inherit;font-size:.8rem;padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--panel);color:var(--text);cursor:pointer}
 .gu-button:hover{background:var(--accent-tint)}
@@ -111,7 +111,7 @@
 .gu-field input:not([type=checkbox]),.gu-field select,.gu-field textarea{font:inherit;font-size:.82rem;color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 8px}
 .gu-field input[type=checkbox]{accent-color:var(--accent)}
 button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.gu-panel:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
-/* layout */
+
 .gu-stack{display:flex;flex-direction:column;gap:10px}
 .gu-grid{display:grid;grid-template-columns:repeat(var(--gu-columns,2),minmax(0,1fr));gap:10px}
 @container (max-width:520px){.gu-grid{grid-template-columns:1fr}}

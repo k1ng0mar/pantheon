@@ -215,7 +215,7 @@ export function summaryIcons(tools: (Tool | undefined)[], limit = 4): string[] {
   return [...new Set(tools.map(tool => kindIcon(tool ? toolKind(tool.name) : 'tool')))].slice(0, limit);
 }
 
-// --- Cards ---------------------------------------------------------------
+
 
 function card(kind: TraceKind, body: string): string { return body ? `<div class="tool-trace-card" data-trace-kind="${kind}">${body}</div>` : ''; }
 function head(main: string, meta = ''): string {

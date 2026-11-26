@@ -137,7 +137,7 @@ function failed(figure: HTMLElement, message: string, code: string): void {
   figure.replaceChildren(note, pre);
 }
 
-/* ---------- charts ---------- */
+
 
 type Series = { name?: string; values: number[] };
 type ChartSpec = { type: 'bar' | 'line' | 'pie'; title?: string; labels: string[]; series: Series[] };

@@ -319,8 +319,6 @@ pub fn resolve(root: &Path, id: &str, note: Option<String>) -> Result<Comment> {
     Ok(resolved)
 }
 
-// ---- IPC ----
-
 #[tauri::command]
 pub async fn design_list(
     state: State<'_, AppState>,
@@ -359,8 +357,6 @@ pub async fn design_save_comments(
     let root = state.root(&project_id, session_id.as_deref())?;
     crate::blocking(move || save_comments(&root, &comments)).await
 }
-
-// ---- Agent tools ----
 
 pub fn catalog() -> Vec<Value> {
     let name = json!({"type":"string","maxLength":72,"description":"Artboard file name, e.g. \"home.html\" (\".html\" is added if missing)."});

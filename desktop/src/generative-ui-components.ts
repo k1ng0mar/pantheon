@@ -39,7 +39,7 @@ export type View =
 
 export const VIEW_TYPES = ['markdown', 'callout', 'card', 'stats', 'table', 'chart', 'progress', 'steps', 'plan', 'timeline', 'checklist', 'tabs', 'accordion', 'tree', 'diff', 'code', 'terminal', 'compare', 'gallery', 'actions', 'chips', 'form', 'stack', 'grid', 'custom'] as const;
 
-/* ---------- validation ---------- */
+
 
 type Raw = Record<string, unknown>;
 const obj = (value: unknown): Raw => (value && typeof value === 'object' && !Array.isArray(value) ? value as Raw : {});
@@ -213,7 +213,7 @@ export function formPrompt(template: string | undefined, fields: { name: string;
 /** Fills `{key}` from a custom view's state. */
 export const interpolate = (text: string, state: Record<string, string>) => text.replace(/\{([\w-]+)\}/g, (match, key: string) => state[key] ?? match).slice(0, LIMITS.prompt);
 
-/* ---------- rendering ---------- */
+
 
 type Props = Record<string, string | number | boolean | undefined>;
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Props = {}, ...kids: (Node | string | undefined | false)[]): HTMLElementTagNameMap[K] {

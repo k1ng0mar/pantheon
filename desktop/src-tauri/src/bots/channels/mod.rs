@@ -539,8 +539,6 @@ pub(crate) async fn send(
     Ok(())
 }
 
-// --- Connection loops ---------------------------------------------------------
-
 type Running = HashMap<String, tokio::sync::watch::Sender<bool>>;
 fn running() -> &'static Mutex<Running> {
     static RUNNING: std::sync::OnceLock<Mutex<Running>> = std::sync::OnceLock::new();
@@ -669,8 +667,6 @@ pub(crate) async fn stop_bot_channels(app: &tauri::AppHandle, bot_id: &str) {
         stop(&id);
     }
 }
-
-// --- Desktop commands -----------------------------------------------------------
 
 #[tauri::command]
 pub async fn bot_channel_add(

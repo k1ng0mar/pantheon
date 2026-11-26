@@ -79,9 +79,9 @@ import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { isChatProject, NO_PROJECT } from './chats';
 
-/* Visual thesis: calm surfaces, system typography, purple selection, and temple details.
- * Content: project navigation → conversation → contextual source review.
- * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
+
+
+
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
 type Stream = { text: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };

@@ -43,7 +43,7 @@ html[data-theme="dark"] .branch-chip:not(:disabled):active{background:#5b4b20}
 .board-card-meta .link-chip+.link-chip,.board-card-meta .link-chip+.board-running{margin-left:0}
 html[data-theme="dark"] .link-chip{border-color:rgb(var(--accent-rgb) / .16)}
 
-/* Worktree dialogs. */
+
 .worktree-dialog{width:min(430px,calc(100vw - 32px))}
 .worktree-dialog select{padding:9px 12px;border-radius:4px;background:var(--panel);border:1px solid var(--border);font-size:.86rem}
 .worktree-preview{font-family:var(--mono);font-size:.72rem;overflow-wrap:anywhere}
