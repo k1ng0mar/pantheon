@@ -154,9 +154,7 @@ pub fn full_name(tool: DesktopTool) -> String {
 
 /// True when `name` is a known first party desktop tool.
 pub fn is_desktop_tool(name: &str) -> bool {
-    DESKTOP_TOOLS
-        .iter()
-        .any(|tool| full_name(*tool) == name)
+    DESKTOP_TOOLS.iter().any(|tool| full_name(*tool) == name)
 }
 
 /// Domain of a known desktop tool.
@@ -181,7 +179,9 @@ pub fn validate_catalog(tools: &[serde_json::Value]) -> Result<(), String> {
             .strip_prefix(DESKTOP_TOOL_PREFIX)
             .ok_or_else(|| format!("Desktop tool name is not Pantheon owned: {name}"))?;
         if !DESKTOP_TOOLS.iter().any(|entry| entry.name == canonical) {
-            return Err(format!("Desktop tool is not in the Pantheon contract: {name}"));
+            return Err(format!(
+                "Desktop tool is not in the Pantheon contract: {name}"
+            ));
         }
         if !seen.insert(name) {
             return Err(format!("Duplicate desktop tool: {name}"));
@@ -211,7 +211,11 @@ mod tests {
     fn contract_has_all_known_desktop_tools() {
         assert_eq!(DESKTOP_TOOLS.len(), 79);
         let names: BTreeSet<String> = DESKTOP_TOOLS.iter().map(|tool| full_name(*tool)).collect();
-        assert_eq!(names.len(), DESKTOP_TOOLS.len(), "contract has duplicate names");
+        assert_eq!(
+            names.len(),
+            DESKTOP_TOOLS.len(),
+            "contract has duplicate names"
+        );
         assert!(names.contains("pantheon_capture_browser"));
         assert!(names.contains("pantheon_cloud_cli"));
     }
@@ -226,7 +230,9 @@ mod tests {
     fn catalog_validation_rejects_unowned_or_malformed_tools() {
         assert!(validate_catalog(&[spec("shell")]).is_err());
         assert!(validate_catalog(&[spec("pantheon_not_a_tool")]).is_err());
-        assert!(validate_catalog(&[spec("pantheon_list_tasks"), spec("pantheon_list_tasks")]).is_err());
+        assert!(
+            validate_catalog(&[spec("pantheon_list_tasks"), spec("pantheon_list_tasks")]).is_err()
+        );
         let mut bad = spec("pantheon_list_tasks");
         bad["type"] = json!("namespace");
         assert!(validate_catalog(&[bad]).is_err());
@@ -237,8 +243,14 @@ mod tests {
 
     #[test]
     fn domain_lookup_is_available_to_adapters() {
-        assert_eq!(domain_of("pantheon_browser_click"), Some(DesktopToolDomain::Browser));
-        assert_eq!(domain_of("pantheon_vm_exec"), Some(DesktopToolDomain::Device));
+        assert_eq!(
+            domain_of("pantheon_browser_click"),
+            Some(DesktopToolDomain::Browser)
+        );
+        assert_eq!(
+            domain_of("pantheon_vm_exec"),
+            Some(DesktopToolDomain::Device)
+        );
         assert_eq!(domain_of("shell"), None);
     }
 }

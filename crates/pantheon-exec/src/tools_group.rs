@@ -1772,34 +1772,70 @@ pub mod codegraph {
         /// mistaken for a function.
         fn decls(&self) -> Vec<(regex::Regex, &'static str)> {
             let python = [
-                (r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
+                (
+                    r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                    "function",
+                ),
                 (r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
             ];
             let c_like = [
-                (r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(", "function"),
-                (r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b", "class"),
-                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(", "function"),
-                (r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=", "variable"),
-                (r"^\s*(?:pub\s+)?(?:struct|enum|interface|trait)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+                (
+                    r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+                    "function",
+                ),
+                (
+                    r"^\s*(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b",
+                    "class",
+                ),
+                (
+                    r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\(",
+                    "function",
+                ),
+                (
+                    r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=",
+                    "variable",
+                ),
+                (
+                    r"^\s*(?:pub\s+)?(?:struct|enum|interface|trait)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                    "class",
+                ),
             ];
             let go = [
-                (r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
+                (
+                    r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                    "function",
+                ),
                 (r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
             ];
             let c_cpp = [
-                (r"^[A-Za-z_][A-Za-z0-9_:<>,*\s&]*\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{", "function"),
-                (r"^\s*(?:struct|class|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+                (
+                    r"^[A-Za-z_][A-Za-z0-9_:<>,*\s&]*\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{",
+                    "function",
+                ),
+                (
+                    r"^\s*(?:struct|class|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                    "class",
+                ),
             ];
             let java_like = [
-                (r"^\s*(?:public|private|protected|static|final|abstract|async|open|override|internal)\s+(?:[\w<>\[\],\s]+\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", "function"),
-                (r"^\s*(?:public|private|protected|internal|open|final|abstract|sealed)?\s*(?:class|struct|interface|enum|data class)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "class"),
+                (
+                    r"^\s*(?:public|private|protected|static|final|abstract|async|open|override|internal)\s+(?:[\w<>\[\],\s]+\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                    "function",
+                ),
+                (
+                    r"^\s*(?:public|private|protected|internal|open|final|abstract|sealed)?\s*(?:class|struct|interface|enum|data class)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                    "class",
+                ),
             ];
             let ruby = [
                 (r"^\s*def\s+([A-Za-z_][A-Za-z0-9_?!]*)\b", "function"),
                 (r"^\s*class\s+([A-Za-z_:][A-Za-z0-9_:]*)\b", "class"),
             ];
             let shell = [(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{", "function")];
-            let sql = [(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+([A-Za-z_][A-Za-z0-9_]*)\b", "function")];
+            let sql = [(
+                r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+                "function",
+            )];
             let patterns: &[(&str, &'static str)] = match self.lang {
                 "python" => &python,
                 "javascript" | "typescript" => &c_like,
@@ -1823,7 +1859,8 @@ pub mod codegraph {
             // This is intentionally loose, mirroring `grep`: false positives
             // are cheaper in an overview than missed candidates, and LSP is
             // the precise path when it matters.
-            let call_re = regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").expect("static call regex");
+            let call_re =
+                regex::Regex::new(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(").expect("static call regex");
             // (name, line, kind, node id). IDs are assigned here so an edge
             // can name its source node exactly as `add_node` does; `callers`
             // resolves edges by that ID.
@@ -1831,7 +1868,12 @@ pub mod codegraph {
             for (i, raw) in src.lines().enumerate() {
                 let line = raw.trim_end();
                 let trimmed = line.trim_start();
-                if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+                if trimmed.is_empty()
+                    || trimmed.starts_with("//")
+                    || trimmed.starts_with('#')
+                    || trimmed.starts_with("/*")
+                    || trimmed.starts_with('*')
+                {
                     continue;
                 }
                 let mut matched = false;
@@ -1883,9 +1925,26 @@ pub mod codegraph {
     fn is_keyword(name: &str) -> bool {
         matches!(
             name,
-            "if" | "for" | "while" | "switch" | "match" | "return" | "catch"
-                | "except" | "with" | "do" | "elif" | "else" | "foreach" | "when"
-                | "println" | "print" | "await" | "new" | "super" | "self" | "this"
+            "if" | "for"
+                | "while"
+                | "switch"
+                | "match"
+                | "return"
+                | "catch"
+                | "except"
+                | "with"
+                | "do"
+                | "elif"
+                | "else"
+                | "foreach"
+                | "when"
+                | "println"
+                | "print"
+                | "await"
+                | "new"
+                | "super"
+                | "self"
+                | "this"
         )
     }
 
@@ -2525,7 +2584,11 @@ impl Thing {
         #[test]
         fn lexical_nodes_carry_source_lines() {
             let tmp = tempfile::tempdir().unwrap();
-            write(tmp.path(), "src/go_mod.go", "package x\n\nfunc Run() {\n\tgo2()\n}\n");
+            write(
+                tmp.path(),
+                "src/go_mod.go",
+                "package x\n\nfunc Run() {\n\tgo2()\n}\n",
+            );
             let g = CodeGraph::build(tmp.path()).unwrap();
             let run = g
                 .nodes
@@ -2539,7 +2602,11 @@ impl Thing {
         #[test]
         fn unknown_extensions_are_not_indexed() {
             let tmp = tempfile::tempdir().unwrap();
-            write(tmp.path(), "src/notes.txt", "def not_python(x):\n    pass\n");
+            write(
+                tmp.path(),
+                "src/notes.txt",
+                "def not_python(x):\n    pass\n",
+            );
             let g = CodeGraph::build(tmp.path()).unwrap();
             assert_eq!(g.files, 0);
             assert!(g.nodes.is_empty());

@@ -6235,11 +6235,7 @@ pub mod gateway {
     ) -> Result<pantheon_runtime::session::Session, pantheon_api::error::PantheonError> {
         let cfg = crate::config::Config::load_or_report(data_dir);
         // One resolver for every surface: no local-model guess here.
-        let default = pantheon_api::config_resolve::resolve_default_model(
-            cfg.as_ref(),
-            None,
-            None,
-        );
+        let default = pantheon_api::config_resolve::resolve_default_model(cfg.as_ref(), None, None);
         let model_policy = pantheon_api::model::ModelPolicy {
             reasoning_budget: Default::default(),
             reasoning: Default::default(),
@@ -9157,11 +9153,8 @@ pub mod pipeline {
         let cfg = Config::load_or_report(data_dir);
         // No hardcoded provider/model: an unconfigured session resolves
         // to empty values and fails loudly at the provider gate.
-        let resolved = pantheon_api::config_resolve::resolve_default_model(
-            cfg.as_ref(),
-            None,
-            None,
-        );
+        let resolved =
+            pantheon_api::config_resolve::resolve_default_model(cfg.as_ref(), None, None);
         let (provider, model) = (resolved.provider, resolved.model);
         let model_policy = pantheon_api::model::ModelPolicy {
             reasoning_budget: Default::default(),

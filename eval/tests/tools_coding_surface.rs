@@ -122,10 +122,7 @@ fn coding_tools_are_confined() {
             format!(r#"{{"pattern": "helper", "path": "{escape}"}}"#),
         ),
         ("glob", format!(r#"{{"pattern": "*", "path": "{escape}"}}"#)),
-        (
-            "read_file",
-            format!(r#"{{"path": "{escape}/secret.txt"}}"#),
-        ),
+        ("read_file", format!(r#"{{"path": "{escape}/secret.txt"}}"#)),
         (
             "edit_file",
             format!(

@@ -2137,7 +2137,9 @@ pub mod project_instructions {
     /// Whether `workspace` has any instruction file at all. Cheap check for
     /// a caller that wants to skip discovery work entirely.
     pub fn present(workspace: &Path) -> bool {
-        discovery_dirs(workspace).into_iter().any(|d| find_in(&d).is_some())
+        discovery_dirs(workspace)
+            .into_iter()
+            .any(|d| find_in(&d).is_some())
     }
 
     #[cfg(test)]
@@ -2194,7 +2196,9 @@ pub mod project_instructions {
             assert_eq!(files.len(), 1, "got: {files:?}");
             assert!(files[0].content.contains("inner guidance"));
             assert!(
-                !files.iter().any(|f| f.content.contains("outer repo guidance")),
+                !files
+                    .iter()
+                    .any(|f| f.content.contains("outer repo guidance")),
                 "must not cross the .git boundary: {files:?}"
             );
         }

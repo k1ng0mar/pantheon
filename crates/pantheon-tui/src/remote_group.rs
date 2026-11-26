@@ -397,12 +397,7 @@ pub mod swarm {
         let swarm_tag = format!("swarm-{}", &pantheon_runtime::new_run_id()[..12]);
         let mut paths: Vec<std::path::PathBuf> = Vec::with_capacity(spec.n);
         for (i, role) in spec.roles.iter().enumerate() {
-            let name = sanitize_worktree_name(&format!(
-                "{}-{}-{}",
-                swarm_tag,
-                role,
-                i + 1
-            ));
+            let name = sanitize_worktree_name(&format!("{}-{}-{}", swarm_tag, role, i + 1));
             let wt = manager.create(&name, None, None).map_err(|e| {
                 // Roll back trees already made: a half-created swarm leaves
                 // branches and directories nobody asked for.
@@ -413,7 +408,9 @@ pub mod swarm {
         }
 
         let result = run_swarm_spawn(data_dir, spec, profiles, &|p, run_id, task| {
-            let idx = p_index(profiles, p).unwrap_or(0).min(paths.len().saturating_sub(1));
+            let idx = p_index(profiles, p)
+                .unwrap_or(0)
+                .min(paths.len().saturating_sub(1));
             let root = paths.get(idx).map(|p| p.as_path());
             swarm_turn(data_dir, p, run_id, task, root)
         });
@@ -436,7 +433,10 @@ pub mod swarm {
         profiles.iter().position(|p| std::ptr::eq(p, target))
     }
 
-    fn cleanup_worktrees(manager: &pantheon_exec::worktree::WorktreeManager, paths: &[std::path::PathBuf]) {
+    fn cleanup_worktrees(
+        manager: &pantheon_exec::worktree::WorktreeManager,
+        paths: &[std::path::PathBuf],
+    ) {
         for path in paths {
             let shown = path.to_string_lossy().into_owned();
             if let Err(e) = manager.remove(&shown, true) {
@@ -465,7 +465,11 @@ pub mod swarm {
         if out.is_empty() {
             out.push_str("agent");
         }
-        out.chars().take(64).collect::<String>().trim_matches('-').to_string()
+        out.chars()
+            .take(64)
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string()
     }
 
     /// Render the aggregate report: each agent's result under a
@@ -573,7 +577,9 @@ pub mod swarm {
             eprintln!("       pantheon swarm status [<swarm_id>]");
             eprintln!("       pantheon swarm list");
             eprintln!("  --worktree:       give each agent a private git worktree, bound as its workspace");
-            eprintln!("  --keep-worktrees: keep those worktrees after the swarm (default: remove them)");
+            eprintln!(
+                "  --keep-worktrees: keep those worktrees after the swarm (default: remove them)"
+            );
             std::process::exit(0);
         }
         if args.len() < 3 {
@@ -582,8 +588,12 @@ pub mod swarm {
             );
             eprintln!("       pantheon swarm status [<swarm_id>]");
             eprintln!("       pantheon swarm list");
-            eprintln!("  --worktree:      give each agent a private git worktree, bound as its workspace");
-            eprintln!("  --keep-worktrees: keep those worktrees after the swarm (default: remove them)");
+            eprintln!(
+                "  --worktree:      give each agent a private git worktree, bound as its workspace"
+            );
+            eprintln!(
+                "  --keep-worktrees: keep those worktrees after the swarm (default: remove them)"
+            );
             std::process::exit(2);
         }
 
@@ -814,7 +824,10 @@ pub mod swarm {
 
         #[test]
         fn worktree_names_are_safe_branch_suffixes() {
-            assert_eq!(sanitize_worktree_name("swarm-abc-reviewer-1"), "swarm-abc-reviewer-1");
+            assert_eq!(
+                sanitize_worktree_name("swarm-abc-reviewer-1"),
+                "swarm-abc-reviewer-1"
+            );
             let nasty = sanitize_worktree_name("../bad name/;rm -rf");
             assert!(!nasty.contains('/') && !nasty.contains('\\'));
             assert!(!nasty.contains(';'));

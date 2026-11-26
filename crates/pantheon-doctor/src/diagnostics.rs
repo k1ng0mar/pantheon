@@ -1533,7 +1533,11 @@ pub mod checks {
     // so the default `doctor` run is unchanged.
 
     /// Helper: the workspace, or a not-applicable finding.
-    fn workspace_of<'a>(ctx: &'a DoctorCtx, id: &'static str, subsystem: Subsystem) -> Result<&'a Path, Vec<Finding>> {
+    fn workspace_of<'a>(
+        ctx: &'a DoctorCtx,
+        id: &'static str,
+        subsystem: Subsystem,
+    ) -> Result<&'a Path, Vec<Finding>> {
         match ctx.workspace.as_deref() {
             Some(ws) if ws.is_dir() => Ok(ws),
             _ => Err(vec![Finding::not_applicable(
@@ -1637,12 +1641,10 @@ pub mod checks {
         }
         let changed = out.lines().filter(|l| !l.trim().is_empty()).count();
         if changed == 0 {
-            return vec![Finding::passed(
-                ID,
-                Subsystem::Runtime,
-                "working tree is clean",
-            )
-            .with_details(format!("workspace: {}", ws.display()))];
+            return vec![
+                Finding::passed(ID, Subsystem::Runtime, "working tree is clean")
+                    .with_details(format!("workspace: {}", ws.display())),
+            ];
         }
         vec![Finding::failed(
             ID,
@@ -1665,12 +1667,14 @@ pub mod checks {
             Err(f) => return f,
         };
         match pantheon_runtime::project_instructions::find_in(ws) {
-            Some(path) => vec![Finding::passed(
-                ID,
-                Subsystem::Config,
-                format!("found {}", path.display()),
-            )
-            .with_details("the file is injected into the system prompt each turn".to_string())],
+            Some(path) => {
+                vec![
+                    Finding::passed(ID, Subsystem::Config, format!("found {}", path.display()))
+                        .with_details(
+                            "the file is injected into the system prompt each turn".to_string(),
+                        ),
+                ]
+            }
             None => vec![Finding::failed(
                 ID,
                 Subsystem::Config,
@@ -1733,8 +1737,16 @@ pub mod checks {
         .with_details(format!(
             "workspace: {}; servers present for: {}{}",
             ws.display(),
-            if found.is_empty() { "none".to_string() } else { found.join(", ") },
-            if missing.is_empty() { String::new() } else { format!("; missing for: {}", missing.join(", ")) },
+            if found.is_empty() {
+                "none".to_string()
+            } else {
+                found.join(", ")
+            },
+            if missing.is_empty() {
+                String::new()
+            } else {
+                format!("; missing for: {}", missing.join(", "))
+            },
         ))]
     }
 
@@ -1747,7 +1759,9 @@ pub mod checks {
             if depth > 6 || seen.len() >= 8 {
                 break;
             }
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with('.')
@@ -1758,7 +1772,9 @@ pub mod checks {
                 {
                     continue;
                 }
-                let Ok(kind) = entry.file_type() else { continue };
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
                 if kind.is_dir() {
                     stack.push((entry.path(), depth + 1));
                 } else if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
@@ -1790,12 +1806,12 @@ pub mod checks {
             )];
         }
         match pantheon_exec::codegraph::CodeGraph::load(&path) {
-            Some(graph) if graph.is_current_for(ws) => vec![Finding::passed(
-                ID,
-                Subsystem::Tools,
-                "codegraph index is current",
-            )
-            .with_details(format!("index: {} ({} files)", path.display(), graph.files))],
+            Some(graph) if graph.is_current_for(ws) => {
+                vec![
+                    Finding::passed(ID, Subsystem::Tools, "codegraph index is current")
+                        .with_details(format!("index: {} ({} files)", path.display(), graph.files)),
+                ]
+            }
             Some(graph) => vec![Finding::failed(
                 ID,
                 Subsystem::Tools,
@@ -1824,7 +1840,9 @@ pub mod checks {
     /// Quote a path for the tiny subset of shells the probes run under.
     fn shell_quote(p: &Path) -> String {
         let s = p.to_string_lossy();
-        if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)) {
+        if s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
+        {
             s.into_owned()
         } else {
             format!("'{}'", s.replace('\'', r"'\''"))
@@ -1875,7 +1893,12 @@ pub mod checks {
             let ctx = ctx_in(&dir).with_workspace(dir.clone());
             let findings = check_instruction_file(&ctx);
             assert_eq!(findings.len(), 1);
-            assert_eq!(findings[0].status, CheckStatus::Passed, "got: {:?}", findings[0]);
+            assert_eq!(
+                findings[0].status,
+                CheckStatus::Passed,
+                "got: {:?}",
+                findings[0]
+            );
         }
 
         /// Its absence is informational, with a remediation - not a hard
@@ -1918,7 +1941,10 @@ pub mod checks {
             let langs = languages_in(&dir);
             assert!(langs.contains(&"rust"), "got: {langs:?}");
             assert!(langs.contains(&"python"), "got: {langs:?}");
-            assert!(!langs.contains(&"javascript"), "node_modules must be skipped: {langs:?}");
+            assert!(
+                !langs.contains(&"javascript"),
+                "node_modules must be skipped: {langs:?}"
+            );
         }
 
         /// A missing codegraph index is not-applicable, not a failure: it is

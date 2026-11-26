@@ -811,7 +811,9 @@ pub mod builtins {
             {
                 continue;
             }
-            let Ok(kind) = entry.file_type() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             if kind.is_dir() {
                 search_files(&entry.path(), out, depth + 1);
             } else if kind.is_file() {
@@ -902,11 +904,15 @@ pub mod builtins {
                     continue;
                 }
             }
-            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
             if bytes.len() > 4 * 1024 * 1024 || bytes.contains(&0) {
                 continue;
             }
-            let Ok(text) = String::from_utf8(bytes) else { continue };
+            let Ok(text) = String::from_utf8(bytes) else {
+                continue;
+            };
             for (i, line) in text.lines().enumerate() {
                 if !re.is_match(line) {
                     continue;
@@ -926,7 +932,9 @@ pub mod builtins {
             }
         }
         if truncated {
-            lines.push(format!("[truncated: showing first {max_results} matches; narrow the path or glob]"));
+            lines.push(format!(
+                "[truncated: showing first {max_results} matches; narrow the path or glob]"
+            ));
         }
         Ok(lines.join("\n"))
     }
@@ -944,7 +952,9 @@ pub mod builtins {
         let truncated = paths.len() > max_results;
         paths.truncate(max_results);
         if truncated {
-            paths.push(format!("[truncated: showing first {max_results} paths; narrow the pattern]"));
+            paths.push(format!(
+                "[truncated: showing first {max_results} paths; narrow the pattern]"
+            ));
         }
         Ok(paths.join("\n"))
     }
@@ -1126,8 +1136,7 @@ pub mod builtins {
             std::fs::create_dir_all(root.join("target")).expect("mkdir target");
             std::fs::write(root.join("src/main.rs"), "fn main() {\n    hello();\n}\n")
                 .expect("write");
-            std::fs::write(root.join("src/deep/mod.rs"), "// hello from deep\n")
-                .expect("write");
+            std::fs::write(root.join("src/deep/mod.rs"), "// hello from deep\n").expect("write");
             std::fs::write(root.join("src/lib.py"), "print('hello')\n").expect("write");
             std::fs::write(root.join("target/hello.rs"), "hello hello hello\n")
                 .expect("write skipped dir");
@@ -1171,13 +1180,12 @@ pub mod builtins {
             std::fs::write(dir.path().join("n.txt"), "a\nb\n").expect("write");
             let reg = files_registry(dir.path());
 
-            let out = call(
-                &reg,
-                "read_file",
-                r#"{"path": "n.txt", "start_line": 50}"#,
-            )
-            .expect("read range");
-            assert!(out.contains("total 2 lines") || out.contains("file has 2 lines"), "got: {out}");
+            let out = call(&reg, "read_file", r#"{"path": "n.txt", "start_line": 50}"#)
+                .expect("read range");
+            assert!(
+                out.contains("total 2 lines") || out.contains("file has 2 lines"),
+                "got: {out}"
+            );
         }
 
         /// `compact: false` returns the file byte-for-byte, which is what a
@@ -1188,8 +1196,8 @@ pub mod builtins {
             std::fs::write(dir.path().join("n.txt"), "a\nb\nc\n").expect("write");
             let reg = files_registry(dir.path());
 
-            let out = call(&reg, "read_file", r#"{"path": "n.txt", "compact": false}"#)
-                .expect("read");
+            let out =
+                call(&reg, "read_file", r#"{"path": "n.txt", "compact": false}"#).expect("read");
             assert_eq!(out, "a\nb\nc\n");
         }
 
@@ -1203,7 +1211,10 @@ pub mod builtins {
 
             let out = call(&reg, "grep", r#"{"pattern": "hello"}"#).expect("grep runs");
             assert!(out.contains("src/main.rs:2:    hello();"), "got: {out}");
-            assert!(out.contains("src/deep/mod.rs:1:// hello from deep"), "got: {out}");
+            assert!(
+                out.contains("src/deep/mod.rs:1:// hello from deep"),
+                "got: {out}"
+            );
             assert!(out.contains("src/lib.py:1:print('hello')"), "got: {out}");
             assert!(out.contains("README.md:1:# hello"), "got: {out}");
             assert!(!out.contains("target/"), "build dir must be skipped: {out}");
@@ -1218,8 +1229,8 @@ pub mod builtins {
             seed_tree(dir.path());
             let reg = files_registry(dir.path());
 
-            let out = call(&reg, "grep", r#"{"pattern": "hello", "glob": "*.rs"}"#)
-                .expect("grep runs");
+            let out =
+                call(&reg, "grep", r#"{"pattern": "hello", "glob": "*.rs"}"#).expect("grep runs");
             assert!(out.contains("src/main.rs:"), "got: {out}");
             assert!(out.contains("src/deep/mod.rs:"), "got: {out}");
             assert!(!out.contains("src/lib.py:"), "python excluded: {out}");
@@ -1234,7 +1245,10 @@ pub mod builtins {
             let reg = files_registry(dir.path());
 
             let loose = call(&reg, "grep", r#"{"pattern": "HELLO"}"#).expect("grep runs");
-            assert!(loose.contains("src/main.rs:"), "default is insensitive: {loose}");
+            assert!(
+                loose.contains("src/main.rs:"),
+                "default is insensitive: {loose}"
+            );
 
             let strict = call(
                 &reg,
@@ -1253,8 +1267,8 @@ pub mod builtins {
             seed_tree(dir.path());
             let reg = files_registry(dir.path());
 
-            let out = call(&reg, "grep", r#"{"pattern": "hello", "max_results": 1}"#)
-                .expect("grep runs");
+            let out =
+                call(&reg, "grep", r#"{"pattern": "hello", "max_results": 1}"#).expect("grep runs");
             assert!(out.contains("truncated"), "got: {out}");
             assert_eq!(out.lines().count(), 2, "one hit plus one notice: {out}");
         }
@@ -1352,7 +1366,10 @@ pub mod builtins {
 
             let escape = outside.path().to_string_lossy().into_owned();
             for (tool, args) in [
-                ("grep", format!(r#"{{"pattern": "hello", "path": "{escape}"}}"#)),
+                (
+                    "grep",
+                    format!(r#"{{"pattern": "hello", "path": "{escape}"}}"#),
+                ),
                 ("glob", format!(r#"{{"pattern": "*", "path": "{escape}"}}"#)),
                 (
                     "edit_file",
@@ -2935,24 +2952,25 @@ pub mod lsp_tools {
         // Don't Add navigation tools beyond what the model can use: each one
         // is `textDocument/*` on an opened document, with a 0-based
         // (line, character) position the caller supplies.
-        let nav_setup = |language: Option<&str>, path: &str| -> Result<(String, PathBuf), PantheonError> {
-            let lang = language
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    Path::new(path)
-                        .extension()
-                        .and_then(|e| language_for(e.to_str()?))
-                        .map(|s| s.to_string())
-                })
-                .ok_or_else(|| {
-                    err(
-                        "LSP_NO_LANG",
-                        format!("cannot infer language for '{path}'"),
-                        "pass 'language' explicitly",
-                    )
-                })?;
-            Ok((lang, PathBuf::from(path)))
-        };
+        let nav_setup =
+            |language: Option<&str>, path: &str| -> Result<(String, PathBuf), PantheonError> {
+                let lang = language
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        Path::new(path)
+                            .extension()
+                            .and_then(|e| language_for(e.to_str()?))
+                            .map(|s| s.to_string())
+                    })
+                    .ok_or_else(|| {
+                        err(
+                            "LSP_NO_LANG",
+                            format!("cannot infer language for '{path}'"),
+                            "pass 'language' explicitly",
+                        )
+                    })?;
+                Ok((lang, PathBuf::from(path)))
+            };
 
         let n1 = server.clone();
         let n1a = active_root.clone();
@@ -2980,10 +2998,18 @@ pub mod lsp_tools {
                 let v = parse_args(args)?;
                 let path = crate::tools::arg_str(&v, "path")?;
                 let line = v.get("line").and_then(|x| x.as_u64()).ok_or_else(|| {
-                    err("TOOL_BAD_ARGS", "missing 'line'".to_string(), "pass a 0-based line")
+                    err(
+                        "TOOL_BAD_ARGS",
+                        "missing 'line'".to_string(),
+                        "pass a 0-based line",
+                    )
                 })? as u32;
                 let character = v.get("character").and_then(|x| x.as_u64()).ok_or_else(|| {
-                    err("TOOL_BAD_ARGS", "missing 'character'".to_string(), "pass a 0-based character")
+                    err(
+                        "TOOL_BAD_ARGS",
+                        "missing 'character'".to_string(),
+                        "pass a 0-based character",
+                    )
                 })? as u32;
                 let (lang, cpath) = nav_setup(v.get("language").and_then(|x| x.as_str()), &path)?;
                 *n1l.lock().unwrap_or_else(|p| p.into_inner()) = Some(lang.clone());
@@ -2991,9 +3017,21 @@ pub mod lsp_tools {
                     Some(explicit) => Some(path_uri(Path::new(explicit))),
                     None => Some(path_uri(&resolve_workspace_root(&cpath))),
                 };
-                let client = ensure(&n1, &n1a, &lang, target_root.as_deref(), &n1d, timeout, n1p.as_ref())?;
+                let client = ensure(
+                    &n1,
+                    &n1a,
+                    &lang,
+                    target_root.as_deref(),
+                    &n1d,
+                    timeout,
+                    n1p.as_ref(),
+                )?;
                 let text = std::fs::read_to_string(&cpath).map_err(|e| {
-                    err("LSP_READ", format!("read {path}: {e}"), "check the file path")
+                    err(
+                        "LSP_READ",
+                        format!("read {path}: {e}"),
+                        "check the file path",
+                    )
                 })?;
                 client.open_document(&cpath, &lang, &text)?;
                 let uri = path_uri(&cpath);
@@ -3092,10 +3130,18 @@ pub mod lsp_tools {
                 let v = parse_args(args)?;
                 let path = crate::tools::arg_str(&v, "path")?;
                 let line = v.get("line").and_then(|x| x.as_u64()).ok_or_else(|| {
-                    err("TOOL_BAD_ARGS", "missing 'line'".to_string(), "pass a 0-based line")
+                    err(
+                        "TOOL_BAD_ARGS",
+                        "missing 'line'".to_string(),
+                        "pass a 0-based line",
+                    )
                 })? as u32;
                 let character = v.get("character").and_then(|x| x.as_u64()).ok_or_else(|| {
-                    err("TOOL_BAD_ARGS", "missing 'character'".to_string(), "pass a 0-based character")
+                    err(
+                        "TOOL_BAD_ARGS",
+                        "missing 'character'".to_string(),
+                        "pass a 0-based character",
+                    )
                 })? as u32;
                 let (lang, cpath) = nav_setup(v.get("language").and_then(|x| x.as_str()), &path)?;
                 *n3l.lock().unwrap_or_else(|p| p.into_inner()) = Some(lang.clone());
@@ -3103,9 +3149,21 @@ pub mod lsp_tools {
                     Some(explicit) => Some(path_uri(Path::new(explicit))),
                     None => Some(path_uri(&resolve_workspace_root(&cpath))),
                 };
-                let client = ensure(&n3, &n3a, &lang, target_root.as_deref(), &n3d, timeout, n3p.as_ref())?;
+                let client = ensure(
+                    &n3,
+                    &n3a,
+                    &lang,
+                    target_root.as_deref(),
+                    &n3d,
+                    timeout,
+                    n3p.as_ref(),
+                )?;
                 let text = std::fs::read_to_string(&cpath).map_err(|e| {
-                    err("LSP_READ", format!("read {path}: {e}"), "check the file path")
+                    err(
+                        "LSP_READ",
+                        format!("read {path}: {e}"),
+                        "check the file path",
+                    )
                 })?;
                 client.open_document(&cpath, &lang, &text)?;
                 let uri = path_uri(&cpath);
@@ -3148,9 +3206,21 @@ pub mod lsp_tools {
                     Some(explicit) => Some(path_uri(Path::new(explicit))),
                     None => Some(path_uri(&resolve_workspace_root(&cpath))),
                 };
-                let client = ensure(&n4, &n4a, &lang, target_root.as_deref(), &n4d, timeout, n4p.as_ref())?;
+                let client = ensure(
+                    &n4,
+                    &n4a,
+                    &lang,
+                    target_root.as_deref(),
+                    &n4d,
+                    timeout,
+                    n4p.as_ref(),
+                )?;
                 let text = std::fs::read_to_string(&cpath).map_err(|e| {
-                    err("LSP_READ", format!("read {path}: {e}"), "check the file path")
+                    err(
+                        "LSP_READ",
+                        format!("read {path}: {e}"),
+                        "check the file path",
+                    )
                 })?;
                 client.open_document(&cpath, &lang, &text)?;
                 let uri = path_uri(&cpath);
@@ -3193,7 +3263,9 @@ pub mod lsp_tools {
                 .get("range")
                 .or_else(|| item.get("targetSelectionRange"))
                 .or_else(|| item.get("targetRange"));
-            let (Some(uri), Some(range)) = (uri, range) else { continue };
+            let (Some(uri), Some(range)) = (uri, range) else {
+                continue;
+            };
             let start = range.get("start").unwrap_or(&serde_json::Value::Null);
             let line = start.get("line").and_then(|x| x.as_u64()).unwrap_or(0) + 1;
             let col = start.get("character").and_then(|x| x.as_u64()).unwrap_or(0) + 1;
@@ -3356,10 +3428,14 @@ pub mod lsp_tools {
         /// "Nothing found" must be distinguishable from a failure to run.
         #[test]
         fn empty_results_report_no_result() {
-            assert_eq!(format_nav_result(&serde_json::Value::Null, "reference"),
-                "no reference found at that position");
-            assert_eq!(format_nav_result(&serde_json::json!([]), "definition"),
-                "no definition found at that position");
+            assert_eq!(
+                format_nav_result(&serde_json::Value::Null, "reference"),
+                "no reference found at that position"
+            );
+            assert_eq!(
+                format_nav_result(&serde_json::json!([]), "definition"),
+                "no definition found at that position"
+            );
         }
 
         #[test]

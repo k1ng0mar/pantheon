@@ -238,7 +238,10 @@ fn run_delivered_task(
     resume: bool,
     mode: Option<pantheon_api::mode::AgentMode>,
 ) {
-    let Delivery { target, format: output_format } = delivery;
+    let Delivery {
+        target,
+        format: output_format,
+    } = delivery;
     let target = target.as_str();
     let text = match say {
         Some(s) => s.clone(),
@@ -856,7 +859,12 @@ fn check_run_flag_mix(
 /// Write ledger events without calling a model: the deterministic path the
 /// eval harness and recovery tests depend on. It does not execute the tool
 /// named by `--tool` and does not answer a prompt.
-fn run_synthetic(id: &Option<String>, say: &Option<String>, tool: Option<String>, fail: Option<String>) {
+fn run_synthetic(
+    id: &Option<String>,
+    say: &Option<String>,
+    tool: Option<String>,
+    fail: Option<String>,
+) {
     if say.is_none() && tool.is_none() && fail.is_none() {
         eprintln!("run: --synthetic needs --say, --tool, or --fail to have something to record");
         std::process::exit(2);
@@ -1563,7 +1571,9 @@ timeout_ms = 5000
             };
             if parsed.help {
                 println!("usage: pantheon run [--say TEXT|--say -] [--id ID] [--agent PROFILE]");
-                println!("                      [--mode plan|build] [--output-format text|json|plain]");
+                println!(
+                    "                      [--mode plan|build] [--output-format text|json|plain]"
+                );
                 println!("       pantheon run --taskID <id> --resume [--mode plan|build]");
                 println!("       pantheon run --taskID <id> --grant <scope> | --deny <scope> [--no-resume]");
                 println!();
@@ -1582,7 +1592,9 @@ timeout_ms = 5000
                 println!();
                 println!("examples:");
                 println!("  pantheon run --say 'fix the failing test'");
-                println!("  pantheon run --say - < prompt.txt --output-format json | jq -r .answer");
+                println!(
+                    "  pantheon run --say - < prompt.txt --output-format json | jq -r .answer"
+                );
                 println!("  pantheon run --say 'add a test' -p > patch-notes.md");
                 println!("  pantheon run --taskID abc --say 'now run it'");
                 return;
@@ -1672,7 +1684,9 @@ timeout_ms = 5000
             // exact ledger state without a provider.
             if parsed.synthetic {
                 if deliver.is_some() {
-                    eprintln!("run: --synthetic writes ledger events and never delivers; drop --deliver");
+                    eprintln!(
+                        "run: --synthetic writes ledger events and never delivers; drop --deliver"
+                    );
                     std::process::exit(2);
                 }
                 return run_synthetic(&id, &say, parsed.tool, parsed.fail);
@@ -1695,7 +1709,10 @@ timeout_ms = 5000
             run_delivered_task(
                 &id,
                 &say,
-                &Delivery { target, format: output_format },
+                &Delivery {
+                    target,
+                    format: output_format,
+                },
                 verdict_tool,
                 agent_profile.as_deref(),
                 resume,
