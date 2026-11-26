@@ -1,9 +1,9 @@
-//! Agent core merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
+//! The agent loop and its small interfaces.
+//!
+//! Public modules below are re-exports, old import paths keep working.
 
 pub mod capability {
-    //! Capability enforcement at the execution boundary: check-then-act,
-    //! default-deny. Policy lives in pantheon-api; this module enforces it.
+    //! default-deny capability checks at the execution boundary.
     use pantheon_api::capability::{Capability, Decision, Policy};
     use pantheon_api::error::{Layer, PantheonError};
 
@@ -214,10 +214,8 @@ pub mod capability {
 }
 
 pub mod engine {
-    //! The loop itself. Pure orchestration: no model SDK, no process spawning.
-    //!
-    //! The canonical runtime path is `Session::drive` in `pantheon-runtime`
-    //! (typed messages, provenance, real provider chain).
+    //! The provider-free loop. It handles turns and tool calls; the runtime
+    //! supplies the real provider chain and transcript.
     use crate::tool::{EventSink, ToolRunner};
     use pantheon_api::capability::{Capability, Policy};
     use pantheon_api::error::PantheonError;
@@ -247,11 +245,9 @@ pub mod engine {
         /// One or more tool calls to execute.
         Tools {
             calls: Vec<ToolCall>,
-            /// Text the model produced alongside the calls. Previously
-            /// discarded by both adapters, so the assistant tool-calls
-            /// message pushed by the loop had empty content and the next
-            /// turn's model never saw its own text. Empty when the model
-            /// sent calls with no accompanying text.
+            /// Text the model produced alongside the calls, so the assistant tool-calls
+            /// message is not empty and the next turn's model sees its own text. Empty
+            /// when the model sent calls with no accompanying text.
             text: String,
             /// Tokens consumed for the turn that produced these calls.
             tokens: u32,
@@ -582,23 +578,8 @@ pub mod engine {
 }
 
 pub mod subagent {
-    //! In-process sub-agent handles: non-blocking delegation.
-    //!
-    //! `delegate` no longer stops the parent loop. The spawner returns a
-    //! handle immediately (`delegate[researcher]: spawned, handle h_1`) and
-    //! the parent keeps working while children run on their own threads.
-    //! The model follows up through three tools:
-    //!
-    //! - `subagent_read(handle)` - the child's transcript so far; never blocks.
-    //! - `subagent_wait(handle)` - blocks until that child finishes, returns
-    //!   its final result.
-    //! - `subagent_list()` - every live handle with its status.
-    //!
-    //! [`SubagentRegistry`] is the threaded in-process implementation:
-    //! children run `FnOnce` work closures on spawned threads, appending to
-    //! a shared transcript the parent can read live. Spawn enforces
-    //! [`SubagentCaps`]; every violation is a structured refusal error,
-    //! never silent.
+    //! In-process handles for delegation. Spawning returns immediately;
+    //! `subagent_wait` is the blocking operation and `subagent_read` is not.
 
     use pantheon_api::error::{Layer, PantheonError};
     use std::collections::HashMap;
@@ -1093,9 +1074,7 @@ pub mod subagent {
 }
 
 pub mod tool {
-    //! Tool execution boundary: capability gate, then runner. The gate runs
-    //! before the runner, always - there is no path that executes an ungranted
-    //! capability.
+    //! Tool calls always pass the capability gate before reaching a runner.
     use crate::capability::{enforce, Verdict};
     use pantheon_api::capability::{Capability, Policy};
     use pantheon_api::error::{Layer, PantheonError};

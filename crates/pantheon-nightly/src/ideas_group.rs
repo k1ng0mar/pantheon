@@ -1,5 +1,3 @@
-//! ideas_group: audit, ideas, llm, persona, propose, report, signals, state in one file.
-
 pub mod audit {
     //! Audit: every nightly lifecycle event, one JSONL line each.
     //!
@@ -243,10 +241,10 @@ pub mod ideas {
     //!
     //! Two flavors, both deterministic and rule-based:
     //!
-    //! - **General ideas** - repair opportunities and observations from the
+    //! - General ideas - repair opportunities and observations from the
     //!   pass: repair targets the repair phase contained but could not fix,
     //!   and tools that failed repeatedly in the scan window.
-    //! - **Suggested scheduled tasks** - mined from repeating session
+    //! - Suggested scheduled tasks - mined from repeating session
     //!   patterns: a tool sequence run on several separate days becomes a
     //!   "you do X most mornings - want a daily task?" proposal, with the
     //!   cron set to the median hour (UTC) the sequence ran.
@@ -1263,9 +1261,9 @@ pub mod report {
         if ms <= 0 {
             return "never".into();
         }
-        // A real UTC date, not "Ns since epoch": the old rendering forced
-        // the operator to convert epoch seconds by hand to know when a
-        // pass ran. Civil-from-days (Hinnant's algorithm), std-only.
+        // A real UTC date, not "Ns since epoch": an epoch rendering forces the
+        // operator to convert by hand to know when a pass ran. Civil-from-days
+        // (Hinnant's algorithm), std-only.
         let secs = ms.div_euclid(1000);
         let days = secs.div_euclid(86_400);
         let tod = secs.rem_euclid(86_400);
@@ -1336,9 +1334,8 @@ pub mod signals {
     //! Unified ledger scan: one pass over recent runs yields both behavior
     //! signals (proposal mining) and memory candidates (promotion).
     //!
-    //! Replaces the old duplicated scans in `pantheon-reflect::signals` and
-    //! `pantheon-consolidate::stage`. The scan is bounded (`max_runs` runs,
-    //! events at or after `since_ms`) and deterministic: the same ledger
+    //! One scan, not one per consumer. Bounded (`max_runs` runs, events at or
+    //! after `since_ms`) and deterministic: the same ledger
     //! state always yields the same signals in the same order.
 
     use pantheon_api::capability::Policy;

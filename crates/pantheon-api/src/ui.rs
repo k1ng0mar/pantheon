@@ -5,7 +5,7 @@
 //! the task: a table, a chart, a validated form, a task tracker, a diff,
 //! an approval card - not just Markdown text.
 //!
-//! This module defines the **protocol**, not the rendering. Clients
+//! This module defines the protocol, not the rendering. Clients
 //! (TUI, dashboard, gateway channels) render [`Component`]s with their
 //! own native capabilities; the runtime never assumes a particular
 //! client. Model providers never see this schema directly - the agent
@@ -42,7 +42,7 @@
 //! - [`ActionKind::Local`] never leaves the client (tab switches, expand,
 //!   chart filters).
 //! - [`ActionKind::Submit`] carries validated form params to the runtime.
-//! - [`ActionKind::Tool`] invokes a registered tool **through the existing
+//! - [`ActionKind::Tool`] invokes a registered tool through the existing
 //!   capability/permission gate** - the model-provided label grants
 //!   nothing; the capability comes from the server-side action registry.
 //! - [`ActionKind::Approval`] binds the existing approval scope

@@ -1,21 +1,12 @@
-//! Memory plane merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
-
 pub mod backend {
-    //! Memory backend registry. External backends (GalaxyMem, Mnemosyne,
-    //! Honcho, Hindsight, OpenViking, ...) implement `MemoryBackend` and
-    //! register here. The runtime session asks the registry for the active
-    //! backend by name, so the same memory tool surface works against the
-    //! native store or any plugin backend.
+    //! Memory backend registry. External backends (GalaxyMem, Mnemosyne, Honcho,
+    //! Hindsight, OpenViking, ...) implement `MemoryBackend` and register here, so
+    //! the memory tool surface works the same against native or a plugin.
     //!
-    //! Policy and provenance never leave Pantheon. Backends store and
-    //! recall data; callers gate through `recall_via` / `write_via` /
-    //! `confirm_via` BEFORE the backend sees anything. A backend that
-    //! silently overwrites records is a hostile backend.
+    //! Policy and provenance stay in Pantheon: callers gate through `recall_via` /
+    //! `write_via` / `confirm_via` before the backend sees anything.
     //!
-    //! Selection is persisted as TOML at `<data_dir>/memory-backend.toml`
-    //! (`BackendSelection { name, options }`); `open_selected` reads it and
-    //! instantiates the chosen backend.
+    //! Selection persists as TOML at `<data_dir>/memory-backend.toml`.
     use crate::{MemoryBackend, MemoryStore};
     use pantheon_api::error::{Layer, PantheonError};
     use serde::{Deserialize, Serialize};
@@ -34,12 +25,10 @@ pub mod backend {
         )
     }
 
-    /// Catalog metadata for one backend. The registry builds the catalog
-    /// dynamically from the constructors passed at construction. The setup
-    /// wizard consumes `BackendRegistry::catalog()`; `auth` names the
-    /// credential the entry needs (env var or keyless), `deployment` says
-    /// where it runs, and `recommended` is reserved for a future named
-    /// default (false everywhere - native is the implicit default).
+    /// Catalog metadata for one backend, for the setup wizard's
+    /// `BackendRegistry::catalog()`. `auth` names the credential the entry needs,
+    /// `deployment` where it runs, `recommended` is reserved (native is the
+    /// implicit default).
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct BackendInfo {
         pub name: String,
@@ -99,12 +88,10 @@ pub mod backend {
         data_dir.join("memory-backend.toml")
     }
 
-    /// Option names that carry credentials. These are never persisted to
-    /// `memory-backend.toml` and never read back from it: keys live in the
-    /// environment (`PANTHEON_MEMORY_<NAME>_KEY`) or the Secure Vault only.
-    /// A selection file is a plain TOML file in the data dir - readable by
-    /// anything that can read the project - so a key written there is a
-    /// plaintext credential leak, not configuration.
+    /// Option names that carry credentials. Never persisted to
+    /// `memory-backend.toml` and never read back from it - that file is plain TOML
+    /// in the data dir, so a key written there is a plaintext leak. Keys come from
+    /// `PANTHEON_MEMORY_<NAME>_KEY` or the Secure Vault.
     const CREDENTIAL_OPTION_KEYS: &[&str] = &[
         "key",
         "api_key",
@@ -146,22 +133,16 @@ pub mod backend {
         }
     }
 
-    /// Load the persisted selection; missing/unreadable file => default
-    /// (native). Never fails: a broken selection must not brick a session,
-    /// `open_selected` falls back to native with an error line instead.
-    ///
-    /// A corrupt/unparseable file also falls back to native - see
-    /// `load_selection_result` for the surfaced form, which `Session::new`
-    /// uses to print the corruption instead of silently reading a
-    /// different store.
+    /// Load the persisted selection. Missing file is the default (native) and
+    /// never fails - a broken selection shouldn't brick a session. A corrupt file
+    /// also falls back, but `load_selection_result` is the form that surfaces it.
     pub fn load_selection(data_dir: &Path) -> BackendSelection {
         load_selection_result(data_dir).unwrap_or_default()
     }
 
-    /// Load the persisted selection, distinguishing "no file" (default, no
-    /// error) from "file present but unparseable" (error naming the file).
-    /// Callers that degrade to native on error must surface the error -
-    /// silently reading a different store hides a corrupt config.
+    /// As above, but distinguishes "no file" (default) from "present and
+    /// unparseable" (error naming the file). Callers that degrade must surface
+    /// it - quietly reading a different store hides a corrupt config.
     pub fn load_selection_result(data_dir: &Path) -> Result<BackendSelection, PantheonError> {
         let path = selection_path(data_dir);
         let text = match std::fs::read_to_string(&path) {
@@ -202,24 +183,15 @@ pub mod backend {
             })
     }
 
-    /// Sync the persisted backend selection from user-facing config.
+    /// Sync the persisted selection from `config.toml [memory]`, which wins on
+    /// load, and write the resolved value back so the two don't drift. Returns the
+    /// warning to log when a conflict was resolved or the sync failed.
     ///
-    /// Contract (decided): `config.toml [memory]` is authoritative and
-    /// wins over `memory-backend.toml` on load, and the resolved value is
-    /// written back to `memory-backend.toml` so the two never drift
-    /// silently. Returns the warning to log when a conflict was resolved
-    /// (or the sync itself failed); `None` when nothing changed.
-    ///
-    /// - Empty config backend (absent section, or a blank `backend`
-    ///   string) means "no opinion": the selection file wins untouched.
-    /// - Otherwise the config name becomes the resolved selection. Config
-    ///   options win when non-empty; when the config section carries no
-    ///   options, the selection file's options are kept (a backend switch
-    ///   by name alone must not wipe its endpoint options).
-    /// - A corrupt selection file is left alone: it still errors at open
-    ///   time (`open_selected` surfaces `MEM_SELECTION_PARSE`), and
-    ///   overwriting it here would destroy the evidence of the corruption.
-    /// - Credential options are stripped on save, as everywhere else.
+    /// Empty config backend means no opinion and the selection file wins
+    /// untouched. Config options win when non-empty; when the section carries none,
+    /// the file's options are kept, so a switch by name alone doesn't wipe the
+    /// endpoint. A corrupt selection file is left alone - it still errors at open,
+    /// and overwriting it destroys the evidence. Credential options are stripped.
     pub fn sync_selection_from_config(
         data_dir: &Path,
         backend: &str,
@@ -261,17 +233,12 @@ pub mod backend {
         Some(warning)
     }
 
-    /// Instantiate the selected backend for a data dir.
-    /// - `native` (default): the persistent SQLite store at
-    ///   `<data_dir>/memory.db` - same file sessions have always used.
-    /// - anything else: resolved through `BackendRegistry::with_defaults()`.
-    ///   If instantiation fails (missing url, unreachable config), the error
-    ///   is returned so callers can decide; `Session::new` logs and degrades
-    ///   to no memory rather than pretending a backend is active.
-    /// - a corrupt `memory-backend.toml` (present but unparseable) is an
-    ///   error (`MEM_SELECTION_PARSE`), NOT a silent fallback to native:
-    ///   silently reading a different store than the operator configured
-    ///   hides the corruption and mixes up which store holds the memories.
+    /// Instantiate the selected backend. `native` is the SQLite store at
+    /// `<data_dir>/memory.db`; anything else resolves through
+    /// `BackendRegistry::with_defaults()` and errors if it can't (missing url,
+    /// unreachable config) so the caller decides. A corrupt selection file is
+    /// `MEM_SELECTION_PARSE`, not a fallback to native - reading a different store
+    /// than configured hides the corruption.
     pub fn open_selected(data_dir: &Path) -> Result<Arc<dyn MemoryBackend>, PantheonError> {
         let sel = load_selection_result(data_dir)?;
         if sel.name == "native" {
@@ -310,15 +277,11 @@ pub mod backend {
         }
     }
 
-    /// One HTTP-bridge plugin backend. `default_url` is `None` for every
-    /// registered entry: no vendor ships a service that speaks Pantheon's
-    /// `/v1/memory` protocol, so any vendor URL as a default would point the
-    /// protocol client at a native API that returns 404s or foreign JSON.
-    /// Users supply `options.url` (or the env var) pointing at their own
-    /// thin bridge (a user-operated shim translating the vendor API to
-    /// Pantheon's `/v1/memory` protocol). Keeping the default empty makes a
-    /// missing bridge a clear `MEM_BACKEND_CONFIG` error instead of a
-    /// confusing protocol failure.
+    /// One HTTP-bridge plugin backend. `default_url` is `None` everywhere: no
+    /// vendor speaks Pantheon's `/v1/memory`, so a vendor URL as a default would
+    /// point the client at an API that returns 404s or foreign JSON. Users supply
+    /// `options.url` or the env var pointing at their own bridge, so a missing one
+    /// is a clear `MEM_BACKEND_CONFIG`.
     struct PluginSpec {
         name: &'static str,
         label: &'static str,
@@ -327,46 +290,18 @@ pub mod backend {
         deployment: DeploymentKind,
     }
 
-    /// Registered HTTP-bridge plugin backends: each talks to a service that
-    /// exposes (or is bridged to) Pantheon's small `/v1/memory` JSON API.
-    /// URL comes from selection options (`url`) or env
-    /// `PANTHEON_MEMORY_<NAME>_URL` (dashes in the name become underscores);
-    /// the key comes from env `PANTHEON_MEMORY_<NAME>_KEY` ONLY - never from
-    /// the selection file (see `CREDENTIAL_OPTION_KEYS`: `save_selection`
-    /// strips credential options and `load_selection` drops them).
-    /// entry carries a default URL, so a backend with no configured `url`
-    /// fails closed with `MEM_BACKEND_CONFIG` naming the missing piece and
-    /// what a working setup needs (a thin bridge exposing Pantheon's
-    /// `/v1/memory` protocol, or a future native adapter).
+    /// Registered HTTP-bridge backends. URL from selection options (`url`) or
+    /// `PANTHEON_MEMORY_<NAME>_URL`; key from `PANTHEON_MEMORY_<NAME>_KEY` only,
+    /// never the selection file. No entry has a default URL, so an unconfigured
+    /// backend fails with `MEM_BACKEND_CONFIG`.
     ///
-    /// Accuracy notes (docs-verified 2026-09-29, browser search against each
-    /// vendor's current official docs; none of these backends has ever been
-    /// live-tested against the real service, so every entry is
-    /// still-unverifiable at the wire level):
-    /// - Hindsight Cloud is real (api.hindsight.vectorize.io, `hsk_` tokens),
-    ///   as is `pip install hindsight-api` serving :8888; neither speaks
-    ///   Pantheon's `/v1/memory` protocol. Old defaults pointing the
-    ///   protocol client at those hosts were broken-by-design and removed.
-    /// - Honcho Cloud is real (api.honcho.dev, `HONCHO_API_KEY`, Bearer) and
-    ///   Honcho self-hosts from a Docker Compose stack on :8000 (often
-    ///   keyless unless a config key is set); neither speaks Pantheon's
-    ///   `/v1/memory` protocol. Old defaults removed for the same reason.
-    /// - Supermemory Cloud is real (api.supermemory.ai, Bearer, `sm_` keys)
-    ///   and `npx supermemory local` is real (:6767, prints an `sm_...` API
-    ///   key on first boot - local access is NOT keyless). Neither speaks
-    ///   Pantheon's `/v1/memory` protocol. Old defaults removed.
-    /// - Mem0 Cloud is real (api.mem0.ai, `m0-` keys; Mem0's own API uses
-    ///   `Authorization: Token <key>`, not Bearer). Old default removed.
-    /// - OpenViking self-hosts on :1933 with `root_api_key` in `ov.conf`
-    ///   (sent as `X-API-Key` by its own clients, not Bearer); its REST does
-    ///   not speak Pantheon's `/v1/memory` protocol. Old default removed.
-    /// - GalaxyMem (k1ng0mar/galaxymem) is a local-first SQLite memory
-    ///   engine (Hermes plugin or standalone library); it has no plain REST
-    ///   surface at all - a thin bridge is the only path.
-    /// - ByteRover is `brv` CLI/MCP-shaped (no plain REST); Mnemosyne is
-    ///   MCP-shaped (stdio/SSE/streamable HTTP, no REST); mnemopi is omp's
-    ///   local SQLite engine (stdio MCP); sharpshooter is omp's
-    ///   file-based project decision memory (no HTTP surface at all).
+    /// Checked against the vendors' own docs, never live-tested at the wire level,
+    /// and none of them speak `/v1/memory` - a bridge is required either way.
+    /// Hindsight Cloud (`hsk_`) and `hindsight-api` on :8888; Honcho Cloud and
+    /// self-host on :8000; Supermemory Cloud and `npx supermemory local` on :6767
+    /// (local is not keyless); Mem0 Cloud (`Token`, not Bearer); OpenViking on :1933
+    /// (`X-API-Key`). GalaxyMem, ByteRover, Mnemosyne, mnemopi and sharpshooter have
+    /// no plain REST at all.
     const PLUGIN_SPECS: &[PluginSpec] = &[
     PluginSpec {
         name: "byterover",
@@ -494,11 +429,9 @@ pub mod backend {
             }
         };
             let env_key = format!("PANTHEON_MEMORY_{prefix}_KEY");
-            // Keys never come from the selection file: `load_selection`
-            // strips credential options and `save_selection` never writes
-            // them, so a `key` in `options` here can only be an in-memory
-            // leftover or a hand-edited file that bypassed the loader.
-            // Ignore it loudly rather than honouring a plaintext key.
+            // A `key` here can only be an in-memory leftover or a hand-edited
+            // file that skipped the loader. Ignore it loudly rather than honour a
+            // plaintext key.
             if sel.options.contains_key("key") {
                 eprintln!(
                     "pantheon: WARNING: ignoring a `key` in the {} backend selection - \
@@ -514,10 +447,9 @@ pub mod backend {
     }
 
     impl BackendRegistry {
-        /// Build a registry with the native + http + plugin factories
-        /// pre-registered. The native factory opens a fresh in-memory store
-        /// on every call (tests); real sessions use `open_selected`, which
-        /// opens the persistent store directly for `native`.
+        /// Native + http + plugin factories pre-registered. The native factory
+        /// opens a fresh in-memory store per call (tests); sessions use
+        /// `open_selected`.
         pub fn with_defaults() -> Self {
             let mut r = Self {
                 entries: HashMap::new(),
@@ -596,10 +528,9 @@ pub mod backend {
             self.register_with(info, move |_| factory())
         }
 
-        /// Register a backend whose factory receives the persisted selection
-        /// (name + options). This is how a plugin reads `url` from
-        /// `memory-backend.toml`; keys never travel this way (see
-        /// `CREDENTIAL_OPTION_KEYS`).
+        /// Register a backend whose factory receives the persisted selection.
+        /// That's how a plugin reads `url`; keys never travel this way - see
+        /// `CREDENTIAL_OPTION_KEYS`.
         pub fn register_with<F>(&mut self, info: BackendInfo, factory: F)
         where
             F: Fn(&BackendSelection) -> Result<Arc<dyn MemoryBackend>, PantheonError>
@@ -841,27 +772,21 @@ pub mod backend {
 }
 
 pub mod http_backend {
-    //! HTTP-based memory backend adapter. Talks to any external memory service
-    //! that implements a small JSON API (recall, write, list_agent). This is
-    //! the adapter pattern for services like GalaxyMem, Mnemosyne, Honcho, or
-    //! Hindsight - they run as a separate process or remote service, Pantheon
-    //! holds the capability gate, and the HTTPBackend forwards calls.
-    //!
-    //! The protocol is deliberately simple:
+    //! HTTP memory backend adapter for services that implement this JSON API:
     //!
     //!   GET  /v1/memory/recall?query=...&limit=N&layers=...
     //!     -> 200 [{"key":..,"value":..,"rank":..,"provenance":{...}}]
     //!
     //!   POST /v1/memory/write
-    //!     body: {"layer":"Agent","namespace":"nyx","key":"..","value":"..","provenance":{...},
-    //!            "max_bytes":N}
+    //!     body: {"layer":"Agent","namespace":"nyx","key":"..","value":"..",
+    //!            "provenance":{...},"max_bytes":N}
     //!     -> 200 {"key":..,"value":..,"provenance":{...}}
     //!
     //!   GET  /v1/memory/list_agent?namespace=...
     //!     -> 200 [["key","value"], ...]
     //!
-    //! Error responses: 4xx/5xx with JSON {"error":"CODE","cause":"..."} or
-    //! plain text. The adapter maps those back to PantheonError.
+    //! Errors are 4xx/5xx with {"error":"CODE","cause":"..."} or plain text,
+    //! mapped back to PantheonError.
     use crate::{LayerKind, MemoryBackend, MemoryRecord, Proposal, Provenance, Recalled};
     use pantheon_api::capability::Policy;
     use pantheon_api::error::{Layer, PantheonError};
@@ -886,10 +811,9 @@ pub mod http_backend {
         /// Path prefix the service mounts the protocol under. Default
         /// `/v1/memory`; custom plugins set their own (e.g. `/memory`).
         prefix: String,
-        /// Max trust tier the server may report on a record. Default
-        /// Untrusted: a compromised memory server must not launder `user`-tier
-        /// records (with injected instructions) into the recall stream. The
-        /// tier a server *claims* is capped at what we believe from that source.
+        /// Cap on the trust tier the server may report. Default Untrusted: a
+        /// compromised server shouldn't launder injected `user`-tier records into
+        /// the recall stream.
         trust_ceiling: TrustTier,
     }
 
@@ -972,11 +896,9 @@ pub mod http_backend {
         cause: Option<String>,
     }
 
-    /// Map a server error response to `PantheonError`. The `error` field is
-    /// attacker-controlled: only allowlisted codes pass through, anything
-    /// else becomes `MEM_HTTP_REMOTE`. The `cause` is free text: control
-    /// characters are stripped and it is length-capped so a hostile server
-    /// cannot smuggle log-forging content into error paths.
+    /// Server error to `PantheonError`. `error` is attacker-controlled, so only
+    /// allowlisted codes pass; the rest become `MEM_HTTP_REMOTE`. `cause` is free
+    /// text: control characters stripped, length capped.
     fn remote_error(parsed: &ErrorResponse, status: u16, endpoint: &str) -> PantheonError {
         let code = parsed
             .error
@@ -1142,16 +1064,11 @@ pub mod http_backend {
         read_response("POST", url, resp)
     }
 
-    /// One shared agent shape for the memory bridge: bounded overall timeout,
-    /// rustls, no async runtime - the same posture as the provider plane.
+    /// Shared agent: bounded timeout, rustls, no async runtime.
     ///
-    /// Statuses are delivered as responses (`http_status_as_error(false)`) so
-    /// that error bodies flow through the same capped read as successes.
-    ///
-    /// ureq 3 picks up the environment proxy by default. Loopback and
-    /// `NO_PROXY` hosts are still detected here and get an agent with the env
-    /// proxy disabled outright - belt and braces against a proxy that would
-    /// eat a loopback URL.
+    /// Statuses come back as responses so error bodies go through the same capped
+    /// read. ureq 3 takes the env proxy by default; loopback and `NO_PROXY` hosts
+    /// get an agent with it disabled.
     fn http_agent(url: &str) -> ureq::Agent {
         let mut builder = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(30)))
@@ -1186,10 +1103,9 @@ pub mod http_backend {
         host_matches_no_proxy(&host, &list)
     }
 
-    /// Pure `NO_PROXY` list matching, kept separate from the env read so it is
-    /// unit-testable: comma-separated entries, `*` matches everything, a
-    /// leading dot (or none) matches the domain and its subdomains, an
-    /// optional `:port` is ignored.
+    /// `NO_PROXY` matching, split out so it's unit-testable: comma-separated, `*`
+    /// matches everything, a leading dot or none matches the domain and its
+    /// subdomains, an optional `:port` is ignored.
     fn host_matches_no_proxy(host: &str, no_proxy: &str) -> bool {
         no_proxy.split(',').any(|entry| {
             let entry = entry.trim().trim_start_matches('.').to_lowercase();
@@ -1268,18 +1184,10 @@ pub mod http_backend {
 }
 
 pub mod markdown {
-    //! Native MEMORY.md interface (flat file).
-    //!
-    //! Auto-syncs Agent-layer records with a markdown file at the project root.
-    //! Format: each record becomes a section with `# <key>` heading followed by
-    //! the value as the body. Editing MEMORY.md and re-importing keeps the
-    //! store in sync; programmatic writes also write through to the file.
-    //!
-    //! Use cases:
-    //! - Quick visual inspection: `cat MEMORY.md`
-    //! - Git diffable like any other doc
-    //! - Bootstrap from existing MEMORY.md: import on session start
-    //! - Drift-free: store is source of truth, file is a projection
+    //! MEMORY.md interface. Auto-syncs Agent-layer records with a markdown file at
+    //! the project root: each record is a `# <key>` heading and its value as the
+    //! body. The store is the source of truth, the file is a projection - git
+    //! diffable, greppable, and importable on session start.
 
     use crate::{LayerKind, MemoryStore, Proposal, Provenance};
     use pantheon_api::error::{Layer, PantheonError};
@@ -1341,20 +1249,13 @@ pub mod markdown {
         Ok(fnv1a_hex(md.as_bytes()))
     }
 
-    /// One sync pass: read `path` and the store, import file changes, then
-    /// export the store if it changed since the last known file hash.
+    /// One sync pass: read `path` and the store, import file changes, then export
+    /// if the store changed since `last_known_hash`. Pass `None` on a fresh
+    /// install. Returns the new hash to store for the next pass.
     ///
-    /// `last_known_hash` is the hash recorded from the previous sync. Pass
-    /// `None` on a fresh install. Returns the new file hash so the caller
-    /// can store it for the next pass.
-    ///
-    /// Deletions: when the file is a sentinel export (see `render_agent`),
-    /// a section missing from it is a deletion, and the store row is
-    /// forgotten - otherwise every export would resurrect deleted sections.
-    /// Non-sentinel (hand-written/legacy) files never delete: they may be
-    /// partial views. Callers must still run `detect_conflict` first when
-    /// both sides may have changed, since a stale sentinel file would
-    /// otherwise delete newer store rows.
+    /// For a sentinel export file, a section missing from it is a deletion.
+    /// Hand-written or legacy files never delete - they may be partial views. Run
+    /// `detect_conflict` first when both sides may have changed.
     pub fn sync(
         store: &MemoryStore,
         policy: &pantheon_api::capability::Policy,
@@ -1376,12 +1277,9 @@ pub mod markdown {
             .map(|h| h != cur_hash)
             .unwrap_or(file_exists);
         if file_exists && file_changed {
-            // Deletions propagate only for sentinel files: a sentinel
-            // file is a full Pantheon export (every Agent record, in
-            // order), so a section missing from it means the user deleted
-            // it. A hand-written or legacy file may be a partial view, and
-            // deleting every store row it does not mention would nuke
-            // records the file never claimed to cover.
+            // Deletions only for sentinel files, which are full exports. A
+            // hand-written file may be a partial view, and deleting rows it
+            // doesn't mention would nuke records it never claimed to cover.
             let text =
                 std::fs::read_to_string(path).map_err(|e| merr("MEM_SYNC_READ", format!("{e}")))?;
             let sentinel = text
@@ -1466,12 +1364,10 @@ pub mod markdown {
         }
     }
 
-    /// Render Agent-layer records for one namespace as markdown.
-    /// Sections: `# <key>` heading, value as the body. Value lines that look
-    /// like headings are escaped with a leading backslash so a value holding
-    /// `# something` survives a render/parse round-trip as one record.
-    /// Render one record. `trust` becomes a provenance footer that parse_md
-    /// reads back; legacy 2-tuple callers get `user` (human-edited file).
+    /// Render Agent records for a namespace. Value lines that look like headings
+    /// get a leading backslash so a value holding `# something` survives the
+    /// round-trip. `trust` becomes a provenance footer that `parse_md` reads back;
+    /// legacy 2-tuple callers get `user`.
     pub fn render_record(
         key: &str,
         value: &str,
@@ -1483,10 +1379,8 @@ pub mod markdown {
                 if l.starts_with("# ") || l == "#" {
                     format!("\\{l}")
                 } else if l.starts_with("{trust=") {
-                    // A value line that looks like a provenance footer would
-                    // be misparsed as the record's footer on import (the
-                    // footer is `{trust=tier}` as the body's first line).
-                    // Escape it so the round-trip keeps the line as value.
+                    // A value line shaped like the footer would be misparsed as
+                    // the record's footer on import. Escape it so it stays a value.
                     format!("\\{l}")
                 } else {
                     l.to_string()
@@ -1530,16 +1424,11 @@ pub mod markdown {
         store.list_agent_meta(namespace)
     }
 
-    /// Parse a markdown file into Agent-layer records. Splits on `# <key>`
-    /// headings; the body until the next heading becomes the value. Value
-    /// lines escaped at render time (leading backslash before a heading-like
-    /// line) are unescaped here. The sentinel header marks v1 exports; for
-    /// legacy files without it, the first `# Agent memory` line is treated as
-    /// the document header and skipped, so a literal key named `Agent memory`
-    /// in a v1 file round-trips.
-    /// One parsed record: key, value, and the trust tier from its
-    /// provenance footer when the file carries one (v2 sentinel). Legacy
-    /// files (v1 or header-less) yield `None` and the importer decides.
+    /// Parse a markdown file into Agent records: split on `# <key>`, body until
+    /// the next heading is the value, and unescape what render escaped. The
+    /// sentinel header marks v1 exports; without it the first `# Agent memory`
+    /// line is the document header and is skipped, so a v1 key of that name still
+    /// round-trips.
     pub fn parse_md_meta(
         content: &str,
     ) -> Vec<(String, String, Option<pantheon_api::provenance::TrustTier>)> {
@@ -1614,25 +1503,16 @@ pub mod markdown {
             .collect()
     }
 
-    /// Import Agent-layer records from a markdown file. Each parsed section
-    /// becomes a Proposal that goes through the standard write path
-    /// (propose -> policy -> provenance -> validation).
+    /// Import Agent records from a markdown file. Each section becomes a Proposal
+    /// through the normal write path.
     ///
-    /// Trust handling: a v2 file carries each record's tier and a hand-edited
-    /// or legacy file is human-authored, so both import at the file's tier
-    /// (`memory.md` is a human-authored origin in the write gate). The file's
-    /// claim is capped at `User`: `System` is harness-generated control, and
-    /// MEMORY.md is an ordinary project file that an agent or a cloned repo can
-    /// write, so it must not mint the top tier. The tier is then capped at the
-    /// tier the store already has for the row - an import can keep or lower the
-    /// file's claimed tier, never upgrade it. The store's own anti-clobber rule
-    /// still applies on top: when the capped tier is below the stored tier the
-    /// row is held entirely.
+    /// Both v2 (per-record tier) and hand-edited files import at the file's tier,
+    /// capped at `User` - `system` is harness-generated control, and a project file
+    /// an agent or a cloned repo can write must not mint it. Then capped at the
+    /// store's existing tier, so an import can keep or lower but never upgrade.
+    /// The anti-clobber rule still applies: below the stored tier the row is held.
     ///
-    /// All-or-nothing: every section is validated (empty, secret, too
-    /// large) BEFORE any write happens. The old loop wrote section by
-    /// section, so one empty section aborted the import midway with the
-    /// earlier sections already stored.
+    /// All-or-nothing: every section is validated before any write.
     pub fn import_agent(
         store: &MemoryStore,
         policy: &pantheon_api::capability::Policy,
@@ -1655,11 +1535,10 @@ pub mod markdown {
     ) -> Result<usize, PantheonError> {
         let mut proposals = Vec::with_capacity(parsed.len());
         for (key, value, trust) in parsed {
-            // A v2 file carries each record's tier; a hand-edited or legacy
-            // file is human-authored, so it imports as User. An Untrusted
-            // record stays Untrusted: the round-trip must not launder trust.
-            // The file's claim is capped at User: `system` is harness-generated
-            // control, and a project file must not be able to mint it.
+            // A v2 file carries each record's tier; a hand-edited one is
+            // human-authored, so User. Untrusted stays Untrusted - the round-trip
+            // must not launder trust. Capped at User: a project file must not mint
+            // `system`.
             let tier = trust.unwrap_or(pantheon_api::provenance::TrustTier::User);
             let tier = if tier.rank() > pantheon_api::provenance::TrustTier::User.rank() {
                 pantheon_api::provenance::TrustTier::User
@@ -1819,10 +1698,9 @@ pub mod markdown {
 }
 
 pub mod plugins {
-    //! User-defined memory plugins.
-    //!
-    //! Drop a TOML manifest at `<data_dir>/memory-plugins/<name>.toml` and
-    //! the backend becomes selectable like any built-in:
+    //! User-defined memory plugins. A TOML manifest at
+    //! `<data_dir>/memory-plugins/<name>.toml` makes a backend selectable like any
+    //! built-in:
     //!
     //! ```toml
     //! name = "mybrain"
@@ -1830,26 +1708,23 @@ pub mod plugins {
     //! kind = "http"              # or "stdio"
     //! url = "http://127.0.0.1:9000"   # http
     //! key = "token"                  # http (optional)
-    //! prefix = "/v1/memory"          # http (optional; protocol mount point)
+    //! prefix = "/v1/memory"          # http (optional)
     //! command = "python3"            # stdio
     //! args = ["mybrain_bridge.py"]   # stdio
-    //! timeout_ms = 5000              # stdio (optional, default 5000)
+    //! timeout_ms = 5000              # stdio (optional)
     //! ```
     //!
-    //! Selection options (`memory backend select NAME url=... key=...`) override
-    //! manifest values, so one manifest can serve several deployments.
+    //! Selection options override manifest values, so one manifest can serve
+    //! several deployments.
     //!
-    //! The stdio protocol is one JSON request line in, one JSON response line
-    //! out. Requests: `{"op":"recall"|"write"|"list_agent"|"get"|"forget"|"confirm", ...}`.
-    //! `get` and `confirm` carry the record's `layer` (row identity is
-    //! layer+namespace+key); `forget` already did.
-    //! Responses: `{"ok":true, ...}` or `{"ok":false,"code":"...","cause":"..."}`.
-    //! Process-per-call (same model as hook execution): simple, isolated, and
-    //! a hanging plugin cannot poison the runtime - it is killed on timeout.
+    //! stdio is one JSON request line in, one response line out. Ops: `recall`,
+    //! `write`, `list_agent`, `get`, `forget`, `confirm`; `get` and `confirm` carry
+    //! the record's `layer` (row identity is layer+namespace+key). Responses are
+    //! `{"ok":true, ...}` or `{"ok":false,"code":..,"cause":..}`. Process per
+    //! call, killed on timeout.
     //!
-    //! Policy note: this crate never asks a plugin whether a write is allowed.
-    //! Gate (`write_via` / `recall_via` / `confirm_via`) runs before the plugin
-    //! is invoked; plugins only store/return what they are handed.
+    //! A plugin is never asked whether a write is allowed - the gate runs first,
+    //! and plugins only store or return what they're handed.
     use crate::backend::{BackendKind, DeploymentKind};
     use crate::{BackendInfo, BackendRegistry, BackendSelection, LayerKind};
     use pantheon_api::error::{Layer, PantheonError};
@@ -1893,16 +1768,12 @@ pub mod plugins {
         pub timeout_ms: u64,
         /// Explicit operator consent to run a `stdio` command.
         ///
-        /// A `stdio` backend is a child process pantheon spawns with the
-        /// operator's privileges, so it is the same trust class as an
-        /// extension or an exec plugin. Those paths require an approval
-        /// record; without one here, dropping a TOML file into
-        /// `<data_dir>/memory-plugins/` was enough to get arbitrary code
-        /// execution on the next memory call. `http` backends talk to a
-        /// network endpoint and run nothing, so they do not need this.
-        ///
-        /// Defaults to false, so existing `http` manifests keep working and
-        /// every `stdio` manifest must now opt in deliberately.
+        /// A stdio backend is a child process with the operator's privileges - the
+        /// same trust class as an extension or an exec plugin, and those need an
+        /// approval record. Without it, a TOML file in `memory-plugins/` is arbitrary
+        /// code execution on the next memory call. `http` backends run nothing, so
+        /// they don't need it. Defaults to false, so existing manifests keep working
+        /// and stdio has to opt in.
         #[serde(default)]
         pub allow_exec: bool,
     }
@@ -1979,10 +1850,9 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
         Ok(m)
     }
 
-    /// Load every `*.toml` manifest in `<data_dir>/memory-plugins` and register
-    /// it. Bad manifests are skipped with a loud line, never a panic: one broken
-    /// file must not brick the registry. Returns the names registerable after
-    /// the load (good ones), so callers can report what happened.
+    /// Load every manifest in `<data_dir>/memory-plugins` and register it. Bad
+    /// ones are skipped with a loud line, not a panic - one broken file shouldn't
+    /// brick the registry. Returns the names that loaded.
     pub fn load_dir(reg: &mut BackendRegistry, data_dir: &Path) -> Vec<String> {
         let dir = data_dir.join("memory-plugins");
         let mut loaded = Vec::new();
@@ -2103,12 +1973,9 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
         trust_ceiling: TrustTier,
     }
 
-    /// Reap a plugin child, waiting briefly for a clean exit first.
-    /// `Child::wait` blocks forever, so a plugin that answers and then
-    /// lingers (cleanup, a stuck thread) would hang the caller; poll
-    /// `try_wait` for up to a second, then kill and wait. Every return
-    /// path in `StdioBackend::call` goes through this after spawn, so no
-    /// path leaves a zombie behind.
+    /// Reap a plugin child, polling `try_wait` for up to a second before killing.
+    /// `Child::wait` blocks forever, so a plugin that answers and then lingers
+    /// would hang the caller. Every path after spawn goes through this.
     fn reap(child: &mut std::process::Child) {
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
@@ -2155,9 +2022,8 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
         fn call(&self, req: &serde_json::Value) -> Result<serde_json::Value, PantheonError> {
             use std::io::{BufRead, BufReader, Read, Write};
             use std::process::{Command, Stdio};
-            // Memory stdio plugins used to inherit the full host env,
-            // including secrets, unlike hook/tool plugins which scrub to
-            // PATH (+ allowlist). Same scrub here: env_clear, then PATH.
+            // Memory stdio plugins get the same scrub as hook and tool plugins:
+            // env_clear, then PATH plus the allowlist.
             let mut cmd = Command::new(&self.command);
             cmd.args(&self.args)
                 .stdin(Stdio::piped())
@@ -2263,18 +2129,15 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
                     ));
                 }
             };
-            // Every path past the read reaps the child: the old success
-            // path returned without `wait()` (and the read-error path
-            // without even `kill()`), leaking a zombie per call.
+            // Every path past the read reaps the child, including the success and
+            // read-error paths, so no call leaks a zombie.
             reap(&mut child);
             if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
                 Ok(v)
             } else {
-                // The `code` field is plugin-controlled: only allowlisted
-                // codes pass through, anything else becomes
-                // MEM_PLUGIN_REMOTE (the original, sanitized, is kept in the
-                // cause for debugging). The `cause` is free text: control
-                // characters stripped, length capped.
+                // `code` is plugin-controlled, so only allowlisted codes pass; the
+                // rest become MEM_PLUGIN_REMOTE with the sanitized original in the
+                // cause. `cause` is free text: control chars stripped, capped.
                 let raw_code = v
                     .get("code")
                     .and_then(|c| c.as_str())
@@ -2433,10 +2296,9 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
         use super::*;
         use crate::{LayerKind, MemoryBackend};
 
-        /// True when `pid` is neither alive nor a zombie. A reaped child
-        /// has no `/proc` entry at all; an unreaped one lingers as
-        /// `State: Z` until its parent reaps it - and the test process is
-        /// the parent, so a zombie here proves the backend leaked it.
+        /// True when `pid` is neither alive nor a zombie. A reaped child has no
+        /// `/proc` entry; an unreaped one lingers as `State: Z`, and here the test
+        /// process is the parent, so a zombie means the backend leaked it.
         fn child_gone(pid: u32) -> bool {
             match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
                 Err(_) => true,
@@ -2463,14 +2325,10 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
             ));
             std::fs::create_dir_all(&dir).unwrap();
 
-            // Success path: the old code returned without wait() here.
-            //
-            // The script must CONSUME stdin before responding: the backend
-            // writes the request immediately after spawn, and a child that
-            // echoes and exits without reading loses that race under load
-            // (EPIPE on the write made this test flaky, once per full-suite
-            // run). Reading first makes the handshake deterministic - the
-            // assertions below are unchanged: Ok + reaped, Err + reaped.
+            // The script has to consume stdin before responding: the backend
+            // writes the request right after spawn, and a child that echoes and
+            // exits without reading loses that race under load (EPIPE made this
+            // flaky once per full-suite run).
             let pidfile = dir.join("ok.pid");
             let script = format!(
                 "echo $$ > {}; cat > /dev/null; echo '{{\"ok\":true,\"removed\":true}}'",
@@ -2483,8 +2341,8 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
                 "success-path child must be reaped, not left a zombie"
             );
 
-            // Read/decode-error path: the old code returned without even
-            // kill() here. Same stdin handshake for the same reason.
+            // Read/decode-error path. Same stdin handshake and the same reap, so a
+            // child that answers badly still gets cleaned up.
             let pidfile = dir.join("bad.pid");
             let script = format!(
                 "echo $$ > {}; cat > /dev/null; echo 'not json at all'",
@@ -2503,23 +2361,16 @@ privileges; set `allow_exec = true` in this manifest to consent to that",
 pub mod secret_scan {
     //! Curated secret-pattern scan for the memory write path.
     //!
-    //! No regex dependency: the patterns are simple substring/assignment
-    //! shapes matched by hand over ASCII-lowercased bytes. Fail-closed: any
-    //! hit refuses the write with `WriteRefusal::SecretDetected`, naming the
-    //! *class* of pattern ("labeled password", "github token prefix"), never
-    //! the matched text.
+    //! No regex: simple substring and assignment shapes matched by hand over
+    //! lowercased bytes. A hit refuses the write with `SecretDetected`, naming the
+    //! class of pattern, never the matched text.
     //!
-    //! The patterns are deliberately narrow so prose *about* secrets does not
-    //! trip the scan:
-    //! - labeled assignments: `password`, `api_key`, ... followed by `=`/`:` and
-    //!   a non-empty value (`"the password policy requires rotation"` has no
-    //!   assignment and passes; `"password = hunter2"` fails);
-    //! - known token prefixes (`sk-`, `ghp_`, `AKIA`, ...) followed by at least
-    //!   8 opaque characters (`"task-list"` does not count as `sk-`);
-    //! - PEM private-key blocks.
+    //! Narrow on purpose so prose about secrets doesn't trip it: labeled
+    //! assignments (`"the password policy requires rotation"` passes,
+    //! `"password = hunter2"` fails), known token prefixes plus 8 opaque characters
+    //! (`"task-list"` isn't `sk-`), and PEM private-key blocks.
     //!
-    //! This is a tripwire, not a vault: it catches the common accident (a
-    //! pasted key, "remember this password: ..."), not a determined exfil.
+    //! A tripwire, not a vault: catches the pasted key, not a determined exfil.
 
     /// (lowercase label, pattern class)
     const LABELED: &[(&str, &str)] = &[
@@ -2531,10 +2382,9 @@ pub mod secret_scan {
         ("api-key", "labeled api key"),
         ("client_secret", "labeled client secret"),
         ("secret", "labeled secret"),
-        // Compound credential labels: the boundary check above treats `_` as a
-        // word character, so `secret` alone does not match inside
-        // `aws_secret_access_key` (nor does `secret_access_key`, whose left
-        // neighbour is `_`). These are common enough to list explicitly.
+        // The boundary check treats `_` as a word character, so `secret` doesn't
+        // match inside `aws_secret_access_key` (nor `secret_access_key`, whose left
+        // neighbour is `_`). Common enough to list explicitly.
         ("secret_key", "labeled secret"),
         ("secret_access_key", "labeled secret"),
         ("aws_secret_access_key", "labeled secret"),
@@ -2657,16 +2507,14 @@ pub mod secret_scan {
 }
 
 pub mod store {
-    //! SQLite-backed memory provider with FTS recall and provenance.
+    //! SQLite memory provider with FTS recall and provenance.
     //!
-    //! Two tables: `memories` (the record) and `memories_fts` (search index).
-    //! Every recalled row carries its provenance so the agent (and `pantheon logs`)
-    //! can see where a belief came from, including its trust tier.
+    //! Two tables: `memories` and `memories_fts`. Every recalled row carries its
+    //! provenance so the agent and `pantheon logs` can see where a belief came from.
     //!
-    //! The `trust` column is tiered per pantheon_api::provenance::TrustTier.
-    //! Rows written before tiers existed backfill as `memory` tier on open:
-    //! they were human/import authored in practice, and treating legacy data
-    //! as mid-trust is safer than treating it as authoritative.
+    //! Rows written before trust tiers existed backfill as `memory` on open - they
+    //! were human or import authored in practice, and mid-trust is safer than
+    //! treating legacy data as authoritative.
     use crate::{LayerKind, MemoryRecord, Proposal, Provenance};
     use pantheon_api::error::{Layer, PantheonError};
     use pantheon_api::provenance::TrustTier;
@@ -2819,9 +2667,8 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
     }
 
     fn trust_from(s: &str) -> TrustTier {
-        // Fail closed: an unknown/corrupt trust string is Untrusted, never
-        // mid-trust Memory. Previously it defaulted to Memory, promoting
-        // tampered or mistyped rows into the trusted tier on read.
+        // A corrupt or unknown trust string is Untrusted. Anything else would
+        // promote a tampered or mistyped row into the trusted tier on read.
         TrustTier::parse(s).unwrap_or(TrustTier::Untrusted)
     }
 
@@ -2834,16 +2681,14 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
     )
     }
 
-    /// The `put` upsert. Trust is a ceiling on the write, not a field the
-    /// writer sets: a low-trust (model-origin) write must not clobber the value
-    /// of a record a human already confirmed, nor reset its tier.
+    /// The `put` upsert. Trust is a ceiling, not a field the writer sets: a
+    /// model-origin write must not clobber a value a human confirmed or reset its
+    /// tier.
     ///
-    /// The guard is `existing_rank > incoming_rank`, strictly greater, so a
-    /// repeat write at the same tier still overwrites (an agent re-asserting
-    /// its own note works) and only a strictly-higher-trust write wins. On a
-    /// blocked write every column is held, so the caller's `put` still returns
-    /// a record and the outcome is a clean no-op rather than a silent
-    /// downgrade the user never consented to.
+    /// The guard is `existing_rank > incoming_rank`, strictly, so a repeat write at
+    /// the same tier still overwrites (an agent re-asserting its own note works)
+    /// and only a higher-trust write wins. On a blocked write every column is held,
+    /// so `put` returns a record and the outcome is a clean no-op.
     fn upsert_memory_sql() -> String {
         let held = sql_rank("memories.trust");
         let incoming = sql_rank("excluded.trust");
@@ -2898,19 +2743,15 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         }
     }
 
-    /// SQLite hygiene for the shared `memory.db`: WAL mode so a reader never
-    /// blocks a writer, and a 5s busy timeout so brief lock contention waits
-    /// instead of failing. The daemon and the CLI open the same file;
-    /// concurrent writes used to surface as SQLITE_BUSY flakes.
+    /// WAL so a reader never blocks a writer, plus a 5s busy timeout so brief
+    /// contention waits instead of failing. The daemon and the CLI share this file.
     fn tune_connection(conn: &Connection) -> Result<(), PantheonError> {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
             .map_err(|e| serr("MEM_PRAGMA", e.to_string()))
     }
 
-    /// Delete one row by id, removing its FTS index entry too. `DELETE` on
-    /// the content table does not touch the external-content FTS index
-    /// without the explicit 'delete' command the row stays searchable
-    /// forever (the old `forget` had exactly this leak).
+    /// Delete one row and its FTS entry. Without the explicit 'delete' command the
+    /// external-content index keeps the row searchable after the row is gone.
     fn delete_row(
         conn: &Connection,
         id: i64,
@@ -2932,11 +2773,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         Ok(())
     }
 
-    /// Trust-aware eviction for one (layer, namespace): while the total
-    /// stored value bytes exceed `budget`, delete the lowest-trust row
-    /// (oldest first within a tier), never `exclude_id` (the row just
-    /// written). Byte size is `length(CAST(value AS BLOB))` - `length()` on
-    /// TEXT counts characters, not bytes.
+    /// Trust-aware eviction for one (layer, namespace): while stored value bytes
+    /// exceed `budget`, delete the lowest-trust row (oldest within a tier), never
+    /// `exclude_id`. `length()` on TEXT counts characters, so cast to BLOB.
     fn evict_over_budget(
         conn: &Connection,
         layer: LayerKind,
@@ -3049,11 +2888,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                 .map_err(|e| serr("MEM_LOCK", e.to_string()))
         }
 
-        /// Delete a record. Returns whether a row was removed. The lookup
-        /// and the FTS+row delete run in one transaction: the old code did
-        /// the FTS delete and the row delete as separate statements, so a
-        /// crash between them left a present-but-unsearchable row, and a
-        /// failed delete could leave half the pair behind.
+        /// Delete a record, returning whether a row went. Lookup and the FTS+row
+        /// delete share one transaction, so a crash can't leave a
+        /// present-but-unsearchable row.
         pub fn forget(
             &self,
             layer: LayerKind,
@@ -3095,11 +2932,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
             }
         }
 
-        /// List Agent-layer records for a namespace in stable write order,
-        /// including each record's trust tier. The plain `list_agent` stays
-        /// for callers that only need key/value (the memory_list tool);
-        /// anything that round-trips records through files must use this so
-        /// trust survives the trip.
+        /// Agent records for a namespace in write order, with each tier. The plain
+        /// `list_agent` stays for key/value callers; anything round-tripping through
+        /// a file uses this so trust survives.
         pub fn list_agent_meta(
             &self,
             namespace: &str,
@@ -3159,14 +2994,11 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
             self.path.as_deref()
         }
 
-        /// Promote one record's trust tier. Only raises the tier (the
-        /// `derived <= source` invariant runs in reverse only through
-        /// explicit promotion); demotion goes through delete + rewrite.
+        /// Raise one record's tier. Only raises - demotion is delete + rewrite.
         ///
-        /// `layer` is part of the target: the row identity is
-        /// (layer, namespace, key), so promoting by (namespace, key) alone
-        /// could touch several layers' rows at once and return an arbitrary
-        /// one. The caller names the layer it means.
+        /// `layer` is part of the target because the row identity is
+        /// (layer, namespace, key); by (namespace, key) alone this could touch
+        /// several layers and return an arbitrary one.
         pub fn promote(
             &self,
             layer: LayerKind,
@@ -3179,13 +3011,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                     .conn
                     .lock()
                     .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-                // Only raises, as documented: the WHERE clause admits only
-                // existing tiers strictly below the requested one. The old
-                // `IN ('untrusted','memory')` shape let promote(..., Untrusted)
-                // demote a Memory row, and promote(..., Memory) rewrite an
-                // already-Memory row, despite the "only raises" contract.
-                // Promoting to Untrusted is a no-op by construction: there
-                // is no tier below Untrusted to raise from.
+                // Only raises: the WHERE clause admits tiers strictly below the
+                // requested one, so promote(.., Memory) can't rewrite an already-Memory
+                // row. Promoting to Untrusted is a no-op - nothing is below it.
                 let allowed: &[&str] = match tier {
                     pantheon_api::provenance::TrustTier::System => &["untrusted", "memory", "user"],
                     pantheon_api::provenance::TrustTier::User => &["untrusted", "memory"],
@@ -3220,10 +3048,8 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                 .ok_or_else(|| serr("MEM_NOT_FOUND", format!("no record {key} in {namespace}")))
         }
 
-        /// Fetch one record by layer + namespace + key: the full row
-        /// identity. Fetching by (namespace, key) alone was ambiguous
-        /// the same key can exist in several layers - and returned an
-        /// arbitrary row.
+        /// Fetch one record by its full identity. By (namespace, key) alone the key
+        /// can exist in several layers and the lookup would return an arbitrary row.
         pub fn get(
             &self,
             layer: LayerKind,
@@ -3251,10 +3077,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
 
         pub fn put(&self, p: &Proposal) -> Result<MemoryRecord, PantheonError> {
             let budget = self.config()?.budget_for(p.layer);
-            // A single value larger than the whole layer budget can never fit;
-            // refuse before the write rather than write-then-evict (which would
-            // either delete the row just written or leave the layer over
-            // budget). Non-budgeted layers (EphemeralTurn) skip this entirely.
+            // A value bigger than the whole layer budget can never fit: refuse
+            // rather than write-then-evict, which would delete the row just written
+            // or leave the layer over budget. Non-budgeted layers skip this.
             if let Some(budget) = budget {
                 if p.value.len() > budget {
                     return Err(serr(
@@ -3272,29 +3097,20 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                 .conn
                 .lock()
                 .map_err(|e| serr("MEM_LOCK", e.to_string()))?;
-            // Upsert + eviction + re-read run in ONE transaction. The old
-            // code upserted, then evicted in separate statements: an evict
-            // failure after the upsert returned Err even though the row was
-            // stored, and a crash between the FTS delete and the row delete
-            // inside eviction left a present-but-unsearchable row. Inside
-            // the transaction any failure rolls the whole put back, so a
-            // failed put stores nothing and a successful put is fully
-            // searchable. Immediate mode takes the write lock up front so a
-            // second process opening the same file cannot interleave.
+            // Upsert + eviction + re-read in one transaction, so a failure anywhere
+            // rolls the whole put back: an evict failure can't leave the row stored
+            // while reporting Err, and a crash inside eviction can't leave a
+            // present-but-unsearchable row. Immediate mode takes the write lock up
+            // front so a second process can't interleave.
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|e| serr("MEM_PUT", e.to_string()))?;
             tx.execute(
-                // Trust is a ceiling on the write, not a field the writer sets.
-                // A low-trust (model-origin) write must not clobber the value of
-                // a record a human already confirmed, nor reset its tier. Ranks:
+                // Trust is a ceiling, not a field the writer sets. Ranks:
                 // untrusted(0) < memory(1) < user(2) < system(3). The guard is
-                // strictly `existing > incoming`, so equal rank overwrites
-                // (an agent re-asserting its own note works); only a
-                // strictly-higher-trust existing row holds. (The old comment
-                // here claimed equal rank was "existing wins" while also
-                // saying it still updates - the code, and upsert_memory_sql's
-                // doc, say incoming wins at equal rank.)
+                // strictly `existing > incoming`, so equal rank overwrites (an agent
+                // re-asserting its own note works) and only a higher-trust existing
+                // row holds. Incoming wins at equal rank.
                 &upsert_memory_sql(),
                 params![
                     layer_str(p.layer),
@@ -3315,19 +3131,18 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                     |r| r.get(0),
                 )
                 .map_err(|e| serr("MEM_QUERY", e.to_string()))?;
-            // Bound growth: evict lowest-trust, oldest-first until the layer
-            // is back under budget. The row just written is never evicted
-            // `put` must not delete what it just stored.
+            // Bound growth: evict lowest-trust, oldest-first until the layer is
+            // back under budget. The row just written is never evicted: `put` must
+            // not delete what it just stored.
             if let Some(budget) = budget {
                 evict_over_budget(&tx, p.layer, &p.namespace, budget, id)?;
             }
-            // Re-read rather than echo the proposal: when a higher-trust row
-            // held, the stored value is the old one, and returning `p` would tell
-            // the caller its write landed when it did not.
+            // Re-read instead of echoing the proposal: when a higher-trust row
+            // held, the stored value is the old one and returning `p` would claim
+            // the write landed.
             //
-            // The read runs on the transaction already open above, NOT via
-            // `self.get`: `conn` is a `std::sync::Mutex` guard and `get` locks it
-            // again, so calling it here deadlocks on a non-reentrant mutex.
+            // It runs on the open transaction, not `self.get` - `conn` is a
+            // MutexGuard and `get` locks it again, deadlocking a non-reentrant mutex.
             let mut stmt = tx
                 .prepare(
                     "SELECT layer, namespace, key, value, source, origin, trust, recorded_at_ms
@@ -3356,21 +3171,14 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
             Ok(rec)
         }
 
-        /// FTS recall, scoped to one namespace and a set of layers.
+        /// FTS recall for one namespace and a set of layers.
         ///
-        /// `namespaces` is enforced **in SQL**, not by post-filtering. An
-        /// earlier version had no predicate at all and used `layers` only to
-        /// sort the results it had already returned, which meant every recall
-        /// crossed agent boundaries: with per-agent namespaces, Zeus reading
-        /// his own memories also received Nyx's and Athena's. Post-filtering
-        /// would leak too, and would additionally cap `limit` before the
-        /// filter ran, so a busy foreign namespace could crowd out the
-        /// caller's own rows.
+        /// `namespaces` is enforced in SQL. Without the predicate every recall crosses
+        /// agent boundaries, and post-filtering would cap `limit` before the filter
+        /// ran, letting a busy foreign namespace crowd out the caller's own rows.
         ///
-        /// Each layer is queried separately with a per-layer cap
-        /// (`MemoryConfig::max_recall_per_layer`, bounded by `limit`), so one
-        /// layer's matches can no longer crowd out narrower layers, and a
-        /// single huge layer cannot blow up the result set.
+        /// Each layer is queried separately with its own cap (bounded by `limit`), so
+        /// one layer can't crowd out the narrower ones.
         pub fn search_scoped(
             &self,
             namespaces: &[&str],
@@ -3400,8 +3208,8 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                         .max_recall_per_layer,
                 )
                 .max(1);
-            // An empty layer list means "all layers" (the old contract); a
-            // non-empty list is already narrowest-first priority order.
+            // An empty layer list means "all layers"; a non-empty list is already
+            // narrowest-first priority order.
             let effective_layers: Vec<LayerKind> = if layers.is_empty() {
                 vec![
                     LayerKind::Global,
@@ -3429,10 +3237,8 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         }
     }
 
-    /// Simple semantic scoring for keyword misses. Counts token overlap between
-    /// query and value, so paraphrases that share words score even when FTS
-    /// misses. This is not a vector index; it is a lexical fallback that runs
-    /// without embeddings.
+    /// Token overlap between query and value, so paraphrases sharing words score
+    /// even when FTS misses. Lexical fallback, not a vector index - no embeddings.
     pub fn semantic_score(query: &str, value: &str) -> f64 {
         let q: std::collections::HashSet<String> = query
             .split_whitespace()
@@ -3467,11 +3273,10 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
             .join(" OR ")
     }
 
-    /// One layer's share of `search_scoped`. `["*"]` is the explicit
-    /// unrestricted form, reserved for operator tooling
-    /// (`pantheon memory recall '*' ...`). An *empty* namespace list stays a
-    /// hard refusal: a caller that has not established who it reads as must
-    /// get nothing rather than everything.
+    /// One layer's share of `search_scoped`. `["*"]` is the explicit unrestricted
+    /// form, for operator tooling (`pantheon memory recall '*' ...`). An empty list
+    /// is a hard refusal: a caller that hasn't established who it reads as gets
+    /// nothing rather than everything.
     fn search_one_layer(
         conn: &Connection,
         namespaces: &[&str],
@@ -3479,10 +3284,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         layer: LayerKind,
         limit: usize,
     ) -> Result<Vec<Recalled>, PantheonError> {
-        // Explicit `?N` indices throughout. Mixing numbered placeholders
-        // with bare `?` makes SQLite auto-number the bare ones from 1 and
-        // collide with the ones already used, so the bind count stops
-        // matching the parameter count.
+        // Explicit `?N` indices. Mixing numbered placeholders with bare `?` makes
+        // SQLite auto-number the bare ones from 1 and collide, so the bind count
+        // stops matching.
         let mut next_index = 2; // ?1 is the FTS match term
         let unrestricted = namespaces == ["*"];
         let ns_clause = if unrestricted {
@@ -3545,11 +3349,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         Ok(out)
     }
 
-    /// Whether the memory FTS5 sidecar can answer a query.
-    ///
-    /// Same reasoning as the ledger's `search_index_health`: a freshly created
-    /// index has no rows and is healthy, while a damaged one raises on `MATCH`.
-    /// Probing for a working query is the only way to tell them apart.
+    /// Whether the FTS5 sidecar can answer. A freshly created index has no rows and
+    /// is healthy; a damaged one raises on `MATCH`, so probing a query is the only
+    /// way to tell them apart.
     pub fn fts_health(db: &std::path::Path) -> Result<bool, PantheonError> {
         let conn = Connection::open(db).map_err(|e| serr("MEM_FTS_OPEN", e.to_string()))?;
         let probe: Result<i64, _> = conn.query_row(
@@ -3565,19 +3367,14 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         }
     }
 
-    /// Rebuild the memory FTS5 index from the `memories` table.
+    /// Full rebuild of the memory FTS index. `memories_fts` is external-content
+    /// (`content='memories'`) kept in sync by triggers, so the canonical rows are
+    /// already there: drop it, let `SCHEMA` recreate it with its triggers, then
+    /// `rebuild`.
     ///
-    /// This one *is* a full rebuild, unlike the ledger's sidecar. `memories_fts` is
-    /// an external-content table (`content='memories'`) kept in sync by the
-    /// `memories_ai` / `memories_au` triggers, so the canonical rows are already
-    /// in `memories` and re-deriving is a matter of repopulating the index:
-    /// drop it, let `SCHEMA` recreate it with its triggers, then `rebuild`.
-    ///
-    /// Hand-writing the CREATE would be the trap here: an external-content table
-    /// with the wrong columns still opens and still answers MATCH, so a subtly
-    /// wrong rebuild passes every "does it work" check while ranking results
-    /// against a different column set. Re-running `SCHEMA` cannot drift from the
-    /// writer.
+    /// Hand-writing the CREATE is the trap: an external-content table with the wrong
+    /// columns still opens and still answers MATCH, so a subtly wrong rebuild passes
+    /// every "does it work" check while ranking against a different column set.
     pub fn rebuild_fts(db: &std::path::Path) -> Result<u64, PantheonError> {
         let conn = Connection::open(db).map_err(|e| serr("MEM_FTS_OPEN", e.to_string()))?;
         conn.execute_batch("DROP TABLE IF EXISTS memories_fts;")
@@ -3597,11 +3394,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
         Ok(n as u64)
     }
 
-    /// Drop the FTS sidecar while leaving the triggers in place - the state a
-    /// partial write or an interrupted migration leaves behind.
-    ///
-    /// Takes a path rather than exposing a `Connection`, so a consumer can damage
-    /// a store to test recovery without the public API growing a raw handle.
+    /// Drop the FTS sidecar and leave the triggers - the state a partial write or
+    /// an interrupted migration leaves. Takes a path rather than a `Connection` so a
+    /// consumer can damage a store without the public API growing a raw handle.
     /// Idempotent.
     pub fn damage_fts_for_test(db: &std::path::Path) {
         let conn = Connection::open(db).expect("open memory db");
@@ -3717,11 +3512,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
 
         #[test]
         fn failed_put_stores_nothing() {
-            // Fault injection for eviction alone is not possible in-process
-            // (evict SQL only fails on DB corruption, which fails the
-            // upsert's trigger first), so this tests the transaction
-            // contract at the put boundary: a failed put stores nothing,
-            // where the old code could return Err with the row stored.
+            // Eviction alone can't be fault-injected in-process (evict SQL only
+            // fails on corruption, which fails the upsert trigger first), so this
+            // pins the contract at the put boundary: a failed put stores nothing.
             let dir = std::env::temp_dir().join(format!(
                 "pantheon-mem-tx-{}",
                 std::time::SystemTime::now()
@@ -3758,11 +3551,9 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                 .unwrap();
             damage_fts_for_test(&path);
             assert!(store.forget(LayerKind::Agent, "test", "k1").is_err());
-            // No half-delete: the row is still fully there, not
-            // present-but-unsearchable-by-construction (the FTS delete
-            // failed first, so the row delete never ran - and the
-            // transaction guarantees that ordering cannot be split by a
-            // crash either).
+            // No half-delete: the FTS delete failed first so the row delete never
+            // ran, and the transaction means a crash can't split the ordering
+            // either.
             assert!(
                 store.get(LayerKind::Agent, "test", "k1").unwrap().is_some(),
                 "a failed forget must leave the row intact"

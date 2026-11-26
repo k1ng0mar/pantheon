@@ -1,24 +1,21 @@
-//! control_group: agui, agui_serve, computer, desktop_takeover in one file.
-
 pub mod agui {
-    //! AG-UI wire: JSON-RPC commands + SSE frame stream over one seam.
-    //! Commands mutate runs (send/grant/deny); frames stream back keyed by
-    //! run_id/thread_id. Signed generative-UI refs ride inside frames.
+    //! AG-UI wire: JSON-RPC commands + SSE frames on one seam. Commands mutate
+    //! runs (send/grant/deny); frames come back keyed by run_id/thread_id.
+    //! Signed generative-UI refs ride inside the frames.
     use crate::rpc::{Dispatcher, MethodHandler, RpcError};
     use pantheon_gateway::{valid_task_id, GenUiSigner};
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    /// Build a dispatcher with AG-UI commands bound to a data dir.
-    /// Methods: agui.send, agui.grant, agui.deny, agui.frames, agui.sign, agui.serve_hint.
+    /// AG-UI dispatcher, bound to a data dir. Registers agui.send/grant/deny/
+    /// cancel/frames/sign/serve_hint + artifact.put.
     pub fn dispatcher_for(data_dir: PathBuf) -> Dispatcher {
         dispatcher_for_with_hint(data_dir, 18789)
     }
 
-    /// Build the AG-UI dispatcher with the actual serving port.  The default
-    /// constructor remains for embedders, but a real server must use this form so
-    /// `agui.serve_hint` never points clients at the development port.
+    /// Use the real serving port: embedders get the default 18789, but a live
+    /// server must pass its own or `agui.serve_hint` points clients at the dev port.
     pub fn dispatcher_for_with_hint(data_dir: PathBuf, port: u16) -> Dispatcher {
         dispatcher_for_with_hint_and_base(
             data_dir,
@@ -97,31 +94,26 @@ pub mod agui {
         d
     }
     fn sup_for(dir: &Path) -> Result<crate::Supervisor, RpcError> {
-        // NOTE (group-C): one fresh Supervisor per RPC call - 3 SQLite
-        // connections + migrations, then dropped. Fine for a local
-        // single-user server (milliseconds); introduce a SupervisorPool
-        // if this ever goes multi-user. Do NOT cache across threads
-        // without it: the ledger uses immediate transactions + a Mutex.
+        // Fresh Supervisor per RPC: 3 SQLite connections + migrations, then drop.
+        // Fine for local single-user (milliseconds). Multi-user needs a pool.
+        // Do NOT cache across threads as-is: ledger uses immediate txns + a Mutex.
         crate::Supervisor::open(dir.to_path_buf())
             .map_err(|e| RpcError::internal(format!("open runtime: {e}")))
     }
-    /// How a turn opens its Session. Set once by `pantheon serve` so the AG-UI
-    /// path resolves the same provider, secrets, and auxiliary models as the
-    /// CLI, instead of falling back to bare environment variables.
+    /// How a turn opens its Session. `pantheon serve` sets this once so the
+    /// AG-UI path gets the same provider/secrets/models as the CLI, instead of
+    /// bare env vars.
     static SESSION_FACTORY: std::sync::OnceLock<crate::agui_serve::SessionFactory> =
         std::sync::OnceLock::new();
 
-    /// Install the process-wide session factory. Called by the CLI before the
-    /// server starts. A second call is ignored so an embedder that already set
-    /// one is not silently overridden.
+    /// Process-wide factory, installed by the CLI before the server starts.
+    /// Second call is ignored, so an embedder's factory isn't overwritten.
     pub fn set_session_factory(f: crate::agui_serve::SessionFactory) {
         let _ = SESSION_FACTORY.set(f);
     }
 
-    /// One turn at a time per run: two concurrent `agui.send` calls for the
-    /// same run_id must not interleave their `chat_turn`s. Entries are removed
-    /// once no thread holds or waits on them, so the map does not grow
-    /// unboundedly across runs.
+    /// One turn at a time per run. Entries drop when nobody holds/waits, so
+    /// finished runs don't pile up here.
     static TURN_LOCKS: std::sync::LazyLock<
         std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>,
     > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
@@ -135,14 +127,13 @@ pub mod agui {
 
     fn release_turn_lock(run_id: &str, lock: &Arc<std::sync::Mutex<()>>) {
         let mut map = TURN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
-        // map + this clone only: nobody is holding or waiting on the lock.
+        // only the map + this clone left: nobody holds or waits on the lock
         if Arc::strong_count(lock) <= 2 {
             map.remove(run_id);
         }
     }
 
-    /// The installed factory, or the environment-only default used by library
-    /// embedders and tests.
+    /// Installed factory, or the env-only default for embedders/tests.
     fn session_factory_for(_dir: &PathBuf) -> Result<crate::agui_serve::SessionFactory, RpcError> {
         if let Some(f) = SESSION_FACTORY.get() {
             return Ok(Arc::clone(f));
@@ -198,17 +189,14 @@ pub mod agui {
             let worker_lock = turn_lock_for(&worker_run);
             let worker_sup = sup.clone();
             std::thread::spawn(move || {
-                // Serialize with any other in-flight turn for this run; the
-                // RPC already returned, so this only orders the workers.
+                // RPC already returned; this just orders the workers.
                 let result = {
                     let _guard = worker_lock.lock().unwrap_or_else(|e| e.into_inner());
-                    // FIFO queue drain (dashboard parity): a message queued
-                    // while the run was busy rides this turn as the earliest
-                    // input instead of sitting until a dashboard/TUI client
-                    // drains it. Peek first - the head is popped only after
-                    // the turn starts, so a turn that fails to start never
-                    // eats it. The lock serializes workers, so two turns
-                    // cannot drain the same head.
+                    // Drain the FIFO head (same as dashboard): a message queued
+                    // while the run was busy rides this turn instead of waiting
+                    // for a TUI client. Peek first, pop only after the turn
+                    // starts, so a failed start doesn't eat the message. The
+                    // lock keeps two workers from draining the same head.
                     let drained = worker_sup
                         .queued_messages(&worker_run)
                         .unwrap_or_default()
@@ -226,9 +214,8 @@ pub mod agui {
                     log_warn!("agui turn {worker_turn} failed: {error}");
                 }
             });
-            // Admission is durable before the RPC returns. A short bounded wait
-            // gives the client an initial replay cursor without coupling admission
-            // to model/tool completion.
+            // Admission is durable before the reply. Small bounded wait for an
+            // initial replay cursor; don't couple this to model/tool completion.
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
             loop {
                 let entries = sup
@@ -261,10 +248,8 @@ pub mod agui {
         }
     }
 
-    /// Combine a drained queue head with the turn's message: the queued
-    /// text rides first; when the client already sent the same text (the
-    /// app echoes the oldest queued text when the run looks idle), it is
-    /// not duplicated. Same rule as the dashboard's idle-path send.
+    /// Queued head first; skip it if the client already echoed the same text
+    /// (the app does that when a run looks idle). Same rule as dashboard send.
     fn compose_turn_text(drained: Option<&str>, message: &str) -> String {
         match drained {
             Some(queued) if queued != message => format!("{queued}\n\n{message}"),
@@ -336,20 +321,20 @@ pub mod agui {
                 .to_string();
             let dir = self.data_dir.clone();
             let sup = sup_for(&dir)?;
-            // Phase 1: record cancellation intent synchronously so the run
-            // stops taking new work immediately. This is fast (ledger writes).
+            // Write cancellation intent synchronously: run stops taking work.
+            // Cheap ledger write.
             sup.cancel_run_intent(&run_id, &reason)
                 .map_err(|e| RpcError::internal(e.to_string()))?;
-            // Phase 2: process-group TERM/KILL can block up to the grace period
-            // per group, so it runs off the HTTP thread. The heartbeat in the
-            // lease guard also watches for the canceled status.
+            // TERM/KILL can block for the grace period per process group, so
+            // do it off the HTTP thread. The lease heartbeat also watches for
+            // the canceled status.
             let worker_run = run_id.clone();
             let worker_reason = reason.clone();
             let worker = std::thread::spawn(move || {
                 let _ = sup.finish_cancel(&worker_run, &worker_reason);
             });
-            // Do not wait for termination: the RPC replies the moment intent is
-            // durable. Join detached-style; a stuck TERM escalates to KILL.
+            // Don't wait for termination; reply as soon as intent is durable.
+            // A stuck TERM escalates to KILL.
             std::mem::forget(worker);
             Ok(json!({
                 "run_id": run_id,
@@ -524,8 +509,7 @@ pub mod agui_serve {
     //!
     //! This module owns the pure AG-UI handler logic; the gateway's
     //! `pantheon_gateway::http` server owns the socket, the accept loop, and
-    //! the auth/origin layer. Route behavior is unchanged from the old
-    //! runtime-owned shim:
+    //! the auth/origin layer. Routes:
     //! - `GET /`, `/agui`, `/agui/` - the token-injected web client
     //! - `GET /agui/stream` - SSE replay + 25 s long-poll, connection-close
     //!   terminated (non-chunked), delivered as `Response::RawStream`
@@ -535,7 +519,7 @@ pub mod agui_serve {
     //! - `POST /agui/voice/transcribe`, `POST /agui/voice/speak` - speech edge
     //! - `GET /agui/voice/live` - websocket takeover into live-voice mode
     //!
-    //! OPERATING NOTES (group-C audit, carried over verbatim):
+    //! Operating notes:
     //! - Every RPC method opens a fresh `Supervisor` (3 SQLite connections +
     //!   migrations) and drops it. Milliseconds for a local single-user
     //!   server; a multi-user server needs a SupervisorPool (not built).
@@ -566,8 +550,7 @@ pub mod agui_serve {
         /// `X-Pantheon-Token`, or the session cookie (EventSource and
         /// WebSocket clients cannot set headers, but the browser sends the
         /// cookie automatically). `None` means the embedder authenticates some
-        /// other way - the old shim generated a one-time token here, which is
-        /// now the gateway's job.
+        /// other way; the gateway mints the token.
         pub auth_token: Option<String>,
         /// Speech edge for the mobile app (`/agui/voice/*`), built from the
         /// `[tools]` voice toggle and the `[stt]` / `[tts]` config sections.
@@ -844,9 +827,8 @@ pub mod agui_serve {
     fn route_is(path: &str, route: &str) -> bool {
         path == route || path.starts_with(&format!("{route}?"))
     }
-    /// Case-insensitive header lookup. The gateway parser stores header names
-    /// as received; the old shim lowercased them at parse time, so lookups
-    /// stay case-insensitive to keep behavior identical.
+    /// Case-insensitive header lookup: the gateway parser stores header names as
+    /// received.
     fn header<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
         headers
             .iter()
@@ -854,8 +836,8 @@ pub mod agui_serve {
     }
     /// The SSE replay + 25 s long-poll, connection-close terminated. Runs as
     /// the `Response::RawStream` closure: the gateway writes the 200 head
-    /// first, then calls this, then closes the connection. Wire behavior is
-    /// exactly the old `handle_stream`: non-chunked, no trailing framing.
+    /// first, then calls this, then closes the connection. The wire behavior is
+    /// non-chunked, with no trailing framing.
     /// Callers must reject an empty `run` query before building the stream
     /// (the 400 for a missing `?run=` is a buffered response, not a stream).
     fn handle_stream(
@@ -1438,8 +1420,7 @@ pub mod computer {
         })
     }
 
-    /// Backward-compatible alias: the CUA driver is the default, so the old
-    /// call shape still works unchanged.
+    /// Backward-compatible alias: the CUA driver is the default.
     pub fn cua_driver_spec(driver: Option<&str>, binary: Option<&str>) -> Option<McpServerSpec> {
         computer_driver_spec(driver, binary)
     }
@@ -1451,16 +1432,16 @@ pub mod desktop_takeover {
     //!
     //! The dashboard (human viewer) and the agent loop (tool calls) may run in
     //! different processes, so takeover state lives in
-    //! `<data_dir>/desktop-takeover.json` — never in memory. The agent loop
+    //! `<data_dir>/desktop-takeover.json`, never in memory. The agent loop
     //! consults it on every `mcp_cua-driver_*` tool call (the `PreToolCall`
     //! sites in `session.rs`); the dashboard owns the read-modify-write cycle
     //! for takeover/heartbeat/input/release.
     //!
     //! Failure policy is deliberately asymmetric:
     //! - a missing file means no takeover (free);
-    //! - an unreadable or corrupt file PARKS the agent (fail closed — a human
+    //! - an unreadable or corrupt file PARKS the agent (fail closed: a human
     //!   may hold the cursor, and a corrupt file must never be read as "free");
-    //! - the release summary is best-effort (fail open — a missing note must
+    //! - the release summary is best-effort (fail open: a missing note must
     //!   never block a tool call).
     //!
     //! Writes are atomic (temp file + rename), so lock-free readers never see
@@ -1478,7 +1459,7 @@ pub mod desktop_takeover {
     pub const LEASE_TTL_MS: i64 = 5 * 60 * 1000;
     /// A lease whose heartbeat lapsed longer than this may be claimed by a
     /// new takeover. The agent stays parked until explicit release, a fresh
-    /// takeover, or hard expiry — never auto-resumed into a half-done
+    /// takeover, or hard expiry; never auto-resumed into a half-done
     /// human flow.
     pub const CLAIM_AFTER_MS: i64 = 30_000;
     /// How long a release summary survives for injection into the next
@@ -1507,7 +1488,7 @@ pub mod desktop_takeover {
     }
 
     /// One human input action during a takeover, for the audit trail and the
-    /// release summary. `detail` is display-safe by construction — never typed
+    /// release summary. `detail` is display-safe by construction; never typed
     /// text (it may contain credentials); see the dashboard's input path.
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     pub struct TakeoverAction {
@@ -1575,7 +1556,7 @@ pub mod desktop_takeover {
         let raw = match std::fs::read_to_string(lease_path(data_dir)) {
             Ok(r) => r,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Gate::Free,
-            // Unreadable (permissions, IO): fail closed — a human may hold
+            // Unreadable (permissions, IO): fail closed; a human may hold
             // the cursor.
             Err(_) => return Gate::Parked { since_ms: 0 },
         };
@@ -1625,7 +1606,7 @@ pub mod desktop_takeover {
     }
 
     /// Read-modify-write under an exclusive cross-process lock. A missing or
-    /// corrupt file reads as default — replacement is the recovery path (the
+    /// corrupt file reads as default, and replacement is the recovery path (the
     /// agent gate independently fails closed on corrupt files, so a corrupt
     /// file parks the agent until a human takes over fresh).
     pub fn with_takeover_locked<T>(

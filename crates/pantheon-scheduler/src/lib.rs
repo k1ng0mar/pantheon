@@ -377,18 +377,15 @@ impl Job {
     /// - cron: the minute bucket (a cron job fires at most once a minute);
     ///   a catch-up fire stamps the *missed* bucket, so a crash-replay
     ///   claims the same key instead of firing twice;
-    /// - interval: the scheduled fire instant (`last + every`), or a fixed
-    ///   sentinel for a first fire. A first fire used to stamp the quantum
-    ///   containing now (`now / every * every`), so two tickers straddling
-    ///   a quantum boundary (gateway daemon + `schedule tick --watch`)
-    ///   computed different stamps and different claim keys and both
-    ///   fired. The sentinel makes the stamp a pure function of the job,
-    ///   not of the ticker's clock, so the durable claim ledger is the
-    ///   single source of the first-fire decision: exactly one ticker
-    ///   wins the claim. At-most-once, like every other interval
-    ///   occurrence: a won claim is never released, so if the winner
-    ///   crashes before its caller persists `last_run`, the occurrence
-    ///   stays claimed until retention prunes it.
+    /// - interval: the scheduled fire instant (`last + every`), or a fixed sentinel for
+    ///   a first fire. The sentinel makes the stamp a pure function of the job, not of
+    ///   the ticker's clock, so the durable claim ledger is the single source of the
+    ///   first-fire decision: exactly one ticker wins the claim. Stamping the quantum
+    ///   containing now (`now / every * every`) instead would let two tickers straddling
+    ///   a boundary (gateway daemon + `schedule tick --watch`) compute different claim
+    ///   keys and both fire. At-most-once, like every other interval occurrence: a won
+    ///   claim is never released, so if the winner crashes before its caller persists
+    ///   `last_run`, the occurrence stays claimed until retention prunes it.
     /// - one-shot: its fixed fire time.
     pub fn occurrence_stamp(&self, now_ms: i64, last_fire_ms: Option<i64>) -> Option<i64> {
         match &self.kind {
@@ -685,9 +682,9 @@ pub enum MissedPolicy {
     CatchUp,
 }
 
-/// The old six-variant `ScheduleKind`, kept only for parsing legacy rows.
-/// The three surviving variants must keep the old serialization shape so
-/// legacy rows parse; the three removed ones are skipped, never loaded.
+/// The six-variant `ScheduleKind` shape legacy rows were written with, kept only
+/// for parsing. The three surviving variants must keep that serialization shape so
+/// those rows parse; the three dropped ones are skipped, never loaded.
 #[derive(Debug, Deserialize)]
 enum LegacyKind {
     Cron { expr: String },

@@ -1,35 +1,4 @@
-//! Pantheon - façade crate.
-//!
-//! One dependency for "give me Pantheon": every library crate re-exported
-//! under a stable, namespaced path. The names mirror the target
-//! architecture:
-//!
-//! | path | crate | owns |
-//! |---|---|---|
-//! | `pantheon::api` | `pantheon-api` | commands, events, types |
-//! | `pantheon::agent` | `pantheon-agent` | agent, profile, inheritance, capability enforcement |
-//! | `pantheon::runtime` | `pantheon-runtime` | lifecycle, turn, context, state |
-//! | `pantheon::swarm` | `pantheon-runtime::swarm` | delegation, coordination |
-//! | `pantheon::providers` | `pantheon-providers` | catalog, provider, streaming |
-//! | `pantheon::nightly` | `pantheon-nightly` | nightly self-improvement pass |
-//! | `pantheon::tools` | `pantheon-tools` | callable tools + registry |
-//! | `pantheon::exec` | `pantheon-exec` | process/fs execution engine |
-//! | `pantheon::sandbox` | `pantheon-exec::sandbox` | sandbox levels + policy boundary |
-//! | `pantheon::memory` | `pantheon-memory` | memory store, recall, write |
-//! | `pantheon::storage` | `pantheon-storage` | SQLite ledger, repository |
-//! | `pantheon::migration` | `pantheon-migration` | Hermes/OpenClaw/OMP migration |
-//! | `pantheon::mcp` | `pantheon-mcp` | MCP projection |
-//! | `pantheon::extensions` | `pantheon-extensions` | hooks, manifests, runners |
-//! | `pantheon::gateway` | `pantheon-gateway` | channels, messages, delivery |
-//! | `pantheon::scheduler` | `pantheon-scheduler` | cron/interval/webhook jobs |
-//! | `pantheon::secrets` | `pantheon-secrets` | vaults + broker |
-//! | `pantheon::tui` | `pantheon-tui` | interactive terminal surface |
-//! | `pantheon::web` | `pantheon-web` | browser automation + web search |
-//!
-//! `pantheon::tui` re-exports the terminal application crate
-//! (`pantheon-tui`, which also builds the `pantheon` binary) for embedders
-//! that drive its commands; it is the composition root rather than a
-//! stable library surface.
+//! public facade - re-exports the workspace crates under one namespace for embedders.
 
 pub use pantheon_agent as agent;
 pub use pantheon_agent::capability;

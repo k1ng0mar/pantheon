@@ -1,17 +1,15 @@
-//! heal_group: apply, fixloop, repair_targets, replay, gate in one file.
-
 pub mod apply {
     //! Apply + pending approval.
     //!
     //! Propose-only: no unattended path writes a durable record.
     //!
-    //! - **Memory lessons** are surfaced with their evidence (provenance
+    //! - Memory lessons are surfaced with their evidence (provenance
     //!   runs + observed-count), then parked in
     //!   `<data_dir>/nightly/nightly-pending.json` for a human to approve or
     //!   deny. A grant writes the record at the configured trust tier
     //!   (`NightlyConfig::memory_trust`, `Memory` by default); a denial
     //!   ends the proposal. Idempotent keys keep re-approval stable.
-    //! - **Skill and Persona proposals** pass eval-gating and replay-gating,
+    //! - Skill and Persona proposals pass eval-gating and replay-gating,
     //!   then sit in the same pending queue until a human approves or denies
     //!   them.
     //!
@@ -545,21 +543,21 @@ pub mod fixloop {
     //! the pass doesn't just reject it - it tries to repair the DRAFT
     //! first:
     //!
-    //! - **Eval reject**: the eval failure detail goes to the repair aux
+    //! - Eval reject: the eval failure detail goes to the repair aux
     //!   model (Repair slot), which revises the draft body; the FULL eval
     //!   tag set re-runs against the revised draft. Eval tags are immutable
     //!   once the proposal enters the loop - the loop may not narrow the
     //!   claim to dodge failing evals (that let broken drafts validate
     //!   green).
-    //! - **Skipped evals** (no tags): escalates unless the proposal kind is
+    //! - Skipped evals (no tags): escalates unless the proposal kind is
     //!   explicitly allowlisted to skip eval-gating. Currently no kind is
     //!   allowlisted - memory lessons never reach the gate at all (lib.rs
     //!   handles them on a separate path: the promotion rule IS the gate).
-    //! - **Replay reject, fair measurement** ("no strict improvement"): one
+    //! - Replay reject, fair measurement ("no strict improvement"): one
     //!   flakiness re-run of the A/B pair per attempt. With LLM steps
     //!   enabled, the repair aux model (Repair slot) may instead sharpen
     //!   the draft once, then both gates re-run on the revised draft.
-    //! - **Replay reject, infrastructure** (no tasks, spawn/timeout/scoring
+    //! - Replay reject, infrastructure (no tasks, spawn/timeout/scoring
     //!   errors): not repairable by revision - escalate immediately.
     //!
     //! After `max_fix_attempts` the proposal is marked `NeedsAttention` and
@@ -632,7 +630,7 @@ pub mod fixloop {
 
     pub(crate) fn record_escalation(data_dir: &Path, esc: &Escalation) -> Result<(), String> {
         let mut all = load_escalated(data_dir)?;
-        // One record per proposal: a re-escalation replaces the old one.
+        // One record per proposal: a re-escalation replaces the previous one.
         if let Some(pos) = all.iter().position(|e| e.id == esc.id) {
             all[pos] = esc.clone();
         } else {
@@ -913,7 +911,7 @@ pub mod repair_targets {
     //!    unconfigured or the call fails;
     //! 3. a bounded config repair (re-resolve env/paths; normalize a broken
     //!    cron expression);
-    //! 4. contain: **disable** the MCP server / tool, or **pause** the
+    //! 4. contain: disable the MCP server / tool, or pause the
     //!    scheduled job, and escalate to `nightly-escalated.json` with kind
     //!    `mcp-server` / `schedule` / `tool`.
     //!
@@ -2727,7 +2725,7 @@ pub mod gate {
     ///
     /// The required set is exact. Duplicate tags collapse (running the same
     /// target twice proves nothing), but a set larger than `config.max_evals`
-    /// is **refused**, never truncated: silently dropping a required eval
+    /// is refused, never truncated: silently dropping a required eval
     /// would validate the proposal against a partial bar. `max_evals` is a
     /// bound on what the gate will run, not permission to run less than the
     /// proposal claims.

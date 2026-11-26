@@ -1,40 +1,21 @@
-//! support_group: agent_runtime, loop_guard, nightly_tools, rpc, skill_exec_tool, tool_config, watchdog in one file.
-
 pub mod agent_runtime {
     //! Agent runtime: the seam between a resolved agent profile and a run.
     //!
-    //! # Why this exists
+    //! The profile is the unit of identity. One [`AgentRuntime`] owns a resolved
+    //! profile, binds runs to it, refuses cross-profile memory, and hands out the
+    //! delegation tool that runs sub-agents in process against the same [`Supervisor`].
+    //! A resumed session cannot be handed to a different agent, and memory isolation is
+    //! a boundary rather than a convention.
     //!
-    //! Before this module, a Pantheon run had no owner. `Config.profile` was
-    //! parsed and then read by nothing; `run_id` was a bare uuid; the memory
-    //! namespace was a caller-supplied string. Two consequences followed, and
-    //! both were silent:
+    //! `pantheon_agent::agent_profile` owns declaration, inheritance and provenance.
+    //! This module owns the runtime consequences of a resolved profile, and does not
+    //! re-read config: the caller resolves once and hands in the `EffectiveProfile`, so
+    //! one code path decides what a profile means.
     //!
-    //! 1. A resumed session could be handed to a different agent without
-    //!    anything recording the change.
-    //! 2. Memory isolation was a convention (`namespace: "nyx"`), not a
-    //!    boundary. The model picked the namespace in the tool arguments, so a
-    //!    model that named another agent's namespace would have been served.
-    //!
-    //! This module makes the profile the unit of identity. One
-    //! [`AgentRuntime`] owns a resolved profile, binds runs to it, refuses
-    //! cross-profile memory, and hands out the delegation tool that runs
-    //! sub-agents *in process* against the same [`Supervisor`].
-    //!
-    //! # Relationship to the profile layer
-    //!
-    //! `pantheon_agent::agent_profile` owns declaration, inheritance, and
-    //! provenance. This module owns the consequences of a resolved profile at
-    //! runtime. It deliberately does not re-read config: a caller resolves once
-    //! and hands the `EffectiveProfile` in, so there is exactly one code path
-    //! that decides what a profile means.
-    //!
-    //! # Relationship to the collaboration store
-    //!
-    //! [`pantheon_storage::CollaborationStore`] is the durable record of who
-    //! delegated what. This module is the only writer for delegation, so every
-    //! task, message, and tool call made by another agent passes through it and
-    //! is attributable. Nothing here keeps collaboration state in memory.
+    //! [`pantheon_storage::CollaborationStore`] is the durable record of who delegated
+    //! what. This module is the only writer for delegation, so every task, message and
+    //! tool call made by another agent is attributable. No collaboration state is kept
+    //! in memory here.
 
     use pantheon_agent::agent_profile::{EffectiveProfile, ProfileError, ProfileRegistry};
     use pantheon_api::error::{Layer, PantheonError};
@@ -499,9 +480,8 @@ pub mod loop_guard {
             assert!(guard.admit("read_file", r#"{"path":"b"}"#).is_ok());
             assert!(guard.admit("read_file", r#"{"path":"a"}"#).is_ok());
             assert!(guard.admit("read_file", r#"{"path":"a"}"#).is_ok());
-            // The third consecutive identical `a` denies (the contract
-            // `denies_on_third_consecutive_identical_call` pins); the test
-            // formerly asserted a fifth Ok, which that contract forbids.
+            // The third consecutive identical `a` denies, per the contract
+            // `denies_on_third_consecutive_identical_call` pins.
             let err = guard.admit("read_file", r#"{"path":"a"}"#).unwrap_err();
             assert!(err.contains("3 times"));
         }
@@ -536,26 +516,23 @@ pub mod loop_guard {
 pub mod nightly_tools {
     //! The nightly repair loop's durable tool-disable list.
     //!
-    //! When the nightly pass disables a broken tool it removes it from the
-    //! live registry *and* records the name here
-    //! (`<data_dir>/nightly/disabled-tools.json`), so the next registry build
-    //! skips it. [`crate::session::Session::build_tool_registry`] consults this
-    //! list - the registry build is the one constructor, so the skip lives
-    //! there, not in every caller.
+    //! When the nightly pass disables a broken tool it removes it from the live
+    //! registry and records the name here (`<data_dir>/nightly/disabled-tools.json`),
+    //! so the next registry build skips it.
+    //! [`crate::session::Session::build_tool_registry`] consults this list - the
+    //! registry build is the one constructor, so the skip lives there, not in every
+    //! caller.
     //!
-    //! The file is a JSON array of `{name, reason, at_ms}` records. Writes are
-    //! atomic (temp file + rename), mirroring the other data-dir stores.
+    //! The file is a JSON array of `{name, reason, at_ms}` records, written atomically
+    //! (temp file + rename).
     //!
-    //! Missing vs corrupt are different states, and the old code conflated
-    //! them: a missing file is normal (no tool has ever been disabled) and
-    //! reads as empty, but a corrupt file used to read as empty too -
-    //! silently re-enabling every tool the nightly pass had contained,
-    //! including a dangerous one it disabled for a reason. A corrupt list
-    //! now warns loudly at the registry build (log + `/status`
-    //! diagnostic) and refuses to be overwritten, so the corruption is
-    //! visible instead of paved over. The build still proceeds - it cannot
-    //! know which tools the corrupt list named - but it never proceeds
-    //! quietly.
+    //! Missing and corrupt are different states. A missing file is normal (no tool has
+    //! ever been disabled) and reads as empty. A corrupt file also reads as empty,
+    //! which would silently re-enable every tool the nightly pass contained, including
+    //! one it disabled for a reason. So a corrupt list warns loudly at the registry
+    //! build (log + `/status` diagnostic) and refuses to be overwritten. The build
+    //! still proceeds - it cannot know which tools the list named - but it never
+    //! proceeds quietly.
 
     use pantheon_api::logging::now_ms;
     use std::path::{Path, PathBuf};
@@ -978,8 +955,8 @@ pub mod rpc {
             Dispatcher::with_builtins()
         }
 
-        /// Batch arrays used to be rejected wholesale. They are part of JSON-RPC
-        /// 2.0 (§6) and clients send them, so they must dispatch element-wise.
+        /// Batch arrays are part of JSON-RPC 2.0 (§6) and clients send them, so they
+        /// dispatch element-wise.
         #[test]
         fn batch_dispatches_every_element_in_order() {
             let line = r#"[
@@ -1166,11 +1143,11 @@ pub mod skill_exec_tool {
     /// the tool's nature.
     fn extra_capabilities(_skills: &[Skill], args: &str) -> Vec<Capability> {
         let mut caps = vec![Capability::ShellExecute];
-        // Network is a separate grant on the shell path (`shell.network`), and
-        // it must stay separate here: `skill_exec` used to inherit
-        // `network: true` from the High profile, so any skill executable could
-        // egress without the approval (audit F1). Ask for the same capability
-        // when the call asks for the network, whatever the declaration says.
+        // Network is a separate grant on the shell path (`shell.network`), and it stays
+        // separate here: `skill_exec` must not inherit `network: true` from the High
+        // profile, or any skill executable could egress without approval. Ask for the
+        // same capability when the call asks for the network, whatever the declaration
+        // says.
         if pantheon_exec::skill_exec::skill_exec_network_requested(args) {
             caps.push(Capability::Other(
                 pantheon_tools::tools_group::builtins::SHELL_NETWORK_CAP.into(),
@@ -1451,14 +1428,13 @@ pub mod tool_config {
         /// provider switch without an explicit secret name still resolves
         /// the right variable instead of a stale Tavily one.
         pub api_key_secret: Option<String>,
-        /// Endpoint override for self-hosted providers. `None` = the
-        /// provider's default endpoint.
+        /// Endpoint override for self-hosted providers. `None` = the provider's default
+        /// endpoint.
         ///
-        /// DEPRECATED legacy global: retained only so the session can warn
-        /// the operator to move it to `base_urls`. It is NEVER passed to
-        /// `build_provider` (a global URL used to follow a provider switch
-        /// and send another provider's calls, and key, to the wrong host);
-        /// the use site resolves `base_url_for(provider)` instead.
+        /// Deprecated legacy global: retained only so the session can warn the operator
+        /// to move it to `base_urls`. It is not passed to `build_provider` - a global URL
+        /// follows a provider switch and sends another provider's calls and key to the
+        /// wrong host. The use site resolves `base_url_for(provider)` instead.
         pub base_url: Option<String>,
         /// Per-provider endpoint overrides, keyed by registry provider id
         /// (`[websearch.base_urls.<provider>]`). Only the entry for the

@@ -1,35 +1,32 @@
 //! Release-signature verification for `pantheon update`.
 //!
-//! Authentication for release archives is a minisign signature over the
-//! archive bytes, checked offline against a public key pinned in this
-//! crate. The same-origin `.sha256` file is a corruption check only:
-//! it proves the bytes match the publisher's checksum file, and that
-//! file comes from the same origin as the binary, so it can never prove
-//! who published the binary. A signature from the pinned key can.
+//! Auth for release archives is a minisign signature over the archive bytes,
+//! checked offline against a public key pinned in this crate. The same-origin
+//! `.sha256` file is corruption-check only: it proves the bytes match the
+//! publisher's checksum file, which comes from the same origin as the binary,
+//! so it can't prove who published it. The pinned key can.
 //!
-//! Fail-closed, everywhere:
-//! - a missing, unreadable, or malformed `.minisig` → failure.
-//! - signature mismatch, wrong key id, or legacy (non-prehashed)
-//!   signature → failure.
+//! Fail-closed everywhere:
+//! - missing/unreadable/malformed `.minisig` -> failure
+//! - signature mismatch, wrong key id, or legacy (non-prehashed) -> failure
 //!
-//! There is no bypass flag: an unverified binary is never installed.
+//! No bypass flag: an unverified binary is never installed.
 //!
-//! Callers fetch the `{asset_url}.minisig` text themselves (their
-//! transports differ) and pass it to [`verify_signature`]; this crate
-//! stays offline and pure so it is unit-testable without a network.
+//! Callers fetch `{asset_url}.minisig` themselves (transports differ) and pass
+//! it to [`verify_signature`]; this crate stays offline and pure so it tests
+//! without a network.
 
 use minisign_verify::{PublicKey, Signature};
 
 /// Base64 minisign public key pinned for release verification.
 ///
-/// Generated once on an operator machine with `minisign -G`; the secret
-/// half lives only in the `MINISIGN_SECRET_KEY` GitHub repo secret and
-/// is written to a runner temp file at signing time (see
-/// `docs/release-signing.md`). This value is public and safe to ship.
+/// Generated once with `minisign -G`; the secret half lives only in the
+/// `MINISIGN_SECRET_KEY` GitHub repo secret and is written to a runner temp
+/// file at signing time (see `docs/release-signing.md`). Public, safe to ship.
 pub const PINNED_PUBLIC_KEY: Option<&str> =
     Some("RWQfdih4Dd0BpT+16PEvcBm9h0F1LOmTY/mHksosHvt/sl0JUbIlXlpO");
 
-/// Verify `bytes` against the pinned release key and a `.minisig` text.
+/// Verify `bytes` against the pinned key and a `.minisig` text.
 /// Fails closed when the key is absent or malformed.
 pub fn verify_signature(bytes: &[u8], signature_text: &str) -> Result<(), String> {
     let key = PINNED_PUBLIC_KEY.ok_or_else(|| {
@@ -53,9 +50,8 @@ pub fn verify_with_key(
         .map_err(|e| format!("signature verification failed: bad pinned public key ({e})"))?;
     let signature = Signature::decode(signature_text)
         .map_err(|e| format!("signature verification failed: unreadable .minisig ({e})"))?;
-    // `allow_legacy = false`: modern minisign signatures are prehashed
-    // (BLAKE2b, then Ed25519); legacy raw-Ed25519 signatures are
-    // rejected rather than accepted.
+    // allow_legacy = false: modern signatures are prehashed (BLAKE2b then
+    // Ed25519); legacy raw-Ed25519 ones are rejected.
     public_key.verify(bytes, &signature, false).map_err(|e| {
         format!("signature verification failed: signature does not match this release ({e})")
     })
@@ -65,8 +61,8 @@ pub fn verify_with_key(
 mod tests {
     use super::*;
 
-    /// Published `minisign-verify` doc-test vector: public key and a
-    /// signature over `b"test"`.
+    /// Published `minisign-verify` doc-test vector: public key and signature
+    /// over `b"test"`.
     const DOC_KEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
     const DOC_SIG: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1633700835\tfile:test\tprehashed\nwLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJAgAooBQ==";
 
@@ -94,9 +90,8 @@ mod tests {
         assert!(verify_with_key(DOC_KEY, b"test", "").is_err());
     }
 
-    /// Signature made at provisioning time with the real release key,
-    /// kept in scratch as the fixture for this test. It proves the
-    /// pinned key and the workflow's `minisign -S` format agree.
+    /// Made at provisioning time with the real release key, kept in scratch as
+    /// the fixture. Proves the pinned key and the `minisign -S` format agree.
     const RELEASE_SIG: &str = "untrusted comment: signature from minisign secret key\nRUQfdih4Dd0Bpcd6T/WvTNanxXSsxtEpLVfKN+rI9U2uPrJgYpPofVBlHe6KIxwp7uZU7b/uvnQT86mMAVpacNGRcJw3jwLfyAs=\ntrusted comment: timestamp:1795638358\tfile:fixture.txt\thashed\nSLkJcU6mAwiROzLGTwsJ4fWcPfaGoz0XGwr9Q9YZiT5WdbbhyMJFwJzFX+yABRx129DUGg1uA0hnNtyC2y7yDg==";
 
     #[test]

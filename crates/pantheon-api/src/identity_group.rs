@@ -1,80 +1,43 @@
-//! identity_group: agent_profile, mode, nightly, workspace in one file.
-
 pub mod agent_profile {
-    //! Agent profiles (§4): a durable, first-class identity for one agent.
+    //! agent profiles. config section is `[agents.<name>]`, the type lives here
+    //! because runtime/storage/agent all need it and none of them should be
+    //! importing the cli crate for it.
     //!
-    //! # Why this lives in core
+    //! merge rules are per field, not "deep merge everything":
+    //!   soul/user/policy/model/display_name/swarm cap -> child overrides
+    //!   agents_file -> layers, parent then child
+    //!   memory_namespace -> never inherited. this is the one that matters:
+    //!     two profiles on one namespace means one agent can read another's
+    //!     memory.
     //!
-    //! `[agents.<name>]` was originally declared in the CLI crate
-    //! (`pantheon-tui::config`). That made the profile *config* readable by
-    //! the CLI but unreadable by the runtime, which is the only thing that can
-    //! actually give a session an identity. The type moved here so
-    //! `pantheon-runtime`, `pantheon-storage`, and `pantheon-agent` can all
-    //! depend on it without a dependency inversion. `config_doc` re-exports this
-    //! type so the on-disk spelling (`[agents.<name>]`) and the public Rust name
-    //! stay a single definition, not two that drift.
+    //! every resolved value carries where it came from (`Resolved<T>`), mostly
+    //! because "why is this agent on reader policy" is otherwise unanswerable
+    //! without replaying the whole chain by hand.
     //!
-    //! # What a profile is
-    //!
-    //! A named agent with its own instructions (`AGENTS.md`), persona
-    //! (`SOUL.md`), memory namespace, capability policy, model config, and
-    //! sessions. The profile is not a CLI flag: it is resolved into an
-    //! [`AgentProfile`] value that the runtime hands to a `Session`, and every
-    //! effective value on it records *where it came from*.
-    //!
-    //! # Inheritance semantics (explicit, never "merge everything")
-    //!
-    //! A profile may declare `inherits = "<parent>"`. The chain is resolved
-    //! parent-first, and each field has exactly one documented merge rule:
-    //!
-    //! | field | rule | rationale |
-    //! |---|---|---|
-    //! | `display_name`, `soul_file`, `user_file`, `policy`, `model`, `soul`, `swarm_max_subagents` | **override** - child wins if set, else inherit | a persona is an identity, not a stack of layers |
-    //! | `agents_file` (AGENTS.md) | **concatenate**, parent first, child last | instructions genuinely layer; a child adds rules, never silently erases the parent's |
-    //! | `memory_namespace` | **NEVER inherited** - always `agent:<name>` unless set explicitly | inheritance must not merge memory. Two profiles sharing a namespace is a data leak, not a convenience |
-    //! | sessions, ledger rows, artifacts | **isolated by construction** - keyed by the profile's own id | resuming one agent's run must never replay another's transcript |
-    //!
-    //! Because the rules are field-specific rather than uniform, resolution
-    //! returns provenance: [`Resolved<T>`] records which profile in the chain
-    //! supplied each value, so "why is this agent using the reader policy?" has
-    //! an answer that is read from state rather than guessed.
-    //!
-    //! # Cycles and missing parents
-    //!
-    //! Resolution walks the chain with a visited set. A cycle, a missing parent,
-    //! an over-deep chain, or a non-slug name is a *load-time* error
-    //! ([`ProfileError`]), never a silently flattened result. A profile that
-    //! cannot be resolved is refused; it is never degraded into the default.
+    //! bad chains (cycle, missing parent, too deep, bad name) fail at load. no
+    //! fallback to default, that would just hide a broken config.
 
     use serde::{Deserialize, Serialize};
     use std::collections::{HashMap, HashSet};
 
-    /// Maximum `inherits` chain depth. Bounds resolution cost and turns a
-    /// pathological config into a clear error rather than a deep walk.
+    /// 8 is arbitrary. deep enough for persona layering, shallow enough that a
+    /// typo'd inherits loop fails fast instead of walking forever.
     pub const MAX_INHERIT_DEPTH: usize = 8;
 
-    /// The profile that exists implicitly: the baseline every other profile may
-    /// inherit from, and the identity used when no profile is selected.
+    /// implicit baseline, also what you get when nothing is selected.
     pub const DEFAULT_PROFILE: &str = "default";
 
-    /// Where a resolved value came from.
-    ///
-    /// Recorded per field so an operator can answer "where did this setting
-    /// come from?" without reading the whole chain by hand. `Inherited` names
-    /// the ancestor that supplied the value; `Own` is the profile itself.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(tag = "kind", rename_all = "snake_case")]
     pub enum Origin {
-        /// Set explicitly on the profile that resolved it.
+        /// set on the profile itself
         Own { profile: String },
-        /// Taken from an ancestor because the profile did not set it.
+        /// inherited, `ancestor` is whoever set it
         Inherited { profile: String, ancestor: String },
-        /// Supplied by the runtime because no profile set it (e.g. the default
-        /// namespace derivation, or the implicit `default` profile).
+        /// we filled it in, nobody set it
         Runtime { reason: String },
     }
 
-    /// A value together with its provenance.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct Resolved<T> {
         pub value: T,
@@ -107,13 +70,8 @@ pub mod agent_profile {
                 },
             }
         }
-        /// The profile that actually *supplied* this value.
-        ///
-        /// For `Own` that is the profile itself. For `Inherited` it is the
-        /// `ancestor` that declared the value - not the `profile` field, which
-        /// names who asked. Returning the requester would make every inherited
-        /// setting look self-authored, which is precisely the question this
-        /// provenance exists to answer.
+        /// who set it. for inherited that's the ancestor, not whoever asked -
+        /// returning the requester makes everything look self-authored.
         pub fn supplied_by(&self) -> Option<&str> {
             match &self.origin {
                 Origin::Own { profile } => Some(profile),
@@ -121,8 +79,7 @@ pub mod agent_profile {
                 Origin::Runtime { .. } => None,
             }
         }
-        /// The profile that requested resolution, whether or not it supplied
-        /// the value.
+        /// who asked for the resolve
         pub fn requested_by(&self) -> Option<&str> {
             match &self.origin {
                 Origin::Own { profile } | Origin::Inherited { profile, .. } => Some(profile),
@@ -131,57 +88,41 @@ pub mod agent_profile {
         }
     }
 
-    /// A profile exactly as written in `[agents.<name>]`.
-    ///
-    /// Every optional field means "not set here" and is therefore a candidate
-    /// for inheritance. This is the *declared* shape, not the effective one;
-    /// [`ProfileRegistry::resolve`] produces the effective value.
+    /// the profile as written in config. every Option means "not set here",
+    /// which means "look at the parent". not the effective profile.
     #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
     pub struct AgentProfile {
-        /// Human display name. Defaults to the table name.
+        /// defaults to the table name
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub display_name: Option<String>,
-        /// Persona file (SOUL.md equivalent), by path. Optional: an agent with
-        /// no persona file is a blank slate, not an error.
+        /// SOUL.md equivalent
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub soul_file: Option<String>,
-        /// Instructions file (AGENTS.md equivalent). Unlike `soul_file` this
-        /// one *layers* across an inheritance chain.
+        /// AGENTS.md equivalent. layers instead of overriding
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub agents_file: Option<String>,
-        /// User-context file (USER.md equivalent), by path. Optional: like
-        /// `soul_file` this one *overrides* across an inheritance chain - the
-        /// child's file wins if set, else the parent's is inherited.
+        /// USER.md equivalent
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub user_file: Option<String>,
-        /// Parent profile name (`inherits = "default"`).
+        /// parent profile name
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub inherits: Option<String>,
-        /// Long-term memory namespace. Never inherited.
+        /// never inherited, see module docs
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub memory_namespace: Option<String>,
-        /// Capability policy preset name (`reader` | `coder` | `coder_memory`).
+        /// reader | coder | coder_memory
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub policy: Option<String>,
-        /// Provider/model override for this profile. A profile with no model
-        /// pin uses the runtime default; it never picks one itself (locked
-        /// decision: agents never choose models).
+        /// model pin. agents never choose their own model
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub model: Option<String>,
-        /// Provider override paired with `model`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub provider: Option<String>,
-        /// Profile picture, for the dashboard and mobile app. Purely cosmetic:
-        /// the runtime never reads it. Convention is `preset:avatar-N`
-        /// (N = 1..=6) for the bundled preset set, or an absolute file path
-        /// for a user-uploaded picture. The dashboard serves no file; clients
-        /// map the preset to their bundled asset and read the path themselves.
+        /// dashboard/mobile only, runtime ignores it. `preset:avatar-N` or an
+        /// absolute path
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub avatar: Option<String>,
-        /// Per-profile override for the `[swarm]` `max_subagents` cap: how
-        /// many sub-agents this profile may spawn. `None` = fall back to the
-        /// global `[swarm]` value. Override semantics like `soul_file`: the
-        /// child's value wins if set, else the parent's is inherited.
+        /// per-profile override of `[swarm] max_subagents`
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub swarm_max_subagents: Option<u32>,
     }
@@ -210,59 +151,39 @@ pub mod agent_profile {
         }
     }
 
-    /// A fully resolved profile: the effective values plus where each came from.
-    ///
-    /// Produced by [`ProfileRegistry::resolve`]. The runtime consumes only this
-    /// type, so an unresolved profile can never reach a `Session`.
+    /// effective profile. the runtime only ever sees this, so a half-resolved
+    /// profile can't reach a Session.
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct EffectiveProfile {
-        /// Table name, and the stable identity key. Lowercase slug.
+        /// table name, and the stable key
         pub name: String,
-        /// Stable internal id used in run ids, leases, and task provenance.
-        /// Distinct from `name` so a rename does not silently reassign history.
+        /// internal id. separate from `name` so a rename doesn't steal history
         pub agent_id: String,
-        /// Display name, resolved through the chain.
         pub display_name: Resolved<String>,
-        /// Parent profile, if the chain had one.
         pub parent: Option<String>,
-        /// Effective memory namespace, with its derivation recorded. Never
-        /// inherited: if this value came from a parent, that is a bug and
-        /// [`ProfileRegistry::resolve`] refuses it.
         pub memory_namespace: Resolved<String>,
-        /// Effective capability policy preset.
         pub policy: Resolved<String>,
-        /// Effective persona file path, if any.
         pub soul_file: Resolved<Option<String>>,
-        /// Effective user-context file path, if any. Override semantics, like
-        /// `soul_file`: the child's file wins if set, else the parent's.
         pub user_file: Resolved<Option<String>>,
-        /// Layered instruction files, parent first then child, each tagged with
-        /// the profile that contributed it.
+        /// parent first, then child, tagged with who contributed it
         pub agents_files: Vec<(String, String)>,
-        /// Effective model pin, if the profile (or an ancestor) set one.
         pub model: Resolved<Option<String>>,
-        /// Effective provider pin, if set.
         pub provider: Resolved<Option<String>>,
-        /// Effective per-profile sub-agent spawn cap. Override semantics
-        /// like `soul_file`: the child's value wins if set, else the
-        /// parent's. `None` (with a `Runtime` origin) = no profile in the
-        /// chain set one; the caller falls back to the global `[swarm]`
-        /// `max_subagents`.
+        /// None + Runtime origin means nobody in the chain set it; caller falls
+        /// back to `[swarm] max_subagents`
         pub swarm_max_subagents: Resolved<Option<u32>>,
     }
 
     impl EffectiveProfile {
-        /// One-line identity for logs, TUI headers, and the ledger.
+        /// for logs, tui headers, ledger rows
         pub fn identity(&self) -> String {
             match &self.parent {
                 Some(p) => format!("{} (inherits {})", self.display_name.value, p),
                 None => self.display_name.value.clone(),
             }
         }
-        /// The instruction files as a single prompt-ready block, annotated with
-        /// the contributing profile. Annotating matters: a file the model reads
-        /// should say which agent's rules it is, so a child profile that layers
-        /// on a parent is legible in the transcript.
+        /// instruction files as one prompt block. each chunk says which profile
+        /// it came from, otherwise layered rules are invisible in the transcript.
         pub fn instructions_block(&self, read: &dyn Fn(&str) -> Option<String>) -> String {
             let mut out = String::new();
             for (profile, path) in &self.agents_files {
@@ -283,37 +204,31 @@ pub mod agent_profile {
         }
     }
 
-    /// Load-time validation failure. Always fatal: a profile that cannot be
-    /// resolved is refused rather than silently replaced by the default.
+    /// load-time only, not recoverable. we refuse the config.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum ProfileError {
-        /// The name is not a slug, or is blank.
+        /// not a slug, or blank
         InvalidName { name: String, why: String },
-        /// The requested profile is not declared at all. Distinct from
-        /// `MissingParent`: this names a profile the caller asked for that does
-        /// not exist, while `MissingParent` names a valid profile whose
-        /// `inherits` points somewhere undeclared. Conflating them produced the
-        /// bug where a rootless profile reported itself as a missing parent.
+        /// asked for a profile nobody declared. NOT the same as MissingParent -
+        /// conflating those two is what made a rootless profile report itself as
+        /// a missing parent.
         UnknownProfile { name: String },
-        /// `inherits` names a profile that is not declared.
+        /// inherits points at something undeclared
         MissingParent { profile: String, parent: String },
-        /// The `inherits` chain loops.
+        /// inherits loops
         Cycle { chain: Vec<String> },
-        /// The chain is longer than [`MAX_INHERIT_DEPTH`].
+        /// deeper than MAX_INHERIT_DEPTH
         TooDeep { chain: Vec<String>, max: usize },
-        /// Two profiles resolve to the same memory namespace.
+        /// two profiles want the same memory namespace
         NamespaceClash {
             a: String,
             b: String,
             namespace: String,
         },
-        /// A profile explicitly inherited a memory namespace from its parent.
-        ///
-        /// Kept as its own variant rather than a generic invalid config: this is
-        /// the mistake that would leak one agent's memory into another, so it
-        /// must be visible by name in an operator-facing message.
+        /// a profile named its parent's namespace. own variant on purpose, this
+        /// is the one that leaks memory between agents.
         InheritedNamespace { profile: String, namespace: String },
-        /// An unknown policy preset name.
+        /// unknown policy preset
         UnknownPolicy { profile: String, policy: String },
     }
 
@@ -358,17 +273,13 @@ pub mod agent_profile {
 
     impl std::error::Error for ProfileError {}
 
-    /// The set of declared profiles, plus the rules for resolving one.
     #[derive(Debug, Clone, Default)]
     pub struct ProfileRegistry {
-        /// Table name -> declared profile.
         profiles: HashMap<String, AgentProfile>,
     }
 
-    /// Policy preset names the loader accepts. Mirrors
-    /// `PolicyPreset::as_str` in the CLI; kept as data here because core cannot
-    /// depend on the CLI, and a duplicate *list of three strings* is a
-    /// documented, test-pinned mirror rather than a duplicated abstraction.
+    /// has to stay in sync with PolicyPreset::as_str in the cli. it's three
+    /// strings and there's a test on it.
     pub const KNOWN_POLICIES: [&str; 3] = ["reader", "coder", "coder_memory"];
 
     impl ProfileRegistry {
@@ -376,8 +287,8 @@ pub mod agent_profile {
             Self::default()
         }
 
-        /// Declare a profile. Rejects an invalid name and a cycle at insert
-        /// time, so an invalid config can never be written and then used.
+        /// rejects a bad name or a cycle right away, so a broken config never
+        /// makes it to disk.
         pub fn insert(&mut self, name: &str, profile: AgentProfile) -> Result<(), ProfileError> {
             if !AgentProfile::is_slug(name) {
                 return Err(ProfileError::InvalidName {
@@ -386,11 +297,8 @@ pub mod agent_profile {
                 });
             }
             self.profiles.insert(name.to_string(), profile);
-            // A cycle is detectable locally, so catch it at the moment the
-            // offending edge is added rather than at every later resolve.
-            // Only check for a cycle when this profile actually adds an
-            // inheritance edge; re-walking on every unrelated insert would make
-            // declaration order-dependent for no reason.
+            // cheap to catch here, and only when this insert actually adds an
+            // edge. otherwise every insert walks the whole graph for nothing.
             if self
                 .profiles
                 .get(name)
@@ -401,9 +309,8 @@ pub mod agent_profile {
                     return Err(ProfileError::Cycle { chain });
                 }
             }
-            // Missing parents are *not* rejected here: a config may declare
-            // profiles in any table order, and `default` may be supplied by the
-            // caller rather than declared. Resolution enforces it.
+            // missing parents wait until resolve. profiles can be declared in
+            // any table order.
             self.validate_policy_names()?;
             Ok(())
         }
@@ -437,15 +344,10 @@ pub mod agent_profile {
             self.profiles.is_empty()
         }
 
-        /// Walk `inherits` upward, returning the chain root-first
-        /// (`[ancestor, ..., profile]`).
-        ///
-        /// Termination is three distinct outcomes, and conflating any two of them
-        /// is the bug this shape avoids: a declared rootless profile is a
-        /// *successful* one-element walk, an undeclared name is
-        /// [`ProfileError::UnknownProfile`], and a declared profile naming a
-        /// parent that is not declared is [`ProfileError::MissingParent`]. Only
-        /// the last two are errors.
+        /// walk inherits upward, root first. three ways this stops and they are
+        /// not interchangeable: rootless profile = ok, one entry. undeclared
+        /// name = UnknownProfile. declared profile pointing at a missing parent
+        /// = MissingParent.
         fn chain(&self, name: &str) -> Result<Vec<String>, ProfileError> {
             let Some(start) = self.profiles.get(name) else {
                 return Err(ProfileError::UnknownProfile {
@@ -502,11 +404,8 @@ pub mod agent_profile {
             }
         }
 
-        /// Resolve a profile into its effective form.
-        ///
-        /// `default_fallback` supplies the policy used when neither the profile
-        /// nor any ancestor names one; the runtime's own default is the honest
-        /// source for it. Passing it in keeps core free of a Policy dependency.
+        /// `default_policy` is what the runtime falls back to when nothing in
+        /// the chain sets one. passed in so this crate stays out of policy.
         pub fn resolve(
             &self,
             name: &str,
@@ -518,8 +417,7 @@ pub mod agent_profile {
                     why: "must be a slug (letters, digits, - _)".to_string(),
                 });
             }
-            // Reverse to root-first so a "first writer wins" scan produces
-            // child-overrides-parent naturally.
+            // root first, so last writer wins == child overrides parent
             let mut chain = self.chain(name)?;
             chain.reverse();
             let parent = if chain.len() > 1 {
@@ -559,24 +457,17 @@ pub mod agent_profile {
                         Resolved::inherited(name, profile_name, v.clone())
                     }
                 };
-                // OVERRIDE fields: the chain is walked root-first, so the LAST
-                // profile that declares a value wins. That is what makes a
-                // child override its parent - the child is the last writer. A
-                // "first writer wins" scan here would hand precedence to the
-                // ancestor, which is the opposite of what `inherits` means.
+                // override: last writer wins, which is the child
                 if let Some(d) = &decl.display_name {
                     display_name = Some(mark_str(d));
                 }
-                // An explicit `soul_file` overrides; absent means inherit.
-                // There is no "explicitly clear it" spelling: `Option<String>`
-                // cannot distinguish absent from null, so treating the profile's
-                // own absent value as a clear would make a child that simply
-                // never mentions a persona silently erase its parent's.
+                // absent means inherit, not "clear". Option<String> can't tell
+                // absent from null and guessing would silently drop a parent's
+                // persona.
                 if decl.soul_file.is_some() {
                     soul_file = Some(mark_opt(&decl.soul_file));
                 }
-                // `user_file` overrides exactly like `soul_file`: the user's
-                // context is part of the identity, not a layer.
+                // same rule as soul_file
                 if decl.user_file.is_some() {
                     user_file = Some(mark_opt(&decl.user_file));
                 }
@@ -589,8 +480,7 @@ pub mod agent_profile {
                 if decl.provider.is_some() {
                     provider = Some(mark_opt(&decl.provider));
                 }
-                // `swarm_max_subagents` overrides exactly like `soul_file`:
-                // an explicit value on the child wins; absent means inherit.
+                // same rule again
                 if decl.swarm_max_subagents.is_some() {
                     let v = &decl.swarm_max_subagents;
                     swarm_max_subagents = Some(if is_own {
@@ -599,20 +489,17 @@ pub mod agent_profile {
                         Resolved::inherited(name, profile_name, *v)
                     });
                 }
-                // Instructions LAYER: every profile in the chain contributes,
-                // parent first. This is the one field where a child adds rather
-                // than overrides, because rules compose and erasure is silent.
+                // the one field that layers instead of overriding
                 if let Some(f) = &decl.agents_file {
                     agents_files.push((profile_name.clone(), f.clone()));
                 }
-                // Memory is read from the profile itself ONLY.
+                // memory only ever comes off the profile itself
                 if is_own {
                     own_namespace = decl.memory_namespace.clone();
                 }
             }
 
-            // A profile that names someone else's namespace is a config error,
-            // caught here rather than at use time.
+            // naming an ancestor's namespace is a config error
             if let Some(ns) = &own_namespace {
                 if let Some(ancestor) = &parent {
                     if let Some(decl) = self.profiles.get(ancestor) {
@@ -668,11 +555,8 @@ pub mod agent_profile {
             })
         }
 
-        /// Validate the whole table: every profile resolves, no cycle, no
-        /// missing parent, and no two profiles share a memory namespace.
-        ///
-        /// Namespace clash is checked here and not in `resolve` because it is a
-        /// property of the *set*, not of one profile.
+        /// check the whole table. namespace clash is here and not in `resolve`
+        /// because it's a property of the set, not of one profile.
         pub fn validate_all(&self, default_policy: &str) -> Result<(), ProfileError> {
             let problems = self.problems(default_policy);
             match problems.into_iter().next() {
@@ -681,17 +565,12 @@ pub mod agent_profile {
             }
         }
 
-        /// Every problem in the registry, not just the first.
-        ///
-        /// `doctor` needs all of them: reporting one broken profile at a time
-        /// turns a three-line fix into three round trips. The ordering is
-        /// stable (policy names, then per-profile resolution, then namespace
-        /// clashes) so the same broken config always reads the same way.
+        /// all of them, not just the first. doctor needs the full list, else you
+        /// fix one thing, rerun, fix the next, repeat. order is stable.
         pub fn problems(&self, default_policy: &str) -> Vec<ProfileError> {
             let mut out = Vec::new();
             let mut by_ns: HashMap<String, String> = HashMap::new();
-            // Policy spelling first: an unknown preset usually explains several
-            // downstream resolution failures, and it is the cheapest to fix.
+            // policy name first. a typo there usually explains everything after
             let mut policies: Vec<(&String, &String)> = self
                 .profiles
                 .iter()
@@ -727,43 +606,31 @@ pub mod agent_profile {
         }
     }
 
-    /// Stable internal id for a profile.
-    ///
-    /// Prefixed and name-derived so a ledger row is greppable, but a *separate*
-    /// field from the display name: renaming a profile must not silently
-    /// reassign a history that belongs to the old identity, so the id recorded
-    /// on a run is the id, not the label.
+    /// greppable id. separate from the display name so renaming a profile
+    /// doesn't hand its old history to whatever takes the name next.
     pub fn agent_id_for(name: &str) -> String {
         format!("agent:{name}")
     }
 }
 
 pub mod mode {
-    //! Agent operating mode: Build vs Plan.
-    //!
-    //! Plan mode is a host-enforced read-only posture for the agent loop.
-    //! The TUI flips it with Tab; the runtime stores it on the [`Session`]
-    //! (session-scoped, like `/goal`) and reads it at every tool gate,
-    //! refusing mutating tools with a model-facing message instead of
-    //! executing them. Default is Build, so existing behavior is unchanged
-    //! unless the operator opts in.
+    //! build vs plan. plan is a read-only posture the host enforces, not
+    //! something we ask the model to respect. tab flips it in the tui, it's
+    //! session-scoped, and the gate refuses mutating tools at call time.
     //!
     //! [`Session`]: pantheon_runtime::session::Session
     use serde::{Deserialize, Serialize};
 
-    /// Which posture the agent loop runs in.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub enum AgentMode {
-        /// Normal operation: read and write tools run (subject to policy).
         #[default]
         Build,
-        /// Planning only: mutating tools are refused at the gate with
-        /// [`PLAN_MODE_REFUSAL`]; read-only tools run normally.
+        /// mutating tools get refused at the gate, see PLAN_MODE_REFUSAL
         Plan,
     }
 
     impl AgentMode {
-        /// Stable string form (`"build"` / `"plan"`).
+        /// "build" / "plan"
         pub fn as_str(self) -> &'static str {
             match self {
                 AgentMode::Build => "build",
@@ -771,7 +638,7 @@ pub mod mode {
             }
         }
 
-        /// Parse [`AgentMode::as_str`] output (case-insensitive).
+        /// inverse of as_str, case-insensitive
         pub fn parse(s: &str) -> Option<Self> {
             match s.trim().to_lowercase().as_str() {
                 "build" => Some(AgentMode::Build),
@@ -781,19 +648,14 @@ pub mod mode {
         }
     }
 
-    /// Model-facing refusal surfaced as a normal tool result when Plan mode
-    /// blocks a mutating tool. The run neither parks nor fails: the model
-    /// sees the refusal in its transcript and keeps planning.
+    /// what the model sees instead of the tool running. it's a normal tool
+    /// result, so the run neither parks nor fails, it just keeps planning.
     pub const PLAN_MODE_REFUSAL: &str = "Plan mode is active: write/execute tools are disabled. \
         Describe your plan instead; do not attempt the change.";
 
-    /// Tools that are unambiguously read-only. Everything else is treated
-    /// as mutating (fail closed). Matching is EXACT (after trim + lowercase):
-    /// an earlier prefix rule lived here, but a prefix cannot tell
-    /// `read_file` from `read_write`, so any name merely starting with a
-    /// read-only word slipped through as read-only. Unknown names are
-    /// mutating, full stop - a provider-registered tool earns its entry by
-    /// being known read-only, not by naming luck.
+    /// exact match only. we had a prefix rule before and it let `read_write`
+    /// through as read-only because it starts with "read". anything not on this
+    /// list counts as mutating.
     const READ_ONLY_TOOLS: &[&str] = &[
         "read_file",
         "preview_file",
@@ -810,9 +672,8 @@ pub mod mode {
         "skills_list",
         "web_search",
         "ask_user",
-        // Provider-registered read-only tools (previously covered by prefix
-        // families; now listed exactly so similarly-named mutating tools
-        // cannot ride the prefix).
+        // Provider-registered read-only tools, listed exactly so similarly-named
+        // mutating tools cannot ride a prefix family.
         "glob_files",
         "grep_code",
         "web_fetch_page",
@@ -822,14 +683,9 @@ pub mod mode {
         "reflect_step",
     ];
 
-    /// True when the named tool can mutate state and must be refused while
-    /// [`AgentMode::Plan`] is active.
-    ///
-    /// Classification is by name only - deliberately. Allowing `shell` for
-    /// "read-only" commands would require parsing arbitrary shell, which is
-    /// exactly the hole Plan mode closes: **all** exec is blocked in Plan
-    /// mode, including `ls`. Unknown names are treated as mutating (fail
-    /// closed); the [`READ_ONLY_TOOLS`] allowlist is the only way through.
+    /// by name only. even `ls` is blocked in plan mode: deciding which shell
+    /// commands are harmless means parsing shell, and that's the hole plan mode
+    /// exists to close.
     pub fn is_mutating_tool(name: &str) -> bool {
         let n = name.trim().to_lowercase();
         !READ_ONLY_TOOLS.iter().any(|t| *t == n)
@@ -837,18 +693,15 @@ pub mod mode {
 }
 
 pub mod nightly {
-    //! Nightly self-improvement protocol types: the proposal DTOs and the
-    //! single LLM-gating contract.
+    //! nightly proposal DTOs and the one LLM seam.
     //!
-    //! These live at the API (protocol) layer, not in `pantheon-nightly`:
-    //! `pantheon-providers` implements [`NightlyLlm`] but must not depend on
-    //! the nightly pipeline crate (that would invert the layering - a provider
-    //! leaf depending on a pipeline crate). The nightly crate re-exports these
-    //! types, and owns the pipeline that produces and consumes them.
+    //! they sit at the api layer because pantheon-providers has to implement
+    //! NightlyLlm and a provider leaf must not depend on a pipeline crate.
+    //! pantheon-nightly re-exports them and owns the pipeline.
     use crate::model::{AuxiliaryKind, AuxiliaryModel, ModelPolicy};
 
-    /// (run, turn) reference: the provenance unit. `ts_ms` is the event
-    /// time, used for the recency half of the memory promotion rule.
+    /// (run, turn) is the provenance unit. ts_ms is event time, it feeds the
+    /// recency half of memory promotion.
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     pub struct TurnRef {
         pub run_id: String,
@@ -859,22 +712,16 @@ pub mod nightly {
     /// What the nightly pass wants to change.
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     pub enum ProposalKind {
-        /// A durable lesson for the memory store. Proposed, never
-        /// auto-applied: an approved proposal is written at the configured
-        /// trust tier (informative, never authoritative, and it can never
-        /// clobber a user-confirmed record).
+        /// durable lesson. never auto-applied, and it can't overwrite a
+        /// user-confirmed record.
         MemoryLesson { key: String },
-        /// Create or update a SKILL.md under `<data_dir>/skills`. Eval-gated,
-        /// replay-gated, then approval-gated.
+        /// create/update a SKILL.md. eval, then replay, then approval.
         Skill { name: String, update: bool },
-        /// A tweak to the agent's persona notes (stored as agent-layer memory
-        /// under the `persona` namespace, so it shapes future sessions without
-        /// editing user config files). Eval-gated, replay-gated, then
-        /// approval-gated.
+        /// persona note, stored as agent-layer memory under `persona` so it
+        /// doesn't mean editing user config.
         Persona { topic: String },
     }
 
-    /// Lifecycle state of a proposal.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     pub enum ProposalStatus {
         Proposed,
@@ -885,17 +732,14 @@ pub mod nightly {
         Approved,
         Denied,
         Applied,
-        /// Validation failed and the bounded fix loop gave up: a human
-        /// should look at it. Never queued for approval, never applied.
+        /// fix loop gave up. someone should look at it, it never gets applied.
         NeedsAttention,
     }
 
-    /// One proposed self-improvement, with full provenance.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct Proposal {
-        /// Deterministic id: `nly_<kind>_<fnv1a(title+body)[..8]>`. The same
-        /// signal re-observed in a later pass yields the same id, which makes
-        /// "already proposed / already applied" dedupe trivial.
+        /// `nly_<kind>_<fnv1a(title+body)[..8]>`. same signal in a later pass
+        /// gives the same id, which is the whole dedupe story.
         pub id: String,
         pub kind: ProposalKind,
         pub title: String,
@@ -904,9 +748,8 @@ pub mod nightly {
         pub provenance_runs: Vec<String>,
         /// (run, turn) pairs this was learned from.
         pub provenance_turns: Vec<TurnRef>,
-        /// pantheon-eval test targets that must pass before this proposal can
-        /// be approved. Empty for memory lessons (no evals; they queue for
-        /// approval like skill/persona, and a grant writes the record).
+        /// eval targets that must pass first. empty for memory lessons, they
+        /// have no evals.
         pub eval_tags: Vec<String>,
         pub status: ProposalStatus,
     }
@@ -921,51 +764,40 @@ pub mod nightly {
         }
     }
 
-    /// The one LLM seam for the nightly pass. Implementations must place
-    /// calls on the provided [`AuxiliaryModel`] - never on the chat model
-    /// directly. Every call is routed through an explicitly resolved
-    /// [`AuxiliaryModel`]: the proposal refiner uses the `Reflection` slot,
-    /// the memory distiller uses the `Consolidation` slot, and repair
-    /// diagnosis uses the `Repair` slot. Neither ever touches the chat model.
+    /// the one LLM seam for the nightly pass. calls go on the AuxiliaryModel
+    /// you're handed, never on the chat model: refiner uses Reflection,
+    /// distiller uses Consolidation, repair uses Repair.
     pub trait NightlyLlm: Send + Sync {
-        /// Polish or extend a draft proposal body. Must not change the
-        /// proposal's meaning, kind, or provenance - enrichment only.
-        /// Routed through the `Reflection` auxiliary slot.
+        /// polish a draft body. don't change its meaning, kind, or provenance.
+        /// Reflection slot.
         fn refine_proposal(
             &self,
             model: &AuxiliaryModel,
             draft: &Proposal,
         ) -> Result<String, String>;
 
-        /// Merge staged memory texts into durable facts. Must not invent new
-        /// claims - merge and phrase only. Routed through the `Consolidation`
-        /// slot.
+        /// merge staged texts into durable facts. merge and phrase, don't
+        /// invent claims. Consolidation slot.
         fn distill_memories(
             &self,
             model: &AuxiliaryModel,
             texts: &[String],
         ) -> Result<Vec<String>, String>;
 
-        /// Diagnose a broken operational target (MCP server, scheduled job,
-        /// tool) for the nightly repair loop. Advisory only: the caller
-        /// records the returned text in the audit log and any escalation;
-        /// repair *actions* stay deterministic and bounded. Must not suggest
-        /// anything destructive. Routed through the `Repair` auxiliary slot
-        /// never the `Reflection` slot (repair diagnosis is a distinct
-        /// workload from proposal refinement) and never the chat model.
+        /// explain a broken MCP server / scheduled job / tool. advisory only,
+        /// the repair actions themselves stay deterministic and bounded.
+        /// Repair slot, not Reflection, and not the chat model.
         ///
-        /// Default: unimplemented. Callers degrade gracefully to
-        /// deterministic-only repair when the backend does not implement it
-        /// or the `Repair` slot is unconfigured - the nightly pass never
-        /// fails for a missing repair model.
+        /// default is unimplemented and callers fall back to
+        /// deterministic-only repair. a pass never fails over a missing model.
         fn diagnose_repair(&self, model: &AuxiliaryModel, prompt: &str) -> Result<String, String> {
             let _ = (model, prompt);
             Err("repair diagnosis not implemented by this backend".to_string())
         }
     }
 
-    /// Resolve the proposal refiner: `Some` only when the policy carries a
-    /// `Reflection` entry. The caller additionally gates on `config.enabled`.
+    /// Some only if the policy has a Reflection entry. caller also checks
+    /// config.enabled.
     pub fn resolve_refiner<'a>(
         llm: &'a dyn NightlyLlm,
         policy: &'a ModelPolicy,
@@ -975,13 +807,8 @@ pub mod nightly {
             .map(|aux| (llm as &'a dyn NightlyLlm, aux))
     }
 
-    /// Resolve the fix-loop repair model: `Some` only when the policy
-    /// carries a `Repair` entry. All fix-loop draft revision (eval-reject
-    /// and replay-reject paths) resolves through this slot - never the
-    /// Reflection slot. The caller additionally gates on `config.enabled`.
-    /// `None` means revision is unavailable: the loop falls back to plain
-    /// retries, then escalation. A pass never fails for lack of a repair
-    /// model.
+    /// Some only if the policy has a Repair entry. same gating as above.
+    /// None means no revision: the loop retries, then escalates.
     pub fn resolve_repair<'a>(
         llm: &'a dyn NightlyLlm,
         policy: &'a ModelPolicy,
@@ -995,69 +822,42 @@ pub mod nightly {
 }
 
 pub mod workspace {
-    //! The session-scoped workspace root.
+    //! the session's workspace root. every file path is confined to it and
+    //! relative paths resolve against it.
     //!
-    //! The workspace root is the boundary every file path is confined to and
-    //! the directory relative paths resolve against. Historically it was the
-    //! *process* working directory, captured once when the tool registry was
-    //! built. That made the root a property of the process rather than of
-    //! the session: moving a session to another checkout (a git worktree, a
-    //! sibling project) meant starting a new process, and every tool that
-    //! had captured the old root kept using it.
+    //! this used to be the process cwd, captured once at tool-registry build
+    //! time. which meant moving a session to another checkout needed a whole
+    //! new process, because every tool was still holding the old path.
     //!
-    //! [`WorkspaceRoot`] is the swappable form. One handle is shared by every
-    //! tool in a session; the current value is read *at call time*, so a move
-    //! takes effect on the next tool call without re-registering anything.
-    //!
-    //! Two properties matter:
-    //!
-    //! - **Cheap to read.** A tool call reads the root and clones one
-    //!   `PathBuf`. No lock is held across a tool call, and no tool can
-    //!   observe a torn value: the path is swapped atomically under the
-    //!   lock, and readers see either the old or the new root, never a
-    //!   mixture.
-    //! - **Explicit about the move.** [`WorkspaceRoot::set`] returns the
-    //!   previous root so the caller can report it (and record it in the
-    //!   ledger). A root never changes itself.
-    //!
-    //! The handle is `Send + Sync` and cheap to clone, so it can be captured
-    //! by tool closures and shared with the host that owns the session.
+    //! so it's swappable now. one handle, shared, read at call time - a move
+    //! takes effect on the next call without re-registering tools.
 
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, RwLock};
 
-    /// A shared, swappable workspace root.
-    ///
-    /// Cloning is cheap (the inner `Arc` is shared) and every clone observes
-    /// the same root, so a move is visible to all of them at once.
+    /// cloning is cheap and every clone sees the same root, so a move lands
+    /// everywhere at once.
     #[derive(Clone, Debug)]
     pub struct WorkspaceRoot {
         path: Arc<RwLock<PathBuf>>,
     }
 
     impl WorkspaceRoot {
-        /// A root pinned at `path`.
         pub fn new(path: impl Into<PathBuf>) -> Self {
             Self {
                 path: Arc::new(RwLock::new(path.into())),
             }
         }
 
-        /// A root at the process working directory.
-        ///
-        /// The fallback when the working directory cannot be read is `.`,
-        /// which is what the rest of the workspace does in that case: the
-        /// root is still confined, it is just not canonical.
+        /// process cwd. falls back to `.` if that can't be read - still a
+        /// confined root, just not canonical.
         pub fn from_cwd() -> Self {
             Self::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
         }
 
-        /// The current root.
-        ///
-        /// A poisoned lock (a panic while the root was being written) is
-        /// recovered rather than propagated: the value inside is still a
-        /// valid path, and refusing to serve it would turn a panic in an
-        /// unrelated thread into a dead session.
+        /// current root. a poisoned lock gets recovered, not propagated - the
+        /// path inside is still valid and refusing it kills the session over a
+        /// panic in some unrelated thread.
         pub fn path(&self) -> PathBuf {
             self.path
                 .read()
@@ -1065,10 +865,8 @@ pub mod workspace {
                 .clone()
         }
 
-        /// Move the root. Returns the previous root.
-        ///
-        /// The caller decides whether the new path is acceptable (that it
-        /// exists, that it is a directory); this only performs the swap.
+        /// swap the root, returns the old one. this doesn't check that the new
+        /// path exists, the caller does.
         pub fn set(&self, path: impl Into<PathBuf>) -> PathBuf {
             let mut guard = self
                 .path
@@ -1077,12 +875,8 @@ pub mod workspace {
             std::mem::replace(&mut *guard, path.into())
         }
 
-        /// True when `path` is the root itself or lives under it.
-        ///
-        /// Lexical: the path is *not* canonicalized here, so this is a fast
-        /// pre-check, not the containment guarantee. The authoritative check
-        /// is `pantheon_exec::confine::confine`, which canonicalizes and
-        /// applies the deny globs.
+        /// lexical, no canonicalization. use it as a fast pre-check only; the
+        /// real check is `pantheon_exec::confine::confine`.
         pub fn contains(&self, path: &Path) -> bool {
             let root = self.path();
             path == root || path.starts_with(&root)

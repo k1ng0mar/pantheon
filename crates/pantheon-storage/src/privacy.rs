@@ -1,20 +1,18 @@
-//! Owner-only permissions for on-disk state.
+//! keep on-disk state owner-only.
 //!
-//! SQLite creates a database with the process umask, so a default `022` leaves
-//! `ledger.db` at `0644`: every transcript, tool result and memory row is
-//! readable by any other local user, while the secret stores beside it are
-//! `0600`. Files created later by SQLite (the `-wal` and `-shm` siblings, and
-//! a `VACUUM INTO` backup) inherit the main file's mode, so tightening the
-//! main file once on open covers them too.
+//! sqlite creates dbs with the process umask, so `022` leaves `ledger.db` at
+//! `0644`: transcripts, tool results, memory rows, all readable by any local
+//! user, while the secret stores next to them are `0600`. the `-wal`/`-shm`
+//! siblings and `VACUUM INTO` backups inherit the main file's mode, so fixing
+//! that one file on open covers them.
 //!
-//! This is deliberately best-effort: a database on a read-only or
-//! permission-preserving-agnostic filesystem (a mounted backup volume, a FAT
-//! stick) must still open. `pantheon doctor`'s `security.data_dir_permissions`
-//! check reports the mode when it is loose, so a skip is visible, not silent.
+//! best-effort only: a db on a mount that won't chmod (backup volume, FAT stick)
+//! still has to open. `pantheon doctor`'s `security.data_dir_permissions` check
+//! reports loose modes, so a skip isn't silent.
 
 use std::path::Path;
 
-/// Tighten one database file to `0600`. No-op on non-Unix and on `:memory:`.
+/// chmod one database file to `0600`. no-op on non-Unix and on `:memory:`.
 pub fn tighten_database(path: &Path) {
     #[cfg(unix)]
     {
@@ -24,19 +22,18 @@ pub fn tighten_database(path: &Path) {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        // `Connection::path()` returns an empty path for in-memory databases,
-        // and SQLite's own temporary databases are not ours to chmod.
+        // `Connection::path()` is empty for :memory:, and sqlite's own temp
+        // dbs aren't ours to chmod.
         if name.is_empty() || path.as_os_str() == ":memory:" {
             return;
         }
-        // `metadata` on a file that does not exist yet is an error, not a
-        // panic; the next open (when SQLite has created it) tightens it.
+        // missing file -> try again on the next open, once sqlite made it.
         let Ok(meta) = std::fs::metadata(path) else {
             return;
         };
         let mode = meta.permissions().mode() & 0o777;
-        // Keep owner rw, drop everything for group/other. Only chmod when it
-        // is actually loose, so a normal startup costs one stat, not one chmod.
+        // only chmod if it's actually loose: one stat, not one chmod, on a
+        // normal startup.
         if mode & 0o077 != 0 {
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
@@ -47,7 +44,7 @@ pub fn tighten_database(path: &Path) {
     }
 }
 
-/// The mode bits that matter for the check below (owner/group/other rwx).
+/// mode bits the check below looks at (owner/group/other rwx).
 #[cfg(all(unix, test))]
 pub fn mode_of(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
@@ -73,11 +70,11 @@ mod tests {
         tighten_database(&db);
         assert_eq!(mode_of(&db), Some(0o600));
 
-        // Idempotent: a second pass keeps it owner-only.
+        // second pass is a no-op.
         tighten_database(&db);
         assert_eq!(mode_of(&db), Some(0o600));
 
-        // Missing files are a no-op, not a panic.
+        // missing file shouldn't panic.
         tighten_database(&dir.join("does-not-exist.db"));
 
         let _ = std::fs::remove_dir_all(&dir);

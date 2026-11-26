@@ -1,5 +1,3 @@
-//! core_group: ledger, operations, claims, leases in one file.
-
 pub mod ledger {
     //! Event-sourced execution ledger. Every run persists its events to SQLite;
     //! ``pantheon logs run_X`` replays them. During normal operation history is
@@ -479,11 +477,9 @@ pub mod ledger {
             }
         }
 
-        /// The event as stored: every string scrubbed by the known-format
-        /// redactor and the installed registry (audit SEC-16, decision D2).
-        /// The README promised append-time redaction; before this the row
-        /// was the raw `serde_json` of the event, so a key pasted into a
-        /// prompt (`UserMessage`) or echoed in tool output reached disk.
+        /// The event as stored: every string scrubbed by the known-format redactor and
+        /// the installed registry (audit SEC-16, decision D2). A key pasted into a
+        /// prompt (`UserMessage`) or echoed in tool output must not reach disk.
         fn redacted_json(&self, event: &Event) -> Result<String, PantheonError> {
             let mut value =
                 serde_json::to_value(event).map_err(|e| err("LEDGER_SER", e.to_string()))?;
@@ -1726,19 +1722,6 @@ pub mod ledger {
                 .map_err(|e| err("LEDGER_STATUS", e.to_string()))
         }
 
-        /// Delete events with `ts_ms` older than `cutoff_ts_ms` (retention policy).
-        ///
-        /// The events table is append-only and otherwise grows forever; this is
-        /// the explicit retention hook a maintenance cadence (e.g. the scheduler
-        /// worker) calls. Nothing automatic runs on open - see
-        /// [`configure_durability`]'s checkpoint note. Returns the number of
-        /// event rows pruned.
-        ///
-        /// Derived `runs` rows are left alone: a pruned run keeps its status
-        /// row but loses its event history, which is exactly what "keep titles
-        /// and outcomes, drop transcripts" retention means. Pair with
-        /// `SessionSearch::prune_before` so the FTS sidecar does not retain text
-        /// for history the ledger has already pruned.
         /// Delete a run outright: its events, its `runs` row, its
         /// session-search chunks and FTS rows, its `todos` snapshot, and
         /// its `run_process_groups` rows, all in a single transaction. A
@@ -1827,13 +1810,18 @@ pub mod ledger {
             Ok((events, runs))
         }
 
-        /// Retention-safe prune: like [`Self::prune_events_before_active_safe`], but never
-        /// deletes events of runs whose status is not terminal. The active run's
-        /// transcript survives even when its oldest events predate the cutoff
-        /// a run that stays open for months must not lose the history a resume
-        /// rebuilds from. Only finished runs (`completed`, `failed`,
-        /// `canceled`) lose old history. Returns the number of event rows
-        /// pruned.
+        /// Retention prune: events with `ts_ms` older than `cutoff_ts_ms`, except
+        /// those of runs whose status is not terminal. The active run's transcript
+        /// survives even when its oldest events predate the cutoff, because a run
+        /// that stays open for months must not lose the history a resume rebuilds
+        /// from. Only finished runs (`completed`, `failed`, `canceled`) lose old
+        /// history. Derived `runs` rows are left alone: a pruned run keeps its
+        /// status row and loses its event history, which is what "keep titles and
+        /// outcomes, drop transcripts" retention means. Returns the number of event
+        /// rows pruned. Pair with `SessionSearch::prune_before` so the FTS sidecar
+        /// does not retain text the ledger has already pruned. Nothing here runs
+        /// automatically on open; a maintenance cadence (the scheduler worker) calls
+        /// it.
         pub fn prune_events_before_active_safe(
             &self,
             cutoff_ts_ms: i64,
@@ -1932,9 +1920,8 @@ pub mod ledger {
         /// SQLite's own integrity check, verbatim. Returns the rows it reports,
         /// which is `["ok"]` on a healthy database.
         ///
-        /// This is the check nothing in the repo performed. A corrupted ledger
-        /// previously surfaced as a confusing downstream read error with no way
-        /// to tell "your data is damaged" from "this query has a bug".
+        /// Without it a corrupted ledger surfaces as a confusing downstream read error,
+        /// with no way to tell "your data is damaged" from "this query has a bug".
         pub fn integrity_check(&self) -> Result<Vec<String>, PantheonError> {
             let conn = self
                 .conn
@@ -2025,7 +2012,7 @@ pub mod ledger {
         /// about it. Idempotent: a call that already has a `ToolInterrupted`
         /// (or a `ToolCompleted`) row is skipped, so a second pass returns
         /// an empty vec and writes nothing. This does not change the run's
-        /// status — call it before a terminal event, as
+        /// status. Call it before a terminal event, as
         /// [`Ledger::settle_stuck_run`] does, if the run itself must end.
         /// It does not retire approval-parked calls (they never emitted
         /// `ToolStarted`) and it does not touch `ApprovalRequested` rows:
@@ -2134,19 +2121,16 @@ pub mod ledger {
 
         /// Per-run counters folded from the event log.
         ///
-        /// This is where a metrics fold belongs: the ledger is the source of
-        /// truth, so a counter that cannot disagree with it is one that does not
-        /// need a second source of truth. It used to live in `pantheon-otel`,
-        /// where nothing could call it.
+        /// The ledger is the source of truth, so a counter that cannot disagree with it
+        /// needs no second source of truth.
         ///
-        /// `RunFailed` counts separately from `RunCompleted` rather than being
-        /// folded into a single "finished" number: a run that failed is exactly
-        /// what an operator scanning these wants to see, and hiding it inside a
-        /// success count is how failure rates get misread.
+        /// `RunFailed` counts separately from `RunCompleted` rather than folding into a
+        /// single "finished" number: a failed run is what an operator scanning these
+        /// wants to see, and hiding it inside a success count is how failure rates get
+        /// misread.
         pub fn metrics(&self, run_id: &str) -> Result<RunMetrics, PantheonError> {
-            // An unknown run has no events at all; folding that into
-            // all-zero metrics with exit 0 used to masquerade a typo'd id
-            // as a run that did nothing. Fail loudly instead.
+            // An unknown run has no events at all; folding that into all-zero metrics
+            // with exit 0 would pass a typo'd id off as a run that did nothing.
             let entries = self.replay(run_id)?;
             if entries.is_empty() {
                 return Err(err("LEDGER_NO_RUN", format!("no such run {run_id:?}")));
@@ -3091,7 +3075,7 @@ pub mod ledger {
 
         /// Recovery provenance: an interrupted call is recorded with its
         /// identity, tool, issued args, and what the ledger had already
-        /// confirmed about it — never as a bare "run interrupted".
+        /// confirmed about it, never as a bare "run interrupted".
         #[test]
         fn retire_unfinished_calls_records_provenance() {
             let l = Ledger::open_in_memory().expect("in-memory ledger");

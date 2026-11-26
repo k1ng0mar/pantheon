@@ -1,12 +1,7 @@
-//! Memory plane (spec section 11): five layers + runtime state.
+//! Memory storage and the external backend boundary. Data layers from global and
+//! agent scope down to project, session and turn state.
 //!
-//! GLOBAL -> AGENT -> PROJECT -> TASK/SESSION -> EPHEMERAL TURN, plus
-//! RUNTIME STATE (operational, not remembered).
-//!
-//! Writes are capability-gated and never silent:
-//!   propose -> policy -> provenance -> validation -> provider
-//! A webpage telling the agent "remember this password" cannot reach the
-//! store without passing the same five steps as anything else.
+//! Writes pass capability, provenance, validation and trust checks first.
 use pantheon_api::capability::{Capability, Decision, Policy};
 use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
@@ -38,23 +33,17 @@ pub use plane::store::{
     damage_fts_for_test, fts_health, rebuild_fts, LayerBudgets, MemoryConfig, MemoryStore, Recalled,
 };
 
-/// Backend boundary for external memory providers such as GalaxyMem,
-/// Mnemosyne, Honcho, Hindsight, OpenViking. Providers implement recall
-/// and writes; policy and provenance stay at this boundary instead of
-/// being delegated blindly to a plugin.
+/// Boundary for external memory providers (GalaxyMem, Mnemosyne, Honcho,
+/// Hindsight, OpenViking). Providers implement recall and writes; policy and
+/// provenance stay here.
 ///
-/// Policy enforcement rule: callers must gate through the `*_via` helpers
-/// in this crate (`recall_via` / `write_via` / `confirm_via`). Those check
-/// capability + validation + trust clamp BEFORE the backend sees anything,
-/// so a backend can never be the thing that decides to ignore policy.
-/// The trait methods themselves take the policy for native-style backends
-/// that want to re-check; external adapters may ignore it.
+/// Callers gate through the `*_via` helpers (`recall_via` / `write_via` /
+/// `confirm_via`), which check capability, validation and the trust clamp before
+/// the backend sees anything. The trait methods take the policy for native
+/// backends that want to re-check; external adapters may ignore it.
 pub trait MemoryBackend: Send + Sync + std::fmt::Debug {
-    /// Recall scoped to `namespaces`.
-    ///
-    /// The namespace list is part of the contract, not a convenience:
-    /// a backend that cannot filter by namespace must refuse rather than
-    /// return every agent's memories.
+    /// Recall scoped to `namespaces`. A backend that can't filter by namespace has
+    /// to refuse rather than return every agent's memories.
     fn recall(
         &self,
         policy: &Policy,
@@ -211,11 +200,10 @@ impl WriteRefusal {
     }
 }
 
-/// Who is asking, and on whose behalf. `trust` carries the tier from
-/// pantheon-api; the invariant `trust <= source tier` is enforced in
-/// `propose_write`: memory can never raise the trust of its material.
-/// Only an explicit user action (CLI `memory put`, `memory_confirm` on
-/// an existing record) may store or promote a higher tier.
+/// Who is asking, and on whose behalf. The `trust <= source tier` invariant is
+/// enforced in `propose_write`, so memory can't raise the trust of its material.
+/// Only an explicit user action (CLI `memory put`, `memory_confirm`) may store or
+/// promote a higher tier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Provenance {
     pub source: String,
@@ -276,11 +264,9 @@ pub fn validate(p: &Proposal, max_bytes: usize) -> Result<(), WriteRefusal> {
 /// The full write path. Returns the record that was stored.
 ///
 /// Trust invariant: a proposal may not claim a tier above what its origin
-/// justifies. Model-sourced proposals (`origin` not `user`/`cli`/`import`/
-/// `memory.md`) are clamped to Untrusted no matter what the caller asked
-/// for: the model cannot launder web content into trusted memory by
-/// passing a flattering origin tag. Explicit user actions (CLI put, file
-/// import) write User tier directly.
+/// justifies. Model-sourced proposals clamp to Untrusted whatever the caller
+/// asked, so the model can't launder web content into trusted memory with a
+/// flattering origin. Explicit user actions (CLI put, file import) write User.
 pub fn propose_write(
     store: &MemoryStore,
     policy: &Policy,
@@ -292,23 +278,16 @@ pub fn propose_write(
     store.put(&gated)
 }
 
-/// Promote an existing record to Memory tier (from Untrusted). This is
-/// the explicit user-approval path: the CLI and the `memory_confirm` tool
-/// call this after a human says the record is sound. Returns the updated
-/// record. No-op (still succeeds) if the record is already Memory tier or
-/// better.
+/// Promote an existing record to Memory tier. The explicit user-approval path -
+/// CLI and the `memory_confirm` tool call it after a human says the record is
+/// sound. No-op if it's already Memory or better.
 ///
-/// `layer` names which row to promote: the row identity is
-/// (layer, namespace, key), and promoting by (namespace, key) alone
-/// would be ambiguous when the same key exists in several layers.
+/// `layer` names which row: identity is (layer, namespace, key), and by
+/// (namespace, key) alone this is ambiguous.
 ///
-/// The capability check accepts `Allow` or `Approval`. `Deny` fails
-/// closed. The run loop is the enforcement point that parks
-/// `Approval`-gated `memory_confirm` calls before the tool closure ever
-/// runs, so reaching this check with `Approval` means the loop already
-/// enforced the policy (or the human approved on resume - the closure
-/// captures the static policy, which still reads `Approval` after a
-/// grant). Direct callers (CLI, tests) are harness code, not the model.
+/// The check accepts `Allow` or `Approval`; `Deny` fails closed. The run loop
+/// parks `Approval`-gated calls before the tool closure runs, so seeing
+/// `Approval` here means the policy was already enforced or a human granted it.
 pub fn confirm_write(
     store: &MemoryStore,
     policy: &Policy,
@@ -334,12 +313,11 @@ pub fn confirm_write(
     )
 }
 
-/// Recall for one agent, across layers, narrowest first.
+/// Recall for one agent across layers, narrowest first.
 ///
-/// `namespace` is the caller's own namespace. Passing an empty slice
-/// recalls nothing: a caller that has not established who it is reading as
-/// must not get a global view. Cross-agent recall is a deliberate act
-/// (pass several namespaces), never a side effect of forgetting to scope.
+/// An empty slice recalls nothing - a caller that hasn't established who it reads
+/// as doesn't get a global view. Cross-agent recall requires passing several
+/// namespaces.
 pub fn recall(
     store: &MemoryStore,
     policy: &Policy,
@@ -358,9 +336,9 @@ pub fn recall(
     store.search_scoped(namespaces, layers, query, limit)
 }
 
-/// Gated recall against ANY backend. Checks `memory.read` here, before the
-/// backend sees the query - external backends must never be the party that
-/// decides whether policy allows a read.
+/// Gated recall against ANY backend. Checks `memory.read` here, before the backend
+/// sees the query, so an external backend is never the party deciding whether policy
+/// allows a read.
 pub fn recall_via(
     backend: &dyn MemoryBackend,
     policy: &Policy,
@@ -379,11 +357,9 @@ pub fn recall_via(
     backend.recall(policy, namespaces, layers, query, limit)
 }
 
-/// Full write path against ANY backend: policy -> validation -> trust
-/// clamp happen HERE (before the proposal crosses the boundary), then the
-/// backend stores the already-gated proposal. `propose_write` on the
-/// native store re-checks idempotently; external adapters can rely on the
-/// gate having run.
+/// Full write path against any backend: policy, validation and the trust clamp
+/// run here, before the proposal crosses. `propose_write` re-checks
+/// idempotently; external adapters can rely on the gate having run.
 pub fn write_via(
     backend: &dyn MemoryBackend,
     policy: &Policy,
@@ -394,14 +370,12 @@ pub fn write_via(
     backend.write(policy, gated, max_bytes)
 }
 
-/// Gated confirm against ANY backend: policy check first, then the
-/// backend's promotion path (native implements it; external backends
-/// default to `MEM_BACKEND_UNSUPPORTED`).
+/// Gated confirm against any backend: policy first, then the backend's promotion
+/// path (native implements it; external ones default to
+/// `MEM_BACKEND_UNSUPPORTED`).
 ///
-/// Accepts `Allow` or `Approval` for `memory.confirm` - see
-/// [`confirm_write`]: the run loop parks `Approval`-gated calls before
-/// the tool closure runs, so this check only ever sees `Approval` after
-/// enforcement (or a human grant) already happened.
+/// Accepts `Allow` or `Approval` - see [`confirm_write`]; the run loop parks
+/// `Approval`-gated calls, so this only sees `Approval` after enforcement.
 pub fn confirm_via(
     backend: &dyn MemoryBackend,
     policy: &Policy,
@@ -422,11 +396,9 @@ pub fn confirm_via(
     backend.confirm(policy, layer, namespace, key)
 }
 
-/// Clamp a trust tier reported by a non-native backend to the ceiling the
-/// operator configured (default Untrusted). A compromised memory server
-/// must not be able to launder `user`-tier records with injected
-/// instructions into the recall stream: the tier the server *claims* is
-/// capped at what we are willing to believe from that source.
+/// Clamp a tier reported by a non-native backend to the operator's ceiling
+/// (default Untrusted). A compromised server shouldn't be able to launder
+/// `user`-tier records with injected instructions into the recall stream.
 pub fn clamp_trust(
     tier: pantheon_api::provenance::TrustTier,
     ceiling: pantheon_api::provenance::TrustTier,
@@ -438,20 +410,17 @@ pub fn clamp_trust(
     }
 }
 
-/// Hard ceiling on ONE response from any non-native memory backend, both
-/// transports: an stdio plugin's response line and an HTTP bridge's
-/// response body. Per-record payloads are already capped at 4096 bytes
-/// (`max_bytes`), so even a recall with hundreds of hits sits far below
-/// this; the cap exists so a buggy or hostile backend cannot exhaust
-/// memory by streaming an unlimited body. Exceeding it is an explicit
-/// `MEM_HTTP_OVERSIZE` / `MEM_PLUGIN_OVERSIZE` error, never a linger.
+/// Hard ceiling on one response from a non-native backend, both transports: a
+/// stdio response line or an HTTP body. Records already cap at 4096 bytes, so a
+/// normal recall sits far below; this stops a buggy or hostile backend streaming
+/// an unlimited body. Exceeding it is `MEM_HTTP_OVERSIZE` /
+/// `MEM_PLUGIN_OVERSIZE`.
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
-/// The startup line for a memory backend that failed to open. Session
-/// degrades to no memory in that case — never a silent SQLite fallback —
-/// and this reports the failure loudly instead of leaving the operator to
-/// discover the outage as "the agent forgot everything". Pure (returns
-/// the text) so tests can pin the wording and callers choose the stream.
+/// Startup line for a backend that failed to open. Session degrades to no memory
+/// instead of silently falling back to SQLite, and this reports it rather than
+/// leaving the operator to notice the agent forgot everything. Pure so tests can
+/// pin the wording.
 pub fn unavailable_message(sel: &crate::backend::BackendSelection, err: &PantheonError) -> String {
     let backend = if sel.name == "native" {
         "native".to_string()
@@ -468,10 +437,9 @@ switching backends is not migration.",
     )
 }
 
-/// Error codes a Pantheon-protocol memory server may legitimately return
-/// in the `error`/`code` field. The field is attacker-controlled and must
-/// never become a `PantheonError` code verbatim (code/log spoofing), so
-/// anything outside this allowlist maps to `fallback`.
+/// Error codes a memory server may return in `error`/`code`. The field is
+/// attacker-controlled, so anything outside this maps to `fallback` rather than
+/// becoming a code verbatim.
 const KNOWN_REMOTE_CODES: &[&str] = &[
     "MEM_BACKEND_CONFIG",
     "MEM_BACKEND_UNKNOWN",
@@ -586,12 +554,10 @@ fn gate_proposal(
             remediation,
         ));
     }
-    // 3. trust clamp. Anything not authored by an explicit user action
-    // lands at Untrusted regardless of the requested tier. `memory.md`
-    // is the MEMORY.md file importer - human-authored (or a v2 file
-    // carrying each record's own tier), so it keeps its tier here; the
-    // importer separately caps the tier at the store's existing tier so
-    // an import can never upgrade trust.
+    // 3. trust clamp. Anything not authored by an explicit user action lands at
+    // Untrusted whatever was requested. `memory.md` is the file importer -
+    // human-authored, or a v2 file carrying each record's tier - so it keeps its
+    // tier here; the importer separately caps it at the store's existing tier.
     let mut p = proposal;
     if !matches!(
         p.provenance.origin.as_str(),

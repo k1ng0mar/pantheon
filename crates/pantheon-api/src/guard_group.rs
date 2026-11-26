@@ -1,30 +1,18 @@
-//! guard_group: approval, capability, permission_mode in one file.
-
 pub mod approval {
-    //! Third-party plugin approval: the ONE approval store for every plugin kind.
+    //! plugin approval. one store for both kinds (tool plugins from
+    //! pantheon-exec, hook plugins from pantheon-extensions). the only per-kind
+    //! code is the manifest loader each one passes in.
     //!
-    //! Security posture, stated plainly: Pantheon does **not** sandbox plugins.
-    //! Secrets are scrubbed from a plugin's environment, but a plugin otherwise
-    //! runs with the operator's full user privileges - it can read the
-    //! operator's files, access the network, and execute commands. A crashing
-    //! or timed-out plugin fails safely (its action is denied or errors), but
-    //! that is a fail-safe, not isolation.
+    //! the posture, plainly: we do not sandbox plugins. secrets get scrubbed
+    //! from the env, but otherwise a plugin runs as you. a crash or a timeout
+    //! fails that one action safely, that is not isolation.
     //!
-    //! Because of that, a third-party plugin is never loaded or spawned until
-    //! the operator has explicitly approved it. Approval is recorded (name,
-    //! version, content hash, timestamp) in `<scope_dir>/.approvals.json` so
-    //! consent is traceable. The approval is bound to the plugin's content
-    //! hash: if the plugin's code changes after approval, the approval lapses
-    //! and the warning is shown again.
+    //! so nothing third-party loads until the operator approves it. record is
+    //! name + version + content hash + timestamp in
+    //! `<scope_dir>/.approvals.json`, bound to the hash: change the code and the
+    //! approval lapses, warning comes back.
     //!
-    //! First-party plugins - those shipped with Pantheon under
-    //! `<scope_dir>/bundled/` - do not need approval. Everything else is
-    //! third-party.
-    //!
-    //! Both plugin kinds (tool plugins via `pantheon-exec`, hook plugins via
-    //! `pantheon-extensions`) share this store. The only per-kind code is the
-    //! manifest loader passed to [`pending_approvals`]/[`record_approval`]:
-    //! each kind knows its own manifest filename and shape.
+    //! bundled plugins (`<scope_dir>/bundled/`) don't need approval.
     use crate::error::{Layer, PantheonError};
     use fs2::FileExt as _;
     use serde::{Deserialize, Serialize};
@@ -44,8 +32,8 @@ pub mod approval {
         )
     }
 
-    /// The warning shown before a third-party plugin can be approved. Approval
-    /// is informed consent to everything below - there is no sandbox.
+    /// shown before approval. the operator is consenting to all of it, we can't
+    /// actually contain the plugin.
     pub const PRIVILEGE_WARNING: &str = "\
     WARNING: '{name}' is third-party code, and Pantheon does not sandbox plugins.\n\
     \n\
@@ -64,19 +52,17 @@ pub mod approval {
 
     const APPROVALS_FILE: &str = ".approvals.json";
 
-    /// One recorded operator approval. Bound to the plugin's content hash so a
-    /// code change after approval lapses the consent.
+    /// bound to the content hash, so editing the plugin means asking again.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub struct ApprovalRecord {
         pub plugin: String,
         pub version: String,
-        /// sha256 over the plugin directory (relative paths + contents).
+        /// sha256 over the plugin dir (relative paths + contents)
         pub dir_hash: String,
-        /// Unix millis when the operator approved.
+        /// unix millis when the operator approved
         pub approved_at_ms: u64,
     }
 
-    /// A discovered plugin that is not approved yet.
     #[derive(Debug, Clone)]
     pub struct PendingPlugin {
         pub name: String,
@@ -84,64 +70,41 @@ pub mod approval {
         pub dir: PathBuf,
     }
 
-    /// Compute a stable sha256 over a plugin directory: sorted relative paths
-    /// plus file contents.
+    /// sha256 over a plugin dir: sorted relative paths + contents.
     ///
-    /// Each entry is opened exactly ONCE: a single `open()` resolves a symlink
-    /// and opens its target atomically, the bytes are read from the resulting
-    /// file descriptor, and the entry's identity is bound from `fstat`
-    /// (dev+ino) on that same descriptor - never from a path string. There is
-    /// no separate resolve-then-read step, so a link retargeted "between"
-    /// resolution and read cannot bind stale bytes: the digest always covers
-    /// what the loader will actually open, and the identity bound is the file
-    /// that was opened, not a path that can be repointed afterwards.
+    /// each file is opened once. the open resolves any symlink, bytes come off
+    /// that fd, and identity (dev+ino) comes from fstat on the same fd, never
+    /// from the path - so retargeting a link between resolve and read can't
+    /// slip bytes in.
     ///
-    /// Identity semantics: dev+ino names the file, not its path. Renaming a
-    /// target outside the plugin dir does not lapse the approval; replacing
-    /// the target (new inode) does, even when the bytes are identical.
-    /// (Non-Unix fallback: size+mtime binding, weaker - a same-size,
-    /// same-mtime replacement would alias. Documented here, not hidden.)
+    /// dev+ino means identity is the file, not the path. renaming a target
+    /// doesn't lapse the approval, replacing it does, even with identical bytes.
+    /// non-unix falls back to size+mtime, which is weaker: a same-size,
+    /// same-mtime replacement would alias.
     ///
-    /// Symlinks are therefore bound by their live target's bytes + identity.
-    /// A link escaping the plugin dir is allowed and bound the same way.
+    /// errors, so nothing binds: dangling links, unreadable targets, links to
+    /// non-regular files, link loops.
     ///
-    /// Fail-closed cases (the hash errors, so no approval can bind): dangling
-    /// links, unreadable targets, links to non-regular files (e.g.
-    /// directories), and link loops.
+    /// `.approvals.json` is not skipped. a planted one gets hashed like
+    /// anything else, and the real store isn't in a plugin dir anyway.
     ///
-    /// `.approvals.json` is NOT skipped: a file by that name planted inside
-    /// the plugin dir is hashed like any other file. (The real store lives in
-    /// the scope dir, outside any plugin dir, and loaders only execute
-    /// manifest-declared entrypoints, so excluding the name bought nothing
-    /// and hid tampering.)
-    ///
-    /// OUT OF CONTRACT - the hash-then-use gap at the loader: this function
-    /// closes the intra-hash TOCTOU, but approval as a whole is still
-    /// check-then-use. `verify_plugin` hashes via [`dir_hash`],
-    /// `plugin_approval::is_approved` compares against the store, and the
-    /// supervisor spawns the returned runner path later - the directory can
-    /// change in between those steps. Loaders close the remaining gap with
-    /// [`dir_hash_with_override`]: hash the runner's bytes as read through an
-    /// already-open fd, compare against the store, and exec a sealed private
-    /// copy of those exact bytes - so the approval binds what executes, not
-    /// what the path happened to resolve to.
+    /// known gap: this closes the TOCTOU inside the hash, not between hash and
+    /// exec. loaders use [`dir_hash_with_override`] to bind the bytes they
+    /// actually execute.
     pub fn dir_hash(dir: &Path) -> Result<String, PantheonError> {
         dir_hash_inner(dir, None)
     }
 
-    /// [`dir_hash`] variant where one file's bytes and identity come from an
-    /// already-open handle instead of a fresh path open.
+    /// dir_hash, except one file's bytes + identity come from a handle the
+    /// caller already has open.
     ///
-    /// The loader opens the runner first (pinning the inode), reads its bytes
-    /// through that fd, and calls this with the fd's bytes and fstat metadata.
-    /// The returned digest therefore binds exactly the bytes the loader holds
-    /// an in-place rewrite of the file (same inode, new bytes) between the
-    /// read and this call cannot smuggle unapproved bytes past the check,
-    /// because the check runs on the bytes already in hand. A passing check
-    /// against the approval store proves those bytes were operator-approved.
+    /// the loader opens the runner, reads it through that fd, passes both in.
+    /// an in-place rewrite after the read doesn't help anyone - the digest is
+    /// over bytes already in hand. if it matches the store, those exact bytes
+    /// were approved.
     ///
-    /// `override_rel` is the file's path relative to `dir`. The override skips
-    /// the regular-file check - the caller already fstat'd the open handle.
+    /// `override_rel` is relative to `dir`. no regular-file check here; the
+    /// caller already fstat'd it.
     pub fn dir_hash_with_override(
         dir: &Path,
         override_rel: &Path,
@@ -164,15 +127,15 @@ pub mod approval {
             let rel = f.strip_prefix(dir).unwrap_or(f);
             h.update(rel.to_string_lossy().as_bytes());
             h.update([0u8]);
-            // Pinned override: these bytes were read through an already-open
-            // fd by the caller, so they are exactly what will execute.
+            // pinned override, read through the caller's own fd, so this is
+            // exactly what will execute
             if let Some((orel, obytes, omd)) = ovr {
                 if rel == orel {
                     hash_file_bytes(&mut h, obytes, omd);
                     continue;
                 }
             }
-            // Bind what the plugin will actually execute, opened once.
+            // open once and bind what will actually execute
             let mut file = std::fs::File::open(f)
                 .map_err(|e| merr("APPROVAL_HASH", format!("open {}: {e}", f.display())))?;
             let md = file
@@ -192,17 +155,16 @@ pub mod approval {
         Ok(hex_of(h.finalize()))
     }
 
-    /// Mix one file's bytes and opened-file identity into the digest.
+    /// mix one file's bytes + opened identity into the digest
     fn hash_file_bytes(h: &mut Sha256, bytes: &[u8], md: &std::fs::Metadata) {
         h.update(bytes);
-        // Identity of the file actually opened (fstat), not a path string.
+        // identity of the fd we actually opened, not a path
         file_identity(md, h);
         h.update([1u8]);
     }
 
-    /// Mix the opened file's identity into the digest: dev+ino from fstat on
-    /// Unix. This binds the digest to the file that was opened, so a path
-    /// retarget after the open cannot alias a recorded approval.
+    /// dev+ino from fstat. binds the digest to the file that was opened, so a
+    /// retarget after the open can't alias a recorded approval.
     #[cfg(unix)]
     fn file_identity(md: &std::fs::Metadata, h: &mut Sha256) {
         use std::os::unix::fs::MetadataExt;
@@ -210,9 +172,8 @@ pub mod approval {
         h.update(md.ino().to_le_bytes());
     }
 
-    /// Non-Unix fallback: std has no stable file-id API here, so bind
-    /// size+mtime instead. Weaker than dev+ino - a same-size, same-mtime
-    /// replacement would alias - but explicit.
+    /// std has no stable file-id API off unix, so size+mtime. weaker than
+    /// dev+ino: a same-size, same-mtime swap would alias. explicit about it.
     #[cfg(not(unix))]
     fn file_identity(md: &std::fs::Metadata, h: &mut Sha256) {
         h.update(md.len().to_le_bytes());
@@ -241,40 +202,39 @@ pub mod approval {
         bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// sha256 of raw bytes, hex-encoded. Used by non-directory approval
-    /// subjects (MCP server binaries, endpoint URLs) so they can bind an
-    /// approval to content the same way [`dir_hash`] binds plugin dirs.
+    /// sha256 of raw bytes, hex-encoded. used by non-directory approval
+    /// subjects (MCP server binaries, endpoint URLs) to bind an approval to
+    /// content the way [`dir_hash`] binds plugin dirs.
     pub fn bytes_hash(bytes: &[u8]) -> String {
         let mut h = Sha256::new();
         h.update(bytes);
         hex_of(h.finalize())
     }
 
-    /// Persistent approval records for one plugin scope directory
+    /// persistent approval records for one plugin scope dir
     /// (`<data_dir>/plugins`, `<data_dir>/extensions`, or
     /// `<project>/.pantheon/plugins`).
     #[derive(Debug, Default)]
     pub struct ApprovalStore {
         path: PathBuf,
         records: HashMap<String, ApprovalRecord>,
-        /// True when the store file existed but did not parse. The store
-        /// reads as empty (fail-closed: nothing is approved), but it must
-        /// never be overwritten by a save - that would silently discard
-        /// every approval the corrupt file once held.
+        /// true when the store file existed but didn't parse. the store reads
+        /// as empty (fail-closed: nothing approved), but a save must never
+        /// overwrite it - that would silently throw away every approval the
+        /// corrupt file once held.
         corrupt: bool,
     }
 
-    /// Process-wide write lock for approval stores, the in-process half
-    /// of the exclusion [`ApprovalStore::record`]/[`revoke`] hold. Same
-    /// shape as the dotenv writer lock: a process mutex plus an exclusive
-    /// flock on a sidecar `<store>.lock` file, so writers in *other*
-    /// processes cannot interleave a read-modify-write either. The sidecar
-    /// is never renamed, so the flock pins a stable inode across the
-    /// atomic renames of the store file itself.
+    /// process-wide write lock for approval stores, the in-process half of the
+    /// exclusion [`ApprovalStore::record`]/[`revoke`] hold. same shape as the
+    /// dotenv writer lock: a process mutex + exclusive flock on a sidecar
+    /// `<store>.lock`, so writers in *other* processes can't interleave a
+    /// read-modify-write either. the sidecar is never renamed, so the flock
+    /// pins a stable inode across atomic renames of the store itself.
     static APPROVAL_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Read one store file: the records, plus whether the file existed
-    /// but failed to parse.
+    /// read one store file: the records, plus whether the file existed but
+    /// failed to parse.
     fn load_records(path: &Path) -> (HashMap<String, ApprovalRecord>, bool) {
         match std::fs::read_to_string(path) {
             Ok(text) => match serde_json::from_str::<HashMap<String, ApprovalRecord>>(&text) {
@@ -285,18 +245,18 @@ pub mod approval {
         }
     }
 
-    /// Held across one [`ApprovalStore::record`]/[`revoke`]: the process
+    /// held across one [`ApprovalStore::record`]/[`revoke`]: the process
     /// mutex (dropped first) and the sidecar flock file (dropped last,
-    /// releasing the flock). Kept as a named type so the two halves
-    /// cannot be released independently by accident.
+    /// releasing the flock). a named type so the two halves can't be released
+    /// independently by accident.
     struct ApprovalWriteGuard {
         _proc: std::sync::MutexGuard<'static, ()>,
         _file: std::fs::File,
     }
 
-    /// Acquire the write exclusion for one store file: the process mutex,
-    /// then an exclusive flock on the sidecar `<store>.lock` file (the
-    /// dotenv writer pattern). Blocking: a writer waits its turn.
+    /// acquire the write exclusion for one store file: process mutex, then an
+    /// exclusive flock on the sidecar `<store>.lock` (the dotenv writer
+    /// pattern). blocking: a writer waits its turn.
     fn lock_for_write(path: &Path) -> Result<ApprovalWriteGuard, PantheonError> {
         let proc = APPROVAL_WRITE_LOCK
             .lock()
@@ -332,21 +292,21 @@ pub mod approval {
     }
 
     impl ApprovalStore {
-        /// Open (or create) the store for a plugin scope directory.
+        /// open (or create) the store for a plugin scope dir
         pub fn open(scope_dir: &Path) -> Self {
-            // The store file's parent may not exist yet (e.g. a fresh
-            // `<data_dir>/mcp` with only config-declared servers): create it so
-            // a later `record` doesn't fail on a missing directory.
+            // the store file's parent may not exist yet (e.g. a fresh
+            // `<data_dir>/mcp` with only config-declared servers): create it
+            // so a later `record` doesn't fail on a missing dir.
             let _ = std::fs::create_dir_all(scope_dir);
             let path = scope_dir.join(APPROVALS_FILE);
             let (records, corrupt) = load_records(&path);
             if corrupt {
-                // Loud, not silent: a corrupt store reads as empty
-                // (fail-closed), so without this an operator would see
-                // every plugin unapproved with no hint that the file they
-                // approved into is damaged. The log line reaches the
-                // agent log when a sink is set; stderr reaches every CLI
-                // caller even when it is not.
+                // loud, not silent: a corrupt store reads as empty
+                // (fail-closed), so without this an operator sees every
+                // plugin unapproved with no hint that the file they approved
+                // into is damaged. the log line reaches the agent log when a
+                // sink is set; stderr reaches every CLI caller even when it
+                // isn't.
                 let msg = format!(
                     "WARNING: corrupt approval store {}: approvals read as empty (fail-closed) and the file will not be overwritten; repair or remove it by hand",
                     path.display()
@@ -361,15 +321,15 @@ pub mod approval {
             }
         }
 
-        /// True when the store file existed but failed to parse. Reads are
-        /// fail-closed (nothing approved); saves are refused until the file
-        /// is repaired or removed by hand, so a corrupt store can never be
-        /// silently overwritten with an empty one.
+        /// true when the store file existed but failed to parse. reads are
+        /// fail-closed (nothing approved); saves are refused until the file is
+        /// repaired or removed by hand, so a corrupt store is never silently
+        /// overwritten with an empty one.
         pub fn is_corrupt(&self) -> bool {
             self.corrupt
         }
 
-        /// True when a live approval exists for this exact name + version +
+        /// true when a live approval exists for this exact name + version +
         /// content hash.
         pub fn is_approved(&self, name: &str, version: &str, dir_hash: &str) -> bool {
             self.records
@@ -377,23 +337,22 @@ pub mod approval {
                 .is_some_and(|r| r.version == version && r.dir_hash == dir_hash)
         }
 
-        /// True when a live approval exists for this exact name + content
-        /// hash, regardless of the recorded version string. The hash is
-        /// the authoritative gate: a version string is self-reported by
-        /// the server and can lie (or bump without any content change),
-        /// while the hash binds the approval to the exact content the
-        /// operator consented to. The recorded version is kept for
-        /// DISPLAY only (approval listings, dashboard responses) and must
-        /// never gate execution. MCP's post-handshake gate uses this;
-        /// plugin loading keeps the stricter name + version + hash check
-        /// in [`Self::is_approved`].
+        /// true when a live approval exists for this name + content hash,
+        /// regardless of the recorded version string. the hash is the
+        /// authoritative gate: a version is self-reported by the server and
+        /// can lie (or bump without any content change), while the hash binds
+        /// the approval to the exact content the operator consented to. the
+        /// recorded version is DISPLAY-only (approval listings, dashboard
+        /// responses) and must never gate execution. MCP's post-handshake gate
+        /// uses this; plugin loading keeps the stricter name + version + hash
+        /// check in [`Self::is_approved`].
         pub fn is_approved_for_hash(&self, name: &str, dir_hash: &str) -> bool {
             self.records
                 .get(name)
                 .is_some_and(|r| r.dir_hash == dir_hash)
         }
 
-        /// The recorded approval for `name`, if any. Lets a caller compare
+        /// the recorded approval for `name`, if any. lets a caller compare
         /// against a partially-known identity (e.g. an MCP server whose
         /// self-reported version is only known after the handshake) without
         /// opening the store file twice.
@@ -401,19 +360,19 @@ pub mod approval {
             self.records.get(name)
         }
 
-        /// Every approved name in the store, sorted.
+        /// every approved name, sorted.
         pub fn names(&self) -> Vec<String> {
             let mut out: Vec<String> = self.records.keys().cloned().collect();
             out.sort();
             out
         }
 
-        /// Record an approval (insert or overwrite).
+        /// record an approval (insert or overwrite).
         ///
-        /// Holds the write exclusion and re-reads the file under it, so
-        /// two processes approving different plugins at once cannot lose
-        /// each other's record: the old read-at-open, write-at-record
-        /// shape overwrote whatever the other process wrote in between.
+        /// holds the write exclusion and re-reads the file under it, so two
+        /// processes approving different plugins at once can't lose each
+        /// other's record - reading at open and writing at record would
+        /// overwrite whatever the other wrote in between.
         pub fn record(&mut self, rec: ApprovalRecord) -> Result<(), PantheonError> {
             let _guard = lock_for_write(&self.path)?;
             self.refresh_under_lock()?;
@@ -421,9 +380,9 @@ pub mod approval {
             self.save()
         }
 
-        /// Revoke an approval. Returns true when one existed.
+        /// revoke an approval. true when one existed.
         ///
-        /// Same write exclusion and re-read as [`Self::record`].
+        /// same write exclusion and re-read as [`Self::record`].
         pub fn revoke(&mut self, name: &str) -> Result<bool, PantheonError> {
             let _guard = lock_for_write(&self.path)?;
             self.refresh_under_lock()?;
@@ -434,8 +393,8 @@ pub mod approval {
             Ok(removed)
         }
 
-        /// Re-read the store file under the write lock, failing closed on
-        /// a corrupt file (never overwrite it with a partial view).
+        /// re-read the store file under the write lock, failing closed on a
+        /// corrupt file (never overwrite it with a partial view).
         fn refresh_under_lock(&mut self) -> Result<(), PantheonError> {
             let (records, corrupt) = load_records(&self.path);
             if corrupt {
@@ -465,9 +424,9 @@ pub mod approval {
             }
             let text = serde_json::to_string_pretty(&self.records)
                 .map_err(|e| merr("APPROVAL_WRITE", format!("serialize: {e}")))?;
-            // Atomic: write tmp, fsync the tmp file, then rename, so a crash
-            // never leaves half JSON and the renamed file is durable. The
-            // directory fsync is best-effort (not all filesystems support it).
+            // atomic: write tmp, fsync the tmp file, rename, so a crash never
+            // leaves half JSON and the renamed file is durable. the dir fsync
+            // is best-effort (not all filesystems support it).
             let tmp = self.path.with_extension("json.tmp");
             {
                 use std::io::Write;
@@ -489,24 +448,23 @@ pub mod approval {
         }
     }
 
-    /// True for plugins shipped with Pantheon: `<scope_dir>/bundled/<name>`.
-    /// Only these skip approval; everything else is third-party.
+    /// true for plugins shipped with pantheon: `<scope_dir>/bundled/<name>`.
+    /// only these skip approval; everything else is third-party.
     pub fn is_bundled(scope_dir: &Path, plugin_dir: &Path) -> bool {
         plugin_dir.starts_with(scope_dir.join("bundled"))
     }
 
-    /// Convenience: is this plugin currently approved in `scope_dir`?
+    /// convenience: is this plugin currently approved in `scope_dir`?
     pub fn is_approved(scope_dir: &Path, name: &str, version: &str, hash: &str) -> bool {
         ApprovalStore::open(scope_dir).is_approved(name, version, hash)
     }
 
-    /// Systemic gate state for a plugin scope: `None` when the store is
-    /// usable (a missing store reads as empty, the normal first-run
-    /// state), else a reason when the store file exists but cannot be
-    /// trusted - corrupt JSON or unreadable. Callers use this to
-    /// quarantine everything the store gates, instead of treating each
-    /// plugin as merely unapproved (which would invite re-approval into a
-    /// broken store that can never record it).
+    /// systemic gate state for a plugin scope: `None` when the store is usable
+    /// (a missing store reads as empty, the normal first-run state), else a
+    /// reason when the store file exists but can't be trusted - corrupt JSON
+    /// or unreadable. callers use this to quarantine everything the store
+    /// gates, instead of treating each plugin as merely unapproved (which
+    /// would invite re-approval into a broken store that can never record it).
     pub fn store_gate_failure(scope_dir: &Path) -> Option<String> {
         let path = scope_dir.join(APPROVALS_FILE);
         match std::fs::read_to_string(&path) {
@@ -525,9 +483,9 @@ pub mod approval {
         }
     }
 
-    /// Record operator approval for a plugin without checking the pending set.
-    /// The caller must have shown [`PRIVILEGE_WARNING`] and obtained explicit
-    /// consent first - this only persists the record.
+    /// record operator approval for a plugin without checking the pending set.
+    /// the caller must have shown [`PRIVILEGE_WARNING`] and gotten explicit
+    /// consent - this only persists the record.
     pub fn record_approval_for(
         scope_dir: &Path,
         name: &str,
@@ -544,24 +502,24 @@ pub mod approval {
         Ok(rec)
     }
 
-    /// Revoke a recorded approval. The plugin stays installed but will no
-    /// longer load until re-approved.
+    /// revoke a recorded approval. the plugin stays installed but won't load
+    /// until re-approved.
     pub fn revoke_approval_for(scope_dir: &Path, name: &str) -> Result<bool, PantheonError> {
         ApprovalStore::open(scope_dir).revoke(name)
     }
 
-    /// List third-party plugins in `scope_dir` that are installed but not
-    /// approved (or whose approval lapsed after a code change).
+    /// list third-party plugins in `scope_dir` installed but not approved (or
+    /// whose approval lapsed after a code change).
     ///
-    /// Fail-closed visibility note: a plugin whose directory cannot be
-    /// hashed (dangling symlink, unreadable dir) or whose manifest loader
-    /// returns `None` is skipped here, so it appears in neither the
-    /// pending list nor the approved set - it cannot be approved through
-    /// this path until its directory is readable again.
+    /// fail-closed visibility: a plugin whose dir can't be hashed (dangling
+    /// symlink, unreadable dir) or whose manifest loader returns `None` is
+    /// skipped, so it shows up in neither the pending list nor the approved
+    /// set - it can't be approved through this path until its dir is readable
+    /// again.
     ///
-    /// `load_name_version` maps a plugin directory to its `(name, version)`;
-    /// each plugin kind supplies its own manifest loader, so this store never
-    /// learns manifest formats.
+    /// `load_name_version` maps a plugin dir to its `(name, version)`; each
+    /// plugin kind supplies its own manifest loader, so this store never learns
+    /// manifest formats.
     pub fn pending_approvals(
         scope_dir: &Path,
         load_name_version: &dyn Fn(&Path) -> Option<(String, String)>,
@@ -598,11 +556,10 @@ pub mod approval {
         out
     }
 
-    /// Record operator approval for the plugin named `name` in `scope_dir`.
-    /// Errors when the plugin is not in the pending set - approval is consent
-    /// for a specific discovered plugin, never a blank check.
-    /// The caller must have shown [`PRIVILEGE_WARNING`] and obtained explicit
-    /// consent first.
+    /// record operator approval for the plugin named `name` in `scope_dir`.
+    /// errors when the plugin isn't in the pending set - approval is consent
+    /// for a specific discovered plugin, never a blank check. the caller must
+    /// have shown [`PRIVILEGE_WARNING`] and gotten explicit consent.
     pub fn record_approval(
         scope_dir: &Path,
         name: &str,
@@ -618,14 +575,14 @@ pub mod approval {
         record_approval_for(scope_dir, &p.name, &p.version, &p.dir)
     }
 
-    /// Render the privilege warning for a plugin.
+    /// render the privilege warning for a plugin
     pub fn warning_text(name: &str) -> String {
         PRIVILEGE_WARNING.replace("{name}", name)
     }
 
-    // Small deterministic invariant tests only. Filesystem behavior
-    // (hash stability, lapse on code change, store round-trip) is covered in
-    // `pantheon-eval` (`eval/tests/approval_store.rs`).
+    // small deterministic invariant tests only. filesystem behavior (hash
+    // stability, lapse on code change, store round-trip) lives in `pantheon-eval`
+    // (`eval/tests/approval_store.rs`).
 
     #[cfg(all(test, unix))]
     mod tests {
@@ -635,8 +592,8 @@ pub mod approval {
 
         static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-        /// Unique scratch dir under the system temp dir (std-only: this crate
-        /// has no tempfile dev-dependency).
+        /// unique scratch dir under temp (std-only: this crate has no tempfile
+        /// dev-dependency).
         fn test_dir(tag: &str) -> PathBuf {
             let n = TEST_DIR_SEQ.fetch_add(1, Ordering::SeqCst);
             let d = std::env::temp_dir().join(format!(
@@ -673,7 +630,7 @@ pub mod approval {
                 .record(rec)
                 .expect_err("save must refuse a corrupt store");
             assert!(err.to_string().contains("corrupt"), "got: {err}");
-            // The corrupt file itself is untouched by the refused save.
+            // the corrupt file itself is untouched by the refused save.
             assert_eq!(
                 std::fs::read_to_string(scope.join(".approvals.json")).unwrap(),
                 "{not json"
@@ -682,10 +639,9 @@ pub mod approval {
 
         #[test]
         fn stale_store_record_does_not_clobber_a_newer_record() {
-            // Two handles opened at the same time (two processes, or two
-            // call sites): the second record must re-read under the write
-            // lock instead of overwriting the first record with its stale
-            // at-open view.
+            // two handles opened at the same time (two processes, or two call
+            // sites): the second record must re-read under the write lock
+            // instead of overwriting the first with its stale at-open view.
             let scope = test_dir("stale-record");
             let mut a = ApprovalStore::open(&scope);
             let mut b = ApprovalStore::open(&scope);
@@ -721,8 +677,8 @@ pub mod approval {
             let p = plugin_with_link(&scratch, &outside);
             let h1 = dir_hash(&p).unwrap();
             assert_eq!(h1, dir_hash(&p).unwrap(), "stable while untouched");
-            // Rewrite the target after the hash was taken: the approval binding
-            // must lapse even though the link itself did not change.
+            // rewrite the target after the hash was taken: the approval
+            // binding must lapse even though the link itself didn't change.
             std::fs::write(&outside, "version two").unwrap();
             let h2 = dir_hash(&p).unwrap();
             assert_ne!(h1, h2, "rewriting a symlink target must change the digest");
@@ -792,12 +748,11 @@ pub mod approval {
 
         #[test]
         fn dir_hash_retarget_between_resolve_and_read_lapses_approval() {
-            // Deterministic replay of the intra-hash TOCTOU the pre-fix code
-            // was vulnerable to: it resolved each entry with three separate
-            // path-based syscalls (canonicalize -> is_file -> read), so a
-            // link retargeted between the resolve and the read bound the OLD
-            // target's bytes to the approval while the loader followed the
-            // NEW target.
+            // deterministic replay of the intra-hash TOCTOU: resolving each
+            // entry with three separate path-based syscalls (canonicalize ->
+            // is_file -> read) lets a link retargeted between resolve and read
+            // bind one target's bytes to the approval while the loader follows
+            // the other.
             let scratch = test_dir("toctou-interleave");
             let a = scratch.join("a.py");
             let b = scratch.join("b.py");
@@ -809,23 +764,23 @@ pub mod approval {
             let link = p.join("helper.py");
             symlink(&a, &link).unwrap();
 
-            // Approval recorded while the link points at A.
+            // approval recorded while the link points at A.
             let h_approval = dir_hash(&p).unwrap();
 
-            // The old three-syscall sequence, with the attacker's retarget
-            // injected exactly where the window was:
+            // the three-syscall sequence, with the attacker's retarget injected
+            // exactly where the window is:
             let resolved = std::fs::canonicalize(&link).unwrap(); // resolve -> A
             assert!(resolved.is_file());
-            // Attacker retargets the link here, inside the old code's window:
+            // attacker retargets the link here, inside the vulnerable window:
             std::fs::remove_file(&link).unwrap();
             symlink(&b, &link).unwrap();
-            // The old code then read the RESOLVED path, i.e. the stale target.
+            // that sequence then reads the RESOLVED path, the stale target.
             let stale_bytes = std::fs::read(&resolved).unwrap();
             assert_eq!(stale_bytes, b"payload A", "old sequence binds stale bytes");
             // ...while the loader follows the (retargeted) link and gets B:
             assert_eq!(std::fs::read(&link).unwrap(), b"payload B");
 
-            // Post-fix, dir_hash opens each entry once and reads via the fd, so
+            // post-fix, dir_hash opens each entry once and reads via the fd, so
             // the digest follows the live target: it must NOT reproduce the
             // pre-retarget approval.
             let h_after = dir_hash(&p).unwrap();
@@ -838,8 +793,8 @@ pub mod approval {
 
         #[test]
         fn dir_hash_replaced_target_changes_digest_despite_identical_bytes() {
-            // Same path, same bytes, NEW inode (delete + recreate): the old
-            // code bound the canonical path string, so this was invisible.
+            // same path, same bytes, NEW inode (delete + recreate): binding the
+            // canonical path string instead of the inode makes this invisible.
             let scratch = test_dir("identity-replace");
             let a = scratch.join("a.py");
             std::fs::write(&a, "same bytes").unwrap();
@@ -858,7 +813,7 @@ pub mod approval {
 
         #[test]
         fn dir_hash_renamed_target_keeps_digest_for_same_inode() {
-            // Same inode, different path: identity is the file, not the path.
+            // same inode, different path: identity is the file, not the path.
             let scratch = test_dir("identity-rename");
             let a = scratch.join("a.py");
             std::fs::write(&a, "payload").unwrap();
@@ -880,7 +835,7 @@ pub mod approval {
 
         #[test]
         fn dir_hash_includes_planted_approvals_json() {
-            // A planted `.approvals.json` inside the plugin dir must be bound
+            // a planted `.approvals.json` inside the plugin dir must be bound
             // into the digest like any other file.
             let scratch = test_dir("approvals-included");
             let p = scratch.join("plugin");
@@ -979,11 +934,11 @@ pub mod capability {
         McpEnable,
         /// A tool projected from an MCP server that has no explicit
         /// classification (no per-tool/per-server override, no built-in
-        /// inventory entry). Split from [`Capability::NetworkOutbound`]
-        /// because the old default let any unclassified third-party tool -
-        /// including one that deletes, writes, or sends - ride an allowed
-        /// capability under the coder policy, leaving server approval as the
-        /// only gate. Default policies mark this Approval, so the run parks
+        /// inventory entry). Split from [`Capability::NetworkOutbound`] because
+        /// that default lets any unclassified third-party tool - including one
+        /// that deletes, writes, or sends - ride an allowed capability under the
+        /// coder policy, leaving server approval as the only gate. Default
+        /// policies mark this Approval, so the run parks
         /// for a human before an unclassified tool runs. Operators classify a
         /// server or tool once via `McpCapabilityOverrides` to allow it.
         McpUnclassified,
@@ -1140,9 +1095,9 @@ pub mod capability {
                 .approval(Capability::BinaryTrace)
                 .approval(Capability::PluginEnable)
                 .approval(Capability::McpEnable)
-                // Unclassified MCP tools park: the old NetworkOutbound default
-                // let an unknown third-party tool (delete/write/send) run on an
-                // allowed capability with only server approval as the gate.
+                // Unclassified MCP tools park: a NetworkOutbound default lets an
+                // unknown third-party tool (delete/write/send) run on an allowed
+                // capability with only server approval as the gate.
                 .approval(Capability::McpUnclassified)
                 // Cloudflare CLI: reads ride ShellExecute; anything that
                 // creates/modifies infra or can destroy it (DNS, WAF, access

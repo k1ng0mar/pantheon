@@ -1,6 +1,3 @@
-//! Migration merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
-
 pub mod apply {
     //! The writing half of the migration pipeline: backup -> stage -> commit.
     //!
@@ -16,22 +13,20 @@ pub mod apply {
     //!
     //! Three guarantees:
     //!
-    //! - **Transactional.** `apply` stages everything under
+    //! - Transactional. `apply` stages everything under
     //!   `<dest>/.migrate-stage/<id>/` first. The live tree is untouched until
     //!   every item has staged and validated; commit is a sequence of renames,
     //!   and any commit error triggers an automatic rollback from the backup
     //!   pre-images. A failed apply leaves the target untouched - there are no
     //!   manual-restore instructions because there is nothing manual to do.
-    //! - **Budgeted.** Every byte staged or backed up is charged against
+    //! - Budgeted. Every byte staged or backed up is charged against
     //!   [`StageBudgets`] (default 1 GiB total, 100k files, 100 MiB per file).
     //!   Exceeding a budget aborts cleanly: the staging tree is discarded and
     //!   the live tree is untouched.
-    //! - **No silent partial copy.** `copy_tree` records every skipped symlink
+    //! - No silent partial copy. `copy_tree` records every skipped symlink
     //!   and unreadable entry in the report rather than copying a partial tree.
     //!
-    //! Budgets use the [`StageBudgets`] defaults (1 GiB total, 100k files,
-    //! 100 MiB per file); callers that need different limits construct one
-    //! explicitly.
+    //! Callers that need different limits construct their own [`StageBudgets`].
 
     use crate::{merr, Action, ItemKind, MigrationPlan, PlanItem, Targets};
     use pantheon_api::error::PantheonError;
@@ -308,7 +303,7 @@ pub mod apply {
         out
     }
 
-    /// Item kinds whose import is produced by a **bridge** rather than by copying
+    /// Item kinds whose import is produced by a bridge rather than by copying
     /// the source file.
     ///
     /// These must be excluded from the file copier. `Credentials` is the sharp
@@ -1653,19 +1648,19 @@ pub mod carry {
     //! each gets a bridge: a declaration Pantheon can act on, written in
     //! Pantheon's own terms.
     //!
-    //! - **MCP** (`mcp_servers` in a Hermes `config.yaml`, an `mcp.json`, a
+    //! - MCP (`mcp_servers` in a Hermes `config.yaml`, an `mcp.json`, a
     //!   `.mcp.json`): parsed into a Pantheon-shaped server list. Transport,
     //!   command, args, and url carry over. Headers, tokens, and env values do
     //!   not - they become a declared requirement instead.
-    //! - **Credentials** (`.env`, `auth.json`, provider blocks): read as *names*.
+    //! - Credentials (`.env`, `auth.json`, provider blocks): read as *names*.
     //!   The bridge emits a manifest saying which env var feeds which Pantheon
     //!   provider, so the operator can fill them through `pantheon model` rather
     //!   than inheriting a foreign vault. With `carry_credentials: true` the
     //!   values are written into Pantheon's own encrypted vault, which is the
     //!   only way a value moves - never a raw copy of the source `.env`.
-    //! - **Sessions** (transcript dirs): copied into a quarantine path with a
-    //!   manifest, so they can be indexed into `session_search` deliberately
-    //!   rather than silently shadowing ledger-owned transcripts.
+    //! - Sessions (transcript dirs): copied into a quarantine path with a
+    //!   manifest, so indexing them into `session_search` is a separate step
+    //!   rather than something that silently shadows ledger-owned transcripts.
 
     use pantheon_api::error::{Layer, PantheonError};
     use serde::{Deserialize, Serialize};
@@ -1706,16 +1701,15 @@ pub mod carry {
         /// True when the source declared a credential we refused to copy.
         #[serde(default)]
         pub needs_credentials: bool,
-        /// Operator toggle. Defaults to true so every declaration written
-        /// before this field existed reads as enabled. The launcher honors
-        /// it: a disabled declaration is never configured.
+        /// Operator toggle. Defaults to true so a declaration that predates this
+        /// field reads as enabled. The launcher honors it: a disabled declaration is
+        /// never configured.
         ///
-        /// Deliberate asymmetry, documented not changed: config entries
-        /// default to disabled ("fresh installs enable zero"), while
-        /// migrated declarations default to enabled because a migration
-        /// preserves the source's intent. Enabling is still not execution:
-        /// an enabled declaration still needs an explicit
-        /// `pantheon mcp approve <name>` before it ever launches.
+        /// The asymmetry with config entries is intentional: those default to disabled
+        /// ("fresh installs enable zero"), while migrated declarations default to
+        /// enabled because a migration preserves the source's intent. Enabling is not
+        /// execution - an enabled declaration still needs an explicit
+        /// `pantheon mcp approve <name>` before it launches.
         #[serde(default = "mcp_enabled_default")]
         pub enabled: bool,
     }
@@ -2184,7 +2178,7 @@ pub mod carry {
         parse_env(body, false)
     }
 
-    /// Parse a `.env`-shaped file **including values**. Only the credential-bridge
+    /// Parse a `.env`-shaped file including values. Only the credential-bridge
     /// path calls this, and it writes the result straight into an encrypted vault
     /// without echoing it. Nothing here prints, logs, or returns a value through
     /// a plan, a report, or an error.
@@ -2314,7 +2308,7 @@ pub mod carry {
         Ok(path)
     }
 
-    /// Write the credential manifest. **Names and targets only** - the file
+    /// Write the credential manifest. Names and targets only - the file
     /// deliberately has no field a value could occupy.
     pub fn write_credential_manifest(
         targets_data_dir: &Path,
@@ -2340,7 +2334,7 @@ pub mod carry {
     // .env  ->  <data_dir>/.env
     // ===========================================================================
 
-    /// Where a credential value landed, per key. **Names only** - this struct has
+    /// Where a credential value landed, per key. Names only - this struct has
     /// no field a value could occupy, deliberately.
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct EnvMergeReport {
@@ -2417,7 +2411,7 @@ pub mod carry {
     /// Rules, in order of importance:
     /// - Only keys that classify as credentials are carried. A source `PATH` or
     ///   `HOME` does not belong in a key store.
-    /// - **An existing key is never clobbered.** It is reported as
+    /// - An existing key is never clobbered. It is reported as
     ///   `already_present` and the operator decides. A migration that overwrites a
     ///   key the operator set in Pantheon is a data-loss bug.
     /// - A value is written to `<data_dir>/.env` and nowhere else. It is never
@@ -2459,10 +2453,9 @@ pub mod carry {
                 report.already_present.push(e.name);
                 continue;
             }
-            // The store write goes through the canonical atomic dotenv writer
-            // (temp + fsync + rename, owner-only, lossless quoting): the old
-            // raw `format!("{key}={value}")` + `fs::write` path silently
-            // truncated values like `sk-abc # def` on read-back.
+            // The store write goes through the canonical atomic dotenv writer (temp + fsync
+            // + rename, owner-only, lossless quoting): a raw `format!("{key}={value}")` +
+            // `fs::write` silently truncates values like `sk-abc # def` on read-back.
             if value.contains('\n') || value.contains('\r') {
                 return Err(werr(
                     "MIGRATE_ENV_WRITE",
@@ -2566,8 +2559,8 @@ pub mod carry {
         servers: Vec<McpServer>,
     }
 
-    /// Copy transcript files into a quarantine path and write a manifest, so they
-    /// can be indexed into `session_search` deliberately, with explicit budgets.
+    /// Copy transcript files into a quarantine path and write a manifest. Indexing
+    /// them into `session_search` is a separate step with explicit budgets.
     /// A budget breach aborts the quarantine copy with an error; the caller
     /// discards the partial tree.
     pub fn write_session_import_with_budget(
@@ -2841,15 +2834,15 @@ pub mod compat {
     //!
     //! The contract it upholds is deliberately narrow:
     //!
-    //! - A foreign hook maps to a Pantheon hook **only** when the semantics match.
+    //! - A foreign hook maps to a Pantheon hook only when the semantics match.
     //!   Nothing is approximated.
-    //! - An unmappable hook is **reported, never dropped**. A plugin that asks for
+    //! - An unmappable hook is reported, never dropped. A plugin that asks for
     //!   `before_tool_call` and gets silence is worse than one that is refused,
     //!   so `CompatReport::unsupported` always names what was lost.
     //! - Capabilities Pantheon has no equivalent for (model providers, media
     //!   generation, gateway methods, HTTP routes) are recorded as `refused`, so
     //!   the operator can see the plugin loaded a subset of what it declares.
-    //! - Credentials are **described, never copied**: the manifest's
+    //! - Credentials are described, never copied: the manifest's
     //!   `envVars` become a declaration of what the operator must supply through
     //!   Pantheon's own secrets plane.
 
@@ -2939,7 +2932,7 @@ pub mod compat {
     /// Map a foreign lifecycle event onto a Pantheon hook.
     ///
     /// The mapping is intentionally conservative. A hook is only reported as
-    /// [`HookMap::Mapped`] when it is both semantically equivalent **and**
+    /// [`HookMap::Mapped`] when it is both semantically equivalent and
     /// actually wired (see [`Hook::is_wired`]) - `Mapped` promises the operator
     /// that the handler will run, so it must never be handed out for a hook with
     /// no fire site. `before_tool_call` maps for real (to the
@@ -3428,11 +3421,11 @@ pub mod index {
     //!
     //! Two rules keep the import from lying to the operator:
     //!
-    //! - **A migrated chunk is namespaced.** `run_id` is
+    //! - A migrated chunk is namespaced. `run_id` is
     //!   `migrated:<source>:<session>`, which cannot collide with a real `run_*`
     //!   id, and `seq` is the record's line number. A hit points at the quarantined
     //!   file, not at a ledger event that does not exist.
-    //! - **Indexing is idempotent.** `chunk_id` is derived from
+    //! - Indexing is idempotent. `chunk_id` is derived from
     //!   (source, file, line), and `index()` is `INSERT OR REPLACE`, so
     //!   re-indexing converges instead of duplicating rows.
     //!
@@ -3722,12 +3715,10 @@ pub mod index {
     /// Index the quarantined transcripts for `source` into the live session
     /// search store, treating index failure as import failure.
     ///
-    /// A bare [`index_quarantine`] returns `Err` on an index write failure, but
-    /// nothing stops a caller from logging it and reporting success anyway
-    /// which is what `migrate apply` used to do (stderr line, exit 0). This
-    /// function's contract is explicit: an `Err` here means the session import
-    /// did not complete and must be reported as failed, never as success.
-    /// Callers must propagate the error to their exit status.
+    /// A bare [`index_quarantine`] returns `Err` on an index write failure, and a
+    /// caller could log that and report success anyway. This function's contract is
+    /// explicit: an `Err` here means the session import did not complete and must be
+    /// reported as failed. Callers propagate the error to their exit status.
     ///
     /// A missing quarantine dir is not a failure: there is simply nothing to
     /// index, and an empty report is returned.
@@ -3857,10 +3848,10 @@ pub mod providers {
     //!
     //! Two separate problems, deliberately kept apart:
     //!
-    //! - **Custom providers** (`[providers.<name>]` in a Hermes `config.yaml`)
+    //! - Custom providers (`[providers.<name>]` in a Hermes `config.yaml`)
     //!   describe an endpoint Pantheon has no catalog entry for. They need a
     //!   `[custom_providers.<name>]` section written into `config.toml`.
-    //! - **Builtin provider keys** are already covered by the credential carry,
+    //! - Builtin provider keys are already covered by the credential carry,
     //!   because Pantheon's catalog names each provider's key env after the same
     //!   `<PROVIDER>_API_KEY` convention the sources use. Nothing needs writing
     //!   but nothing *verifies* it either, so a key that matches no catalog entry
@@ -3889,7 +3880,7 @@ pub mod providers {
         pub base_url: String,
         /// `openai` or `anthropic`.
         pub api_mode: String,
-        /// Env var **name** holding the key. Never the key.
+        /// Env var name holding the key. Never the key.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub key_env: Option<String>,
         /// The source's default model for this provider, when it declared one.
@@ -4177,7 +4168,7 @@ pub mod providers {
     /// Render `[custom_providers.<id>]` sections in Pantheon's TOML shape.
     ///
     /// A provider whose key was a literal in the source is emitted with the
-    /// `key_env` line **omitted** and a comment saying so, rather than with an
+    /// `key_env` line omitted and a comment saying so, rather than with an
     /// invented env var that would resolve to nothing.
     pub fn render_custom_providers(providers: &[CustomProvider]) -> String {
         let mut s = String::new();
@@ -4272,7 +4263,7 @@ pub mod providers {
         data_dir.join("providers").join("imported.toml")
     }
 
-    /// Write the sidecar. This is the **default** destination: a provider is
+    /// Write the sidecar. This is the default destination: a provider is
     /// written somewhere reviewable, never straight into the live config.
     pub fn write_provider_sidecar(
         data_dir: &Path,
@@ -4309,13 +4300,13 @@ pub mod providers {
         Ok(path)
     }
 
-    /// Merge provider sections into an existing `config.toml` **body**, without
+    /// Merge provider sections into an existing `config.toml` body, without
     /// clobbering anything.
     ///
     /// A text-level merge, not a TOML round-trip: re-serialising a user's
     /// `config.toml` would reorder and reformat every table in it, and a
     /// migration should leave the file it did not write byte-identical outside the
-    /// sections it adds. An existing `[custom_providers.<id>]` is **skipped**, not
+    /// sections it adds. An existing `[custom_providers.<id>]` is skipped, not
     /// replaced, and reported.
     pub fn merge_into_config(
         existing: &str,
@@ -4417,21 +4408,21 @@ pub mod session_import {
     //!
     //! Design notes:
     //!
-    //! - **Deterministic ids.** A run id is
+    //! - Deterministic ids. A run id is
     //!   `imported:<source>:<parent-dir>:<file-stem>`. Re-running an import
     //!   converges: a run that already exists is skipped, never duplicated.
-    //! - **Native shapes.** User and assistant records become
+    //! - Native shapes. User and assistant records become
     //!   `AssistantMessage` events - the same shape the runtime uses for live
     //!   sessions (user prompts ride `AssistantMessage` with `Role::User`), so
     //!   `rebuild_messages` and resume work unchanged.
-    //! - **Reasoning survives.** Thinking traces become `ImportedReasoning`
+    //! - Reasoning survives. Thinking traces become `ImportedReasoning`
     //!   events: durable, surfaced in the TUI transcript in order, never sent
     //!   to the model as a conversation message.
-    //! - **Tool traffic is dropped.** Pantheon cannot safely re-execute a
+    //! - Tool traffic is dropped. Pantheon cannot safely re-execute a
     //!   foreign tool call, so tool records are counted and the drop is written
     //!   onto the run as a `RunProgress` note. The transcript is honest about
     //!   what is missing.
-    //! - **Provenance.** Source, original session id, and import timestamp are
+    //! - Provenance. Source, original session id, and import timestamp are
     //!   written as the run's first `RunProgress` event.
 
     use pantheon_api::error::{Layer, PantheonError};
@@ -4753,11 +4744,9 @@ pub mod session_import {
                 if let Some(arr) = arr {
                     return records_to_turns(arr.iter().map(|v| v.to_string()).collect());
                 }
-                // A single message object under `messages`, or the whole
-                // file as one record: parse it as one record, not as lines
-                // (a pretty-printed object spans many lines, each of which
-                // fails record parsing, and the file used to yield
-                // `SkippedEmpty` for a perfectly good transcript).
+                // A single message object under `messages`, or the whole file as one
+                // record: parse it as one record, not as lines. A pretty-printed object
+                // spans many lines, each of which fails record parsing.
                 let single: Option<serde_json::Value> = v
                     .get("messages")
                     .filter(|m| m.is_object())

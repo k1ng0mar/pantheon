@@ -1,19 +1,7 @@
-//! broker_group: broker, vault, value, error, filevault, keychain, grants, redaction in one file.
-
 pub mod broker {
-    //! The secrets broker: resolution + injection at the execution boundary.
-    //!
-    //! Guarantees:
-    //! - Resolution order is deterministic: durable vaults in insertion order,
-    //!   then the environment. First hit wins.
-    //! - A durable vault whose platform store cannot answer
-    //!   ([`SecretsError::Backend`]) is skipped, not fatal: a broken keyring
-    //!   must never fail a resolve the next vault could satisfy. Deeper
-    //!   failures (tampered encrypted vault, I/O) still propagate loudly.
-    //! - Secrets travel only as [`SecretValue`]; `describe`/`Debug` never leak
-    //!   contents, so events, `pantheon logs`, and logs stay clean.
-    //! - `inject` returns `None` for absent secrets rather than erroring, so
-    //!   callers degrade gracefully when a secret isn't configured.
+    //! Resolve order: durable vaults in insertion order, then env.
+    //! A keyring that won't answer gets skipped, deeper failures propagate.
+    //! `inject` returns None for an absent secret rather than erroring.
 
     use crate::env::EnvVault;
     use crate::error::SecretsError;
@@ -26,24 +14,15 @@ pub mod broker {
     /// Resolves and injects secrets for a run.
     #[derive(Debug)]
     pub struct SecretsBroker {
-        /// Durable backends behind `Arc`: every vault guards its state with a
-        /// `Mutex` and takes `&self`, so sharing is sound - and `clone()` keeps
-        /// resolving against the same platform stores instead of silently
-        /// dropping to memory-only.
+        // Arc so clone() keeps hitting the same store.
         durable: Vec<Arc<dyn SecretVault>>,
         env: EnvVault,
-        /// Host env names the plugin supervisor may copy into plugin
-        /// subprocesses. Carried on the broker because the broker owns the
-        /// run's secrets-boundary policy. Empty (default) = plugins receive no
-        /// host vars beyond the curated minimum (PATH); manifest-declared names
-        /// only cross the boundary on an explicit operator allowlist hit.
+        // Empty = PATH only for plugin children.
         plugin_env_allowlist: Vec<String>,
-        /// Exact-value redaction registry. `inject` records every handed-out
-        /// value here; the session scrubs model-facing tool output against it.
-        /// Shared by `Arc`, so clones register into the same registry instead
-        /// of silently splitting it.
+        // inject() registers each value it hands out; the session scrubs
+        // tool output against this.
         redaction: Arc<RedactionRegistry>,
-        /// When Some, only these names resolve. Used for delegated child grants.
+        // Some = only these names resolve. Delegated child grants.
         allowed_names: Option<std::collections::HashSet<String>>,
     }
 
@@ -61,10 +40,7 @@ pub mod broker {
 
     impl Clone for SecretsBroker {
         fn clone(&self) -> Self {
-            // Vaults are shared, not dropped: the `Arc`s clone cheaply and the
-            // clone resolves against the same platform stores. (An earlier
-            // version rebuilt from the system environment here and silently
-            // fell back to memory-only, losing every durable backend.)
+            // Clone shares the Arcs, so a clone resolves against the same stores.
             Self {
                 durable: self.durable.clone(),
                 env: self.env.clone(),
@@ -81,13 +57,9 @@ pub mod broker {
             Self::default()
         }
 
-        /// Broker over the real process environment (`PANTHEON_SECRET_*`),
-        /// plus the OS keychain first when this host has a usable platform
-        /// credential store (spec §13 ranks it above every other durable
-        /// backend).
-        ///
-        /// The `env:` literal form resolves nothing unless an allowlist is
-        /// installed via [`Self::with_env_allowlist`]: fail closed by default.
+        /// Broker over the real process env (`PANTHEON_SECRET_*`), with the OS
+        /// keychain in front when this host has a usable one. `env:` resolves
+        /// nothing until [`Self::with_env_allowlist`].
         pub fn from_system_env() -> Self {
             let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
             if crate::keychain::KeychainVault::platform_available().is_ok() {
@@ -102,16 +74,10 @@ pub mod broker {
             }
         }
 
-        /// Like `from_system_env`, but also picks up the legacy `PANTHEON_API_KEY`
-        /// env var (and any config-named env var passed via `key_env`) by injecting
-        /// it into a memory vault. The mirror is ranked *with the environment*
-        /// (in front of the keychain) for reads, so exporting a rotated key
-        /// always beats a stale stored one; an explicit `--key` still beats both
-        /// via [`Self::with_vault_front`].
-        ///
-        /// The mirror is read-only: it is wrapped in
-        /// [`crate::vault::ReadOnlyVault`] so a `set` falls through to the next
-        /// durable vault (the keychain) instead of dying in process memory.
+        /// `from_system_env` plus the legacy `PANTHEON_API_KEY` (and any
+        /// `key_env`), injected as a memory vault ranked with the environment, so
+        /// an exported rotation beats a stored one. Read-only mirror: `set` falls
+        /// through to the keychain.
         pub fn from_system_env_with_api_key(key_env: Option<&str>) -> Self {
             let mem = crate::vault::MemoryVault::new();
             let found = key_env
@@ -124,41 +90,28 @@ pub mod broker {
                 .with_vault_front(Box::new(crate::vault::ReadOnlyVault::new(mem)))
         }
 
-        /// Broker with a durable vault that survives restarts, for hosts where
-        /// the OS keychain may be absent (headless Linux): the OS keychain
-        /// when the platform has a usable credential store, otherwise an
-        /// [`crate::filevault::EncryptedFileVault`] under `data_dir`
-        /// (`secrets.json` sealed under `.secrets.key`, 0600).
+        /// Durable vault for hosts that may have no keychain (headless Linux):
+        /// the OS keychain when usable, else an [`crate::filevault::EncryptedFileVault`]
+        /// under `data_dir` (`secrets.json` sealed under `.secrets.key`, 0600).
         ///
-        /// There is deliberately no in-memory fallback in the chain: a `set`
-        /// that only reaches process memory silently loses the secret on
-        /// restart, which is the failure this constructor exists to prevent.
-        /// Fails loudly when the file vault cannot be opened (I/O, tampered
-        /// envelope) rather than degrading to memory.
+        /// No memory fallback in the chain - that loses the secret on restart,
+        /// which is the failure this constructor exists to prevent. Errors when
+        /// the file vault won't open rather than degrading.
         ///
-        /// "The platform has a usable credential store" is checked with a real
-        /// probe, not just `store_status`. A D-Bus session can exist on a
-        /// headless host while the `login` keyring collection does not, and
-        /// `store_status` reports Ok for that case. Trusting it put a broker in
-        /// front of a keychain that can only ever fail, so every `set` returned
-        /// a backend error and the file vault that would have worked was never
-        /// opened.
+        /// Usability is a real entry probe, not `store_status`: a headless box can
+        /// have a D-Bus session and no `login` collection, and trusting
+        /// `store_status` there gave a broker a keychain that could only fail.
         pub fn durable(data_dir: &Path) -> Result<Self, SecretsError> {
             let keychain_usable = crate::keychain::KeychainVault::platform_available().is_ok()
                 && crate::keychain::KeychainVault::usable().is_ok();
             Self::durable_with(data_dir, keychain_usable)
         }
 
-        /// The selection half of [`Self::durable`], with the environment probe
-        /// split out. Tests pass `keychain_usable: false` so the file-vault
-        /// fallback is exercised without touching the developer's real keyring
-        /// (a locked keyring would otherwise prompt for an unlock, bounded by
-        /// the keychain operation timeout).
+        /// The selection half of [`Self::durable`], env probe split out. Tests
+        /// pass `keychain_usable: false` so they don't touch a real keyring.
         ///
-        /// Public because a host that builds a broker per request needs an
-        /// enumerable backend: the OS keychain cannot list its entries, so under
-        /// the keychain backend a secret stored by one request reads back as
-        /// `SECRET_NOT_FOUND` on the next. Headless hosts and tests pin `false`.
+        /// Public because a per-request host needs an enumerable backend, and the
+        /// keychain can't enumerate.
         pub fn durable_with(data_dir: &Path, keychain_usable: bool) -> Result<Self, SecretsError> {
             let mut durable: Vec<Arc<dyn SecretVault>> = Vec::new();
             if keychain_usable {
@@ -199,10 +152,8 @@ pub mod broker {
             self
         }
 
-        /// Restrict the `env:` literal secret form to the allowlist (exact
-        /// names or `PREFIX_*`; see [`crate::env::env_var_allowed`]). Default
-        /// is empty: `env:` reads fail closed. Applies to the broker's own
-        /// environment vault.
+        /// Restrict `env:` to the allowlist (exact names or `PREFIX_*`). Empty by
+        /// default, so `env:` reads fail closed.
         pub fn with_env_allowlist(mut self, allowlist: Vec<String>) -> Self {
             self.env = self.env.with_env_allowlist(allowlist);
             self
@@ -223,11 +174,9 @@ pub mod broker {
             self
         }
 
-        /// Scope the redaction registry to `scope` (a data dir or profile home),
-        /// so multiplexed scopes never cross-scrub: scrubbing scope B's output
-        /// with scope A's values would confirm to B that those bytes exist.
-        /// The default scope is shared process-wide and is correct for
-        /// single-scope processes.
+        /// Scope the redaction registry - a data dir or profile home. Scopes
+        /// don't cross-scrub: doing so would confirm to one scope that another's
+        /// bytes exist.
         pub fn with_redaction_scope(mut self, scope: &str) -> Self {
             self.redaction = RedactionRegistry::for_scope(scope);
             self
@@ -249,12 +198,8 @@ pub mod broker {
             self.env.env_allowlist()
         }
 
-        /// Resolve a secret: durable vaults first, then the environment.
-        ///
-        /// A vault whose platform store cannot answer ([`SecretsError::Backend`])
-        /// is skipped - a broken keyring degrades to the next vault instead of
-        /// failing the run. Any other error (tampered encrypted vault, bad
-        /// request) propagates immediately.
+        /// Durable vaults first, then the env. A vault whose store can't answer
+        /// ([`SecretsError::Backend`]) is skipped; anything else propagates.
         pub fn resolve(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
             if let Some(allowed) = &self.allowed_names {
                 if !allowed.contains(name) {
@@ -275,16 +220,12 @@ pub mod broker {
             self.env.get(name)
         }
 
-        /// Execution-boundary injection. Same as [`resolve`], named for the call
-        /// site where a run's tool/process/session credentials are handed over.
+        /// [`resolve`], named for the point where a run's credentials are handed
+        /// over. The value goes straight to the boundary - not into a log or model
+        /// context.
         ///
-        /// The returned value must be passed to the execution boundary directly;
-        /// it must never be logged or embedded into model context.
-        ///
-        /// Every handed-out value is registered with the redaction registry
-        /// (fill-time registration): the exact bytes are recorded before they
-        /// can appear in any tool result, so a later echo is scrubbed before it
-        /// reaches the model. Registration never fails the injection.
+        /// Each value is registered for redaction at handout, before it can appear
+        /// in a tool result. Registration can't fail the injection.
         pub fn inject(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
             if let Some(allowed) = &self.allowed_names {
                 if !allowed.contains(name) {
@@ -300,13 +241,10 @@ pub mod broker {
             result
         }
 
-        /// Store into the first durable vault that can accept it (error when
-        /// none is configured).
+        /// First durable vault that takes it. Errors when there isn't one.
         ///
-        /// A higher-ranked vault whose platform store cannot answer falls
-        /// through to the next one - a broken keyring must not block a write
-        /// the encrypted file could take - while every other failure
-        /// propagates.
+        /// A vault that can't answer falls through - a locked keyring shouldn't
+        /// block a write the file vault could take.
         pub fn set(&self, name: &str, value: SecretValue) -> Result<(), SecretsError> {
             crate::error::validate_name(name)?;
             if self.durable.is_empty() {
@@ -339,20 +277,13 @@ pub mod broker {
             }
         }
 
-        /// All secret names across durable vaults and the environment, sorted,
-        /// plus one warning per vault whose listing failed. Never returns
-        /// values - only names, so a caller can list what exists without
-        /// exposing any secret material.
+        /// Names across the durable vaults and the env, sorted, plus one warning
+        /// per vault that failed to list. No values.
         ///
-        /// The list is NOT complete when warnings are non-empty: a vault
-        /// error is swallowed by no one here, it is reported. In
-        /// particular the OS keychain vault can never enumerate
-        /// ([`crate::keychain::KeychainVault::names`] always returns
-        /// `Unsupported` - the platform APIs expose lookup-by-name, not
-        /// listing), so any broker backed by the keychain omits every
-        /// keychain entry from this list by design. Callers that must not
-        /// present a partial list as complete (the dashboard env page, for
-        /// example) use the warnings, not just the names.
+        /// Non-empty warnings mean the list is incomplete. The keychain can't
+        /// enumerate at all (the platform APIs only look up by name), so any chain
+        /// with a keychain in it omits those entries by design. The dashboard env
+        /// page shows the warnings.
         pub fn names_with_warnings(&self) -> (Vec<String>, Vec<String>) {
             let mut names: Vec<String> = Vec::new();
             let mut warnings: Vec<String> = Vec::new();
@@ -375,15 +306,8 @@ pub mod broker {
             (names, warnings)
         }
 
-        /// All secret names across durable vaults and the environment, sorted.
-        /// Never returns values - only names, so a caller can list what exists
-        /// without exposing any secret material.
-        ///
-        /// Convenience over [`names_with_warnings`](Self::names_with_warnings):
-        /// warnings are printed to stderr, because a silently partial list
-        /// used to be the behaviour here and it hid keychain entries and
-        /// broken vaults alike. Callers that render the list to a user
-        /// should use `names_with_warnings` and show the warnings alongside.
+        /// [`names_with_warnings`](Self::names_with_warnings) with the warnings on
+        /// stderr. Rendering a list to a user should use that one so they see them.
         pub fn names(&self) -> Vec<String> {
             let (names, warnings) = self.names_with_warnings();
             for w in warnings {
@@ -392,14 +316,9 @@ pub mod broker {
             names
         }
 
-        /// Delete a secret from every vault that holds it. A name no vault
-        /// knows is a no-op (not an error): the caller asked for it to be gone,
-        /// and it is.
-        ///
-        /// A vault whose platform store cannot answer
-        /// ([`SecretsError::Backend`]) is skipped, not fatal - the same
-        /// degraded-store rule as [`Self::resolve`] and [`Self::set`]. Every
-        /// other failure propagates: a delete that reports `Ok` really deleted.
+        /// Delete from every vault that holds it. An unknown name is a no-op - the
+        /// caller wanted it gone and it is. A vault that can't answer is skipped;
+        /// anything else propagates, so an `Ok` really did delete.
         pub fn delete(&self, name: &str) -> Result<(), SecretsError> {
             crate::error::validate_name(name)?;
             for vault in &self.durable {
@@ -417,15 +336,9 @@ pub mod broker {
     mod tests {
         use super::*;
 
-        /// Item 3: a secret `set` through the durable broker survives a
-        /// full drop-and-recreate from the same data dir. The fallback for a
-        /// host with no usable OS keychain is the EncryptedFileVault - a
-        /// memory-only fallback would lose the secret at the second broker.
-        ///
-        /// Forces the fallback instead of probing the real keychain: a test
-        /// must not write to the developer's credential store, and a locked
-        /// keyring would otherwise prompt for an unlock (now bounded by the
-        /// keychain operation timeout).
+        /// A `set` through the durable broker survives a full drop-and-recreate
+        /// from the same data dir. Forced onto the file vault so the test doesn't
+        /// write to the developer's keyring.
         #[test]
         fn durable_broker_secret_survives_restart() {
             let dir = std::env::temp_dir().join(format!(
@@ -619,28 +532,17 @@ pub mod broker {
 }
 
 pub mod vault {
-    //! Vault abstraction.
-    //!
-    //! One `SecretVault` = one storage backend. Backends in the skeleton:
-    //! - [`crate::env::EnvVault`] - process environment compat (always present).
-    //! - [`crate::filevault::EncryptedFileVault`] - AES-256-GCM sealed JSON file.
-    //! - [`MemoryVault`] - tests / ephemeral runtime.
-    //!
-    //! - [`crate::keychain::KeychainVault`] - macOS Keychain, Windows CredMan,
-    //!   Linux Secret Service (the preferred durable backend).
-    //!
-    //! All of these implement [`SecretVault`].
+    //! One `SecretVault` = one backend: [`crate::env::EnvVault`],
+    //! [`crate::filevault::EncryptedFileVault`], [`MemoryVault`],
+    //! [`crate::keychain::KeychainVault`].
 
     use crate::error::SecretsError;
     use crate::value::SecretValue;
     use std::collections::HashMap;
     use std::sync::{Mutex, MutexGuard};
 
-    /// Storage backend for secrets.
-    ///
-    /// Implementations guard their state with a [`Mutex`] and take `&self`, so
-    /// a broker may share vaults across the runtime. `get` must never block on
-    /// network or prompt - it is called on hot paths.
+    /// Backend for secrets. Implementations guard state with a [`Mutex`] and take
+    /// `&self`. `get` doesn't block on network or a prompt - it's on hot paths.
     pub trait SecretVault: Send + Sync + std::fmt::Debug {
         /// Fetch a secret, or `None` when this backend has no such name.
         fn get(&self, name: &str) -> Result<Option<SecretValue>, SecretsError>;
@@ -696,14 +598,10 @@ pub mod vault {
 
     /// Read-only view over another vault.
     ///
-    /// An env-var mirror (see
-    /// [`crate::broker::SecretsBroker::from_system_env_with_api_key`]) must win
-    /// reads - an exported rotation beats a stale stored value - but must never
-    /// absorb writes: a write landing in a process-memory mirror dies with the
-    /// process instead of reaching durable storage. `set`/`delete` fail with
-    /// [`SecretsError::Backend`] so the broker treats this vault like a
-    /// degraded platform store and falls through to the next durable vault,
-    /// exactly as it does for a locked keychain.
+    /// The env mirror wins reads but doesn't absorb writes - a write into process
+    /// memory dies with the process. `set`/`delete` return `Backend` so the broker
+    /// falls through to the next durable vault, the same way it does for a locked
+    /// keychain.
     #[derive(Debug)]
     pub struct ReadOnlyVault<V: SecretVault> {
         inner: V,
@@ -740,20 +638,14 @@ pub mod vault {
 }
 
 pub mod value {
-    //! Zeroizing secret value.
-    //!
-    //! `SecretValue` is the only type a secret travels as. It zeroizes its
-    //! backing buffer on drop, never appears verbatim in its own `Debug`
-    //! output, and exposes its contents only through [`SecretValue::expose`],
-    //! which is reserved for the execution boundary.
+    //! Zeroizing secret value. The only type a secret travels as. Zeroizes on
+    //! drop, `Debug` prints nothing, and `expose` is for the execution boundary.
 
     use std::fmt;
     use zeroize::Zeroizing;
 
-    /// A secret value that scrubs its contents on drop.
-    ///
-    /// Cloning is allowed but discouraged; prefer moving. Logs/errors/events
-    /// must only ever carry `Debug` or [`SecretValue::len`], never raw bytes.
+    /// Scrubs its contents on drop. Cloning works but prefer moving. Logs and
+    /// errors carry `Debug` or [`SecretValue::len`], not bytes.
     #[derive(Clone, Default)]
     pub struct SecretValue(Zeroizing<String>);
 
@@ -891,28 +783,18 @@ pub mod error {
 }
 
 pub mod filevault {
-    //! Encrypted local vault (the fallback when no OS keychain is available).
+    //! Encrypted local vault, the fallback when there's no OS keychain.
     //!
-    //! Everything is sealed with AES-256-GCM under a 32-byte random key stored
-    //! in a separate 0600 key file. The payload is written atomically (temp +
-    //! rename) so a crash can't leave a torn vault, and any bit flip in the file
-    //! fails decryption loudly instead of returning wrong secrets.
+    //! AES-256-GCM under a 32-byte random key in a separate 0600 file. Payload is
+    //! written temp+rename so a crash can't tear it, and a bit flip fails
+    //! decryption instead of returning a wrong secret.
     //!
-    //! Two limitations are by design and documented, not hidden:
+    //! The key sits beside the vault, so this protects against casual reads, not a
+    //! compromised data dir. Moving the key elsewhere (keychain, separate mount)
+    //! needs a migration for existing installs. Key file permissions are ratcheted
+    //! to 0600 on every load, and a file that can't be tightened fails the open.
     //!
-    //! - **The key sits beside the vault.** The key file lives in the same
-    //!   data dir as `secrets.json` (that is the only location the vault is
-    //!   ever told about), so anyone who can read the data dir can read
-    //!   both the ciphertext and its key. The vault protects secrets at
-    //!   rest from casual reads, not from a data-dir compromise. Moving the
-    //!   key elsewhere (OS keychain, separate mount) needs a migration plan
-    //!   for existing installs and is deliberately not done silently here.
-    //! - **Permissions are ratcheted, not just set on creation.** An
-    //!   existing key file that is group/world-readable is tightened to
-    //!   0600 on load; a file whose mode cannot be tightened fails the open
-    //!   rather than proceeding with a readable key.
-    //!
-    //! OS keychains are the preferred backend; this is the self-hosted fallback.
+    //! Keychain first where there is one; this is the self-hosted fallback.
 
     use crate::error::SecretsError;
     use crate::value::SecretValue;
@@ -995,11 +877,8 @@ pub mod filevault {
 
         fn set(&self, name: &str, value: SecretValue) -> Result<(), SecretsError> {
             crate::error::validate_name(name)?;
-            // Persist first, then swap the cache: the old code mutated the
-            // in-memory cache before persisting, so a persist failure
-            // returned Err while the process-local cache already reflected
-            // the change until restart - a lie to every later `get` in this
-            // process. The mutex is not held across the write.
+            // Persist, then swap the cache, so a persist failure leaves `get`
+            // serving the previous value. The mutex isn't held across the write.
             let new_map = {
                 let map = self.state();
                 let mut new_map = map.clone();
@@ -1045,10 +924,8 @@ pub mod filevault {
                     bytes.len()
                 )));
             }
-            // 0600 was previously set only on creation: an existing key file
-            // left group/world-readable (umask, restore, copy) stayed that
-            // way forever. Ratchet it on every load; failing to tighten
-            // fails the open rather than proceeding with a readable key.
+            // 0600 was creation-only before, so a key file left readable by
+            // umask, a copy or a restore stayed that way. Ratchet on every load.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1219,9 +1096,8 @@ pub mod filevault {
             EncryptedFileVault::open(dir.join("secrets.json"), dir.join(".secrets.key")).unwrap()
         }
 
-        /// A persist failure must not pollute the process-local cache: the
-        /// old code inserted into the cache first, so `get` reported the
-        /// change even though the call returned `Err`.
+        /// A persist failure leaves the process-local cache alone, so `get` never
+        /// reports a change the call returned `Err` for.
         #[test]
         fn failed_set_and_delete_leave_cache_unchanged() {
             let dir = scratch("atomic");
@@ -1270,42 +1146,23 @@ pub mod filevault {
 }
 
 pub mod keychain {
-    //! OS keychain vault (spec §13): the preferred durable backend.
+    //! OS keychain vault: the preferred durable backend. Keychain Services on
+    //! macOS, CredMan on Windows, Secret Service on Linux (gnome-keyring,
+    //! KWallet), all through the `keyring` crate.
     //!
-    //! macOS Keychain Services, Windows Credential Manager, and - on Linux
-    //! the freedesktop Secret Service (gnome-keyring, KWallet) all sit behind
-    //! the `keyring` crate's platform-default store. This is the "OS
-    //! keychain" the spec ranks above the encrypted local file; insert it
-    //! into a broker ahead of [`crate::filevault::EncryptedFileVault`] and
-    //! the environment.
+    //! A locked keyring prompts to unlock, and that prompt's wait has no timeout
+    //! of its own, so every operation is bounded by `KEYCHAIN_TIMEOUT`. On timeout
+    //! the op is abandoned and surfaces as [`SecretsError::Backend`], which the
+    //! broker skips rather than hanging the runtime on a modal dialog.
     //!
-    //! Contract notes:
-    //! - `get`/`set` are one local round-trip to the store (a D-Bus call on
-    //!   Linux, ~ms). A *locked* keyring is the one case that can block: the
-    //!   Secret Service store prompts to unlock, and that prompt's
-    //!   `Completed`-signal wait has no timeout of its own. Every operation is
-    //!   therefore bounded by `KEYCHAIN_TIMEOUT`; on timeout the operation is
-    //!   abandoned and the store surfaces as [`SecretsError::Backend`] - which
-    //!   the broker skips - so the runtime never hangs on a modal prompt.
-    //! - `names` is unsupported: the platform APIs store and look up
-    //!   credentials but offer no enumeration through this interface. Keep
-    //!   the authoritative name list wherever the references live.
-    //! - Secrets cross into the store as one plain copy at the platform
-    //!   boundary (unavoidable at the FFI/D-Bus edge); everything on this
-    //!   side stays a zeroizing [`SecretValue`].
+    //! `names` is unsupported - the platform APIs store and look up by name but
+    //! don't enumerate. Keep the authoritative list wherever the references live.
     //!
-    //! Availability contract (the broker relies on it):
-    //! - Host with **no store at all**: `get` reads as absence (`Ok(None)`),
-    //!   `delete` as the no-op it would be, so a broker chain falls through
-    //!   to the next vault; `set` errors - there is nowhere to write.
-    //! - Host **with a store that cannot answer** (locked, D-Bus broken):
-    //!   every op surfaces [`SecretsError::Backend`] - the secret may exist,
-    //!   the store just couldn't reply. Callers such as
-    //!   [`crate::SecretsBroker`] decide whether to fall through or fail.
+    //! No store on the host: `get` is `Ok(None)` and `delete` is the no-op it would
+    //! be, so the chain falls through; `set` errors since there's nowhere to write.
+    //! A store that exists but can't answer is `Backend` on every op.
     //!
-    //! Headless machines without a credential store keep working: the broker
-    //! falls through to the next vault, and [`KeychainVault::platform_available`]
-    //! lets callers check first.
+    //! [`KeychainVault::platform_available`] lets a caller check before committing.
 
     use crate::error::{validate_name, SecretsError};
     use crate::value::SecretValue;
@@ -1325,23 +1182,15 @@ pub mod keychain {
     /// secret; it exists only to prove the credential store answers.
     const PROBE_VALUE: &str = "pantheon-probe-value";
 
-    /// How long a keychain operation may block before we give up and report the
-    /// store as unavailable.
-    ///
-    /// The Secret Service store prompts to unlock a locked keyring, and
-    /// `secret-service`'s `exec_prompt` waits for the unlock dialog's
-    /// `Completed` signal with no timeout of its own - so an unanswered prompt
-    /// would block the runtime forever (the `SecretVault::get` contract forbids
-    /// that). This bound turns an unbounded wait into a [`SecretsError::Backend`],
-    /// which the broker skips.
+    /// How long a keychain op may block. The Secret Service unlock prompt waits on
+    /// its `Completed` signal with no timeout of its own, and `SecretVault::get`
+    /// can't block forever. On expiry the op is `Backend`, which the broker skips.
     const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
-    /// Set once a keychain operation has timed out. The platform store is a
-    /// process-wide singleton and its mutex is still held by the abandoned thread
-    /// while the prompt is up, so every later operation would block on that
-    /// mutex. Latching here makes later calls fail fast instead of hanging: the
-    /// keychain is treated as unusable until the process restarts, and the broker
-    /// falls through to the next durable vault.
+    /// Set once a keychain op has timed out. The platform store is a process-wide
+    /// singleton and the abandoned thread still holds its mutex while the prompt
+    /// is up, so later calls would queue behind it. Latched, they fail fast: the
+    /// keychain is unusable until the process restarts.
     static KEYCHAIN_TIMED_OUT: AtomicBool = AtomicBool::new(false);
 
     /// The error a timed-out (or latched-off) keychain operation reports.
@@ -1349,11 +1198,9 @@ pub mod keychain {
         SecretsError::Backend("os keychain: operation timed out".into())
     }
 
-    /// Run one blocking keychain operation under [`KEYCHAIN_TIMEOUT`].
-    ///
-    /// The operation runs on a throwaway thread so the wait can be bounded; the
-    /// outer `Err` is a timeout/latch, the inner `Result` is the platform's own
-    /// answer (so callers can still distinguish `NoEntry` from a real failure).
+    /// One blocking keychain op under [`KEYCHAIN_TIMEOUT`], on a throwaway thread.
+    /// Outer `Err` is the timeout/latch; inner `Result` is the platform's own
+    /// answer, so callers can still tell `NoEntry` from a real failure.
     fn run_bounded<T>(
         op: impl FnOnce() -> Result<T, KrError> + Send + 'static,
     ) -> Result<Result<T, KrError>, SecretsError>
@@ -1413,31 +1260,23 @@ pub mod keychain {
             }
         }
 
-        /// Is the platform credential store usable in this process?
-        ///
-        /// Initializes the store on first call (once per process, cached by
-        /// the keyring crate). `Err` = no store here: headless box, container
-        /// without a Secret Service, unsupported platform.
+        /// Whether a store object can be built here. `Err` = headless box,
+        /// container without a Secret Service, unsupported platform.
         pub fn platform_available() -> Result<(), SecretsError> {
             ensure_store()
         }
 
-        /// Can the keychain actually store a credential right now?
+        /// Whether the keychain can actually store something right now.
         ///
-        /// [`Self::platform_available`] only proves a store object could be
-        /// constructed. On a headless Linux host a D-Bus session is often
-        /// present while the `login` collection is not, so a real entry probe
-        /// fails where `store_status` succeeded. Callers that are about to
-        /// commit to the keychain (rather than merely report availability)
-        /// must use this one.
+        /// [`Self::platform_available`] only proves a store could be constructed.
+        /// A headless Linux box often has a D-Bus session and no `login`
+        /// collection. Anything about to commit to the keychain uses this one.
         pub fn usable() -> Result<(), SecretsError> {
             ensure_store()?;
-            // Building an entry is lazy on the Secret Service backend: the
-            // handle is created but no D-Bus call happens until a credential
-            // is read or written. So the probe has to actually round-trip a
-            // value, otherwise it reports a usable keychain on a host whose
-            // `login` collection does not exist. Each round-trip is bounded
-            // (see `run_bounded`) so a locked keyring cannot hang the probe.
+            // Building an entry is lazy on Secret Service: the handle exists but
+            // no D-Bus call happens until a value is read or written. So the probe
+            // round-trips a value, otherwise it reports a working keychain on a
+            // host whose collection doesn't exist. Each trip is bounded.
             let entry =
                 Arc::new(KrEntry::new(PROBE_SERVICE, PROBE_USER).map_err(|e| backend_err(&e))?);
             run_bounded({
@@ -1470,14 +1309,9 @@ pub mod keychain {
         }
     }
 
-    /// Make sure some credential store is installed, then report the status.
-    ///
-    /// The first use in a process asks the `keyring` crate to build the
-    /// platform-default store (a Secret Service connection on Linux, the
-    /// Keychain on macOS, CredMan on Windows) and installs it. Once a store
-    /// is already installed - including a test-injected one - this is a
-    /// no-op, which is what makes the sample-store lib tests deterministic
-    /// in the same process.
+    /// Install the platform-default store if it isn't already, then report status.
+    /// A no-op once a store is installed - including a test-injected one, which is
+    /// why the sample-store tests are deterministic in one process.
     fn ensure_store() -> Result<(), SecretsError> {
         if keyring_core::get_default_store().is_some() {
             return Ok(());
@@ -1501,10 +1335,9 @@ pub mod keychain {
     impl SecretVault for KeychainVault {
         fn get(&self, name: &str) -> Result<Option<SecretValue>, SecretsError> {
             validate_name(name)?;
-            // No store on this host: this backend holds nothing under any
-            // name - absence, so the broker chain falls through.
-            // (A store that exists but cannot answer stays a loud Backend
-            // error below: the secret may well be in there.)
+            // No store here, so this backend holds nothing under any name -
+            // absence, and the chain falls through. (A store that exists but
+            // can't answer stays a loud Backend error below.)
             if ensure_store().is_err() {
                 return Ok(None);
             }
@@ -1524,11 +1357,8 @@ pub mod keychain {
         }
 
         fn delete(&self, name: &str) -> Result<(), SecretsError> {
-            // Validate before touching the platform, exactly like get/set. A
-            // store-less host returned Ok(()) for every name, empty ones
-            // included, so `delete("")` only failed where a keyring happened to
-            // exist - the test passed locally and failed on a CI runner with
-            // one. A rejected name is rejected everywhere.
+            // Validate before touching the platform, like get/set: a rejected name
+            // is rejected everywhere, store or no store.
             validate_name(name)?;
             // Nothing can be stored where there is no store: deleting every
             // conceivable name is a chain of no-ops, contract and all.
@@ -1545,13 +1375,10 @@ pub mod keychain {
         }
 
         fn names(&self) -> Result<Vec<String>, SecretsError> {
-            // Enumeration gap, by platform design: the OS keychain APIs
-            // expose lookup-by-name, not listing, so no broker list that
-            // includes this vault is ever complete. The broker surfaces
-            // this as a warning via `names_with_warnings` instead of
-            // letting callers present a partial list as the whole store;
-            // the only complete record of keychain-held names is the
-            // operator's own tracking alongside the references.
+            // The platform APIs look up by name and don't enumerate, so no list
+            // that includes this vault is complete. The broker turns that into a
+            // warning via `names_with_warnings`. The only complete record of
+            // keychain names is the operator's own tracking.
             Err(SecretsError::Unsupported(
                 "the OS keychain API cannot enumerate entries; track names \
                  alongside their references"
@@ -1564,10 +1391,9 @@ pub mod keychain {
     mod tests {
         use super::*;
 
-        /// The bound must turn the Secret Service's unbounded unlock-prompt wait
-        /// into a `Backend` error (which the broker skips) and latch the store
-        /// off, so a later call fails fast instead of blocking on the abandoned
-        /// thread's process-wide mutex.
+        /// The bound has to turn the unlock-prompt wait into a `Backend` error
+        /// (which the broker skips) and latch the store off, so a later call
+        /// doesn't queue behind the abandoned thread's process-wide mutex.
         #[test]
         fn a_blocking_operation_is_bounded_and_latches_the_store_off() {
             KEYCHAIN_TIMED_OUT.store(false, Ordering::SeqCst);
@@ -1602,37 +1428,27 @@ pub mod keychain {
 }
 
 pub mod redaction {
-    //! Exact-value redaction registry.
+    //! Exact-value redaction. Pattern-based redaction guesses a secret's shape;
+    //! this records the exact bytes the broker handed out and scrubs those
+    //! substrings from model-facing text. Registration happens at fill time, so an
+    //! echo later can't reach the model.
     //!
-    //! Complements pattern-based redaction (see `pantheon-api` logging): instead
-    //! of guessing what a secret looks like from its shape, the registry records
-    //! the exact bytes the broker handed out and scrubs those substrings from
-    //! model-facing text. Registration happens at fill time, before the value can
-    //! appear in any tool result, so a later echo can never reach the model.
+    //! Registries are per scope (a data dir or profile home), shared process-wide so
+    //! a registering broker and a scrubbing session stay in sync without plumbing.
+    //! Scopes don't share entries - that would confirm to one scope that another's
+    //! bytes exist.
     //!
-    //! Registries are keyed by scope (a data dir or profile home) and shared
-    //! process-wide per scope: a broker that registers and a session that scrubs
-    //! stay in sync without plumbing handles between them. Scopes never share
-    //! entries - scrubbing scope B's output with scope A's values would confirm
-    //! to B that those bytes exist.
-    //!
-    //! Fail-open on a poisoned lock is a deliberate tradeoff, documented
-    //! here rather than changed: `register` skips and `scrub` returns text
-    //! unchanged when the per-scope lock is poisoned (a thread panicked
-    //! while holding it). Failing the caller instead would break unrelated
-    //! model-facing flows over a best-effort defence-in-depth layer -
-    //! pattern-based redaction in `pantheon-api` logging still applies -
-    //! and there is no safe state to recover: the guarded deque may be
-    //! half-mutated. Poisoning is rare (it needs a panic mid-register /
-    //! mid-scrub) and loud in logs via the panic itself.
+    //! A poisoned lock fails open: `register` skips and `scrub` returns the text
+    //! unchanged. Poisoning needs a panic mid-register or mid-scrub, and the guarded
+    //! deque may be half-mutated, so there's no state to recover to. Pattern-based
+    //! redaction in `pantheon-api` logging still applies.
 
     use std::collections::{HashMap, VecDeque};
     use std::sync::{Arc, LazyLock, Mutex};
 
-    /// Upper bound on registered values per scope. A fill-heavy session evicts
-    /// its oldest entries instead of growing without limit. Eviction is
-    /// loud (stderr): silently losing scrubbing for an early secret would
-    /// leave that secret unscrubbed with no trace.
+    /// Cap on registered values per scope. A fill-heavy session evicts oldest
+    /// rather than growing. Eviction goes to stderr: silently losing scrubbing for
+    /// a secret would leave it unscrubbed with nothing in the log.
     const MAX_VALUES_PER_SCOPE: usize = 64;
 
     /// Minimum length of a registered secret. A 1-char "secret" would scrub
@@ -1678,14 +1494,11 @@ pub mod redaction {
             &self.scope
         }
 
-        /// Record an exact secret value for later scrubbing. Empty values
-        /// are ignored: matching the empty string would hit everywhere.
-        /// Values shorter than [`MIN_SECRET_LEN`] are ignored for the same
-        /// reason at a smaller scale: a 1-char secret would scrub benign
-        /// text wherever that character appears. Re-registering a value
-        /// refreshes its recency so live secrets are evicted last. Fails
-        /// open: a poisoned lock skips registration instead of failing the
-        /// caller (see the module docs for the tradeoff).
+        /// Record a value for later scrubbing. Empty values are ignored (matching
+        /// "" hits everywhere), and so is anything under [`MIN_SECRET_LEN`] - a
+        /// 1-char secret would scrub that character out of benign text. Re-
+        /// registering refreshes recency so live secrets evict last. A poisoned
+        /// lock skips rather than failing the caller.
         pub fn register(&self, value: &str) {
             if value.len() < MIN_SECRET_LEN {
                 return;
@@ -1708,10 +1521,9 @@ pub mod redaction {
             }
         }
 
-        /// Replace every registered value in `text` with the placeholder.
-        /// Longest values go first so a registered substring never shadows its
-        /// registered superstring. Fails open: a poisoned lock returns `text`
-        /// unchanged rather than failing the caller.
+        /// Replace registered values with the placeholder, longest first so a
+        /// registered substring can't shadow its superstring. A poisoned lock
+        /// returns the text unchanged.
         pub fn scrub(&self, text: &str) -> String {
             let Ok(values) = self.values.lock() else {
                 return text.to_string(); // poisoned: fail open, no scrub
@@ -1721,12 +1533,11 @@ pub mod redaction {
             }
             let mut ordered: Vec<&str> = values.iter().map(String::as_str).collect();
             ordered.sort_by_key(|a| std::cmp::Reverse(a.len()));
-            // Substitute once, in a single left-to-right pass, never re-scanning
-            // emitted output. `str::replace` cascades: with a value that overlaps
-            // the placeholder (a registered "[redacted-secret]", or a short value
-            // like "redact"), a later iteration rewrites bytes an earlier one just
-            // inserted, producing `[redacted-[redacted-secret]]`. A single pass is
-            // a fixed point by construction: scrubbing scrubbed text is a no-op.
+            // One left-to-right pass, never re-scanning output. `str::replace`
+            // cascades: a value overlapping the placeholder (a registered
+            // "[redacted-secret]", or a short one like "redact") rewrites bytes an
+            // earlier iteration inserted, giving `[redacted-[redacted-secret]]`.
+            // One pass is a fixed point by construction.
             let mut out = String::with_capacity(text.len());
             let mut rest = text;
             'outer: while !rest.is_empty() {
@@ -1860,13 +1671,10 @@ pub mod redaction {
 
     #[cfg(test)]
     mod fixed_point_tests {
-        //! Scrubbing must be a fixed point: scrubbing an already-scrubbed string
-        //! is a no-op. The old implementation chained `str::replace` per value, so
-        //! a registered value overlapping the placeholder rewrote the placeholder
-        //! into `[redacted-[redacted-secret]]`. That surfaced as a flaky
-        //! assertion in `oauth::tests::redaction_registered_on_handout`, because
-        //! every broker shares one process-wide registry and sibling tests were
-        //! registering an overlapping value.
+        //! Scrubbing a scrubbed string is a no-op. Chained `str::replace` broke that
+        //! when a registered value overlapped the placeholder, which surfaced as a
+        //! flaky assertion in `oauth::tests::redaction_registered_on_handout` since
+        //! every broker shares one process-wide registry.
         use super::*;
 
         #[test]
@@ -1911,8 +1719,7 @@ pub mod redaction {
         #[test]
         fn ordinary_values_still_scrub_longest_first() {
             // Both values must exceed MIN_SECRET_LEN (4): anything shorter is
-            // deliberately ignored by `register`, which would make this test pass
-            // vacuously.
+            // ignored by `register`, which would make this test pass vacuously.
             let reg = RedactionRegistry::for_scope("test-fixed-point-longest");
             reg.register("abcdefgh");
             reg.register("abcd");

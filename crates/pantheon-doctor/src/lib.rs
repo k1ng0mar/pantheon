@@ -1,12 +1,9 @@
-//! Structured diagnostics engine behind `pantheon doctor` and
-//! `GET /api/health`.
+//! diagnostics engine behind `pantheon doctor` and `GET /api/health`.
 //!
-//! Every check is a function returning [`finding::Finding`]s - checks
-//! never print. The [`registry::Registry`] orchestrates them (timing,
-//! panic isolation, subsystem filtering); [`render`] turns the
-//! [`finding::DiagnosticReport`] into concise, verbose, or JSON output;
-//! [`health`] builds the `pantheon.health/v1` contract for the HTTP
-//! endpoint. Both consumers share this one pipeline.
+//! checks return [`finding::Finding`]s, they never print. [`registry::Registry`]
+//! times them, isolates panics and filters by subsystem; [`render`] formats the
+//! [`finding::DiagnosticReport`]; [`health`] builds the `pantheon.health/v1`
+//! payload. Both consumers use the same pipeline.
 
 pub mod diagnostics;
 

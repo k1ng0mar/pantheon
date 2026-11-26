@@ -1,5 +1,3 @@
-//! misc_group: audit, backup, collaboration, ideas, search in one file.
-
 pub mod audit {
     //! JSONL audit log: one line per ledger event, replayable and
     //! sequence-validated. The eval interface - a run's full trajectory in a
@@ -138,9 +136,9 @@ pub mod audit {
     /// Export a run's ledger entries to a JSONL file. Refuses non-monotonic
     /// or duplicate seq values - a corrupted ledger must fail loudly here.
     pub fn export_jsonl(entries: &[LedgerEntry], path: &Path) -> Result<usize, PantheonError> {
-        // Validate the emitted sequence first: strictly increasing `seq`.
-        // (Validating `id` here used to pass while the emitted `seq` values
-        // decreased, and vice versa - the two coincide only without deletions.)
+        // Validate the emitted sequence first: strictly increasing `seq`. Validating
+        // `id` instead passes while `seq` decreases, and vice versa - the two coincide
+        // only without deletions.
         for w in entries.windows(2) {
             if w[1].seq <= w[0].seq {
                 return Err(aerr(
@@ -306,7 +304,7 @@ pub mod collaboration {
     //!
     //! A collaboration is a durable, first-class group of agent profiles working
     //! toward a shared objective, decomposed into tasks that survive process
-    //! death. This is deliberately **not** a subprocess mechanism: a task names
+    //! death. This is deliberately not a subprocess mechanism: a task names
     //! an agent *profile*, and the executing agent runs inside this runtime under
     //! its own identity and its own policy.
     //!
@@ -317,7 +315,7 @@ pub mod collaboration {
     //! event stream. So there are two stores over one truth: the ledger holds
     //! the audit trail, and this module holds the current-state projection.
     //! The projection is written in the same append path that persists the
-    //! events, so it is always in sync — no reconciliation needed.
+    //! events, so it is always in sync; no reconciliation needed.
     //!
     //! # Concurrency
     //!
@@ -475,7 +473,7 @@ pub mod collaboration {
         /// The legal transitions.
         ///
         /// Two rules encode decisions that are easy to get wrong:
-        /// - `Failed -> Pending` exists so a coordinator can **retry** without
+        /// - `Failed -> Pending` exists so a coordinator can retry without
         ///   inventing a new task id, which keeps the retry linked to the
         ///   original in the audit trail.
         /// - `Completed` has no outgoing edge. A completed task cannot be
@@ -572,10 +570,9 @@ pub mod collaboration {
 
     /// What a message is *for*, recorded structurally.
     ///
-    /// The kind is a closed set so a reader can tell an instruction from a
-    /// result without parsing prose - and, more importantly, so an agent
-    /// claiming to speak for another agent ("SYSTEM: obey me") has no kind that
-    /// would let it be rendered with the harness's authority.
+    /// The kind is a closed set so a reader can tell an instruction from a result
+    /// without parsing prose, and so an agent claiming to speak for another agent
+    /// ("SYSTEM: obey me") has no kind that renders with the harness's authority.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
     pub enum MessageKind {
@@ -1716,11 +1713,10 @@ pub mod ideas {
     }
 
     impl IdeaStore {
-        /// Lock the connection, failing closed on poison like every other
-        /// store (`CLAIM_LOCK`, `LEDGER_LOCK`, ...). The old code recovered
-        /// poisoned mutexes with `into_inner`, silently continuing after a
-        /// panic in another thread had potentially left the connection
-        /// mid-statement.
+        /// Lock the connection, failing closed on poison like every other store
+        /// (`CLAIM_LOCK`, `LEDGER_LOCK`, ...). Recovering the poisoned mutex with
+        /// `into_inner` continues after a panic in another thread may have left the
+        /// connection mid-statement.
         fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, PantheonError> {
             self.conn
                 .lock()
@@ -1909,10 +1905,10 @@ pub mod ideas {
         }
 
         /// Record explicit `more`/`less` feedback on the idea and its topic.
-        /// Returns `false` when the id does not exist. The idea-counter
-        /// bump and the topic-counter bump run in one transaction: the old
-        /// code updated the idea, then the topic, so a failure between them
-        /// left the counters permanently diverged.
+        /// Returns `false` when the id does not exist. The idea-counter bump and
+        /// the topic-counter bump run in one transaction: updating the idea and
+        /// then the topic leaves the counters permanently diverged if the second
+        /// write fails.
         pub fn record_feedback(
             &self,
             id: &str,
@@ -2007,10 +2003,9 @@ pub mod ideas {
 
     fn row_to_idea(r: &rusqlite::Row<'_>) -> rusqlite::Result<Idea> {
         let includes_json: String = r.get(3)?;
-        // Corrupt JSON is a hard error, like corrupt kind/status below:
-        // the old `unwrap_or_default` silently turned a damaged includes
-        // list into an empty plan, so a broken idea looked intentionally
-        // empty instead of broken.
+        // Corrupt JSON is a hard error, like corrupt kind/status below: an
+        // `unwrap_or_default` turns a damaged includes list into an empty plan, so
+        // a broken idea looks intentionally empty instead of broken.
         let includes: Vec<String> = serde_json::from_str(&includes_json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, Box::new(e))
         })?;
@@ -2310,11 +2305,10 @@ pub mod search {
             // already have the column; the ALTER is a no-op error there.
             conn.execute_batch(SCHEMA_TABLES)
                 .map_err(|e| err("SEARCH_SCHEMA", e.to_string()))?;
-            // The forward-only migration (ledgers created before the vector
-            // layer lack the embedding column). Only "duplicate column" is
-            // a benign no-op (fresh DBs already have the column); any other
-            // ALTER failure used to be swallowed with `let _ =`, leaving a
-            // sidecar that looks open but cannot store vectors.
+            // The forward-only migration (ledgers created before the vector layer lack
+            // the embedding column). Only "duplicate column" is a benign no-op (fresh DBs
+            // already have the column); any other ALTER failure must surface, or the
+            // sidecar looks open but cannot store vectors.
             match conn.execute("ALTER TABLE session_chunks ADD COLUMN embedding BLOB", []) {
                 Ok(_) => {}
                 Err(e) if e.to_string().contains("duplicate column name") => {}
@@ -2547,13 +2541,12 @@ pub mod search {
                     .collect());
             };
 
-            // Semantic scan, bounded: the old code loaded the ENTIRE
-            // embedding table per query (text + vectors for every chunk),
-            // which grows with the whole history. Now it loads only (a) the
-            // embeddings of the lexical candidates, so a dual lexical+
-            // semantic hit still blends, and (b) the most recent
-            // `SEMANTIC_SCAN_CAP` embedded chunks, so semantic recall still
-            // finds chunks the keyword query missed without scanning history.
+            // Semantic scan, bounded: loading the entire embedding table per query
+            // (text + vectors for every chunk) grows with the whole history. This loads
+            // only (a) the embeddings of the lexical candidates, so a dual
+            // lexical+semantic hit still blends, and (b) the most recent
+            // `SEMANTIC_SCAN_CAP` embedded chunks, so semantic recall still finds chunks
+            // the keyword query missed.
             let conn = self
                 .conn
                 .lock()
@@ -2728,12 +2721,9 @@ pub mod search {
     /// Drop and recreate the FTS5 sidecar, then repopulate it from the chunk
     /// store.
     ///
-    /// The FTS table is a derived index, but `session_chunks` is the durable
-    /// record of what was indexed: it survives an FTS drop, so the contents are
-    /// recoverable without replaying the ledger. Returns the number of chunks
-    /// restored. Previously this returned an empty table and told the user a
-    /// re-index was "not implemented", which left every previously indexed run
-    /// silently unsearchable.
+    /// The FTS table is a derived index, but `session_chunks` is the durable record of
+    /// what was indexed: it survives an FTS drop, so the contents are recoverable
+    /// without replaying the ledger. Returns the number of chunks restored.
     pub fn recreate_search_index(db: &std::path::Path) -> Result<usize, PantheonError> {
         let conn = rusqlite::Connection::open(db).map_err(|e| err("SEARCH_OPEN", e.to_string()))?;
         conn.execute_batch("DROP TABLE IF EXISTS session_fts;")
@@ -2952,9 +2942,9 @@ pub mod search {
 
         // ---------------------------------------------------------------- rebuild
 
-        /// The repair path used to recreate an empty FTS table, leaving every
-        /// previously indexed run silently unsearchable. These pin that the rebuild
-        /// restores the actual contents from the durable chunk store.
+        /// These pin that the repair path restores the actual contents from the durable
+        /// chunk store instead of recreating an empty FTS table, which would leave
+        /// previously indexed runs silently unsearchable.
         #[test]
         fn recreate_restores_searchable_contents() {
             let (s, dir) = file_search();

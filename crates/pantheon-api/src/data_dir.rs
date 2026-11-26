@@ -1,17 +1,15 @@
-//! The one resolver for Pantheon's data directory.
+//! single resolver for the data dir.
 //!
-//! Security decisions depend on this path (the file-tool deny list and
-//! the shell sandbox's hidden paths cover it), so it must resolve the
-//! same way everywhere. Before this module the deny list only knew the
-//! data dir when `PANTHEON_DATA_DIR` was exported, which left the default
-//! `~/.pantheon` (and its `.env`) readable and writable by the file tools
-//! (audit SEC-02).
+//! security decisions key off this path (file-tool deny list, shell sandbox
+//! hidden paths), so it has to resolve identically everywhere. if we only knew
+//! the dir when `PANTHEON_DATA_DIR` was exported, the default `~/.pantheon` and
+//! its `.env` would be readable/writable by the file tools.
 
 use std::path::{Path, PathBuf};
 
-/// `PANTHEON_DATA_DIR` when set and non-empty, else `$HOME/.pantheon`
-/// (`%USERPROFILE%` on Windows), else `$XDG_DATA_HOME/pantheon`, else a
-/// per-user directory under the system temp dir.
+/// `PANTHEON_DATA_DIR` if set + non-empty, else `$HOME/.pantheon`
+/// (`%USERPROFILE%` on windows), else `$XDG_DATA_HOME/pantheon`, else a
+/// per-user dir under temp.
 pub fn resolve() -> PathBuf {
     if let Some(d) = std::env::var_os("PANTHEON_DATA_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
@@ -32,25 +30,24 @@ pub fn resolve() -> PathBuf {
         .join(".pantheon")
 }
 
-/// Create the data directory and make it owner-only.
+/// create the dir owner-only.
 ///
-/// SQLite (and every plain `File::create` in the tree) uses the process umask,
-/// so a default `022` leaves the data dir at `0755` and the ledgers inside it
-/// at `0644`: transcripts and memory readable by every local user, next to a
-/// `0600` secret store (audit F2). Startup calls this before anything opens a
-/// database. Best-effort on non-Unix and when the mode cannot be changed (a
-/// read-only or mode-agnostic mount); `pantheon doctor` reports a loose mode.
+/// sqlite and every plain `File::create` use the process umask, so a default
+/// `022` gives us a `0755` data dir and `0644` ledgers: transcripts and memory
+/// readable by every local user, sitting next to a `0600` secret store
+/// (audit F2). startup calls this before anything opens a db. best effort on
+/// non-unix and when the mode can't be changed; `pantheon doctor` flags a
+/// loose mode.
 ///
-/// Returns the resolved path so callers can use the result directly:
-/// `let dir = data_dir::ensure_private();`
+/// returns the resolved path so callers can do `let dir = data_dir::ensure_private();`
 pub fn ensure_private() -> PathBuf {
     let dir = resolve();
     ensure_private_at(&dir);
     dir
 }
 
-/// The [`ensure_private`] body, taking the directory explicitly so callers
-/// that resolved it themselves (and tests) use the same rule.
+/// [`ensure_private`] body, with the dir passed in so callers that resolved it
+/// themselves (and tests) use the same rule.
 pub fn ensure_private_at(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
     #[cfg(unix)]
@@ -59,8 +56,8 @@ pub fn ensure_private_at(dir: &Path) {
         let Ok(meta) = std::fs::metadata(dir) else {
             return;
         };
-        // Only chmod when it is actually loose, so a normal startup costs one
-        // stat rather than one chmod.
+        // only chmod when it's actually loose, so normal startup is one stat
+        // instead of one chmod.
         if meta.permissions().mode() & 0o077 != 0 {
             let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }

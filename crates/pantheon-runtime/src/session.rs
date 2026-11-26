@@ -1,8 +1,5 @@
-//! Wired agent session: supervisor + provider chain + tool registry + loop.
-//!
-//! This is the "fully functioning harness" path: a run goes
-//! start -> loop (model turns, gated tool calls, compacted output)
-//! -> terminal outcome, every step event-sourced in the ledger.
+//! A wired agent session: provider chain, tool registry, supervisor, and
+//! event-sourced turns.
 
 use crate::agent_runtime::AgentRuntime;
 use crate::operation::{operation_err, run_tool_operation, ToolOperationAdapter};
@@ -583,11 +580,10 @@ struct RegistryToolAdapter<'a> {
     /// the adapter was constructed.
     policy: &'a Policy,
     name: String,
-    /// Extension hooks. The adapter is the only executor the production
-    /// path uses, so `pre_tool_call` and `transform_tool_result` are
-    /// enforced here. They used to live only in RegRunner, which the
-    /// parallel tool path in drive never used, so a plugin could not deny
-    /// a call there and could not redact a secret out of tool output.
+    /// Extension hooks. The adapter is the only executor the production path uses, so
+    /// `pre_tool_call` and `transform_tool_result` are enforced here. Keeping them
+    /// only in RegRunner would leave the parallel tool path in `drive` unable to deny a
+    /// call or redact a secret out of tool output.
     hooks: Option<&'a ExtensionManager>,
     run_id: String,
     /// The call this execution answers; installed as the thread's
@@ -599,13 +595,10 @@ struct RegistryToolAdapter<'a> {
     redaction: Arc<RedactionRegistry>,
     /// Data dir for the Bot Screen takeover gate (see RegRunner).
     data_dir: PathBuf,
-    /// Loop-hygiene gate for this turn. `drive` executes tools through
-    /// this adapter (`durable_tool`), never through `RegRunner`, so the
-    /// guard must live here or the production path has no loop
-    /// protection at all: the only `admit` call used to be in
-    /// `RegRunner::run`, which the parallel tool path never invoked.
-    /// `None` keeps bare-adapter tests and embedded uses working; the
-    /// production `durable_tool` path always passes `Some`.
+    /// Loop-hygiene gate for this turn. `drive` executes tools through this adapter
+    /// (`durable_tool`), never through `RegRunner`, so the guard has to live here or
+    /// the production path has no loop protection. `None` keeps bare-adapter tests and
+    /// embedded uses working; the production `durable_tool` path always passes `Some`.
     loop_guard: Option<&'a crate::loop_guard::LoopGuard>,
 }
 
@@ -631,16 +624,13 @@ impl<'a> RegistryToolAdapter<'a> {
     }
 }
 
-/// Durable result cache for one tool operation, under the session data
-/// dir. A crash after `execute` but before the operation store persists
-/// `raw_result` used to leave the operation in phase `execute`, so the
-/// resume re-ran it and side-effecting tools (shell writes, messages,
-/// file edits) executed twice. The adapter writes the result here
-/// atomically (temp file + rename) before returning it, and
-/// `execute_keyed` replays the cached result when the phase is retried
-/// instead of executing again. `translate_result` removes the entry
-/// best-effort once the operation store holds `raw_result`, so only
-/// crashed-mid-operation entries linger.
+/// Durable result cache for one tool operation, under the session data dir. A crash
+/// after `execute` but before the operation store persists `raw_result` would leave
+/// the operation in phase `execute`, so the resume re-runs it and side-effecting tools
+/// (shell writes, messages, file edits) execute twice. The adapter writes the result
+/// here atomically before returning it, and `execute_keyed` replays the cached result
+/// when the phase is retried. `translate_result` removes the entry best-effort once the
+/// operation store holds `raw_result`, so only crashed-mid-operation entries linger.
 fn tool_result_cache_path(data_dir: &std::path::Path, operation_id: &str) -> std::path::PathBuf {
     let safe: String = operation_id
         .chars()
@@ -789,7 +779,7 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             // to reintroduce a secret after the scrub ran. Fails open.
             self.redaction.scrub(&transformed)
         } else {
-            // No hooks: still scrub — see RegRunner::run.
+            // No hooks: still scrub; see RegRunner::run.
             let out = self.run_registered(name, args)?;
             self.redaction.scrub(&out)
         };
@@ -1024,7 +1014,7 @@ fn verify_delegation(
 /// budget; depth limits nesting, never the work a level may do.
 ///
 /// `max_delegations` accounting is deliberately NOT part of this: the
-/// budget is owned by the ROOT run (Decision B, 2026-10-01) and resolved
+/// budget is owned by the ROOT run and resolved
 /// through [`DelegateBudgetStore`], never copied down the tree. The
 /// `budget_section` travels only so the child's own `for_turn` resolves
 /// the same `max_delegations` number and child token default.
@@ -1103,9 +1093,9 @@ fn build_delegate_session(
     // The profile's model/provider pin applies to the child session's
     // default: a profile pinned to a cheap model must actually run on
     // it, not silently inherit the parent's (possibly switched) model.
-    // Each field overrides independently — a model-only pin keeps the
-    // parent's provider, a provider-only pin keeps the parent's model —
-    // and an absent pin leaves the parent's default untouched. Auto
+    // Each field overrides independently: a model-only pin keeps the parent's
+    // provider, a provider-only pin keeps the parent's model, and an absent pin
+    // leaves the parent's default untouched. Auto
     // auxiliaries (entries still pointing at the parent's default) move
     // with the child default, exactly as `switch_model` moves them;
     // pinned auxiliaries stay pinned.
@@ -1269,8 +1259,8 @@ impl DelegateDriver {
             .as_ref()
             .map(|s| s.max_delegations_or_default())
             .unwrap_or(pantheon_api::config::DEFAULT_MAX_DELEGATIONS);
-        // Decision B (2026-10-01): the delegation budget is owned by the
-        // ROOT run and shared across the whole descendant tree. Ensure it
+        // The delegation budget is owned by the ROOT run and shared across the
+        // whole descendant tree. Ensure it
         // exists before the first delegation of this turn; re-ensuring
         // never resets an existing budget, and nested children resolve
         // the same root.
@@ -1702,8 +1692,8 @@ impl SessionSpawner {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default();
-        // Decision B (2026-10-01): the delegation budget is owned by the
-        // root run; ensure it exists before any threaded delegate call.
+        // The delegation budget is owned by the root run; ensure it exists before
+        // any threaded delegate call.
         // Re-ensuring never resets an existing budget.
         crate::delegate_budget::DelegateBudgetStore::global().ensure_budget(
             run_id,
@@ -1798,7 +1788,7 @@ impl pantheon_agent::SubagentSpawner for SessionSpawner {
             },
         )?;
         let child_run = child_session.current_run_id();
-        // Decision B: consume one slot of the ROOT run's delegation budget.
+        // Consume one slot of the ROOT run's delegation budget.
         // The guard rolls back if the registry rejects the spawn below.
         let budget_guard = crate::delegate_budget::DelegateBudgetStore::global()
             .try_consume_delegation(&self.run_id, &child_run)
@@ -2058,25 +2048,22 @@ pub fn register_subagent_tools(
     );
 }
 
-/// Blocking delegation: the single source of truth for running a child
-/// agent to completion.
+/// Blocking delegation: the single source of truth for running a child agent to
+/// completion.
 ///
-/// Used by the `delegate` tool and by the `TurnOutcome::Delegate` arm in
-/// `drive` - one path, no hollow row-writes. Lifecycle: enforce the
-/// root-owned delegation budget (Decision B, 2026-10-01) and the depth
-/// caps, resolve the child's token budget (per-call `budget`, else
-/// `[budget].delegate_child_max_tokens`, else the model default), build the child session, drive it to a
-/// terminal outcome on the calling thread, and settle the outcome into
-/// the result text (or a structured error).
+/// Used by the `delegate` tool and by the `TurnOutcome::Delegate` arm in `drive`,
+/// one path with no hollow row-writes. Lifecycle: enforce the root-owned
+/// delegation budget and the depth caps, resolve the child's token budget
+/// (per-call `budget`, else `[budget].delegate_child_max_tokens`, else the model
+/// default), build the child session, drive it to a terminal outcome on the
+/// calling thread, and settle the outcome into the result text (or a structured
+/// error).
 ///
-/// The child's token usage is recorded under the child's own run id, so
-/// it never counts against the parent's budget. A child that parks on
-/// approval parks against the CHILD's run: the error names the child's
-/// run id, capability, and scope, and the parent run cannot grant it
-/// grants are matched against the run that requested them.
-/// The pre-route entry point, kept so existing callers (the
-/// `TurnOutcome::Delegate` arm and tests) keep the direct behaviour:
-/// no route, no report, target is the named profile.
+/// The child's token usage is recorded under the child's own run id, so it never
+/// counts against the parent's budget. A child that parks on approval parks
+/// against the CHILD's run: the error names the child's run id, capability and
+/// scope, and grants are matched against the run that requested them, so the
+/// parent cannot grant the child's request.
 fn run_delegate_child(
     driver: &DelegateDriver,
     agent: &str,
@@ -2198,7 +2185,7 @@ fn run_delegate_child_routed(
             })
     });
     let child_run = child_session.current_run_id();
-    // Decision B (2026-10-01): the delegation budget is owned by the ROOT
+    // The delegation budget is owned by the ROOT
     // run and shared across the whole descendant tree. A delegation counts
     // only on successful descendant session creation - the guard rolls the
     // slot back if anything below fails before commit.
@@ -2323,7 +2310,7 @@ fn map_child_outcome(
                 // without this mark, an unverified child claim travels
                 // to the parent indistinguishable from a verified
                 // completion. A child that reported failure needs no
-                // mark — its status already says it did not complete.
+                // mark; its status already says it did not complete.
                 out.push_str(
                     "\n[verification: not run - verify slot unconfigured]",
                 );
@@ -2494,9 +2481,8 @@ pub struct Session {
     /// read once per turn (snapshotted, never held across model or tool
     /// work) and written only by an explicit switch.
     pub model_policy: Mutex<ModelPolicy>,
-    /// Secrets broker. Replaces the old raw `api_key: String` field so
-    /// the API key is resolved through `SecretsBroker::inject` at the
-    /// execution boundary and never lives in memory as a plain String.
+    /// Secrets broker. The API key is resolved through `SecretsBroker::inject` at
+    /// the execution boundary and never lives in memory as a plain String.
     pub secrets: SecretsBroker,
     /// Effective credential grants for this session. Empty means unrestricted
     /// root session. Delegated children carry the intersection computed at
@@ -2615,11 +2601,10 @@ pub struct Session {
     /// the guard at the end of the turn would miss `on_session_end` - the
     /// hook GalaxyMem-style consolidation depends on.
     pub hook_observer: ObserverGuard,
-    /// The lifecycle-hook dispatcher, kept so session teardown can drain
-    /// it: `on_session_end` fires are queued on a worker thread, and a
-    /// process exiting right after a run used to lose them because no
-    /// caller ever invoked `drain`. [`Drop`] for `Session` drains with a
-    /// bounded budget (best-effort; a wedged plugin cannot hang exit).
+    /// The lifecycle-hook dispatcher, kept so session teardown can drain it:
+    /// `on_session_end` fires are queued on a worker thread, and a process exiting
+    /// right after a run would lose them without a drain. [`Drop`] for `Session` drains
+    /// with a bounded budget (best-effort; a wedged plugin cannot hang exit).
     pub hook_dispatcher: std::sync::Arc<pantheon_extensions::HookDispatcher>,
     /// The agent profile this session runs as. Optional so a pre-profiles
     /// caller (tests, the AG-UI server) still constructs a Session; when it
@@ -2782,11 +2767,6 @@ impl ToolCounts {
     }
 }
 
-/// Browser automation and web-search knobs live in
-/// [`crate::tool_config`] (`BrowserToolConfig` / `WebsearchToolConfig`):
-/// plain data resolved from `[browser]` / `[websearch]` in config.toml.
-/// Secrets resolve at registration time via the session's broker, so a
-/// resolved key never sits in long-lived session state.
 /// What `Session::compress_now` found and did, for display.
 pub struct CompressReport {
     /// Estimated tokens before the fit.
@@ -3007,8 +2987,8 @@ impl Session {
             default,
             // The configured fallback chain, not an empty one: dropping
             // it here silently removed every configured fallback for
-            // headless sessions. Auxiliaries stay empty on this path —
-            // that is semantically `auto`, since absent aux entries fall
+            // headless sessions. Auxiliaries stay empty on this path, which is
+            // semantically `auto`, since absent aux entries fall
             // back to the default model at the call site.
             fallbacks: pantheon_api::config_resolve::resolve_fallback_chain(cfg.as_ref()),
             auxiliaries: Vec::new(),
@@ -3190,24 +3170,22 @@ impl Session {
         Ok(text)
     }
 
-    /// Switch the default model of a live session.
+    /// Switch the chat model for the next turn.
     ///
-    /// Switch the chat model for the next turn. The default target moves,
-    /// and so does every auxiliary that still points at the OLD default:
-    /// those entries are the materialised `auto` slots (the TUI's
-    /// `auxiliaries()` clones the default into them at build time), and
-    /// leaving them on the old model after a `/model` switch froze the
-    /// title/compression/judge/vision helpers on the previous model.
-    /// Auxiliaries pinned to a different target stay pinned — that is the
-    /// point of pinning them. Known limit, stated plainly: an entry that
-    /// was explicitly pinned to a value that happens to equal the old
-    /// default is indistinguishable from an `auto` entry after
-    /// materialisation, so it moves too. Fallbacks are untouched, and
-    /// the next turn resolves keys and endpoints for the new target from
-    /// scratch. Validation is deliberately shallow (non-empty): unknown
-    /// ids fail at request time with structured provider errors, and a
-    /// provider string may be a raw base URL rather than a catalog id,
-    /// so catalog membership is not a valid gate here.
+    /// The default target moves, and so does every auxiliary still pointing at the
+    /// previous default: those entries are the materialised `auto` slots (the TUI's
+    /// `auxiliaries()` clones the default into them at build time), and leaving them
+    /// behind would freeze the title/compression/judge/vision helpers on the old
+    /// model. Auxiliaries pinned to a different target stay pinned.
+    ///
+    /// Known limit: an entry explicitly pinned to a value that happens to equal the
+    /// previous default is indistinguishable from an `auto` entry after
+    /// materialisation, so it moves too. Fallbacks are untouched, and the next turn
+    /// resolves keys and endpoints for the new target from scratch.
+    ///
+    /// Validation is deliberately shallow (non-empty): unknown ids fail at request
+    /// time with structured provider errors, and a provider string may be a raw base
+    /// URL rather than a catalog id, so catalog membership is not a valid gate.
     pub fn switch_model(&self, provider: &str, model: &str) -> Result<(), PantheonError> {
         let provider = provider.trim();
         let model = model.trim();
@@ -3945,23 +3923,12 @@ impl Session {
         self.secrets.redaction_registry().scrub(text)
     }
 
-    /// Plan-mode refusal for one tool call. When the session is in
-    /// [`AgentMode::Plan`] and the named tool can mutate state, the call
-    /// is refused BEFORE the approval gate and before execution: the
-    /// refusal lands in the transcript as a normal tool result (the model
-    /// sees it and keeps planning) with the same event shape as an
-    /// executed call, minus the execution.
-    ///
-    /// Returns true when the call was refused - the caller must not gate
-    /// or execute it further, and must not count it against the tool
-    /// budget (like denials, refusals are not executed calls).
-    /// Provenance for a tool call: `skill_exec` calls are attributed to
-    /// the skill they run (`"skill:<name>"`) so the timeline names the
-    /// skill; every other call keeps system provenance. pantheon-api has
-    /// no structured event field for skill attribution (and is out of
-    /// scope for this workstream), so this reuses the existing
-    /// provenance-source string; the trust tier is unchanged. Note the
-    /// args JSON also carries the skill name natively.
+    /// Provenance for a tool call: `skill_exec` calls are attributed to the skill
+    /// they run (`"skill:<name>"`) so the timeline names the skill; every other
+    /// call keeps system provenance. `pantheon-api` has no structured event field
+    /// for skill attribution, so this reuses the existing provenance-source
+    /// string; the trust tier is unchanged. The args JSON also carries the skill
+    /// name natively.
     fn tool_call_provenance(&self, tool: &str, args: &str) -> Provenance {
         if tool == pantheon_exec::skills::SKILL_EXEC_TOOL_NAME {
             let skills = self
@@ -4022,6 +3989,13 @@ impl Session {
         pantheon_exec::prestate::verify_pre_state(path, &recorded.sha256)
     }
 
+    /// Plan-mode refusal for one tool call. In [`AgentMode::Plan`] a mutating tool
+    /// is refused BEFORE the approval gate and before execution: the refusal lands
+    /// in the transcript as a normal tool result (the model sees it and keeps
+    /// planning) with the same event shape as an executed call, minus the
+    /// execution. Returns true when the call was refused; the caller must not gate
+    /// or execute it further, and must not count it against the tool budget (like
+    /// denials, refusals are not executed calls).
     fn plan_refuse_tool(
         &self,
         run_id: &str,
@@ -5160,11 +5134,9 @@ Extracted:
                 }
             }
         };
-        // Web search: query -> snippets. Keyed providers register only
-        // when a key resolves; keyless providers (Marginalia, the
-        // `*_free` fallbacks, `ddgs`, SearXNG) register without one.
-        // The old "a keyless web_search would be a dead tool" comment
-        // predates those providers.
+        // Web search: query -> snippets. Keyed providers register only when a key
+        // resolves; keyless providers (Marginalia, the `*_free` fallbacks, `ddgs`,
+        // SearXNG) register without one.
         let n_websearch = {
             let wcfg = self
                 .websearch_config
@@ -5182,7 +5154,7 @@ Extracted:
                 // backend and enforces its auth requirement. A keyed
                 // provider with no resolvable key is an unconfigured
                 // optional tool, not an error: it is skipped silently,
-                // with no warning anywhere — a missing web-search key
+                // with no warning anywhere; a missing web-search key
                 // is not something the session needs to be told about.
                 // A keyless provider registers without one; any other
                 // build failure (e.g. an unknown provider id) is a
@@ -5204,17 +5176,13 @@ Extracted:
                 if keyed && key_missing {
                     0
                 } else {
-                    // Per-provider scoping: only the override for THIS
-                    // provider id is passed. The legacy global
-                    // `[websearch] base_url` is deprecated: it is never
-                    // passed to build_provider directly (it used to
-                    // follow a provider switch and send another
-                    // provider's calls - and key - to the wrong host).
-                    // Operators are told to move it to
-                    // [websearch.base_urls.<provider>]; the one
-                    // exception is the searxng-only compatibility shim
-                    // in resolve_websearch_section, which cannot leak
-                    // to any other provider.
+                    // Per-provider scoping: only the override for this provider id
+                    // is passed. The legacy global `[websearch] base_url` is never
+                    // passed to build_provider directly - it follows a provider switch
+                    // and sends another provider's calls and key to the wrong host.
+                    // Operators move it to [websearch.base_urls.<provider>]; the one
+                    // exception is the searxng-only shim in resolve_websearch_section,
+                    // which cannot leak to another provider.
                     if wcfg
                         .base_url
                         .as_deref()
@@ -5540,7 +5508,7 @@ Extracted:
         let mut plugin_supers =
             PluginCleanup::new(self.supervisor.clone(), run_id, Arc::clone(lease_lost));
         // Per-turn plugin diagnostics: same policy as the registry build
-        // (see `tool_diagnostics`) — a plugin spawn failure is non-fatal
+        // (see `tool_diagnostics`); a plugin spawn failure is non-fatal
         // and is recorded for `/status`, never printed into the session.
         let mut turn_diags: Vec<String> = Vec::new();
         // Plugin tools: discover installed plugins, verify + spawn the enabled
@@ -5698,10 +5666,9 @@ Extracted:
         let mut reopened = false;
         match self.supervisor.ledger_status(run_id)?.as_deref() {
             Some("awaiting_approval") => {
-                // Name the scope. This used to point at `pantheon logs` and
-                // leave the operator to copy `call_id:tool:args` - JSON with
-                // embedded quotes - out of a table by hand. An approval flow
-                // cannot ask for that.
+                // Name the scope rather than pointing at `pantheon logs` and leaving
+                // the operator to copy `call_id:tool:args` - JSON with embedded quotes -
+                // out of a table by hand. An approval flow cannot ask for that.
                 let pending = self.supervisor.pending_approvals(run_id)?;
                 let how = match pending.first() {
                     Some(scope) => format!(
@@ -5813,10 +5780,9 @@ Extracted:
                     pantheon_api::capability::Decision::Allow
                 ) {
                     let layers = [LayerKind::Project, LayerKind::Agent, LayerKind::Global];
-                    // Session recall is scoped to the agent's own memory
-                    // namespace, the same one `memory_recall` uses. It
-                    // used to pass none, so every turn's recall block was
-                    // assembled from all agents' records.
+                    // Session recall is scoped to the agent's own memory namespace,
+                    // the same one `memory_recall` uses, so a turn's recall block isn't
+                    // assembled from every agent's records.
                     let own_ns = self.effective_namespace();
                     let namespaces = [own_ns.as_str()];
                     if let Ok(hits) =
@@ -6474,25 +6440,20 @@ Extracted:
         }))
     }
 
-    /// The window the current turn must fit, or `None` when the model has no
-    /// known context limit.
+    /// The window the current turn must fit, or `None` when the model has no known
+    /// context limit.
     ///
     /// `None` is the interesting case. `catalog::model_meta` returns
-    /// `context_limit: None` for any model it does not know, and an unknown
-    /// limit must mean "do not touch the transcript" - not "assume 4k" and
-    /// silently truncate a conversation on a 1M-window model, and not
-    /// "assume infinite" and eat a provider 400. So an uncataloged model gets
-    /// no fit at all, exactly as it did before this was wired - and the
-    /// fit site now logs that fact, because "no fitting happens" used to
-    /// be invisible until the provider 400'd.
+    /// `context_limit: None` for any model it does not know, and an unknown limit must
+    /// mean "do not touch the transcript" - not "assume 4k" and truncate a conversation
+    /// on a 1M-window model, and not "assume infinite" and eat a provider 400. So an
+    /// uncataloged model gets no fit at all, and the fit site logs that fact.
     ///
-    /// The budget is the MINIMUM known window across the default and
-    /// every fallback, not the default's alone: fitting to the default
-    /// and then falling back mid-turn to a smaller-window model sent a
-    /// default-fitted transcript at the fallback and 400'd. The
-    /// last-resolved model is deliberately not used: the chain is
-    /// rebuilt per run, so it is stale (or absent) at fit time, and
-    /// the turn's serving model is not known until the chain walks.
+    /// The budget is the minimum known window across the default and every fallback,
+    /// not the default's alone: fitting to the default and then falling back mid-turn
+    /// to a smaller-window model sends a default-fitted transcript at the fallback and
+    /// 400s. The last-resolved model is not used - the chain is rebuilt per run, so it
+    /// is stale at fit time, and the serving model is not known until the chain walks.
     fn window_budget<T: pantheon_providers::ChatTransport>(
         &self,
         chain: &ProviderChain<T>,
@@ -6676,7 +6637,7 @@ Extracted:
     /// The warning never fires when it would be pointless: if the warning
     /// threshold is 0 (disabled), if it is >= the termination cap (no room
     /// for a warning before termination), or if the termination cap itself
-    /// is 0 (unbounded retries — the streak is unbounded by design).
+    /// is 0 (unbounded retries; the streak is unbounded by design).
     ///
     /// Provider note: `Message::system` is the established harness-
     /// authoritative voice (see `assemble_transcript`). Anthropic request
@@ -6688,7 +6649,7 @@ Extracted:
     /// the failures remain visible chronologically, so the model can
     /// correlate them on either provider. A user-role message would
     /// impersonate the user; an assistant-role message would impersonate
-    /// the model — system is the correct role for harness guidance.
+    /// the model; system is the correct role for harness guidance.
     fn maybe_warn_consecutive_failures(
         &self,
         loop_: &AgentLoop,
@@ -6929,20 +6890,15 @@ Extracted:
                         .unwrap_or_default(),
                 });
             }
-            // Re-execute granted calls through the same parallel path as a
-            // fresh batch: gate (already granted), run, emit, append results.
-            // Plan mode still applies: a grant from before the Tab flip
-            // does not authorize a write the operator has since ruled out.
-            // A grant settles ONE tool call, not "this kind of call". The scope
-            // string binds the exact call id, tool name, and argument
-            // bytes, so a granted `shell` running `git status` can never
-            // authorize a different `shell` call on the same run. What the
-            // grant does NOT do is re-decide the capability: if the
-            // operator approved under one policy and the run resumes
-            // under a stricter one, the capability check must run again.
-            // The fresh-call path below re-gates every capability; this
-            // path used to skip it, on the belief that "already granted"
-            // settled it.
+            // Re-execute granted calls through the same parallel path as a fresh
+            // batch: gate, run, emit, append results. Plan mode still applies: a grant
+            // from before the Tab flip does not authorize a write the operator has
+            // since ruled out. A grant settles one tool call, not "this kind of call" -
+            // the scope string binds the exact call id, tool name and argument bytes,
+            // so a granted `shell` running `git status` cannot authorize a different
+            // `shell` call on the same run. The grant does not re-decide the capability:
+            // if the operator approved under one policy and the run resumes under a
+            // stricter one, the capability check runs again.
             let mut regated: Vec<&ToolCallRef> = Vec::with_capacity(granted.len());
             for tc in &granted {
                 if self.plan_refuse_tool(run_id, &tc.id, &tc.name, &tc.arguments, messages)? {
@@ -6976,15 +6932,12 @@ Extracted:
                     *tool_calls_used += 1;
                     continue;
                 }
-                // Re-gate the granted call against the current policy.
-                // A Deny still propagates as an error (a stricter policy
-                // must be able to forbid the call). But NeedsApproval
-                // must NOT re-park: the grant in the ledger IS the human
-                // answer for this exact scope, and re-parking is a dead
-                // end - granting the re-parked scope fails as already
-                // resolved, so the run could never resume. The old code
-                // re-parked here, which made every grant-resume under an
-                // approval policy park again forever.
+                // Re-gate the granted call against the current policy. A Deny still
+                // propagates as an error (a stricter policy must be able to forbid the
+                // call). NeedsApproval must not re-park: the grant in the ledger is the
+                // human answer for this exact scope, and re-parking is a dead end -
+                // granting the re-parked scope fails as already resolved, so the run
+                // can never resume.
                 let caps = reg.required_capabilities(&tc.name, &tc.arguments);
                 for cap in &caps {
                     let _ = self.gate_with_mode(loop_, run_id, &tc.name, &tc.arguments, cap)?;
@@ -7121,10 +7074,9 @@ Extracted:
         if let Some(budget) = self.window_budget(chain) {
             self.fit_context(messages, &budget, run_id)?;
         } else {
-            // Unknown window = no fitting at all (fail-open by design),
-            // but that must be visible: previously a long transcript on
-            // an uncatalogued model grew until the provider 400'd with
-            // no hint that nothing had ever fitted it.
+            // Unknown window = no fitting at all (fail-open by design), but it has to
+            // be visible: without the log a long transcript on an uncatalogued model
+            // grows until the provider 400s with no hint that nothing fitted it.
             let (p, m) = self.default_model();
             pantheon_api::logging::warn(
                 "provider",
@@ -7672,7 +7624,7 @@ impl Session {
                     // `UiActionRequested` (the park outcome carries a
                     // single call id), so settling it with "ui
                     // published" success would complete a call whose
-                    // decision was never requested — undecidable work
+                    // decision was never requested; undecidable work
                     // reported as done. It is refused instead, with an
                     // instruction to re-issue after the operator decides
                     // the first card, exactly like a parked sibling.
@@ -8246,7 +8198,7 @@ fn redact_ui_tool_args(doc: &UiDocument, node_id: &str, args: &str) -> String {
     // event unredacted. Record a marker instead of the raw args; the
     // tool itself already received the real values, so execution is
     // unaffected. The normal call site always passes a JSON object,
-    // so this path is defensive — but a redaction boundary must not
+    // so this path is defensive, but a redaction boundary must not
     // depend on its callers staying well-formed.
     let mut v: serde_json::Value = match serde_json::from_str(args) {
         Ok(v) => v,
@@ -8759,7 +8711,7 @@ pub fn rebuild_messages(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Mess
     // to the provider. A call retired by recovery has no result row in
     // the ledger (that is what "settled, not pending" means), so fabricate
     // one here, directly after its assistant row, stating the outcome is
-    // unconfirmed — never a success, never a re-run. Calls that are still
+    // unconfirmed: never a success, never a re-run. Calls that are still
     // genuinely pending (started, neither completed nor interrupted) are
     // NOT fabricated here: `drive`'s pending path settles or re-runs
     // them, and inventing a result would hide a call that may still run.
@@ -8924,7 +8876,7 @@ pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Tr
                 // Retired by recovery: the call is settled, not running.
                 // `ok: Some(false)` is the only settled marker the
                 // transcript item has; it means "did not complete", not
-                // "failed" — the ledger's ToolInterrupted row carries the
+                // "failed"; the ledger's ToolInterrupted row carries the
                 // unconfirmed-outcome detail.
                 if let Some(&idx) = tool_index.get(&call_id) {
                     if let Some(TranscriptItem::ToolCall { ok, .. }) = out.get_mut(idx) {
@@ -9744,8 +9696,8 @@ mod delegate_tool_tests {
     }
 
     /// The anti-spawn-army cap: `max_delegations` delegate calls per root
-    /// run (Decision B: the budget is owned by the root and shared across
-    /// the whole descendant tree), then `DELEGATE_CAP_EXCEEDED`. Only
+    /// run: the budget is owned by the root and shared across the whole
+    /// descendant tree. Exceeding it is `DELEGATE_CAP_EXCEEDED`. Only
     /// successful descendant creations consume slots.
     #[test]
     fn spawn_bomb_refused_by_per_run_cap() {
@@ -9767,10 +9719,9 @@ mod delegate_tool_tests {
         run_delegate_child(&driver2, "child", "task", None, None, None).expect("fresh run");
     }
 
-    /// #1: delegation knobs travel parent -> child -> grandchild. The
-    /// child session used to be built with `Budget::default()`, so an
-    /// operator cap of `max_delegate_depth = 1` was evaded at the
-    /// grandchild level: the child's own turn snapshotted the default
+    /// #1: delegation knobs travel parent -> child -> grandchild. Building the child
+    /// with `Budget::default()` lets an operator cap of `max_delegate_depth = 1` be
+    /// evaded at the grandchild level, since the child's own turn snapshots the default
     /// (depth 2, spawn allowed) in `DelegateDriver::for_turn`.
     #[test]
     fn delegation_policy_propagates_to_child_and_grandchild() {
@@ -9807,7 +9758,7 @@ mod delegate_tool_tests {
             // The grandchild level: a driver built from the child session
             // must snapshot the same caps, or the depth check in
             // `run_delegate_child` would pass one level too deep.
-            // Decision B (2026-10-01): the delegation budget is owned by
+            // The delegation budget is owned by
             // the ROOT run. The grandchild driver resolves the same root,
             // so a delegation at the child level consumes the parent's
             // slots instead of starting a fresh count.
@@ -10126,7 +10077,7 @@ mod delegate_tool_tests {
 
     /// Crash-resume idempotency: `execute_keyed` runs the tool once and
     /// replays the cached result on a second call with the same operation
-    /// id and translated request — the resume-after-crash path — instead
+    /// id and translated request, the resume-after-crash path, instead
     /// of executing a side effect twice.
     #[test]
     fn adapter_execute_keyed_replays_cached_result() {
@@ -10846,14 +10797,12 @@ mod delegate_tool_tests {
         assert!(completed, "ToolCompleted closes the UI action's lifecycle");
     }
 
-    /// A UI-bound tool's RESULT must be scrubbed too, not just its
-    /// args: `execute_gated` has no redaction pass (unlike RegRunner /
-    /// RegistryToolAdapter), so a tool echoing an injected secret
-    /// used to land it in the client result and the ToolMessage row
-    /// that re-enters the transcript on resume. Here the secret
-    /// arrives through the broker registry (not a form field) and
-    /// surfaces both in the recorded args (a fixed param) and in the
-    /// tool's error text (the confined path it failed to list).
+    /// A UI-bound tool's result must be scrubbed too, not just its args:
+    /// `execute_gated` has no redaction pass (unlike RegRunner / RegistryToolAdapter),
+    /// so a tool echoing an injected secret would land it in the client result and the
+    /// ToolMessage row that re-enters the transcript on resume. Here the secret arrives
+    /// through the broker registry (not a form field) and surfaces both in the recorded
+    /// args and in the tool's error text.
     #[test]
     fn submit_ui_action_scrubs_registered_secrets_from_args_and_result() {
         let (session, _dir) = test_session();
@@ -10988,7 +10937,7 @@ mod delegate_tool_tests {
 
     /// Redaction must fail closed: with a secret field declared, args
     /// that are not a parseable JSON object must never be recorded
-    /// verbatim into the ledger — they are replaced by a marker.
+    /// verbatim into the ledger; they are replaced by a marker.
     #[test]
     fn redact_ui_tool_args_fails_closed_on_unparseable_args() {
         let doc = UiDocument {
@@ -11060,7 +11009,7 @@ mod delegate_tool_tests {
             .publish_one_ui(run_id, "turn1", &args2)
             .expect("revise");
         assert_eq!(rev, 1);
-        // Submit against the old revision: rejected, even though the
+        // Submit against the superseded revision: rejected, even though the
         // action ids are identical.
         let sub = UiActionSubmission {
             ui_id: ui_id.clone(),
@@ -11573,8 +11522,8 @@ mod delegate_tool_tests {
     fn second_approval_card_in_one_batch_is_refused_not_settled() {
         // Regression: `publish_ui_batch` computed the park only while
         // no card had parked yet, so a second approval card in the same
-        // batch got a "ui published" success and no UiActionRequested —
-        // a call completed while its decision was never requested.
+        // batch got a "ui published" success and no UiActionRequested, so a call
+        // completed while its decision was never requested.
         use pantheon_agent::ToolCall;
         use pantheon_api::message::ToolCallRef;
         let (session, _dir) = test_session();
@@ -12699,11 +12648,9 @@ mod tool_registration_diagnostics_tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn code_intel_false_registers_no_code_intel_tools() {
-        // Config -> enablement -> registry, end to end: `[tools]
-        // code_intel = false` used to leave the group on because
-        // `from_section` dropped the flag and `is_enabled` hardcoded
-        // true. The gate covers LSP, git-undo, worktrees, and the code
-        // graph, not just the LSP + git-undo the old label named.
+        // Config -> enablement -> registry, end to end: `[tools] code_intel = false`
+        // has to leave the group off. The gate covers LSP, git-undo, worktrees and the
+        // code graph, not just LSP + git-undo.
         let (session, _dir) = test_session();
         let mut section = pantheon_api::config::ToolsSection::default();
         section.code_intel = Some(false);
@@ -12729,11 +12676,9 @@ mod tool_registration_diagnostics_tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn memory_false_registers_no_session_search_and_plugins_false_registers_no_oauth_tools() {
-        // `[tools]` toggles used to be bypassed by these two: OAuth
-        // connector tools and session_search registered
-        // unconditionally, gated only by capability. They now ride
-        // existing groups - Memory for recall, Plugins for external
-        // integrations - so disabling the group removes them.
+        // `[tools]` toggles cover these two: OAuth connector tools and session_search
+        // ride existing groups - Memory for recall, Plugins for external integrations -
+        // so disabling the group removes them.
         let (session, _dir) = test_session();
         let (reg, counts) = session.build_tool_registry();
         assert!(
@@ -12771,10 +12716,9 @@ mod tool_registration_diagnostics_tests {
 
     #[test]
     fn corrupt_disabled_tools_list_is_a_diagnostic_not_a_silent_reenable() {
-        // A corrupt nightly disabled-tools list used to read as
-        // empty, silently re-enabling contained tools. The build
-        // still proceeds (it cannot know the lost names), but the
-        // corruption must surface on /status.
+        // A corrupt nightly disabled-tools list must not read as empty: that silently
+        // re-enables contained tools. The build still proceeds (it cannot know the lost
+        // names), but the corruption surfaces on /status.
         let (session, dir) = test_session();
         let path = crate::nightly_tools::disabled_tools_path(dir.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

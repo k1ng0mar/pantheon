@@ -1,10 +1,7 @@
-//! Supervisor: run lifecycle, quotas, recovery, checkpointing (D decision).
-//! Runs persist every event; a killed run resumes as RunRecovered.
+//! Run lifecycle, quotas, recovery, and checkpointing.
 //!
-//! Owns the **Runtime API** (ARCHITECTURE §18): the JSON-RPC command
-//! surface (`rpc`, `agui_serve`) and the AG-UI streaming path
-//! (`agui`) moved here from `pantheon-api`, which is now the bottom
-//! protocol-leaf crate (commands, events, types).
+//! A run writes its events as it goes, so a process restart can pick it back
+//! up. This crate also owns the JSON-RPC and AG-UI runtime paths.
 
 /// Best-effort stderr diagnostic. Rust's `eprintln!` panics when the
 /// write fails (closed pipe, full disk); on a long-lived server that
@@ -299,8 +296,6 @@ impl RunLeaseGuard {
             && self.supervisor.assert_lease(&self.run_id).is_ok()
     }
     /// The lease-lost flag (`true` once the heartbeat failed to renew).
-    /// Renamed from `health_flag`, which named the opposite of what it
-    /// holds (audit GP F01).
     pub fn lost_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         Arc::clone(&self.lost)
     }
@@ -446,8 +441,8 @@ impl Supervisor {
         &self.inner.lease_id
     }
 
-    /// Default lease lifetime.  It is intentionally short enough for a
-    /// crashed process to be recovered by the next session.
+    /// Default lease lifetime. Short enough for a crashed process to be recovered by
+    /// the next session.
     pub fn lease_ttl_ms(&self) -> i64 {
         std::env::var("PANTHEON_RUN_LEASE_TTL_MS")
             .ok()
@@ -688,8 +683,8 @@ impl Supervisor {
     ///
     /// # Locking contract - read before writing an observer
     ///
-    /// Observers are invoked **while the supervisor's observer lock is
-    /// held** (see `emit`). An observer callback therefore MUST:
+    /// Observers are invoked while the supervisor's observer lock is held (see
+    /// `emit`). An observer callback therefore has to:
     ///
     /// * be fast and non-blocking (the only current observer is a
     ///   non-blocking `mpsc::Sender::send` into the TUI event loop),
@@ -861,14 +856,13 @@ impl Supervisor {
     /// Every approval scope still awaiting an operator decision, in the
     /// order it was requested.
     ///
-    /// This exists so a park message can name the exact scope instead of
-    /// sending the user to a second command to find it. The scope is
-    /// `call_id:tool:args` and the args are long JSON with embedded quotes,
-    /// so "run the other command and copy it" was a real papercut on the
-    /// approval path, not a hypothetical one.
+    /// This exists so a park message can name the exact scope instead of sending the
+    /// user to a second command to find it. The scope is `call_id:tool:args` and the
+    /// args are long JSON with embedded quotes, so "run the other command and copy it"
+    /// is a real papercut on the approval path.
     ///
-    /// Scopes already granted or denied are filtered out, so the result is
-    /// exactly what still needs a human.
+    /// Already granted or denied scopes are filtered out, so the result is exactly what
+    /// still needs a human.
     /// Look up the pre-state hash recorded for an approval scope. Returns
     /// None when no PreStateRecorded event exists for that scope (e.g. a
     /// read-only tool, or a run from before this feature).
@@ -1686,13 +1680,11 @@ mod tests {
         (sup, dir)
     }
 
-    /// Regression test for the FTS `chunk_id` TOCTOU race: the chunk for an
-    /// event must be indexed under the seq returned by `append` for that
-    /// event, not under whatever `max_seq()` returns when indexing runs.
-    /// This test deterministically simulates the interleaving the old code
-    /// was vulnerable to: chunk B lands between A's ledger append and A's
-    /// FTS insert, and the old `max_seq()` recompute indexed A's text under
-    /// B's seq (silent FTS corruption).
+    /// Regression test for the FTS `chunk_id` TOCTOU race: the chunk for an event must
+    /// be indexed under the seq `append` returned for that event, not under whatever
+    /// `max_seq()` returns when indexing runs. This deterministically simulates the
+    /// interleaving: chunk B lands between A's ledger append and A's FTS insert, and
+    /// recomputing `max_seq()` indexes A's text under B's seq (silent FTS corruption).
     #[test]
     fn fts_chunk_indexed_under_append_seq_not_max_seq() {
         let (sup, dir) = temp_supervisor();

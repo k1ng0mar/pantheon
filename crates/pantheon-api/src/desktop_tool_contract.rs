@@ -1,17 +1,17 @@
-//! Stable contract for tools exposed by the first party desktop client.
+//! contract for tools exposed by the first-party desktop client.
 //!
-//! Desktop supplies UI and native capability adapters. Pantheon owns the tool
-//! names, their domains and the rule that a catalog may only contain known
-//! Pantheon tools. This module is intentionally small and dependency free so
-//! both the workspace and the separately built desktop can use it.
+//! desktop supplies the UI + native capability adapters. we own the tool names,
+//! their domains, and the rule that a catalog may only list known pantheon
+//! tools. small + dependency-free on purpose: both the workspace and the
+//! separately built desktop use it.
 
 use std::collections::BTreeSet;
 
-/// Prefix required for every agent callable desktop adapter tool.
+/// prefix every agent-callable desktop adapter tool needs
 pub const DESKTOP_TOOL_PREFIX: &str = "pantheon_";
 
-/// Coarse domain used by tests and capability mapping. Runtime policy remains
-/// the authority for what an operation may do; this is not a permission.
+/// coarse domain for tests / capability mapping. runtime policy decides what an
+/// operation can actually do; this isn't a permission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DesktopToolDomain {
     Project,
@@ -53,11 +53,11 @@ pub struct DesktopTool {
     pub domain: DesktopToolDomain,
 }
 
-/// All agent callable tools the desktop may currently expose.
+/// tools the desktop may currently expose to an agent.
 ///
-/// Adding a name here is a deliberate API change and must be accompanied by
-/// the native Pantheon tool contract it maps to, or by an explicit desktop UI
-/// adapter justification in `docs/developer/desktop-tool-ownership.md`.
+/// adding a name here is an API change: it needs the native pantheon tool
+/// contract it maps to, or an explicit desktop UI adapter justification in
+/// `docs/developer/desktop-tool-ownership.md`.
 pub const DESKTOP_TOOLS: &[DesktopTool] = &[
     desktop("list_projects", DesktopToolDomain::Project),
     desktop("list_tasks", DesktopToolDomain::Task),
@@ -147,12 +147,12 @@ const fn desktop(suffix: &'static str, domain: DesktopToolDomain) -> DesktopTool
     }
 }
 
-/// Full tool name for a contract entry.
+/// full name for a contract entry
 pub fn full_name(tool: DesktopTool) -> String {
     format!("{DESKTOP_TOOL_PREFIX}{}", tool.name)
 }
 
-/// True when `name` is a known first party desktop tool.
+/// true when `name` is a known first-party desktop tool
 pub fn is_desktop_tool(name: &str) -> bool {
     DESKTOP_TOOLS.iter().any(|tool| full_name(*tool) == name)
 }

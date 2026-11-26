@@ -1,38 +1,26 @@
-//! Storage: SQLite-backed event-sourced execution ledger (§12 + §19).
-//! The backend is SQLite (rusqlite, bundled).
+//! sqlite-backed event-sourced ledger. rusqlite, bundled, no server.
 
 use pantheon_api::error::{Layer, PantheonError};
 use rusqlite::Connection;
 use std::time::Duration;
 
-/// Durability pragmas every store in this crate applies on open, file-backed
-/// or in-memory: a 5s busy timeout (second process / thread never hits
-/// SQLITE_BUSY immediately), WAL journal mode (concurrent readers don't block
-/// writers; crash mid-commit leaves a replayable WAL, not a hot journal), and
-/// an explicit `synchronous = NORMAL` (process-crash durable under WAL
-/// without the double-fsync tax rollback-journal `FULL` imposes - but
-/// NOT fully durable across an OS crash or power loss: NORMAL may lose
-/// recently committed transactions there. The old "fully durable" wording
-/// overstated this; use FULL for a ledger that must survive power loss).
+/// the pragmas every store here applies on open: 5s busy timeout, WAL, and
+/// synchronous=NORMAL.
 ///
-/// The `code` prefix names the store for error codes, e.g. `"LEDGER"`.
+/// NORMAL survives a process crash but not a power cut - it may lose recent
+/// commits there. if you need the latter, switch to FULL, but you pay a second
+/// fsync. we took the cheap option on purpose, this is a ledger not a bank.
 ///
-/// Checkpoint policy (deliberately NOT enforced here): SQLite's default
-/// `wal_autocheckpoint` (1000 pages) bounds WAL growth in normal use. Long
-/// write bursts should issue `PRAGMA wal_checkpoint(TRUNCATE)` from an idle
-/// hook or maintenance pass instead - auto-checkpointing on close would turn a
-/// cheap disconnect into a latency spike, and doing it here would hide the
-/// cost inside every store open. Retention likewise stays an explicit API
-/// (e.g. [`ledger::Ledger::prune_events_before_active_safe`]); nothing in this crate wires
-/// automatic pruning into open paths.
+/// checkpointing is left to sqlite's autocheckpoint (1000 pages, covers normal
+/// use). a long write burst should run wal_checkpoint(TRUNCATE) from a
+/// maintenance pass. doing it on close makes a disconnect look like a hang.
+///
+/// `code` prefixes the error codes, e.g. "LEDGER".
 pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), PantheonError> {
-    // Before anything else touches the file: the SQLite file inherits the
-    // process umask, so a default 022 umask leaves `ledger.db` at 0644 and the
-    // data dir at 0755 - every transcript and memory row readable by any local
-    // user, while the secret stores beside them are 0600 (audit F2). This is
-    // the one open path every file-backed store in the workspace shares, so it
-    // is the chokepoint that covers ledgers, memory, ideas, claims and backups
-    // without touching each caller.
+    // the db file inherits the process umask. 022 leaves ledger.db at 0644 and
+    // the data dir at 0755, so any local user can read every transcript while
+    // the secret stores next to them are 0600. this is the one open path all the
+    // file-backed stores share, so fix it here instead of at each caller.
     if let Some(path) = conn.path() {
         crate::privacy::tighten_database(std::path::Path::new(path));
     }
@@ -46,12 +34,11 @@ pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), 
             "",
         )
     };
-    // Busy timeout first: the WAL pragma below can itself block when another
-    // process holds the write lock.
+    // timeout first, the WAL pragma below can block on another process's lock
     conn.busy_timeout(Duration::from_secs(5))
         .map_err(|e| err("BUSY_TIMEOUT", e.to_string()))?;
-    // `PRAGMA journal_mode = WAL` returns the resulting mode as a row;
-    // ignore it - on :memory: connections it reports "memory" (a no-op).
+    // journal_mode returns the resulting mode as a row, ignore it. on :memory:
+    // connections it just reports "memory".
     conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0))
         .map_err(|e| err("WAL", e.to_string()))?;
     conn.execute_batch("PRAGMA synchronous = NORMAL")
@@ -59,17 +46,14 @@ pub(crate) fn configure_durability(conn: &Connection, code: &str) -> Result<(), 
     Ok(())
 }
 
-/// Execute one forward-only `ALTER TABLE ... ADD COLUMN` migration step.
+/// one forward-only ADD COLUMN.
 ///
-/// The "duplicate column name" error means the database already carries
-/// the column (fresh databases do - the `SCHEMA` constants declare every
-/// column), so it is ignored and the migration stays idempotent. Every
-/// other SQLite error (I/O, locked, no-such-table) is returned to the
-/// caller: a migration that reports `Ok` really migrated.
+/// "duplicate column name" means it's already there (fresh dbs get every column
+/// from the SCHEMA constants), so we swallow it and the migration stays
+/// idempotent. everything else propagates - if this returns Ok, it really ran.
 ///
-/// The match is on the message text because SQLite reports this as a
-/// plain `SQLITE_ERROR` with no distinct extended code; the lowercase
-/// match keeps it robust across rusqlite versions.
+/// matching on the message text because sqlite gives this a plain SQLITE_ERROR
+/// with no separate code.
 pub(crate) fn add_column_once(conn: &Connection, sql: &str) -> Result<(), rusqlite::Error> {
     match conn.execute(sql, []) {
         Ok(_) => Ok(()),

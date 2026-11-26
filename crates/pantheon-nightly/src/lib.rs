@@ -1,47 +1,10 @@
-//! `pantheon-nightly`: the unified nightly self-improvement pass.
+//! The nightly self-improvement pass.
 //!
-//! One pipeline replaces the old `pantheon-reflect` + `pantheon-consolidate`
-//! split:
-//!
-//! 1. **Scan** the structured ledger once ([`signals::collect`]).
-//! 2. **Propose** deterministic proposals with run/turn provenance
-//!    ([`propose::from_signals`]).
-//! 3. Optionally **refine** drafts with an LLM - off by default, always
-//!    through the `Reflection` auxiliary slot, never the chat model.
-//! 4. **Eval-gate** skill/persona proposals: relevant `pantheon-eval`
-//!    targets must pass ([`gate`]). Memory lessons skip this.
-//! 5. **Replay-gate** skill/persona proposals: held-out recurring tasks
-//!    replay with and without the candidate; the proposal ships only on
-//!    *strict improvement* ([`replay`]). This is the SkillOpt learning
-//!    rule, adapted to Pantheon's provenance and approval model.
-//! 6. **Fix loop**: a proposal that fails a gate gets up to
-//!    `max_fix_attempts` diagnose → revise → re-check iterations
-//!    (deterministic repairs; LLM sharpening only when LLM steps are
-//!    enabled), then escalates to the human as `NeedsAttention`
-//!    ([`fixloop`]) - never an infinite loop, never silent.
-//! 7. **Apply**: everything queues for human approval. Memory lessons
-//!    propose-only - an unattended pass never writes a durable record;
-//!    it surfaces the candidate with its evidence (provenance runs +
-//!    observed-count) and parks it in the approval queue, exactly like
-//!    skills and personas. Only an operator grant applies it. This is
-//!    the trust/permission model: frequency + recency can *propose* a
-//!    lesson, they cannot *durable* one.
-//! 7. **Repair** broken operational targets: MCP servers, scheduled
-//!    jobs, and tools walk a bounded repair ladder (retry → `Repair`-slot
-//!    diagnosis → config repair → disable/pause + escalate), audited with
-//!    the same event shapes ([`repair_targets`]). Skipped when no repair
-//!    targets are attached. In dry-run mode the phase detects and audits
-//!    but mutates nothing.
-//! 8. **Audit** every lifecycle event to JSONL; write the pass report.
-//!
-//! Approved persona notes are injected into fresh runs' system prompts
-//! by the runtime ([`persona`]), so an approved persona actually shapes
-//! future sessions.
-//!
-//! Memory promotion rule: a candidate promotes when seen in at least
-//! `min_sessions` distinct runs with the newest observation inside
-//! `max_age_days`. Plain frequency + recency - the old exponential
-//! half-life formula is gone.
+//! It scans ledger signals, proposes changes, and optionally evaluates or
+//! replays them before queuing work for an operator. LLM refinement is opt-in
+//! and uses the reflection slot, not the chat model. Repairs use a bounded
+//! ladder and dry-run mode does not mutate anything. Memory lessons remain
+//! propose-only until a human grants them.
 
 mod heal_group;
 mod ideas_group;

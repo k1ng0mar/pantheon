@@ -1,23 +1,9 @@
-//! auth_group: oauth, logins, secure_forms, gateway_tokens, migration, dotenv, env in one file.
-
 pub mod oauth {
-    //! Local-first OAuth2 connectors (GitHub, Google, Notion, Spotify).
-    //!
-    //! Unlike hosted connector designs, tokens live in the local durable
-    //! vaults (OS keychain, else the encrypted file vault): there is no
-    //! server side. The model never sees token bytes.
-    //! [`SecretsBroker::oauth_request`] resolves a valid token, performs the
-    //! authenticated request, and returns only the response body. Every
-    //! handed-out access token is registered with the exact-value redaction
-    //! registry at handout (fill-time registration), so a later echo in any
-    //! tool result is scrubbed before it reaches the model.
-    //!
-    //! Client IDs come from the environment (`PANTHEON_OAUTH_<APP>_CLIENT_ID`);
-    //! client secrets are never required. All four providers run the RFC 8252
-    //! public-client loopback flow with PKCE S256 (RFC 7636). Notion
-    //! additionally honors `PANTHEON_OAUTH_NOTION_CLIENT_SECRET`: when set,
-    //! the token exchange uses HTTP Basic (`client_id:client_secret`); when
-    //! absent, the PKCE public-client flow is used.
+    //! Local OAuth2 for GitHub, Google, Notion, Spotify. Tokens go in the
+    //! local durable vaults, so there's no server side and the model never
+    //! sees bytes. RFC 8252 loopback + PKCE S256 (RFC 7636); client IDs come
+    //! from `PANTHEON_OAUTH_<APP>_CLIENT_ID`. A client secret is only used for
+    //! Notion, and only if `PANTHEON_OAUTH_NOTION_CLIENT_SECRET` is set.
 
     use crate::error::{validate_name, SecretsError};
     use crate::value::SecretValue;
@@ -32,10 +18,8 @@ pub mod oauth {
     pub enum TokenAuth {
         /// Public client: PKCE only, no secret (GitHub, Google, Spotify).
         Pkce,
-        /// Optional HTTP Basic `client_id:client_secret` (Notion): used when
-        /// `PANTHEON_OAUTH_NOTION_CLIENT_SECRET` is set, PKCE otherwise. A
-        /// Notion integration configured as a public client works without it;
-        /// one configured confidential needs it.
+        /// Notion only: HTTP Basic when the client secret is set, PKCE
+        /// otherwise.
         BasicOptional,
     }
 
@@ -57,8 +41,7 @@ pub mod oauth {
         /// Extra headers on broker-side API requests (Notion's version pin).
         pub extra_headers: &'static [(&'static str, &'static str)],
         pub token_auth: TokenAuth,
-        /// Env var carrying the OAuth client ID (public identifier, not a
-        /// secret - but read from env so installs never bake one in).
+        /// Env var carrying the OAuth client ID.
         pub client_id_env: &'static str,
     }
 
@@ -130,8 +113,8 @@ pub mod oauth {
         PROVIDERS.iter().find(|p| p.id == id).copied()
     }
 
-    /// A stored OAuth2 token set. Secret material travels only as
-    /// [`SecretValue`]; the struct deliberately has no Serialize impl.
+    /// A stored OAuth2 token set. No `Serialize` impl: secret material travels
+    /// only as [`SecretValue`].
     #[derive(Debug, Clone)]
     pub struct OAuthToken {
         pub access_token: SecretValue,
@@ -170,10 +153,8 @@ pub mod oauth {
         pub expires_at: Option<SystemTime>,
     }
 
-    /// Per-app token records persisted through the broker's durable vaults.
-    ///
-    /// Names are `oauth_<app>_<field>` (underscores only: the dotenv vault
-    /// rejects anything outside `[A-Za-z0-9_]`).
+    /// Per-app token records, names `oauth_<app>_<field>`. Underscores only,
+    /// the dotenv vault rejects anything else.
     pub struct OAuthStore<'a> {
         broker: &'a SecretsBroker,
     }
@@ -191,13 +172,9 @@ pub mod oauth {
             )
         }
 
-        /// Persist a token set. Overwrites any previous records for the app.
-        ///
-        /// All-or-nothing: the previous set is snapshotted first, and any
-        /// failure mid-save restores it (best-effort) before the error
-        /// propagates. The old order wrote access, then refresh, then meta
-        /// with no rollback, so a failure left a mixed token set - a new
-        /// access token paired with an old refresh token and old metadata.
+        /// Persist a token set, all or nothing: the previous set is restored on
+        /// failure, so a partial write can't leave a new access token paired with an
+        /// old refresh token.
         pub fn save(&self, app: &str, token: &OAuthToken) -> Result<(), SecretsError> {
             provider(app)
                 .ok_or_else(|| SecretsError::Invalid(format!("unknown oauth app {app:?}")))?;
@@ -224,9 +201,8 @@ pub mod oauth {
                 Ok(())
             })();
             if let Err(e) = write {
-                // Restore the previous set; rollback failures are ignored
-                // (the original error is the one reported) but attempted for
-                // every record, not just the first.
+                // Restore every previous record; rollback failures are ignored
+                // since the original error is the one reported.
                 for (name, prev) in [
                     (&access_name, &prev_access),
                     (&refresh_name, &prev_refresh),
@@ -310,15 +286,9 @@ pub mod oauth {
             }
         }
 
-        /// Resolve a usable access token, refreshing when expired or expiring
-        /// within 60 seconds. Rotated tokens are persisted.
-        ///
-        /// The handed-out bytes are registered with the broker's redaction
-        /// registry (fill-time registration): the exact bytes are recorded
-        /// before they can appear in any tool result.
-        ///
-        /// Fails closed: unknown app, not connected, and expired-without-a-
-        /// refresh-token all name the `pantheon oauth login <app>` remediation.
+        /// Access token, refreshed if it's expired or within 60s of it. Bytes
+        /// are registered for redaction before they can reach a tool result.
+        /// Unknown or unconnected app says `pantheon oauth login <app>`.
         pub fn ensure_valid_token(&self, app: &str) -> Result<SecretValue, SecretsError> {
             let prov = provider(app)
                 .ok_or_else(|| SecretsError::Invalid(format!("unknown oauth app {app:?}")))?;
@@ -361,20 +331,15 @@ pub mod oauth {
             })
     }
 
-    /// ureq agent for token and API calls. Honors proxy-from-env (the
-    /// workspace standard, on by default in ureq 3) so sandboxed egress keeps
-    /// working; tests build their own agent without a proxy and pass it to the
-    /// `_with` variants. HTTP statuses are returned as responses, not errors,
-    /// because every call site reads the error body.
+    /// ureq agent for token and API calls. Proxy from env, which ureq 3 does by
+    /// default. Statuses come back as responses, not errors - every caller
+    /// reads the error body.
     fn http_agent() -> ureq::Agent {
         http_agent_with(std::time::Duration::from_secs(30))
     }
 
-    /// [`http_agent`] with an explicit overall budget. ureq 2 gave every
-    /// agent an implicit 30s connect timeout; ureq 3 has none by default, so
-    /// the deadline is pinned here: a wedged token endpoint must fail the
-    /// exchange, not hang the session thread. Tests drive a short budget to
-    /// pin exactly that contract.
+    /// `http_agent` with a deadline. ureq 3 has no default timeout and a
+    /// wedged token endpoint shouldn't hang the session thread.
     fn http_agent_with(timeout: std::time::Duration) -> ureq::Agent {
         ureq::Agent::config_builder()
             .timeout_global(Some(timeout))
@@ -432,10 +397,9 @@ pub mod oauth {
             if let Ok(secret) = std::env::var("PANTHEON_OAUTH_NOTION_CLIENT_SECRET") {
                 if !secret.trim().is_empty() {
                     let creds = base64_encode(format!("{client_id}:{secret}").as_bytes());
-                    // The secret travels only in this header, over TLS, and is
-                    // never logged. It is NOT registered for redaction: it is a
-                    // static credential the model must never be able to trigger
-                    // the use of, let alone see.
+                    // Only in this header, over TLS, never logged. Not
+                    // registered for redaction: it's a static credential the
+                    // model must not be able to trigger.
                     req = req.header("Authorization", format!("Basic {creds}").as_str());
                 }
             }
@@ -548,7 +512,7 @@ pub mod oauth {
         )?
         .into_token();
         // Providers that do not rotate the refresh token (Google) omit it:
-        // keep the old one rather than losing the ability to refresh.
+        // keep the existing one rather than losing the ability to refresh.
         if token.refresh_token.is_none() {
             token.refresh_token = Some(SecretValue::new(refresh_token));
         }
@@ -704,19 +668,10 @@ pub mod oauth {
         Ok(())
     }
 
-    /// Accept the single OAuth callback on the loopback listener and return
-    /// the authorization code. The `state` parameter is checked against the
-    /// value sent (CSRF protection); a mismatch fails closed.
-    ///
-    /// Bounded: `accept()` used to block forever, with the 300s timeout
-    /// applying only after a connection arrived - so a user who abandoned
-    /// the flow hung the caller indefinitely, contradicting the login
-    /// flow's "blocks until user completes (or abandons)" contract. The
-    /// whole wait (accept + stray connections) is now bounded by
-    /// `timeout`. Stray connections (health checks, a second browser tab,
-    /// a request without a matching code/state) are answered 400 and
-    /// ignored instead of aborting the flow on the first one; only a real
-    /// provider `error` response aborts immediately.
+    /// Accept the one OAuth callback and return the code. `state` mismatch fails
+    /// closed. Both the accept and any strays sit inside `timeout`, so an abandoned
+    /// flow can't block the caller. Strays get a 400 and are ignored; a real
+    /// provider `error` aborts.
     fn wait_for_code(
         listener: &TcpListener,
         expected_state: &str,
@@ -810,11 +765,8 @@ pub mod oauth {
         }
     }
 
-    /// Run the RFC 8252 loopback authorization flow: open the provider's
-    /// consent page, receive the authorization code on an ephemeral
-    /// `127.0.0.1` listener, and exchange it for tokens. Blocks until the
-    /// user completes (or abandons) the browser step, bounded by a 300s
-    /// callback timeout. `client_id` is a public identifier, never a secret.
+    /// RFC 8252 loopback flow: consent page, code on an ephemeral 127.0.0.1
+    /// listener, exchange for tokens. Blocks on the browser step, 300s cap.
     pub fn login_flow(prov: OAuthProvider, client_id: &str) -> Result<OAuthToken, SecretsError> {
         validate_name(prov.id)?;
         let listener = TcpListener::bind("127.0.0.1:0").map_err(SecretsError::from)?;
@@ -853,19 +805,14 @@ pub mod oauth {
     }
 
     // ---------------------------------------------------------------------------
-    // Broker-side request execution: the "model never sees the token" boundary
+    // Broker-side request execution
     // ---------------------------------------------------------------------------
 
     impl SecretsBroker {
-        /// Perform an authenticated API request broker-side: resolve a valid
-        /// token (refreshing when needed), send it as `Authorization: Bearer`,
-        /// and return the response body. The token never leaves this function
-        /// and is never logged.
-        ///
-        /// Fails closed: unknown app, unconnected app, expired token without a
-        /// refresh token, disallowed method, and any URL outside the provider's
-        /// API base are all errors (the first three name the
-        /// `pantheon oauth login <app>` remediation).
+        /// Resolve a token (refresh if needed), send it as a bearer, return the
+        /// body. The token doesn't leave this function. Unknown or unconnected
+        /// app, expired with no refresh, bad method, or a URL outside `api_base`
+        /// are all errors.
         pub fn oauth_request(
             &self,
             app: &str,
@@ -891,8 +838,7 @@ pub mod oauth {
             let token = OAuthStore::new(self).ensure_valid_token(app)?;
             let agent = http_agent();
             // force_send_body unifies the builder typestate so the validated
-            // method set can be built in one match; bodies without a body send
-            // empty, which no API distinguishes from v2's `.call()`.
+            // method set can be built in one match.
             let mut req = match method.as_str() {
                 "GET" => agent.get(url).force_send_body(),
                 "DELETE" => agent.delete(url).force_send_body(),
@@ -1217,11 +1163,8 @@ pub mod oauth {
 
         #[test]
         fn token_exchange_is_bounded_by_the_agent_timeout() {
-            // The timeout contract this pins: every agent built by
-            // `http_agent_with` carries a deadline, so an endpoint that
-            // accepts and never answers fails the exchange instead of
-            // hanging the caller forever (ureq 3 ships no default timeout;
-            // ureq 2's implicit 30s connect bound is what this restores).
+            // Every agent from http_agent_with carries a deadline, so an
+            // endpoint that accepts and never answers fails instead of hanging.
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             std::thread::spawn(move || {
@@ -1269,8 +1212,7 @@ pub mod oauth {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        /// No connection at all: the wait ends at the deadline instead of
-        /// hanging forever (the old `accept()` had no timeout).
+        /// No connection at all: the wait ends at the deadline instead of hanging.
         #[test]
         fn wait_for_code_times_out_without_connections() {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1390,14 +1332,10 @@ pub mod oauth {
 pub mod logins {
     //! Website-login credentials for browser sessions.
     //!
-    //! A login is `(id, site, username, password)`. The password lives in a
-    //! [`SecretsBroker`] vault (`logins.env` inside the data dir - deliberately
-    //! NOT `.env`, so login passwords never surface in the `.env` key
-    //! manager); the metadata (site, username, the secret's broker name) lives
-    //! in `logins.json` next to it. The password is only ever exposed through
-    //! [`LoginStore::password_for`], for server-side use by the browser
-    //! session. API responses use [`LoginCredential::masked`]: the password is
-    //! always the `••••` placeholder, never secret material, not even partial.
+    //! A login is (id, site, username, password). The password sits in a broker
+    //! vault (`logins.env`, not `.env`, so it stays out of the `.env` key
+    //! manager) and the metadata in `logins.json` beside it. Only
+    //! `password_for` returns it; API responses get `••••`.
 
     use crate::{DotenvVault, EnvVault, SecretValue, SecretsBroker, SecretsError};
     use std::path::{Path, PathBuf};
@@ -1440,13 +1378,10 @@ pub mod logins {
         }
     }
 
-    /// CRUD over the login store. Backed by a broker whose only vault is
-    /// `logins.env` (no process-env fallback, so `names`/`resolve` reflect
-    /// the file and nothing else) plus the `logins.json` metadata file.
-    ///
-    /// The store is deliberately dumb about the browser: it hands the
-    /// password to server-side callers via [`LoginStore::password_for`]; the
-    /// login *flow* (fill + submit) belongs to the browser tool surface.
+    /// CRUD over the login store. One vault (`logins.env`, no process env
+    /// fallback, so `names` and `resolve` reflect the file alone) plus
+    /// `logins.json`. Filling and submitting the page is the browser tool's
+    /// job, not this store's.
     pub struct LoginStore {
         broker: SecretsBroker,
         meta_path: PathBuf,
@@ -1475,10 +1410,8 @@ pub mod logins {
             )
         }
 
-        /// Read the metadata file. Missing/empty is a clean empty list;
-        /// present-but-unparseable is an error - never silently treated as
-        /// empty, because the next write would then overwrite (wipe) the
-        /// corrupt file.
+        /// Missing or empty is an empty list. Unparseable is an error - treated
+        /// as empty, the next write would wipe the file.
         fn read_meta(&self) -> Result<Vec<LoginCredential>, SecretsError> {
             let text = std::fs::read_to_string(&self.meta_path).unwrap_or_default();
             if text.trim().is_empty() {
@@ -1498,12 +1431,10 @@ pub mod logins {
             if let Some(parent) = self.meta_path.parent() {
                 std::fs::create_dir_all(parent).map_err(SecretsError::Io)?;
             }
-            // Atomic-ish: temp file + rename, owner-only like the vault files.
-            // Create with the private mode rather than writing at the umask
-            // default and chmod'ing after: a `fs::write` file is briefly
-            // world-readable, and ignoring a failed `set_permissions` would leave
-            // credentials readable to everyone on the box. Match `filevault`'s
-            // pattern: fail the write if the mode cannot be set.
+            // temp+rename, owner-only from creation. Writing at the umask
+            // default and chmod'ing after leaves it briefly world-readable, and
+            // a failed chmod leaves it readable for good. Same as filevault:
+            // fail the write if the mode can't be set.
             let tmp = self.meta_path.with_extension("json.tmp");
             {
                 use std::io::Write as _;
@@ -1550,14 +1481,9 @@ pub mod logins {
             self.broker.resolve(&cred.secret_name)
         }
 
-        /// Create a login. The id is derived from the site; collisions get a
-        /// numeric suffix. Fails on empty site/username/password.
-        ///
-        /// Metadata-first: the `logins.json` row is written before the vault
-        /// password, and a vault failure rolls the row back out. The old
-        /// order (vault first) orphaned a password with no row whenever the
-        /// metadata write failed - a secret the store could never name or
-        /// delete again.
+        /// Create a login. Id comes from the site, collisions get a numeric suffix.
+        /// Metadata row first, vault password second, row rolled back if the vault
+        /// write fails - otherwise a failure can orphan a password with no row.
         pub fn create(
             &self,
             site: &str,
@@ -1622,17 +1548,10 @@ pub mod logins {
             Ok(cred)
         }
 
-        /// Update username and/or password. At least one must be given.
-        /// Password updates are write-only (the old value is never readable).
-        ///
-        /// Metadata-first, like [`create`](Self::create): the metadata row
-        /// is written before the vault password, and a vault failure
-        /// restores the previous metadata and reports the error - never a
-        /// success for a half-applied pair. One asymmetry remains by
-        /// construction: the old password value is unreadable, so a vault
-        /// write that *succeeds* cannot be undone if a later step fails;
-        /// nothing after the vault write can fail except the rollback
-        /// itself, which is best-effort.
+        /// Update username and/or password, at least one. Passwords are
+        /// write-only. Metadata first like `create`; a failed vault write
+        /// restores the row. A vault write that succeeds can't be undone, but
+        /// nothing after it can fail except the rollback.
         pub fn update(
             &self,
             id: &str,
@@ -1680,21 +1599,16 @@ pub mod logins {
                 }
                 None => None,
             };
-            // Metadata first: if this write fails, the vault is untouched
-            // and the call fails with nothing changed. The old order set
-            // the vault password first, so a metadata failure left the
-            // password changed while the update reported failure.
+            // Metadata first: a failure here leaves the vault untouched.
             self.write_meta(&creds)?;
             if let Some(p) = new_password {
                 if let Err(e) = self
                     .broker
                     .set(&creds[pos].secret_name, SecretValue::new(p))
                 {
-                    // Roll the metadata back: the caller was told the update
-                    // failed, so the row must not claim the new values.
-                    // (The vault password itself cannot be restored - the
-                    // old value is write-only - but a retry with the same
-                    // password converges, and the row no longer lies.)
+                    // Caller was told the update failed, so the row can't
+                    // claim the new values. The password itself can't come back
+                    // (write-only), but a retry with the same one converges.
                     let mut rollback = self.read_meta().unwrap_or_default();
                     if let Some(rpos) = rollback.iter().position(|c| c.id == id) {
                         rollback[rpos] = original;
@@ -1706,16 +1620,10 @@ pub mod logins {
             Ok(creds[pos].clone())
         }
 
-        /// Delete a login: metadata row and its vault password both go.
-        /// Unknown id is a no-op returning `false`; deleted returns `true`.
-        ///
-        /// Metadata-first: the row is removed from `logins.json` before the
-        /// vault password is deleted, and a vault-delete failure restores
-        /// the row and propagates the error. The old order deleted the
-        /// password first, so a metadata failure left a row whose password
-        /// was already gone. (A crash between the metadata write and the
-        /// vault delete orphans the password instead - an unnamed secret
-        /// the store can no longer reach, but never a dangling row.)
+        /// Delete a login and its password. Unknown id is a no-op returning
+        /// `false`. Metadata first, row restored if the vault delete fails. A
+        /// crash in between orphans the password instead of leaving a row with
+        /// nothing behind it.
         pub fn delete(&self, id: &str) -> Result<bool, SecretsError> {
             let mut creds = self.read_meta()?;
             let Some(pos) = creds.iter().position(|c| c.id == id) else {
@@ -1757,7 +1665,7 @@ pub mod logins {
             let _ = std::fs::remove_dir_all(dir.join("logins.json.tmp"));
         }
 
-        /// Happy path still works end to end after the reorder.
+        /// Happy path works end to end.
         #[test]
         fn create_update_delete_round_trip() {
             let dir = scratch("roundtrip");
@@ -1796,7 +1704,7 @@ pub mod logins {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
-        /// A failed update leaves the old password in place: metadata goes
+        /// A failed update leaves the existing password in place: metadata goes
         /// first, so when it fails the vault password is never touched.
         #[test]
         fn failed_update_keeps_old_password() {
@@ -1836,29 +1744,14 @@ pub mod logins {
 }
 
 pub mod secure_forms {
-    //! Secure forms: masked secret entry and management on top of the broker.
+    //! Secure forms: masked secret entry on top of the broker.
     //!
-    //! This is Pantheon's equivalent of a secure vault entry form. It adds no
-    //! second secret store: values live only in the broker's durable vaults,
-    //! exactly as before. What it adds is:
-    //!
-    //! * A metadata sidecar (`secure-forms.json` under the data dir) holding
-    //!   only names, scopes and last-updated timestamps. It never holds values,
-    //!   and it is written with 0600 permissions.
-    //! * A caller gate: only a live user session may save, rotate or delete.
-    //!   Delegated child agents and plugins are refused outright, so a
-    //!   compromised or over-eager delegate cannot harvest or replace keys.
-    //! * Verification on save: a harmless check (provider models list, bot
-    //!   `getMe`, or a local shape check) that reports success or failure
-    //!   without ever echoing the value, not even in an error string.
-    //! * Config references: which config paths name a secret, so rotation
-    //!   never requires hand-editing `config.toml` — config keeps naming the
-    //!   secret, and the broker resolves the current value.
-    //!
-    //! Failure is always closed: when the broker has no durable vault, or the
-    //! metadata file cannot be written, `save` returns an error and nothing
-    //! is written anywhere else. There is no fallback to `config.toml`, to a
-    //! log, or to the transcript.
+    //! No second store, values still live in the broker's vaults. This adds
+    //! a metadata sidecar (`secure-forms.json`, names/scopes/timestamps only,
+    //! 0600), a gate that refuses delegated agents and plugins, a save-time
+    //! verification that never echoes the value, and config references so
+    //! rotation doesn't mean hand-editing config.toml. No durable vault or no
+    //! writable sidecar = error, nothing written anywhere.
 
     use crate::broker::SecretsBroker;
     use crate::error::SecretsError;
@@ -1961,12 +1854,10 @@ pub mod secure_forms {
         fn verify(&self, value: &SecretValue) -> VerifyOutcome;
     }
 
-    /// Credential diagnosis for a verification failure, mirroring
-    /// `pantheon_providers::credential_error::classify` (this crate
-    /// cannot depend on pantheon-providers: providers depends on
-    /// secrets, so the mappings live here too; keep them in sync).
-    /// The diagnosis is static text only, never the body, so no
-    /// credential can pass through it.
+    /// Credential diagnosis, same mapping as
+    /// `pantheon_providers::credential_error::classify` - providers depends on
+    /// this crate, not the other way round, so keep the two in sync. Static
+    /// text only, never the body.
     fn credential_diagnosis(code: u16, body: &str) -> Option<&'static str> {
         if body.contains("error code: 1010") {
             return Some("Blocked at Cloudflare's edge by Browser Integrity Check: the request never reached the provider's auth layer. Do NOT replace the key. Fix: send a real User-Agent header.");
@@ -2170,10 +2061,8 @@ pub mod secure_forms {
                 "secure-forms metadata could not be serialised: {e}"
             ))
         })?;
-        // Owner-only from creation, not chmod-after-write: the old
-        // `fs::write` used the process umask (world-readable under 022)
-        // and discarded the chmod error, so the file could stay readable
-        // (audit REL-02). A failed permission set now fails the write.
+        // Owner-only from creation. `fs::write` used the umask and dropped the
+        // chmod error, so the file could stay world-readable (audit REL-02).
         let tmp = path.with_extension("json.tmp");
         let _ = std::fs::remove_file(&tmp);
         {
@@ -2228,11 +2117,9 @@ pub mod secure_forms {
             &self.metadata_path
         }
 
-        /// Save a secret via the broker, then verify it. The value is stored
-        /// before verification runs, so a failed check leaves the user with
-        /// retry and clear options instead of losing the entry. On a broker
-        /// failure nothing is recorded and the metadata file is untouched:
-        /// fail closed, never fall back to config or a log.
+        /// Store, then verify. A failed check leaves the entry with retry/clear
+        /// rather than losing it. Broker failure: nothing recorded, sidecar
+        /// untouched.
         pub fn save(
             &self,
             caller: SecretCaller,
@@ -2313,11 +2200,9 @@ pub mod secure_forms {
             Ok(())
         }
 
-        /// List secrets by name, scope and last update. Values are never
-        /// included. Names the broker holds but the sidecar has never seen
-        /// (saved before secure forms, or by another path) appear with scope
-        /// `custom` and unknown update time, so the list is never silently
-        /// partial.
+        /// Names, scopes, timestamps. No values. Names in the broker the sidecar
+        /// never saw (saved before secure forms, or by another path) come back
+        /// as scope `custom` with no update time.
         pub fn list(&self) -> Vec<SecretEntry> {
             let meta = load_metadata(&self.metadata_path);
             let mut entries: BTreeMap<String, SecretEntry> = BTreeMap::new();
@@ -2344,11 +2229,10 @@ pub mod secure_forms {
             entries.into_values().collect()
         }
 
-        /// Config paths that reference each secret name, from parsed TOML
-        /// text. A path is recorded when a `key_env` / `api_key_env` leaf
-        /// names the secret, or when a `{source, name}` table names it.
-        /// Other string leaves (provider ids, model ids, titles) are not
-        /// references. Unparsable config yields no references, never an error.
+        /// Which config paths name each secret, from parsed TOML. A path counts
+        /// when a `key_env`/`api_key_env` leaf names the secret or a
+        /// `{source, name}` table does. Unparsable config gives no references,
+        /// not an error.
         pub fn references(config_text: &str) -> BTreeMap<String, Vec<String>> {
             let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
             let Ok(doc) = toml::from_str::<toml::Value>(config_text) else {
@@ -2646,18 +2530,12 @@ pub mod secure_forms {
 }
 
 pub mod gateway_tokens {
-    //! Gateway chat-surface tokens: the Telegram and Discord bot tokens that
-    //! `gateway run` needs.
+    //! Telegram and Discord bot tokens for `gateway run`.
     //!
-    //! Collected by the Full Setup wizard's Gateway screen. The tokens live in
-    //! `<data_dir>/gateway.env` - a [`DotenvVault`] namespace deliberately
-    //! separate from `.env`, so bot tokens never surface in the `.env` key
-    //! manager - and a process env var always wins over the file when both are
-    //! set (an exported rotation must beat a stale stored token).
-    //!
-    //! Tokens travel only as [`SecretValue`]. The one display helper,
-    //! [`mask_token`], shows the last four characters; nothing here ever logs
-    //! or prints a full value.
+    //! They live in `<data_dir>/gateway.env`, a DotenvVault namespace apart from
+    //! `.env`, so they stay out of the key manager. A process env var wins over
+    //! the file, so an exported rotation beats a stale stored token.
+    //! `mask_token` shows the last four; nothing here prints a value.
 
     use crate::{
         vault::SecretVault, DotenvVault, EnvVault, MemoryVault, ReadOnlyVault, SecretValue,
@@ -2672,12 +2550,9 @@ pub mod gateway_tokens {
     /// Secret name (and env var) for the Discord bot token.
     pub const DISCORD_TOKEN_NAME: &str = "PANTHEON_DISCORD_TOKEN";
 
-    /// Broker resolving the two channel tokens: process env first, then
-    /// `<data_dir>/gateway.env`. The env values are mirrored into a read-only
-    /// front vault - the same trick as
-    /// [`SecretsBroker::from_system_env_with_api_key`] - so an exported var
-    /// beats the file on read, while `set`/`delete` fall through to the file
-    /// vault and can never touch the process environment.
+    /// Broker over the two channel tokens: process env first, then
+    /// `<data_dir>/gateway.env`, with the env side mirrored into a read-only
+    /// front vault so `set`/`delete` still land in the file.
     pub fn gateway_token_broker(data_dir: &Path) -> SecretsBroker {
         let mirror = MemoryVault::new();
         for name in [TELEGRAM_TOKEN_NAME, DISCORD_TOKEN_NAME] {
@@ -2746,13 +2621,9 @@ pub mod gateway_tokens {
 }
 
 pub mod migration {
-    //! Plaintext store migration: backup, migrate, verify, never delete.
-    //!
-    //! The gateway and login stores live as plaintext dotenv files today.
-    //! This migrator copies every entry into the encrypted file vault,
-    //! verifies each value by reading it back, and records a report.
-    //! Plaintext originals are left in place. Deleting them is a separate
-    //! human approved step after a verified restart.
+    //! Plaintext store migration: copy into the encrypted vault, read each value
+    //! back, record a report. Originals stay put - deleting them is a separate
+    //! step after a verified restart.
 
     use crate::{EncryptedFileVault, SecretValue, SecretVault};
     use std::path::Path;
@@ -2815,14 +2686,9 @@ pub mod migration {
 }
 
 pub mod dotenv {
-    //! Dotenv-file vault: `<data_dir>/.env` as a [`SecretVault`].
-    //!
-    //! The dashboard's `.env` key manager used to read and write the file
-    //! directly, bypassing the secrets crate. Routing it through this vault
-    //! means dotenv keys get the same name validation, value hygiene, and
-    //! broker contracts as every other backend. Reads and writes reuse the
-    //! atomic helpers in [`pantheon_api::dotenv`] (line-preserving, owner-only
-    //! permissions), so behavior matches the rest of the codebase.
+    //! `<data_dir>/.env` as a [`SecretVault`]. Reads and writes go through the
+    //! atomic dotenv helpers in [`pantheon_api::dotenv`], so the key manager
+    //! gets the same name validation and permissions as every other backend.
 
     use crate::error::SecretsError;
     use crate::value::SecretValue;
@@ -2842,10 +2708,9 @@ pub mod dotenv {
             Self::new_file(data_dir, ".env")
         }
 
-        /// Vault over a different dotenv file inside `data_dir` (same
-        /// atomic/permission semantics). Used for secret namespaces that
-        /// must not appear in the `.env` key manager - e.g. website-login
-        /// passwords live in `logins.env`, never in `.env`.
+        /// Vault over another dotenv file in `data_dir`, same atomicity and
+        /// permissions. Used for namespaces that shouldn't show up in the `.env`
+        /// key manager - login passwords, for one.
         pub fn new_file(data_dir: impl AsRef<Path>, file_name: &str) -> Self {
             Self {
                 data_dir: data_dir.as_ref().to_path_buf(),
@@ -2915,10 +2780,8 @@ pub mod dotenv {
 
         static SEQ: AtomicU64 = AtomicU64::new(0);
 
-        /// Item 2b: 8 threads x 25 keys through the real write path
-        /// (`DotenvVault::set`, the same path `PUT /api/env` uses). Without
-        /// an inter-request lock around read-modify-write, concurrent
-        /// writers lose updates (the audit empirically saw 100/200 survive).
+        /// 8 threads x 25 keys through `DotenvVault::set`. Without a lock around
+        /// read-modify-write, concurrent writers lose updates.
         #[test]
         fn concurrent_sets_all_survive() {
             let dir = std::env::temp_dir().join(format!(
@@ -2964,20 +2827,11 @@ pub mod dotenv {
 }
 
 pub mod env {
-    //! Environment compatibility vault.
+    //! Env vault. `db.password` resolves to `PANTHEON_SECRET_DB_PASSWORD`
+    //! (upper, `.`/`-` to `_`). `env:FOO` resolves to `FOO` only if the allowlist
+    //! allows it, otherwise `Ok(None)`.
     //!
-    //! Lets 12-factor style deployments feed secrets through the process
-    //! environment without touching the runtime secret store:
-    //!
-    //! - Name `db.password` resolves to env var `PANTHEON_SECRET_DB_PASSWORD`
-    //!   (uppercase, `.`/`-` become `_`).
-    //! - Name `env:FOO` resolves to the literal env var `FOO` - but ONLY when
-    //!   `FOO` matches the vault's allowlist (see
-    //!   [`EnvVault::with_env_allowlist`]). Without an allowlist entry the
-    //!   lookup fails closed (`Ok(None)`), so a name can never be used to
-    //!   exfiltrate an arbitrary host variable like `env:AWS_SECRET_ACCESS_KEY`.
-    //!
-    //! The system vault is read-only; store in a durable vault instead.
+    //! Read only. Store in a durable vault.
 
     use crate::error::SecretsError;
     use crate::value::SecretValue;
@@ -2987,17 +2841,9 @@ pub mod env {
 
     const PREFIX: &str = "PANTHEON_SECRET_";
 
-    /// Match one allowlist entry against an env var name.
-    ///
-    /// - Exact entry `"FOO"` matches only `FOO`.
-    /// - Trailing-star entry `"PANTHEON_"` ... `"PANTHEON_*"` matches any name
-    ///   with that prefix.
-    /// - `"*"` alone matches everything: the explicit opt-out for operators
-    ///   who accept the old open behavior.
-    ///
-    /// Entries are trimmed; empty entries never match. The same matcher gates
-    /// both `env:` secret lookups and plugin-subprocess env passthrough, so
-    /// the two boundaries cannot drift apart.
+    /// `"FOO"` matches `FOO`. `"PANTHEON_*"` matches by prefix. `"*"` matches
+    /// everything, the explicit opt-out. Trimmed; empty never matches. The same
+    /// matcher gates `env:` lookups and plugin env passthrough.
     pub fn env_var_allowed(allowlist: &[String], var: &str) -> bool {
         allowlist.iter().any(|entry| {
             let entry = entry.trim();

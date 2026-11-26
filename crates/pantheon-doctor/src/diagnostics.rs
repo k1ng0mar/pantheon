@@ -1,6 +1,3 @@
-//! Doctor diagnostics merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
-
 pub mod checks {
     //! The built-in diagnostic checks, grouped by subsystem.
     //!
@@ -205,10 +202,9 @@ pub mod checks {
             )
             .with_details(format!("path: {}", path.display()))],
             Err(e) => {
-                // A missing file is not a broken file: it used to report as
-                // Critical "does not parse", sending users to fix TOML that
-                // does not exist. Missing = not configured yet (setup);
-                // present-but-unparseable stays Critical.
+                // A missing file is not a broken file: reporting it as Critical "does
+                // not parse" sends users to fix TOML that does not exist. Missing = not
+                // configured yet (setup); present-but-unparseable stays Critical.
                 if !path.exists() {
                     return vec![Finding::failed(
                         "config.file",
@@ -588,11 +584,10 @@ pub mod checks {
         // silent and never a failure. Only presence is reported, never the
         // token value.
         //
-        // Sources mirror the daemon's resolution (env > gateway.env), plus
-        // the configured channels themselves: the old check read only
-        // process-env tokens, so a wizard-configured install (tokens in
-        // gateway.env, channels in `[gateway.channels.*]`) reported idle
-        // while the gateway itself ran fine.
+        // Sources mirror the daemon's resolution (env > gateway.env), plus the
+        // configured channels themselves: process-env tokens alone would report a
+        // wizard-configured install (tokens in gateway.env, channels in
+        // `[gateway.channels.*]`) idle while the gateway itself runs fine.
         let mut live = Vec::new();
         // Channels whose explicit token_secret names a secret the broker
         // cannot resolve (env, then <data_dir>/gateway.env, then vault).
@@ -742,13 +737,10 @@ pub mod checks {
                     .as_ref()
                     .map(|m| m.provider.as_str())
                     .unwrap_or("unknown");
-                // The old code passed every keyless provider with "no API
-                // key required" - including a keyless `openai`, which then
-                // failed at request time. Only `local` is keyless by
-                // construction. For anything else, mirror the runtime's
-                // fallback (`catalog::key_for`): the catalog's key env, else
-                // `PANTHEON_KEY_<PROVIDER>`; an unset fallback is a warning,
-                // not a silent pass.
+                // Only `local` is keyless by construction. For anything else, mirror
+                // the runtime's fallback (`catalog::key_for`): the catalog's key env,
+                // else `PANTHEON_KEY_<PROVIDER>`; an unset fallback is a warning, not a
+                // silent pass.
                 if provider == "local" {
                     return vec![Finding::passed(
                         "providers.model_key",
@@ -906,10 +898,9 @@ pub mod checks {
 
     fn check_ledger(ctx: &DoctorCtx) -> Vec<Finding> {
         let path = ctx.data_dir.join("ledger.db");
-        // Doctor claims to be read-only, but opening a SQLite file creates
-        // it when absent: a `GET /api/health` on a fresh install used to
-        // materialize ledger.db. An absent ledger is not a failure - it
-        // just means no runs yet - so report that without opening.
+        // Doctor claims to be read-only, but opening a SQLite file creates it when
+        // absent. An absent ledger is not a failure - it just means no runs yet - so
+        // report that without opening.
         if !path.exists() {
             return vec![Finding::not_applicable(
                 "memory.ledger",
@@ -1112,11 +1103,10 @@ pub mod checks {
             )];
         }
         let section = cfg.computer_use.clone().unwrap_or_default();
-        // Resolve exactly like the dashboard does (`cua_driver_spec`): the
-        // configured `[computer_use].driver` ("tapp" resolves to `tapp-mcp`,
-        // not `cua-driver`) and an explicit `binary` path. The old check
-        // always probed `cua-driver` on PATH and used `Path::is_file` on a
-        // bare name, so a configured tapp driver always reported missing.
+        // Resolve exactly like the dashboard does (`cua_driver_spec`): the configured
+        // `[computer_use].driver` ("tapp" resolves to `tapp-mcp`, not `cua-driver`) and
+        // an explicit `binary` path. Probing `cua-driver` on PATH with `Path::is_file` on
+        // a bare name reports a configured tapp driver as missing.
         let spec = pantheon_runtime::computer::cua_driver_spec(
             section.driver.as_deref(),
             section.binary.as_deref(),
@@ -1392,12 +1382,11 @@ pub mod checks {
 
     /// Data dir and ledger permissions.
     ///
-    /// Everything else in the data dir is derived from this mode: SQLite
-    /// creates the databases with the process umask, so a `0755` dir used to
-    /// mean `0644` ledgers - full transcripts and memory readable by every
-    /// local user (audit F2). Startup now tightens both; this check exists to
-    /// catch an install that predates the fix, or a chmod that failed on an
-    /// unusual mount.
+    /// Everything else in the data dir is derived from this mode: SQLite creates the
+    /// databases with the process umask, so a `0755` dir means `0644` ledgers - full
+    /// transcripts and memory readable by every local user (audit F2). Startup tightens
+    /// both; this check catches an install that predates that, or a chmod that failed on
+    /// an unusual mount.
     fn check_data_dir_permissions(ctx: &DoctorCtx) -> Vec<Finding> {
         #[cfg(unix)]
         {
@@ -1458,10 +1447,9 @@ pub mod checks {
     }
 
     fn check_exec_sandbox(_ctx: &DoctorCtx) -> Vec<Finding> {
-        // No namespace backend exists outside Linux: `unshare`/`bwrap` are
-        // Linux mechanisms. Before this the check said "install bubblewrap"
-        // on macOS and Windows, where that either does not exist or does not
-        // provide the boundary. Say the true thing instead (audit F3).
+        // No namespace backend exists outside Linux: `unshare`/`bwrap` are Linux
+        // mechanisms, so "install bubblewrap" is wrong advice on macOS and Windows (audit
+        // F3).
         if !cfg!(target_os = "linux") {
             return vec![Finding::failed(
                 "security.exec_sandbox",
@@ -2107,10 +2095,9 @@ pub mod checks {
             assert_eq!(seen.len(), 26);
         }
 
-        // -- previously untested checks -------------------------------------
-        // These eight registered checks had no coverage, so a regression in
-        // their verdict logic would ship silently. Each test pins the
-        // happy/failure distinction that the reported finding depends on.
+        // -- check verdicts -------------------------------------------------
+        // Each test pins the happy/failure distinction that the reported finding
+        // depends on.
 
         #[test]
         fn nightly_state_is_skipped_when_config_does_not_parse() {

@@ -1,5 +1,3 @@
-//! orchestration_group: harness, delegate_budget, swarm, swarm_exec, swarm_persist, operation, pipeline, pipeline_runner, judge, partial_handoff, temporal in one file.
-
 pub mod harness {
     //! Initializer artifacts for long running work.
     //!
@@ -109,78 +107,29 @@ pub mod harness {
 }
 
 pub mod delegate_budget {
-    //! Root-owned atomic delegation budget (Umar's Decision B).
+    //! Root-owned atomic delegation budget.
     //!
-    //! One [`RunBudget`] lives on the ROOT run of a delegation tree:
-    //! `RunBudget { max_delegations: 8, delegations_used: 0 }`. Every
-    //! `delegate()` resolves the root for the calling run and atomically
-    //! increments `delegations_used`; when `used >= max` the delegation is
-    //! rejected. The budget is never reset when a child run is created
-    //! children share the root's counter.
+    //! One [`RunBudget`] lives on the root run of a delegation tree
+    //! (`RunBudget { max_delegations: 8, delegations_used: 0 }`). Every `delegate()`
+    //! resolves the root for the calling run and atomically increments
+    //! `delegations_used`; when `used >= max` the delegation is rejected. Children
+    //! share the root's counter, and the budget is never reset on child creation.
     //!
-    //! A "delegation" counts only on **successful descendant session
-    //! creation**: failed or rejected attempts consume nothing. The
-    //! [`DelegateBudgetStore::try_consume_delegation`] contract is therefore:
+    //! Only a successful descendant session creation counts, so failed or rejected
+    //! attempts consume nothing. [`DelegateBudgetStore::try_consume_delegation`] is
+    //! called after `build_delegate_session` returns `Ok` and hands back a
+    //! [`DelegationGuard`] that rolls the increment back if it drops before
+    //! [`DelegationGuard::commit`].
     //!
-    //! 1. Call it AFTER the child session is successfully created
-    //!    (`build_delegate_session` returned `Ok`).
-    //! 2. It returns a [`DelegationGuard`]. Keep the guard alive while the
-    //!    remaining spawn wiring runs.
-    //! 3. When the child is observable/running, call
-    //!    [`DelegationGuard::commit`] - the budget stays consumed.
-    //! 4. If anything between creation and commit fails, just let the guard
-    //!    drop (or call [`DelegateBudgetStore::release_delegation`]): the
-    //!    increment is rolled back and the child→root link is removed.
+    //! Per-run links (`parent_of[child] = root`) are tracked separately for
+    //! observability via [`DelegateBudgetStore::stats`]; enforcement always reads the
+    //! root's [`RunBudget`].
     //!
-    //! Per-run stats are tracked separately for observability: every
-    //! successfully created child run is linked to its root
-    //! (`parent_of[child_run_id] = root_run_id`), readable via
-    //! [`DelegateBudgetStore::stats`]. Enforcement always reads the root's
-    //! [`RunBudget`], never the per-run links.
-    //!
-    //! ## Storage choice
-    //!
-    //! The budget lives in process memory (this store), NOT in the ledger's
-    //! `runs` table. Rationale:
-    //!
-    //! * The budget is a live-process atomic-enforcement concern. A
-    //!   delegation tree cannot survive a process restart - child sessions
-    //!   run on live threads - so a persisted counter has no coherent
-    //!   cross-restart semantics; the first run after a restart would read a
-    //!   stale `delegations_used` for a tree that no longer exists.
-    //! * Atomicity here means a CAS loop on an [`AtomicU64`]: concurrent
-    //!   delegates can never overshoot `max`. Doing the same through SQLite
-    //!   would mean `BEGIN IMMEDIATE` transactions serializing every delegate
-    //!   call on the ledger lock, plus a forward-only migration for columns
-    //!   that are dead weight the moment the process exits.
-    //! * This is a like-for-like replacement of the existing accounting
-    //!   location: the current cap (`delegations_used:
-    //!   Arc<Mutex<HashMap<String, u32>>>` on the session) is already
-    //!   process-local memory; this module just moves it to root ownership
-    //!   with atomic increments.
-    //! * Durable observability already exists: the ledger records
-    //!   `AgentSpawned` / `AgentCompleted` per run. If a durable
-    //!   parent→root link is ever wanted, a `parent_run_id` ledger column
-    //!   could mirror [`DelegateBudgetStore`]'s in-memory linkage
-    //!   enforcement would still read the root budget here.
-    //!
-    //! ## Wiring (done by the parent orchestrator, NOT this module)
-    //!
-    //! * Add `pub mod delegate_budget;` to `crates/pantheon-runtime/src/lib.rs`.
-    //! * In the blocking `delegate` path (`run_delegate_child` in
-    //!   `session.rs`): immediately after
-    //!   `let child_session = build_delegate_session(...)?;` succeeds, call
-    //!   `store.try_consume_delegation(&driver.run_id, &child_run)`; keep the
-    //!   guard; call `guard.commit()` after the `AgentSpawned` emit succeeds.
-    //!   Map [`BudgetExceeded`] to a `PantheonError` with code
-    //!   `DELEGATE_CAP_EXCEEDED` (mirroring the existing cap error).
-    //! * In the threaded path (`SessionSpawner::spawn_handle` in
-    //!   `session.rs`): same, right after `build_delegate_session(...)?;`,
-    //!   and `guard.commit()` after `self.registry.spawn_child(...)` returns
-    //!   `Ok` - a registry rejection rolls the budget back via `Drop`.
-    //! * Ensure the root budget exists before the first delegation of a run:
-    //!   `store.ensure_budget(&run_id, max_delegations)` at turn/driver
-    //!   setup. Re-ensuring never resets an existing budget.
+    //! The counter lives in process memory, not the ledger's `runs` table. A
+    //! delegation tree cannot survive a restart - child sessions run on live threads -
+    //! so a persisted counter would have no cross-restart meaning. Atomicity is a CAS
+    //! loop on an [`AtomicU64`], which concurrent delegates cannot overshoot; doing the
+    //! same through SQLite would serialize every delegate call on the ledger lock.
 
     use std::collections::HashMap;
     use std::fmt;
@@ -4536,24 +4485,23 @@ pub mod judge {
 pub mod partial_handoff {
     //! Partial-work handoff when a child run is stopped.
     //!
-    //! Stopping a sub-agent (user stop, timeout, budget exhaustion) used to
-    //! discard everything the child had done: the parent only learned
-    //! `SWARM_CHILD_CANCELED` / `SWARM_CHILD_BUDGET` and had to start over.
-    //! This module captures what the child completed, what was still pending,
-    //! and a short transcript excerpt from the child's ledger, and returns it
-    //! to the parent as a structured handoff so the work can resume instead
-    //! of restarting.
+    //! Stopping a sub-agent (user stop, timeout, budget exhaustion) discards
+    //! everything the child had done unless it is captured: the parent would only
+    //! learn `SWARM_CHILD_CANCELED` / `SWARM_CHILD_BUDGET` and have to start over.
+    //! This captures what the child completed, what was still pending, and a short
+    //! transcript excerpt from its ledger, and returns it as a structured handoff so
+    //! the work resumes.
     //!
-    //! Capture is read-only against the child's ledger: completed tool calls
-    //! (from `ToolCompleted` + `ToolStarted` args), the pending plan (from the
-    //! child's todo snapshot), and the last few turn outcomes. Fail-open by
-    //! construction: a ledger read failure yields an empty handoff with a
-    //! note, never a new error - a stop that cannot capture still stops.
+    //! Capture is read-only against the child's ledger: completed tool calls (from
+    //! `ToolCompleted` + `ToolStarted` args), the pending plan (the child's todo
+    //! snapshot), and the last few turn outcomes. Fail-open: a ledger read failure
+    //! yields an empty handoff with a note, never a new error - a stop that cannot
+    //! capture still stops.
     //!
-    //! The handoff rides to the parent as a fenced ```partial-handoff JSON
-    //! block appended to the stop error's cause, mirroring the `child-result`
-    //! envelope pattern: machine-readable, parsed in Rust should anyone need
-    //! it, and the error code still says the child did NOT finish.
+    //! The handoff rides to the parent as a fenced ```partial-handoff JSON block
+    //! appended to the stop error's cause, mirroring the `child-result` envelope:
+    //! machine-readable, parsed in Rust if anyone needs it, and the error code still
+    //! says the child did not finish.
 
     use crate::Supervisor;
     use pantheon_api::events::Event;

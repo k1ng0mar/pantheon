@@ -1,5 +1,3 @@
-//! types_group: events, message, model, provenance, temporal, todo, logging, mcp_catalog in one file.
-
 pub mod events {
     //! Agent-engine event enum. Every meaningful transition becomes an event,
     //! giving replayability, debugging, and crash recovery.
@@ -209,9 +207,9 @@ pub mod events {
         /// first-class provenance record for an unfinished outcome: it names
         /// the call, repeats the issued arguments, and says what was already
         /// confirmed (`output_seen`: a `ToolOutput` row exists;
-        /// `result_seen`: a `ToolMessage` row exists) — and, by its existence,
-        /// that the outcome itself was never confirmed. It is deliberately
-        /// NOT a success and NOT a failure: the tool may or may not have
+        /// `result_seen`: a `ToolMessage` row exists), and by its existence,
+        /// that the outcome itself was never confirmed. It is not a success and not
+        /// a failure: the tool may or may not have
         /// had its side effect, and no consumer may assume either. A call
         /// with this event is settled, never pending: recovery must not
         /// re-run it, and a second recovery pass must not write it again.
@@ -267,8 +265,8 @@ pub mod events {
         },
         /// The operator submitted a UI action. This is the audit record and
         /// the idempotency key: `(ui_id, nonce)` replays are rejected.
-        /// Params are deliberately NOT persisted (form `Secret` fields must
-        /// never land in the ledger); the triggered tool call gets its own
+        /// Params are not persisted (form `Secret` fields must never land in the
+        /// ledger); the triggered tool call gets its own
         /// `ToolStarted` event like any other execution.
         UiActionSubmitted {
             run_id: String,
@@ -452,11 +450,9 @@ pub mod events {
             /// derived the title locally from the first prompt.
             source: String,
         },
-        /// One model call's token/cost accounting, persisted. `ModelEvent::Usage`
-        /// used to be dropped by `to_event`, so historical spend was invisible;
-        /// this event makes the event ledger the source of truth for
-        /// `pantheon stats`. The model/provider are captured from the most
-        /// recent `ModelRequested`/`Attempt` seen by the persisting sink.
+        /// One model call's token/cost accounting, persisted. The event ledger is the
+        /// source of truth for `pantheon stats`; the model and provider come from the
+        /// most recent `ModelRequested`/`Attempt` seen by the persisting sink.
         UsageRecorded {
             run_id: String,
             /// Model identifier, e.g. `anthropic:claude-opus-4-6` (provider
@@ -1861,12 +1857,11 @@ pub mod model {
         pub default: DefaultModel,
         pub fallbacks: FallbackChain,
         pub auxiliaries: Vec<AuxiliaryModel>,
-        /// Reasoning effort for chat turns. `Off` sends no effort param and
-        /// every provider behaves exactly as before. Applies to the default
-        /// and to fallback attempts alike; aux turns (title, judge,
-        /// compression) always run `Off` so helpers stay fast and cheap.
-        /// `#[serde(default)]` keeps configs written before this existed
-        /// loading as `Off`.
+        /// Reasoning effort for chat turns. `Off` sends no effort param, so every
+        /// provider behaves as it did without the field. Applies to the default and to
+        /// fallback attempts alike; aux turns (title, judge, compression) always run
+        /// `Off` so helpers stay fast and cheap. `#[serde(default)]` makes an absent
+        /// field load as `Off`.
         #[serde(default)]
         pub reasoning: ReasoningLevel,
         /// Exact thinking budget in tokens, overriding the level mapping on
@@ -2320,7 +2315,7 @@ pub mod temporal {
     }
 
     /// Coarse inner sentence for an elapsed gap, e.g.
-    /// `"about 5 hours have passed"`. Deliberately imprecise - never exact
+    /// `"about 5 hours have passed"`. Imprecise on purpose: never exact
     /// wall-clock time, and coarser as the gap grows.
     fn gap_sentence(gap_secs: i64) -> String {
         const MIN: i64 = 60;
@@ -2548,7 +2543,7 @@ pub mod logging {
     //! "why did that turn die" was unanswerable after the fact and `pantheon logs`
     //! had nothing real to read.
     //!
-    //! This is deliberately dependency-free. The workspace has no logging crate and
+    //! This is dependency-free. The workspace has no logging crate and
     //! adding one means a global subscriber, per-crate span instrumentation, and a
     //! subscriber that has to be initialised before anything can log - all of it
     //! invisible in review. A writer behind one function, called where the
@@ -2729,7 +2724,7 @@ pub mod logging {
             std::fs::create_dir_all(parent)?;
         }
         // Enforce the size cap before every write. Best-effort: a failed rotation
-        // degrades to the old unbounded behaviour rather than losing the line.
+        // degrades to unbounded growth rather than losing the line.
         rotate_if_needed(path);
         OpenOptions::new().create(true).append(true).open(path)
     }
@@ -2809,9 +2804,8 @@ pub mod logging {
 
     /// Redact secrets from a message before it reaches a log file.
     ///
-    /// The redaction pipeline is fail-closed: when a secret pattern is detected,
-    /// the entire match is replaced with `[REDACTED]`. This is deliberately
-    /// aggressive - a partial leak is still a leak.
+    /// The pipeline is fail-closed: on a pattern hit the whole match becomes
+    /// `[REDACTED]`, because a partial leak is still a leak.
     ///
     /// Patterns redacted:
     /// - `sk-or-v1-...` (OpenRouter keys)
@@ -2823,12 +2817,9 @@ pub mod logging {
     /// - `api-key: <value>` (API key headers)
     /// - `PANTHEON_SECRET_<name>=<value>` (env-style secrets)
     /// - values under sensitive keys (`password`, `token`, `api_key`,
-    ///   `secret`, `authorization`, and close variants) in JSON - whether
-    ///   the whole input parses as JSON or the JSON is embedded in a log
-    ///   line (`request: {"password": "..."}`). The embedded case used to
-    ///   leak: the JSON pass only ran when the whole input parsed, so a
-    ///   secret inside a larger line reached disk despite the "never reach
-    ///   disk" claim.
+    ///   `secret`, `authorization`, and close variants) in JSON, whether the whole
+    ///   input parses as JSON or the JSON sits inside a log line
+    ///   (`request: {"password": "..."}`).
     pub fn redact(msg: &str) -> String {
         let mut out = msg.to_string();
         out = redact_prefix(&out, "sk-or-v1-");
@@ -2870,7 +2861,7 @@ pub mod logging {
     /// True when a JSON object key names a credential. Matching is on the
     /// lowercased key with `-`/space folded to `_`: the known credential
     /// names, plus any `*_token` / `*_secret` / `*_password` compound
-    /// (`access_token`, `client_secret`, `db_password`, ...). Deliberately
+    /// (`access_token`, `client_secret`, `db_password`, ...). Narrower
     /// narrower than a substring scan - `token_count` is telemetry, not a
     /// secret, and redacting it would gut usage logs.
     fn is_sensitive_key(key: &str) -> bool {
@@ -3102,7 +3093,7 @@ pub mod logging {
         }
 
         /// A secret inside JSON embedded in a log line is redacted, not
-        /// leaked to disk: the old whole-input-only pass let
+        /// leaked to disk: a whole-input-only pass lets
         /// `request: {"password": ...}` straight through.
         #[test]
         fn embedded_json_secrets_are_redacted() {
@@ -3158,64 +3149,17 @@ pub mod logging {
 }
 
 pub mod mcp_catalog {
-    //! The canonical bundled MCP server catalog: the ONE recipe definition
-    //! every surface consumes.
+    //! The one bundled MCP recipe catalog used by the launcher, dashboard,
+    //! and agent tools.
     //!
-    //! ## Why the canonical recipe lives here (not in `pantheon-mcp`)
+    //! It lives in this leaf crate because both `pantheon-mcp` and
+    //! `pantheon-tools` depend on it. Keeping the recipes here avoids a
+    //! dependency cycle and avoids separate copies that
+    //! can drift. `pantheon_mcp::bundled` adds launcher-side helpers.
     //!
-    //! The launcher owns `pantheon-mcp`, but the dependency edges run
-    //! `pantheon-mcp -> pantheon-tools -> pantheon-api`: the agent's
-    //! `enable_mcp` tool (in `pantheon-tools`) needs the catalog names, pins,
-    //! and the file-persisting [`set_enabled`] write. Placing the canonical
-    //! recipe in `pantheon-mcp` would force a `tools -> mcp` edge - a
-    //! dependency cycle, since the edge runs `mcp -> tools`. So the recipe
-    //! data lives in the leaf both depend on (`pantheon-api`), and
-    //! `pantheon_mcp::bundled` is a thin facade re-exporting
-    //! [`BundledMcpServer`] plus the launcher-side pure helpers. There is
-    //! exactly one copy of the recipe data; the old "two copies + drift
-    //! test" arrangement is gone by construction.
-    //!
-    //! ## What this module guarantees
-    //!
-    //! - [`BundledMcpServer`] rows: the single source of truth for package
-    //!   pins, launch shapes, secret names, and placement notes.
-    //! - [`BundledMcpServer::to_config_entry`]: the single materialization
-    //!   of a recipe into a `[mcp.servers.<name>]` entry (disabled by
-    //!   default).
-    //! - [`materialize_recipe_table`]: the single TOML-table writer. Both
-    //!   the agent path ([`set_enabled`]) and the dashboard path use it, so
-    //!   one canonical recipe always materializes to byte-identical tables
-    //!   no matter which surface enabled the server first
-    //!   first-writer-wins divergence is impossible. `pinned_version` is
-    //!   stamped only when the recipe carries a real package pin; unpinned
-    //!   (remote) recipes get no stamp - a fabricated pin would lie about
-    //!   what code is approved to run.
-    //! - [`set_enabled`] / [`is_enabled`]: the single enablement state
-    //!   `[mcp.servers.<name>]` in `<data_dir>/config.toml` - rejecting
-    //!   non-catalog names. This is the no-arbitrary-MCP-command boundary
-    //!   for the agent path: the agent can never get an unvetted binary onto
-    //!   the command line through it.
-    //!
-    //! ## MCPs vs plugins: the trust distinction
-    //!
-    //! (Mirrors `pantheon_extensions::bundled`.) A bundled MCP server is an
-    //! out-of-process integration: Pantheon spawns or connects to it and
-    //! speaks the MCP protocol. Pantheon never executes the server's code,
-    //! which may run on another machine entirely - trust is in the endpoint
-    //! and its configuration (command, URL, env), not in shipped code.
-    //! Bundled MCPs are first-party, so they skip the third-party approval
-    //! store ([`crate::approval`]); they do **not** skip enablement. A custom
-    //! (non-catalog) MCP server additionally needs operator consent recorded
-    //! in `<data_dir>/mcp/.approvals.json` before the launcher connects.
-    //!
-    //! ## Content-hash binding
-    //!
-    //! The launcher's content hash binds the package spec (`name@pin`) plus
-    //! the full argument list for launcher-shim servers (`npx`, `uvx`,
-    //! `docker`, ...), so a pin bump or an arg change lapses approval. For
-    //! shims the hash binds the *requested* spec, not the bytes the registry
-    //! served - registry-fetched code can change under a pin, so treat the
-    //! approval as binding intent, not bytes.
+    //! Recipes are disabled until config enables them. Custom servers still
+    //! need their normal approval. Package pins and launcher arguments are
+    //! included in the approval hash, so changing either asks again.
 
     use crate::config::{Config, McpServerEntry};
     use crate::error::{Layer, PantheonError};
@@ -3321,11 +3265,10 @@ pub mod mcp_catalog {
         }
     }
 
-    /// One catalog row. Pins verified 2026-09-29 against official
-    /// docs/registries.
+    /// One catalog row. Pins checked against the official docs and registries.
     ///
-    /// Canonical decisions, made once here (previously the two copies
-    /// disagreed): every `npx` invocation carries `-y` (without it npx
+    /// Canonical decisions, made once here: every `npx` invocation carries `-y`
+    /// (without it npx
     /// prompts on piped stdin and hangs); every registry package is pinned
     /// in the arg list (an unpinned arg would float to latest under a pinned
     /// claim); `google-workspace` runs `workspace-mcp==1.30.0`.

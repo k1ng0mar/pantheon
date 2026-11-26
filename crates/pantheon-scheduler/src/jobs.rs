@@ -1,6 +1,3 @@
-//! Scheduler merged into one file. External paths keep working through the
-//! crate-root shims in lib.rs (same pattern as the providers merge).
-
 pub mod cron {
     //! Cron expressions for durable jobs (§21).
     //!
@@ -557,10 +554,10 @@ pub mod repair_budget {
     }
 
     impl RepairBudget {
-        /// Open the budget file under `data_dir` (creating parent dirs on
-        /// first persist). A missing file starts empty. A corrupt file is an
-        /// error: it used to read as an empty budget and the next persist
-        /// overwrote it, resetting the daily cap (audit COR-10).
+        /// Open the budget file under `data_dir` (creating parent dirs on first persist).
+        /// A missing file starts empty. A corrupt file is an error: reading it as empty
+        /// would let the next persist overwrite it and reset the daily cap (audit
+        /// COR-10).
         pub fn open(data_dir: &Path) -> Result<Self, String> {
             let path = data_dir.join(FILE_NAME);
             let file = Self::read_file(&path)?;
@@ -762,8 +759,8 @@ pub mod repair_budget {
 
         #[test]
         fn corrupt_file_fails_closed() {
-            // A corrupt file used to read as empty and be overwritten,
-            // resetting the daily cap (audit COR-10).
+            // A corrupt file must not read as empty and be overwritten, which would
+            // reset the daily cap (audit COR-10).
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join(FILE_NAME), b"not json{{{").unwrap();
             assert!(RepairBudget::open(dir.path()).is_err());
@@ -786,17 +783,14 @@ pub mod repair_budget {
 pub mod retention {
     //! Event retention for the scheduler daemon.
     //!
-    //! This is the single implementation of the retention pass: the gateway
-    //! daemon's tick loop calls [`maybe_run_retention`], and the TUI's
-    //! `schedule tick --watch` loop and `schedule prune` route through this
-    //! module too (see `pantheon-tui/src/schedule.rs`). There used to be a
-    //! second copy in the TUI; it was retired in favour of this one so a
-    //! change to the prune rule can no longer drift between the two tick
-    //! loops. The 24h gate is tracked in `<data_dir>/retention.json`, shared
-    //! by both callers, and active runs are never pruned.
+    //! The single implementation of the retention pass: the gateway's tick loop
+    //! calls [`maybe_run_retention`], and the TUI's `schedule tick --watch` loop and
+    //! `schedule prune` route through it (see `pantheon-tui/src/heal_group.rs`). The
+    //! 24h gate is tracked in `<data_dir>/retention.json`, shared by both callers, and
+    //! active runs are never pruned.
     //!
-    //! Wire-up: the gateway daemon should call [`maybe_run_retention`]
-    //! from its tick loop (e.g. `pantheon-gateway/src/daemon.rs`).
+    //! Wire-up: the gateway calls [`maybe_run_retention`] from its tick loop
+    //! (`pantheon-gateway/src/runtime.rs`).
 
     use crate::durable::DurableClaimLedger;
     use pantheon_api::config::{Config, DEFAULT_RETENTION_DAYS};
@@ -831,13 +825,10 @@ pub mod retention {
         if ledger_path.exists() {
             let ledger = pantheon_storage::ledger::Ledger::open(&ledger_path)
                 .map_err(|e| format!("retention: cannot open ledger: {e}"))?;
-            // The FTS sidecar lives in the same database file, and pruned
-            // history must not stay searchable. Open and prune it FIRST: the
-            // old order pruned the ledger, then skipped the index with only
-            // an eprintln when it would not open (or returned before the
-            // claims prune when its prune failed), leaving deleted text
-            // searchable (audit COR-08). Now an index failure fails the
-            // pass before any row is removed, and the next pass retries.
+            // The FTS sidecar lives in the same database file, and pruned history must
+            // not stay searchable. Open and prune it first: an index failure fails the
+            // pass before any row is removed, and the next pass retries. Pruning the
+            // ledger first leaves deleted text searchable (audit COR-08).
             let search = pantheon_storage::search::SessionSearch::open(&ledger_path)
                 .map_err(|e| format!("retention: cannot open search index: {e}"))?;
             report.search_chunks_pruned = search
@@ -1686,8 +1677,8 @@ pub mod templates {
                     format!("template '{}' has an invalid cron schedule: {e}", t.name)
                 })?;
             }
-            // Every used to be saved unvalidated and failed only at job
-            // creation, leaving a template that could never run.
+            // `Every` is validated here as well, so a saved template cannot be one that
+            // fails only at job creation.
             TemplateSchedule::Every(dur) => {
                 crate::parse_duration(dur).map(|_| ()).map_err(|e| {
                     format!(
@@ -2194,9 +2185,8 @@ pub mod tick {
                     // occurrence already ran (the due fire claimed it, or
                     // the in-flight run was itself that occurrence), so the
                     // drain is consumed WITHOUT firing: one fire per event,
-                    // ever. An unknown stamp ("") keeps the old behaviour -
-                    // a unique key, so a genuinely owed recovery fire still
-                    // runs once.
+                    // ever. An unknown stamp ("") gets a unique key, so a
+                    // genuinely owed recovery fire still runs once.
                     drain_seq += 1;
                     let key = if queued_stamp.is_empty() {
                         occurrence_key(&job, &format!("{}:q{drain_seq}", now_ms()))
@@ -2331,10 +2321,9 @@ pub mod tick {
         /// and the worker drain claims the same occurrence key, loses, and
         /// is consumed without firing. One fire per event, ever.
         ///
-        /// Note that this test previously expected TWO executions, a natural fire
-        /// and a recovered drain back to back. For a one-shot that is a
-        /// duplicate, there is only one event (its `at_ms`), and firing it
-        /// twice is the catch-up multi-fire this fix removes.
+        /// A one-shot has only one event (its `at_ms`), so a natural fire followed by a
+        /// recovered drain is a duplicate and part of the catch-up multi-fire this
+        /// prevents.
         #[test]
         fn recovery_plus_due_fires_once_not_twice() {
             let dir = tempfile::tempdir().unwrap();
