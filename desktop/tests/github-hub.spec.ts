@@ -97,7 +97,7 @@ test('pull requests open for review, or in a thread with the prompt ready', asyn
   await row(page, 127).getByRole('button', { name: 'More actions for #127' }).click();
   const menu = page.locator('.choice-menu');
   await expect(menu).toContainText('Merge when ready');
-  await menu.getByText('Open in thread', { exact: true }).click();
+  await menu.getByRole('menuitemradio', { name: 'Open in thread' }).click();
   await expect(page.locator('#prompt')).toHaveValue('Let’s work on pull request #127: '.replace('’', "'"));
   await expect(page.locator('#prompt')).toBeFocused();
   await expect(page.locator('#transcript .user-message')).toHaveCount(0);
