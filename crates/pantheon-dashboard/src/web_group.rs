@@ -1,43 +1,40 @@
-//! web_group group: browser, link_preview, uploads, util, ui_actions in one file.
-
 pub mod browser {
     //! Browser take-control endpoints: live screenshot stream + input forwarding.
     //!
     //! The dashboard drives the *same* configured browser backend the agent
     //! loop uses ([`pantheon_runtime::build_browser_backend`] - identical
-    //! `[browser]` resolution, identical secret handling), through the
-    //! existing canonical tool surface
-    //! ([`BrowserBackend::invoke`] with `screenshot` / `eval` / `press` /
-    //! `navigate` / ... argv). No second browser driver.
+    //! `[browser]` resolution, identical secret handling), through the existing
+    //! canonical tool surface ([`BrowserBackend::invoke`] w/ `screenshot` /
+    //! `eval` / `press` / `navigate` / ... argv). No second browser driver.
     //!
-    //! Endpoints (all under `/api/`, so the dashboard token auth applies):
+    //! Endpoints (all under `/api/`, so dashboard token auth applies):
     //!
     //! * `GET /api/browser/status` → `{enabled, backend, ready,
     //!   binary_found, secret_present, detail, needs, last_activity}`.
-    //! * `GET /api/browser/stream?session=<name>&fps=<1-10>` → **WebSocket**.
+    //! * `GET /api/browser/stream?session=<name>&fps=<1-10>` → WebSocket.
     //!   Server → client: one `{"type":"ready",...}` text frame, then binary PNG
-    //!   frames at the requested rate (default 2 fps). Capture failures
-    //!   arrive as `{"type":"error","message":...}` text frames; the stream
-    //!   keeps going. Client → server messages are ignored - input goes
-    //!   through `POST /api/browser/input`.
+    //!   frames at the requested rate (default 2 fps). Capture failures arrive as
+    //!   `{"type":"error","message":...}` text frames; the stream keeps going.
+    //!   Client → server messages are ignored - input goes through
+    //!   `POST /api/browser/input`.
     //! * `POST /api/browser/input` → `{session?, action, ...}`; forwards one
-    //!   action into the session. Actions: `tap` (`x`, `y` CSS px),
-    //!   `type` (`text` into the focused element), `scroll` (`dx`, `dy`),
-    //!   `press` (`key`), `navigate` (`url`), `back`, `forward`, `reload`.
+    //!   action into the session. Actions: `tap` (`x`, `y` CSS px), `type`
+    //!   (`text` into the focused element), `scroll` (`dx`, `dy`), `press`
+    //!   (`key`), `navigate` (`url`), `back`, `forward`, `reload`.
     //!
-    //! Why WebSocket and not MJPEG/SSE: the transport already has the WS
-    //! takeover primitive (used by live voice), tungstenite frames binary
-    //! PNGs with no extra encoding, and the socket stays open for the app's
-    //! future client → server input without a second connection. The stream
-    //! is one-way today by choice, not by limitation.
+    //! WS instead of MJPEG/SSE because the transport already has the WS takeover
+    //! primitive (used by live voice), tungstenite frames binary PNGs w/ no
+    //! extra encoding, and the socket stays open for future client → server
+    //! input without a second connection. The stream is one-way today by choice,
+    //! not by limitation.
     //!
     //! Sessions are named (`?session=` / `"session"`, sanitized, default
     //! `"default"`). One caveat the app must know: browser sessions are
-    //! per-process. The dashboard drives its *own* backend instance - with
-    //! the `gsd` backend, session names address the shared external daemon
+    //! per-process. The dashboard drives its *own* backend instance - with the
+    //! `gsd` backend, session names address the shared external daemon
     //! (`--session`), so the dashboard can attach to the agent's session by
-    //! name; with `camofox` (in-process shim children) the dashboard's
-    //! sessions are separate from the agent loop's.
+    //! name; with `camofox` (in-process shim children) the dashboard's sessions
+    //! are separate from the agent loop's.
 
     use crate::{bad_json, body_json, err_json, json_ok, App};
     use pantheon_api::events::Event;
@@ -54,9 +51,9 @@ pub mod browser {
     /// Hard bounds for `fps` (a 10 fps PNG loop is already generous).
     const MAX_FPS: u32 = 10;
 
-    /// Build the configured browser backend for this dashboard server.
-    /// Errors are API responses: 503 when the browser tool is disabled,
-    /// 500 when the backend fails to build (bad config, missing binary...).
+    /// build the configured browser backend for this dashboard server. Errors
+    /// are API responses: 503 when the browser tool is disabled, 500 when the
+    /// backend fails to build (bad config, missing binary...).
     fn backend_for(app: &App) -> Result<Arc<dyn BrowserBackend>, Response> {
         let cfg = crate::session_factory::load_config(&app.data_dir)
             .map_err(|e| err_json(500, "BROWSER", &format!("load config: {e}")))?;
@@ -78,18 +75,16 @@ pub mod browser {
             .ok_or_else(|| err_json(503, "BROWSER_DISABLED", "browser tool is disabled"))
     }
 
-    /// Readiness of the configured browser backend, without launching
-    /// anything and without resolving secret *values* (presence only).
-    /// This is the honest version of `enabled`/`backend`: the old status
-    /// reported `backend: "gsd"` even with no `gsd-browser` on the host,
-    /// and the gap only surfaced as a 500 on the first input/stream call.
-    /// The blockers are named exactly: for the recommended `gsd` backend
-    /// the blocker is the binary (gsd-browser on PATH, or `[browser]
-    /// binary`) plus Chrome/Chromium on the host - never a provider API
-    /// key (GSD's vault key is optional: an unresolved vault key does not
-    /// block it). `steel` is the hosted/keyed one (its key, or a
-    /// self-hosted base URL); `camofox` is keyless (no API key at all -
-    /// only a proxy password if a proxy is configured).
+    /// Readiness of the configured backend, without launching anything or
+    /// resolving secret *values* (presence only). This is the honest version of
+    /// `enabled`/`backend`: the old status reported `backend: "gsd"` even with
+    /// no `gsd-browser` on the host, and the gap only surfaced as a 500 on the
+    /// first input/stream call. Blockers are named exactly: for the recommended
+    /// `gsd` backend it's the binary (gsd-browser on PATH, or `[browser]
+    /// binary`) plus Chrome/Chromium - never a provider API key (GSD's vault
+    /// key is optional, an unresolved one doesn't block it). `steel` is the
+    /// hosted/keyed one (its key, or a self-hosted base URL); `camofox` is
+    /// keyless (only a proxy password if a proxy is configured).
     struct BrowserReadiness {
         ready: bool,
         binary_found: Option<bool>,
@@ -223,9 +218,9 @@ pub mod browser {
                 }
             }
             // camofox: keyless by design - no API key exists for it. The
-            // camoufox Python package and fetched browser are checked at
-            // first use, so status reports ready with that caveat rather
-            // than inventing a binary check it does not perform.
+            // camoufox Python package + fetched browser are checked at first
+            // use, so status reports ready w/ that caveat rather than inventing
+            // a binary check it doesn't do.
             _ => BrowserReadiness {
                 ready: true,
                 binary_found: None,
@@ -235,18 +230,14 @@ pub mod browser {
         }
     }
 
-    /// `GET /api/browser/status?session=<name>` →
-    /// `{enabled, backend, ready, binary_found, secret_present, detail,
-    /// needs, note, last_activity}`.
-    /// `last_activity` is `{action, detail, at}` (RFC-3339 UTC) for the
-    /// session's latest browser narration - what the agent or take-control
-    /// last did - or `null` when nothing was recorded yet. Never fails:
-    /// reports the configured state even when the backend itself would not
-    /// build, and a dead ledger degrades `last_activity` to null. `ready`
-    /// is the gap check the old status lacked: a configured backend with
-    /// a missing binary or key reports `ready: false` with the exact gap
-    /// in `detail`, instead of looking healthy until the first input call
-    /// 500s.
+    /// `GET /api/browser/status?session=<name>`. Never fails: reports the
+    /// configured state even when the backend wouldn't build, and a dead
+    /// ledger degrades `last_activity` to null. `last_activity` is
+    /// `{action, detail, at}` (RFC-3339 UTC) for the session's latest browser
+    /// narration - what the agent or take-control last did - or null.
+    /// `ready` is the gap check the old status lacked: a configured backend
+    /// with a missing binary or key reports `ready: false` and the exact gap
+    /// in `detail`, instead of looking healthy until the first input 500s.
     pub fn status(app: &App, req: &Request) -> Response {
         let cfg = crate::session_factory::load_config(&app.data_dir).unwrap_or(None);
         let section = cfg
@@ -273,7 +264,7 @@ pub mod browser {
         }))
     }
 
-    /// Latest browser narration for `session` as JSON, or null. Ledger
+    /// latest browser narration for `session` as JSON, or null. ledger
     /// failures degrade to null - status must never fail.
     fn latest_activity(app: &App, session: &str) -> serde_json::Value {
         let view = pantheon_storage::Ledger::open(&app.data_dir.join("ledger.db"))
@@ -288,9 +279,9 @@ pub mod browser {
         }
     }
 
-    /// Format epoch millis as RFC-3339 UTC (`2026-09-30T15:14:27.123Z`).
-    /// Hand-rolled civil date (Howard Hinnant's algorithm): the dashboard
-    /// is std-only and this is the only place that needs an ISO timestamp.
+    /// format epoch millis as RFC-3339 UTC (`2026-09-30T15:14:27.123Z`).
+    /// hand-rolled civil date (Howard Hinnant's algorithm): the dashboard
+    /// is std-only and this is the only place needing an ISO timestamp.
     pub(crate) fn ts_rfc3339(ms: i64) -> String {
         let secs = ms.div_euclid(1000);
         let millis = ms.rem_euclid(1000);
@@ -317,18 +308,17 @@ pub mod browser {
         )
     }
 
-    /// Session name from a query param or JSON body field: sanitized,
-    /// default `"default"`.
+    /// session name from a query param or JSON body field: sanitized, default
+    /// `"default"`
     fn session_name(raw: Option<&str>) -> String {
         let s = raw.unwrap_or("default");
         sanitize_session_name(s)
     }
 
-    /// Map a take-control action + body to narration `(action, detail)`.
-    /// Mirrors `pantheon_web::browser::tools::activity_of` for the
-    /// dashboard's own action vocabulary (tap/type/scroll/...). Typed text
-    /// never lands in `detail` - it may contain credentials or other
-    /// secrets, so it is replaced with a placeholder.
+    /// map a take-control action + body to narration `(action, detail)`.
+    /// Mirrors `pantheon_web::browser::tools::activity_of` for the dashboard's
+    /// own action vocabulary (tap/type/scroll/...). Typed text never lands in
+    /// `detail` - it may contain credentials - so it gets a placeholder.
     fn takeover_activity(action: &str, body: &serde_json::Value) -> (String, String) {
         let field = |key: &str| body.get(key).and_then(|v| v.as_str()).unwrap_or("");
         let detail = match action {
@@ -340,11 +330,10 @@ pub mod browser {
         (action.to_string(), detail)
     }
 
-    /// Record take-control narration into the ledger. Best-effort: a dead
-    /// ledger must never fail the input itself. No run context exists on
-    /// the take-control path, so `run_id` is empty and consumers key on
-    /// `session` - the same contract as the agent path in
-    /// `pantheon-runtime`.
+    /// record take-control narration into the ledger. best-effort: a dead
+    /// ledger must never fail the input. No run context on the take-control
+    /// path, so `run_id` is empty and consumers key on `session` - same
+    /// contract as the agent path in `pantheon-runtime`.
     fn record_takeover_activity(app: &App, session: &str, action: &str, detail: String) {
         let ledger = match pantheon_storage::Ledger::open(&app.data_dir.join("ledger.db")) {
             Ok(l) => l,
@@ -358,10 +347,10 @@ pub mod browser {
         });
     }
 
-    /// Translate one take-control action into the canonical browser argv.
+    /// translate one take-control action into canonical browser argv.
     /// Pure function - unit-tested. Everything goes through
-    /// [`BrowserBackend::invoke`]; coordinate actions use the backend's
-    /// `eval` command (JS in the page), exactly like the tool surface does.
+    /// [`BrowserBackend::invoke`]; coordinate actions use the backend's `eval`
+    /// command (JS in the page), exactly like the tool surface does.
     pub(crate) fn input_argv(
         action: &str,
         body: &serde_json::Value,
@@ -392,7 +381,7 @@ pub mod browser {
             }
             "type" => {
                 let text = str_field("text")?;
-                // JSON string literal = valid JS string literal.
+                // JSON string literal = valid JS string literal
                 let lit = serde_json::to_string(&text).map_err(|e| e.to_string())?;
                 Ok(vec![
                     "eval".to_string(),
@@ -458,14 +447,14 @@ pub mod browser {
             Err(r) => return r,
         };
         let session = session_name(body.get("session").and_then(|v| v.as_str()));
-        // Narrate the take-control gesture the same way the agent's own tool
-        // calls are narrated, so the app subtitle covers human input too.
-        // Recorded before the invoke so the subtitle is live while the
-        // action runs. Best-effort: a dead ledger must not fail the input.
+        // narrate the gesture the same way the agent's own tool calls are
+        // narrated, so the app subtitle covers human input too. recorded
+        // before the invoke so the subtitle is live while it runs.
+        // best-effort: a dead ledger shouldn't fail the input.
         let (act, detail) = takeover_activity(&action, &body);
         record_takeover_activity(app, &session, &act, detail);
-        // The action words are ours (input_argv); only the session name is
-        // user-supplied, and it is sanitized. Nothing secret in the argv.
+        // the action words are ours (input_argv); only the session name is
+        // user-supplied, and it's sanitized. nothing secret in the argv.
         match backend.invoke(&argv, &session) {
             Ok(result) => json_ok(serde_json::json!({
                 "ok": true,
@@ -477,9 +466,9 @@ pub mod browser {
         }
     }
 
-    /// Replays the already-consumed HTTP request head, then delegates to the
-    /// socket, so `tungstenite::accept` can parse the WS handshake itself
-    /// the same trick live voice uses.
+    /// replay the consumed request head, then hand the socket to
+    /// `tungstenite` so it can parse the WS handshake itself - same trick live
+    /// voice uses.
     pub(crate) struct HeadReplay {
         pub(crate) head: Vec<u8>,
         pub(crate) pos: usize,
@@ -527,8 +516,8 @@ pub mod browser {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(DEFAULT_FPS)
             .clamp(1, MAX_FPS);
-        // Rebuild the raw head for the WS handshake (the HTTP layer already
-        // consumed it). Query string included - tungstenite ignores it.
+        // rebuild the raw head for the WS handshake (the HTTP layer already
+        // consumed it). query string included - tungstenite ignores it.
         let qs: Vec<String> = req.query.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let target = if qs.is_empty() {
             req.path.clone()
@@ -541,10 +530,10 @@ pub mod browser {
         }
         head.push_str("\r\n");
         let head = head.into_bytes();
-        // One frame dir per viewer connection (never one per process): two
-        // concurrent viewers of the same session must not share `frame.png`
-        // - they would read each other's screenshots - and the disconnect
-        // cleanup in `serve_stream` must not nuke a live viewer's directory.
+        // one frame dir per viewer connection (never one per process): two
+        // concurrent viewers of the same session must not share `frame.png` -
+        // they'd read each other's screenshots - and the disconnect cleanup in
+        // `serve_stream` must not nuke a live viewer's directory.
         let frame_dir = frame_dir_for(&session, &pantheon_runtime::new_run_id());
         Response::Takeover {
             run: Box::new(move |stream| {
@@ -553,7 +542,7 @@ pub mod browser {
         }
     }
 
-    /// Per-connection screenshot frame directory. The nonce (a fresh id per
+    /// per-connection screenshot frame directory. The nonce (a fresh id per
     /// `stream()` call) makes every connection's dir unique even for the same
     /// session; the session name is already sanitized by [`session_name`].
     fn frame_dir_for(session: &str, nonce: &str) -> std::path::PathBuf {
@@ -569,10 +558,10 @@ pub mod browser {
         let _ = ws.send(tungstenite::Message::Text(text.to_string().into()));
     }
 
-    /// The stream loop: capture → PNG → binary frame, at `fps`. Runs on the
-    /// connection thread until the client disconnects. Capture failures are
-    /// reported as text frames; the loop survives them (the page may still
-    /// be loading or the browser launching).
+    /// the stream loop: capture -> PNG -> binary frame at `fps`, on the
+    /// connection thread until the client leaves. capture failures are text
+    /// frames; the loop survives them (page may still be loading or the
+    /// browser launching).
     fn serve_stream(
         stream: TcpStream,
         head: Vec<u8>,
@@ -609,8 +598,8 @@ pub mod browser {
                 serde_json::to_string(&session).unwrap_or_default()
             ),
         );
-        // Client liveness: each loop iteration ends with a read bounded by
-        // the frame interval. A quiet client just yields timeouts; a Close
+        // client liveness: each loop iteration ends with a read bounded by
+        // the frame interval. a quiet client just yields timeouts; a Close
         // frame or a dead socket ends the loop.
         let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
         let _ = ws.get_mut().stream_mut().set_read_timeout(Some(interval));
@@ -639,8 +628,8 @@ pub mod browser {
                         ),
                     ),
                 },
-                // The argv here is just screenshot --output <tmp path>: no
-                // secrets, but keep the message short anyway.
+                // the argv here is just screenshot --output <tmp path>: no
+                // secrets, but keep the message short anyway
                 Err(e) => ws_text(
                     &mut ws,
                     &format!(
@@ -727,10 +716,10 @@ pub mod browser {
             }
         }
 
-        /// Sweep (dashboard/API): the old status reported `backend: gsd`
-        /// with no hint that the binary was missing, and the gap only
-        /// surfaced as a 500 on first input. An unresolvable gsd binary
-        /// must report ready:false naming gsd-browser.
+        /// Sweep (dashboard/API): a status reporting `backend: gsd` with no hint
+        /// that the binary is missing leaves the gap to surface as a 500 on first
+        /// input. An unresolvable gsd binary must report ready:false naming
+        /// gsd-browser.
         #[test]
         fn status_gsd_missing_binary_reports_gap() {
             let (app, dir) = test_app_with_config(Some(
@@ -1550,9 +1539,8 @@ pub mod uploads {
         resolve_in(&uploads_dir(app), id)
     }
 
-    /// Same as [`resolve`], but against an explicit uploads directory instead
-    /// of an `App` - for callers (like the turn child) that have a data dir
-    /// but no dashboard `App`.
+    /// Same as [`resolve`], but against an explicit uploads directory - for
+    /// callers (like the turn child) that have a data dir but no dashboard `App`.
     pub fn resolve_in(dir: &Path, id: &str) -> Option<UploadInfo> {
         if !valid_id_shape(id) {
             return None;
@@ -1579,9 +1567,9 @@ pub mod uploads {
         })
     }
 
-    /// True when `bytes` begins with a zip signature (local file header,
-    /// empty archive, or spanned archive). Zip detection sniffs magic bytes
-    /// the stored mime is client-supplied and never trusted.
+    /// true when `bytes` starts with a zip signature (local file header,
+    /// empty archive, or spanned archive). detection sniffs magic bytes - the
+    /// stored mime is client-supplied and never trusted.
     pub fn is_zip_bytes(bytes: &[u8]) -> bool {
         bytes.len() >= 4
             && (bytes.starts_with(b"PK\x03\x04")
@@ -1619,10 +1607,10 @@ pub mod uploads {
     ///
     /// Fail-closed on zip-slip paths (absolute or containing `..`), more
     /// than [`MAX_ZIP_ENTRIES`] entries, and total inflated bytes past
-    /// [`MAX_ZIP_INFLATED_BYTES`] (enforced on actual bytes read, never on
-    /// header claims). Directory and symlink entries are skipped, and every
-    /// entry is written as a regular file, so a symlink entry can never
-    /// materialize as a link on disk.
+    /// [`MAX_ZIP_INFLATED_BYTES`] (enforced on actual bytes read, never header
+    /// claims). Directory and symlink entries are skipped, and every entry is
+    /// written as a regular file, so a symlink entry can never materialize as
+    /// a link on disk.
     pub fn extract_zip_upload(app: &App, info: &UploadInfo) -> Result<Vec<ExtractedEntry>, String> {
         let dest_root = zip_extract_dir(app, &info.id);
         let marker = dest_root.join(".extracted.json");
@@ -1632,7 +1620,7 @@ pub mod uploads {
             ) {
                 return Ok(entries);
             }
-            // Corrupt marker: fall through and re-extract.
+            // corrupt marker: fall through and re-extract
             let _ = std::fs::remove_dir_all(&dest_root);
         }
         let bytes =
@@ -1648,8 +1636,8 @@ pub mod uploads {
                 zip.len()
             ));
         }
-        // Extract into a temp dir first, then rename into place, so a failed
-        // or interrupted extraction never leaves a half-written tree behind.
+        // extract into a temp dir first, then rename into place, so a failed
+        // or interrupted extraction never leaves a half-written tree behind
         let tmp_root = uploads_dir(app).join(format!("{}_unzipped.tmp", info.id));
         let _ = std::fs::remove_dir_all(&tmp_root);
         std::fs::create_dir_all(&tmp_root).map_err(|e| format!("create extract dir: {e}"))?;
@@ -1709,20 +1697,19 @@ pub mod uploads {
         Ok(entries)
     }
 
-    /// Turn a resolved upload into a vision [`ImagePart`]: reads the stored
-    /// bytes, sniffs the mime from magic bytes (the stored mime is
-    /// client-supplied and never trusted), enforces the size cap, and
-    /// base64-encodes. This is the bridge from "file on disk" to "image part
-    /// on the outgoing provider request". Loud `Err` on anything that is not
-    /// actually a sendable image.
+    /// turn a resolved upload into a vision [`ImagePart`]: read the stored
+    /// bytes, sniff mime from magic bytes (the stored mime is client-supplied
+    /// and never trusted), enforce the size cap, base64-encode. This is the
+    /// bridge from "file on disk" to "image part on the outgoing provider
+    /// request". Loud `Err` on anything that isn't actually sendable.
     pub fn image_part(info: &UploadInfo) -> Result<ImagePart, String> {
         let bytes = std::fs::read(&info.path)
             .map_err(|e| format!("cannot read stored upload \"{}\": {e}", info.name))?;
         ImagePart::from_bytes(&info.name, &bytes).map_err(|e| format!("\"{}\": {e}", info.name))
     }
 
-    /// `GET /api/uploads/:id`: raw bytes with the stored mime as the
-    /// content type. 404 `UPLOAD_NOT_FOUND` for unknown ids.
+    /// `GET /api/uploads/:id`: raw bytes w/ the stored mime as content type.
+    /// 404 `UPLOAD_NOT_FOUND` for unknown ids.
     pub fn download(app: &App, id: &str) -> Response {
         let info = match resolve(app, id) {
             Some(i) => i,
@@ -1747,8 +1734,8 @@ pub mod uploads {
         // `Response` needs a `&'static str` content type; the mime was
         // validated at upload time and re-checked here, so leaking the tiny
         // string is safe and header-injection-proof. Served as an attachment
-        // (never inline): a stored HTML/SVG must not execute in the
-        // dashboard's origin.
+        // (never inline): a stored HTML/SVG must not execute in the dashboard's
+        // origin.
         let content_type: &'static str = if valid_mime(&info.mime) {
             Box::leak(info.mime.into_boxed_str())
         } else {
@@ -1775,15 +1762,15 @@ pub mod uploads {
 
 pub mod util {
     //! Shared small helpers. `now_ms`, `project_root`, `atomic_write`, and
-    //! `parent_of` were each copied byte-identical into several route
-    //! modules; they live here once.
+    //! `parent_of` were each copied byte-identical into several route modules;
+    //! they live here once.
 
     use std::path::{Path, PathBuf};
 
-    /// Wall-clock milliseconds since the Unix epoch. Never panics: a clock
-    /// before the epoch (or an unreadable one) reads as 0.
+    /// wall-clock ms since the Unix epoch. never panics: a clock before the
+    /// epoch (or an unreadable one) reads as 0.
     ///
-    /// Thin re-export of the canonical `pantheon_api::logging::now_ms` rather
+    /// thin re-export of the canonical `pantheon_api::logging::now_ms` rather
     /// than a ninth copy of the same five lines.
     pub(crate) use pantheon_api::logging::now_ms;
 
@@ -1793,18 +1780,17 @@ pub mod util {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     }
 
-    /// Atomic config write: unique temp file in the same directory +
-    /// fsync + rename, so a crash mid-write never leaves a half-written
-    /// file, and the existing file's permissions survive the rename.
+    /// atomic config write: unique temp file in the same directory + fsync +
+    /// rename, so a crash mid-write never leaves a half-written file, and the
+    /// existing file's permissions survive the rename.
     pub(crate) fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        // Unique temp name (pid + nanos): the old fixed `*.toml.tmp` name
-        // let concurrent writers clobber each other's temp file. Mode:
-        // preserve the existing file's mode instead of loosening it to the
-        // umask default on rename (a 0600 config.toml used to come back
-        // 0644); a brand-new file keeps the umask default, as before.
+        // unique temp name (pid + nanos) so concurrent writers can't clobber
+        // each other's temp file. mode: preserve the existing file's mode
+        // instead of loosening it to the umask default on rename, so a 0600
+        // config.toml stays 0600; a brand-new file keeps the umask default.
         // fsync file + dir so the rename survives a crash.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1879,7 +1865,7 @@ pub mod util {
         Ok((table, leaf.to_string()))
     }
 
-    /// Round a USD cost to 4 decimal places for JSON output. Four, not two:
+    /// round a USD cost to 4 decimal places for JSON output. four, not two:
     /// single model calls routinely cost fractions of a cent, and a frontend
     /// `toFixed(2)` display formats identically either way.
     pub(crate) fn round_cost_usd(v: f64) -> f64 {
@@ -1893,26 +1879,20 @@ pub mod util {
 pub mod ui_actions {
     //! Dashboard UI-action submission: `POST /api/runs/:id/ui-action`.
     //!
-    //! This is the dashboard's interactive client for the agent-native UI
-    //! protocol (`pantheon_api::ui`, see `docs/ui-protocol.md`). Forms,
-    //! buttons, and approval cards rendered by `assets/app.js` submit
-    //! through this route.
+    //! The dashboard's interactive client for the agent-native UI protocol
+    //! (`pantheon_api::ui`, see `docs/ui-protocol.md`). Forms, buttons, and
+    //! approval cards rendered by `assets/app.js` submit through this route.
     //!
-    //! Security posture (deliberate):
-    //! - The route lives under `/api/*`, so the gateway's `check_auth`
-    //!   enforces the dashboard token before this handler runs. There is
-    //!   no unauthenticated path.
-    //! - The run must exist in THIS dashboard's ledger (`known_run`): a
-    //!   caller cannot reach another user's session by guessing a run id.
-    //! - The handler does NO validation of its own beyond JSON shape. Every
-    //!   security decision — action registry, revision pin, nonce replay,
-    //!   capability gate, secret redaction — lives in
-    //!   `Session::submit_ui_action`, which this handler delegates to
-    //!   verbatim. The dashboard never constructs tool calls.
-    //! - Client params are never echoed back in responses (secret safety).
-    //! - Approval decisions resume the parked turn exactly like
-    //!   `runs::answer_input` does: under the run's send guard, spawning a
-    //!   turn child with `--resume`.
+    //! - Lives under `/api/*`, so `check_auth` enforces the dashboard token first.
+    //! - The run must exist in this dashboard's ledger (`known_run`), so a caller
+    //!   can't reach another user's session by guessing a run id.
+    //! - The handler validates only JSON shape. Every security decision (action
+    //!   registry, revision pin, nonce replay, capability gate, secret
+    //!   redaction) lives in `Session::submit_ui_action`, which this delegates to.
+    //!   The dashboard never constructs tool calls.
+    //! - Client params are never echoed back.
+    //! - Approval decisions resume the parked turn like `runs::answer_input`
+    //!   does: under the run's send guard, spawning a turn child with `--resume`.
 
     use crate::session_factory::open_maintenance_session;
     use crate::{bad_json, conflict, err_json, json_ok, spawn_turn_child, App};
@@ -1968,10 +1948,10 @@ pub mod ui_actions {
             params,
             nonce,
         };
-        // Serialize with other dashboard submissions for this run. The
-        // runtime's per-Session ui_action_lock does not span the fresh
-        // Session opened per request above; without this, two concurrent
-        // POSTs could both pass the nonce replay check and both execute.
+        // serialize with other dashboard submissions for this run. The
+        // runtime's per-Session ui_action_lock does not span the fresh Session
+        // opened per request above; without this, two concurrent POSTs could
+        // both pass the nonce replay check and both execute.
         let ui_lock = app.ui_action_guard(run_id);
         let _ui_guard = ui_lock.lock().unwrap_or_else(|e| e.into_inner());
         match session.submit_ui_action(run_id, &sub) {
@@ -1981,10 +1961,10 @@ pub mod ui_actions {
                 "result": result,
             })),
             Ok(UiActionOutcome::Decided { approved }) => {
-                // The parked turn resumes exactly like an answered input:
-                // serialize with other turn-starting requests, then spawn
-                // the resume child. The decision itself is already settled
-                // in the ledger by submit_ui_action.
+                // the parked turn resumes exactly like an answered input:
+                // serialize with other turn-starting requests, then spawn the
+                // resume child. The decision itself is already settled in the
+                // ledger by submit_ui_action.
                 let send_lock = app.send_guard(run_id);
                 let _send_guard = send_lock.lock().unwrap_or_else(|e| e.into_inner());
                 let mode = session
@@ -2014,8 +1994,8 @@ pub mod ui_actions {
                 }))
             }
             Err(e) => match e.code.as_str() {
-                // Client-timing problems: the document moved under the
-                // submission. The frontend should re-fetch and re-render.
+                // client-timing problem: the document moved under the
+                // submission. the frontend should re-fetch and re-render.
                 "UI_STALE" | "UI_REPLAY" => conflict(e.code.as_str(), &format!("{e}")),
                 // Unknown document/action or malformed submission.
                 "UI_UNKNOWN" | "UI_BAD_ACTION" => conflict(e.code.as_str(), &format!("{e}")),
@@ -2237,7 +2217,7 @@ pub mod ui_actions {
         #[test]
         fn unknown_run_is_404() {
             let (app, _dir) = test_app();
-            // No run seeded: session isolation — a guessed run id 404s.
+            // No run seeded: session isolation, so a guessed run id 404s.
             let resp = submit_ui_action(&app, "nope", &post_req(valid_body("turn1-ui_0")));
             assert_eq!(resp_status(&resp), 404);
         }

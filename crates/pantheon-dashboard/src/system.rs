@@ -1,23 +1,22 @@
 //! Gateway status/restart, reflection status/trigger, consolidation
 //! status/trigger.
 //!
-//! Status reads are the real APIs (`pantheon_gateway::service::status`,
-//! the reflect audit's last-run summary, the consolidation state file).
-//! Triggers call back into the real CLI (`spawn_pantheon`) instead of
-//! reimplementing pass machinery - the dashboard is a control plane, not
-//! a second runtime.
+//! Status reads hit the real APIs (`pantheon_gateway::service::status`, the
+//! reflect audit's last-run summary, the consolidation state file). Triggers
+//! call the real CLI (`spawn_pantheon`) instead of reimplementing pass
+//! machinery - the dashboard is a control plane, not a second runtime.
 
 use crate::util::atomic_write;
 use crate::{bad_json, body_json, err_json, json_ok, spawn_pantheon, App};
 use pantheon_gateway::http::{Request, Response};
 use std::path::Path;
 
-/// Resolved nightly enable state from the on-disk config: the single
-/// enable rule ([`pantheon_api::config::nightly_enabled`]) - explicit
-/// flag wins, else the `[nightly.model]` pin (or
-/// `PANTHEON_NIGHTLY_PROVIDER` / `PANTHEON_NIGHTLY_MODEL` env) implies
-/// on. Replaces the old raw `nightly.enabled` TOML bool read, which
-/// cannot express the `Option<bool>` flag or the pin-implied default.
+/// resolved nightly enable state from the on-disk config, via the single
+/// enable rule ([`pantheon_api::config::nightly_enabled`]) - explicit flag
+/// wins, else the `[nightly.model]` pin (or `PANTHEON_NIGHTLY_PROVIDER`/
+/// `PANTHEON_NIGHTLY_MODEL` env) implies on. Replaces the old raw
+/// `nightly.enabled` TOML bool read, which couldn't express the
+/// `Option<bool>` flag or the pin-implied default.
 fn nightly_enabled_resolved(data_dir: &Path) -> bool {
     let Ok(cfg) = pantheon_api::config::Config::load(data_dir) else {
         return false;
@@ -30,10 +29,9 @@ fn nightly_enabled_resolved(data_dir: &Path) -> bool {
     }
 }
 
-/// Next scheduled nightly run in epoch ms, if any: the earliest next
-/// fire among the non-paused `pantheon schedule nightly` jobs (the
-/// [`pantheon_scheduler::NIGHTLY_TASK_MARKER`] task). `None` when no
-/// nightly job is scheduled.
+/// next scheduled nightly run (epoch ms), if any: the earliest next fire
+/// among non-paused `pantheon schedule nightly` jobs (the
+/// [`pantheon_scheduler::NIGHTLY_TASK_MARKER`] task). `None` when none.
 fn next_nightly_run_ms(data_dir: &Path) -> Option<i64> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -95,23 +93,22 @@ pub fn nightly_status(app: &App) -> Response {
     }))
 }
 
-/// `POST /api/nightly/enabled` - `{enabled: bool, confirm: true}`.
-/// The dashboard / mobile-app toggle (enable path 4): writes the
-/// explicit `[nightly] enabled` flag - the same flag `/nightly on|off`
-/// and a manual config edit write. There is no parallel store; the
-/// toggle round-trips API → config file →
+/// `POST /api/nightly/enabled` - `{enabled: bool, confirm: true}`, the
+/// dashboard / mobile-app toggle (enable path 4). Writes the explicit
+/// `[nightly] enabled` flag - same flag `/nightly on|off` and a manual edit
+/// write. No parallel store; the toggle round-trips API → config file →
 /// [`pantheon_api::config::nightly_enabled`].
 ///
-/// The write is a raw TOML table merge (parse to `toml::Value`, set the
-/// `nightly.enabled` key, write back) - deliberately NOT a
-/// `Config::load` → mutate → `Config::save` round-trip, which silently
-/// deletes keys the typed document does not declare (D-3). Unknown keys
-/// are warned about at load; a toggle must never delete them.
+/// The write is a raw TOML table merge (parse to `toml::Value`, set
+/// `nightly.enabled`, write back) - deliberately NOT a `Config::load` →
+/// mutate → `Config::save` round-trip, which silently deletes keys the typed
+/// document doesn't declare (D-3). Unknown keys get warned about at load; a
+/// toggle must never delete them.
 ///
 /// Without `confirm: true` the request is rejected (same two-phase
-/// convention as the other dashboard mutations). The response is the
-/// fresh `GET /api/nightly/status` document, so the client renders the
-/// toggle from the resolved rule without a second read.
+/// convention as the other dashboard mutations). Response is the fresh
+/// `GET /api/nightly/status` document, so the client renders the toggle from
+/// the resolved rule without a second read.
 pub fn nightly_set_enabled(app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
         Ok(v) => v,
@@ -128,11 +125,10 @@ pub fn nightly_set_enabled(app: &App, req: &Request) -> Response {
         Some(b) => b,
         None => return bad_json("body must be {enabled: bool, confirm: true}"),
     };
-    // A missing config.toml starts from an empty document (equivalent to
-    // the defaults for this write); a present-but-unparseable one is a
-    // 500, never a silent default. The write is format-preserving
-    // (toml_edit over the raw text), so toggling nightly no longer
-    // strips the file's comments the way the old re-serialize did.
+    // missing config.toml starts empty (same as defaults for this write); a
+    // present-but-unparseable one is a 500, never a silent default. The write
+    // is format-preserving (toml_edit over raw text), so toggling no longer
+    // strips the file's comments like the old re-serialize did.
     let path = app.data_dir.join("config.toml");
     let raw = if path.exists() {
         match std::fs::read_to_string(&path) {
@@ -162,9 +158,9 @@ pub fn nightly_set_enabled(app: &App, req: &Request) -> Response {
     }
     let mut changes = std::collections::BTreeMap::new();
     changes.insert("nightly.enabled".to_string(), toml::Value::Boolean(enabled));
-    // A preserving edit that cannot land (e.g. a dotted-key document)
-    // falls back to the old re-serialization, which is valid but loses
-    // comments - never a corrupt file, never a failed toggle.
+    // a preserving edit that can't land (e.g. dotted-key document) falls
+    // back to re-serialization: valid but loses comments. better than a
+    // corrupt file or a failed toggle.
     let text = match crate::config::apply_edits_preserving(&raw, &changes) {
         Ok(t) => t,
         Err(_) => {
@@ -198,11 +194,10 @@ pub fn gateway_status(_app: &App) -> Response {
 
 /// `GET /api/health` - the `pantheon.health/v1` contract.
 ///
-/// Runs the shared diagnostics engine (the same checks `pantheon
-/// doctor` runs) and renders the health document the mobile Health
-/// page consumes. Read-only: the opt-in provider reachability probe
-/// stays off here (a GET must not do network I/O), and progress goes
-/// nowhere (there is no stderr consumer on a request thread).
+/// Runs the shared diagnostics engine (same checks `pantheon doctor` runs) and
+/// renders the health doc the mobile Health page consumes. Read-only: the
+/// opt-in provider reachability probe stays off (a GET must not do network
+/// I/O), and progress goes nowhere (no stderr consumer on a request thread).
 pub fn health(app: &App) -> Response {
     let ext_dir = match std::env::var("PANTHEON_EXT_DIR") {
         Ok(d) if !d.trim().is_empty() => Path::new(&d).to_path_buf(),
@@ -217,13 +212,13 @@ pub fn health(app: &App) -> Response {
     }
 }
 
-/// `POST /api/gateway/restart` - `{confirm: true}`. Restarts via the real
+/// `POST /api/gateway/restart` - `{confirm: true}`, via the real
 /// `pantheon gateway restart` path, in the background (200).
 ///
-/// Probes first: on a standalone `pantheon dashboard` there is no
-/// installed service, so the restart would silently no-op - that is a
-/// plain 409 saying so, not an "accepted" toast. Spawn failures are
-/// surfaced (500) instead of swallowed with `let _ =`.
+/// Probes first: on a standalone `pantheon dashboard` there's no installed
+/// service, so the restart would silently no-op - a plain 409 saying so, not
+/// an "accepted" toast. Spawn failures surface as 500, not swallowed with
+/// `let _ =`.
 pub fn gateway_restart(_app: &App, req: &Request) -> Response {
     if !req_body_confirmed(req) {
         return bad_json("restart requires confirm: true");
@@ -249,8 +244,8 @@ pub fn gateway_restart(_app: &App, req: &Request) -> Response {
     }
 }
 
-/// `GET /api/reflect/status` - kept as a legacy route name; reports the
-/// unified nightly pass status.
+/// `GET /api/reflect/status` - legacy route name; reports the unified nightly
+/// pass status.
 pub fn reflect_status(app: &App) -> Response {
     json_ok(serde_json::json!({
         "enabled": nightly_enabled_resolved(&app.data_dir),
@@ -287,8 +282,8 @@ pub fn reflect_run(_app: &App, req: &Request) -> Response {
     json_ok(serde_json::json!({"ok": true, "accepted": true, "dry_run": dry_run}))
 }
 
-/// `GET /api/consolidate/status` - kept as a legacy route name; reports
-/// the unified nightly pass state.
+/// `GET /api/consolidate/status` - legacy route name; reports the unified
+/// nightly pass state.
 pub fn consolidate_status(app: &App) -> Response {
     let state = pantheon_nightly::NightlyState::load(&app.data_dir).unwrap_or_default();
     json_ok(serde_json::json!({
@@ -389,9 +384,9 @@ mod tests {
         }
     }
 
-    /// D-3: the nightly toggle must flip `nightly.enabled` without
-    /// dropping keys the typed Config document does not declare - the
-    /// old `Config::load` / mutate / `save` path silently erased them.
+    /// D-3: the nightly toggle must flip `nightly.enabled` without dropping
+    /// keys the typed Config document doesn't declare - the old `Config::load`
+    /// / mutate / `save` path silently erased them.
     #[test]
     fn nightly_toggle_preserves_unknown_keys() {
         let (app, dir) = test_app();
@@ -419,8 +414,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A missing config.toml starts from an empty document; the toggle
-    /// must create `[nightly] enabled = ...` rather than 500.
+    /// missing config.toml starts empty; the toggle must create
+    /// `[nightly] enabled = ...` rather than 500
     #[test]
     fn nightly_toggle_on_missing_config() {
         let (app, dir) = test_app();
@@ -440,8 +435,7 @@ mod tests {
 
     /// `GET /api/health` serves the `pantheon.health/v1` contract: six
     /// subsystems, the issue rollup, and a valid overall value - even
-    /// against an empty data dir (which reads as unhealthy, never as
-    /// a fake healthy).
+    /// against an empty data dir (which reads unhealthy, never fake-healthy).
     #[test]
     fn health_endpoint_serves_v1_contract() {
         let (app, dir) = test_app();
@@ -481,9 +475,9 @@ mod tests {
             v["issue_count"].as_u64().unwrap() as usize,
             v["issues"].as_array().unwrap().len()
         );
-        // core_runtime mirrors the runtime subsystem; the label must
-        // agree with the status (channel-token presence is
-        // environment-dependent, so only the agreement is asserted).
+        // core_runtime mirrors the runtime subsystem; the label must agree
+        // with the status (channel-token presence is environment-dependent, so
+        // only the agreement is asserted)
         let core_status = v["core_runtime"]["status"].as_str().unwrap();
         let core_label = v["core_runtime"]["label"].as_str().unwrap();
         assert_eq!(

@@ -1,5 +1,3 @@
-//! settings_group group: config, env, oauth, secrets, logins in one file.
-
 pub mod config {
     //! Form-based config editor for `config.toml`.
     //!
@@ -700,13 +698,10 @@ pub mod config {
 
     /// Top-level config sections whose values are read once at process
     /// startup, so a change only takes effect after a restart. Everything
-    /// else applies live to new turns/sessions. Deliberately small and
-    /// documented: `[stt]`/`[tts]`/`[voice]` back long-lived voice
-    /// pipelines that never re-read config, `[gateway]` backs the
-    /// gateway process itself (channels, voice replies), `[server]` backs
-    /// the listener itself (host/port), and `[swarm]` caps are baked into
-    /// the orchestrator at startup - all four used to report "live" while
-    /// needing a restart/rebuild to take effect.
+    /// else applies live to new turns/sessions. `[stt]`/`[tts]`/`[voice]` back
+    /// long-lived voice pipelines that never re-read config, `[gateway]` backs the
+    /// gateway process itself (channels, voice replies), `[server]` backs the listener
+    /// (host/port), and `[swarm]` caps are baked into the orchestrator at startup.
     fn restart_scoped(top: &str) -> bool {
         matches!(
             top,
@@ -969,13 +964,10 @@ pub mod config {
                 ));
             }
         };
-        // Doctor-level problems (empty provider, bad reasoning level,
-        // unknown agent table...) used to travel as warnings while the
-        // import was still written - a broken document landed with a
-        // shrug. On confirm they are rejections; the preview still reports
-        // them as warnings so the caller can fix before committing. (Import
-        // replaces the whole document, so unlike PUT's per-key gate, the
-        // full validation result applies here.)
+        // Doctor-level problems (empty provider, bad reasoning level, unknown agent
+        // table) are rejections on confirm. The preview reports them as warnings so the
+        // caller can fix before committing. Import replaces the whole document, so
+        // unlike PUT's per-key gate the full validation result applies.
         let doc_warnings = typed.validate();
         if confirm && !doc_warnings.is_empty() {
             return bad_json(&format!(
@@ -1170,10 +1162,8 @@ pub mod config {
             assert!(r.is_err(), "wrong-shaped value must Err, got {r:?}");
         }
 
-        /// A-3: restart scoping covers the restart sections and leaves
-        /// everything else live; output is sorted and deduplicated.
-        /// `[server]` and `[swarm]` used to report live while needing a
-        /// restart/rebuild.
+        /// A-3: restart scoping covers the restart sections and leaves everything else
+        /// live; output is sorted and deduplicated.
         #[test]
         fn restart_required_scopes() {
             let paths = [
@@ -1363,10 +1353,9 @@ pub mod config {
             assert_eq!(v["mcp"]["servers"]["srv"]["env"]["KEY"], "[redacted]");
         }
 
-        /// The writer PUT actually uses (`apply_edits_preserving`, via
-        /// `set_path_like`) must keep a trailing comment on the changed
-        /// key, not just the comments above it: replacing the value
-        /// wholesale used to drop the value's decor, which is where the
+        /// The writer PUT uses (`apply_edits_preserving`, via `set_path_like`) keeps a
+        /// trailing comment on the changed key, not just the comments above it:
+        /// replacing the value wholesale drops the value's decor, which is where the
         /// trailing comment lives.
         #[test]
         fn apply_edits_preserving_keeps_trailing_comment() {
@@ -2335,7 +2324,7 @@ pub mod secrets {
     //!
     //! Auth is the dashboard token, enforced by the gateway before dispatch
     //! for every `/api/*` request, so these endpoints are reachable only
-    //! from an authenticated dashboard session — never from a delegated
+    //! from an authenticated dashboard session, never from a delegated
     //! agent or a plugin, which have no dashboard token and no route here.
     //!
     //! When the broker is unavailable (no durable vault), every write fails

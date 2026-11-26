@@ -1,5 +1,3 @@
-//! plugins_group group: plugins, plugin_import, mcp in one file.
-
 pub mod plugins {
     //! Plugin management: list, approve, and disable tool and hook plugins.
     //!
@@ -350,24 +348,21 @@ pub mod plugins {
         match kind {
             "tool" => match find_tool_plugin(app, name) {
                 Some(p) => {
-                    // Order matters: approval is bound to the directory
-                    // hash, and flipping the manifest rewrites it. Flip
-                    // first, then record approval for the post-flip bytes -
-                    // recording first used to leave the list showing
-                    // approved:false right after a successful approve.
+                    // Order matters: approval is bound to the directory hash, and
+                    // flipping the manifest rewrites it. Flip first, then record approval
+                    // for the post-flip bytes, or the list shows approved:false right
+                    // after a successful approve.
                     if let Err(e) = plugins::set_enabled(&p, true) {
                         return err_json(500, "PLUGIN_APPROVE", &e.to_string());
                     }
                     match plugin_approval::record_approval(&p) {
                         Ok(rec) => {
-                            // Approval alone does not enable: the runtime skips
-                            // a plugin whose manifest flag is false before
-                            // `spawn_verified`, so an approved-but-disabled plugin
-                            // used to stay unloaded while the list showed
-                            // `approved: true, enabled: false` with no enable
-                            // action. Approving here also flips the manifest on
-                            // (done above, before recording, so the approval
-                            // hash covers the enabled manifest).
+                            // Approval alone does not enable: the runtime skips a
+                            // plugin whose manifest flag is false before
+                            // `spawn_verified`, so an approved-but-disabled plugin stays
+                            // unloaded while the list shows `approved: true, enabled:
+                            // false`. Approving here also flips the manifest on, above,
+                            // so the approval hash covers the enabled manifest.
                             json_ok(serde_json::json!({
                                 "ok": true, "kind": "tool", "name": name,
                                 "version": rec.version, "approved": true,
@@ -719,7 +714,7 @@ pub mod plugin_import {
     //!
     //! Honest design notes - read before extending:
     //!
-    //! - The static scanner below is **heuristic pattern matching**, not a
+    //! - The static scanner below is heuristic pattern matching, not a
     //!   sandbox and not a guarantee. It catches low-effort malicious
     //!   patterns (miners, `curl|sh`, credential grabs) and flags suspicious
     //!   ones for a human to review. Defense in depth, in order: (1) the
@@ -727,7 +722,7 @@ pub mod plugin_import {
     //!   approval, (3) the existing approval store still gates loading.
     //!   A clever attacker can evade static heuristics; treat `clean` as
     //!   "nothing obviously bad found", not "safe".
-    //! - ClawHub has a real packages API (verified live 2026-09-30):
+    //! - ClawHub has a real packages API:
     //!   `GET /api/v1/packages/{name}` returns `{"package": {family,
     //!   latestVersion, ...}}` and
     //!   `GET /api/v1/packages/{name}/download?version={v}` returns the
@@ -1761,11 +1756,11 @@ pub mod plugin_import {
         meta: ConvertedMeta<'_>,
         original_raw: &[u8],
     ) -> Result<(), ImportError> {
-        // Flat keys, exactly as `pantheon_extensions::manifest::PluginManifest`
-        // parses them (`name`, `version`, ...). Dotted keys (`"meta.name"`)
-        // used to land in the manifest's flattened `extra` map while the
-        // required `name` field stayed missing, so the manifest failed to
-        // parse and the promoted plugin was silently unloaded (stderr only).
+        // Flat keys, exactly as `pantheon_extensions::manifest::PluginManifest` parses
+        // them (`name`, `version`, ...). Dotted keys (`"meta.name"`) land in the
+        // manifest's flattened `extra` map while the required `name` field stays
+        // missing, so the manifest fails to parse and the promoted plugin silently
+        // fails to load.
         let yaml = serde_yaml::to_string(&serde_json::json!({
             "name": meta.name,
             "version": meta.version,
@@ -2584,8 +2579,7 @@ pub mod plugin_import {
     // ClawHub
     // ---------------------------------------------------------------------------
 
-    /// ClawHub → registry entry field mapping (verified against the live API
-    /// 2026-09-30):
+    /// ClawHub → registry entry field mapping:
     /// - `slug` ← item.slug
     /// - `name` ← item.displayName
     /// - `description` ← item.summary (fallback: item.description, often null)
@@ -2683,7 +2677,7 @@ pub mod plugin_import {
     }
 
     /// Resolve `clawhub:<slug>` via the packages API and download the package
-    /// zip (verified live 2026-09-30: `GET /api/v1/packages/{name}` →
+    /// zip (`GET /api/v1/packages/{name}` →
     /// `{"package": {family, latestVersion, ...}}`,
     /// `GET /api/v1/packages/{name}/download?version={v}` → zip).
     ///
@@ -3168,11 +3162,11 @@ pub mod mcp {
     //!
     //! Two different gates, two different questions:
     //!
-    //! - `enabled` (this file's flag) is the **operator's switch**: is this
+    //! - `enabled` (this file's flag) is the operator's switch: is this
     //!   server supposed to run? Fresh installs enable zero servers; every
     //!   enable is explicit.
     //! - The approval store (`<data_dir>/mcp/.approvals.json`,
-    //!   `pantheon_api::approval`) is **consent to run third-party code**:
+    //!   `pantheon_api::approval`) is consent to run third-party code:
     //!   it binds the server's name to the content hash of its binary (or
     //!   URL). An unapproved custom server never connects no matter what the
     //!   flag says.
@@ -3949,7 +3943,7 @@ pub mod mcp {
     /// `POST /api/mcp/servers` - `{name, transport, command?, args?, url?,
     /// requires_env?, confirm: true}`.
     ///
-    /// Custom servers are added **disabled** into `[mcp.servers.<name>]` in
+    /// Custom servers are added disabled into `[mcp.servers.<name>]` in
     /// `config.toml` (the one enablement state). The shape is validated
     /// without a live handshake; a name the bundled catalog already owns is
     /// rejected (enable the catalog entry instead of shadowing it).
@@ -4048,7 +4042,7 @@ pub mod mcp {
 
     /// `POST /api/mcp/servers/:name/approve` - `{confirm: true}`.
     ///
-    /// Record operator consent for a **custom** server in the unified
+    /// Record operator consent for a custom server in the unified
     /// approval store, binding the server's name to its content hash (the
     /// binary bytes, or the URL bytes for remote transports). The version
     /// the server reports on handshake is recorded for DISPLAY only: the
@@ -4343,9 +4337,9 @@ pub mod mcp {
         if host_port.is_empty() {
             return (false, "unparseable url".to_string());
         }
-        // Bracketed IPv6 first: rsplit_once(':') on "[::1]" splits inside
-        // the address, and a malformed port used to fall through to the
-        // default port 80, probing the wrong service instead of erroring.
+        // Bracketed IPv6 first: rsplit_once(':') on "[::1]" splits inside the address,
+        // and a malformed port falls through to the default port 80, probing the wrong
+        // service instead of erroring.
         let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
             match rest.split_once(']') {
                 Some((h, tail)) => {

@@ -1,14 +1,11 @@
-//! Build a [`Session`](pantheon_runtime::session::Session) for dashboard
+//! Build a [`Session`](pantheon_runtime::session::Session) for the dashboard
 //! maintenance endpoints (compress) without depending on the TUI crate.
 //!
-//! This mirrors `pantheon-tui`'s `resume_after_grant` construction - coder
-//! policy, resolved model policy, secrets broker, tool enablement
-//! reusing the shared config document types from `pantheon-api` and the
-//! TUI's resolution rules. Only the pieces `compress_now` consults are
-//! resolved (default model, the compression and vision auxiliaries and
-//! their keys); the
-//! other aux slots are inert for compression and their resolution lives
-//! in the TUI.
+//! Mirrors `pantheon-tui`'s `resume_after_grant`: coder policy, resolved
+//! model policy, secrets broker, tool enablement, reused shared config types
+//! from `pantheon-api` and the TUI's resolution rules. Only what `compress_now`
+//! reads gets resolved (default model, compression/vision auxiliaries + keys);
+//! the other aux slots are inert for compression and handled by the TUI.
 
 use pantheon_api::capability::Policy;
 use pantheon_api::config::Config;
@@ -38,20 +35,17 @@ fn env_nonempty(name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// Resolve the default chat model under the canonical precedence
-/// (explicit > `[model]` section > local default, empty values ignored)
-/// in [`pantheon_api::config_resolve::resolve_default_model`]. Config
-/// is the single source: the process environment is not consulted, so
-/// a stale `PANTHEON_PROVIDER`/`PANTHEON_MODEL` in a shell cannot
-/// shadow it.
+/// default chat model under the canonical precedence (explicit > `[model]` >
+/// local default, empty values ignored), per `resolve_default_model`. Config is
+/// the single source - env is NOT consulted, so a stale `PANTHEON_PROVIDER`/
+/// `PANTHEON_MODEL` in a shell can't shadow it.
 fn default_model(cfg: Option<&Config>) -> DefaultModel {
     pantheon_api::config_resolve::resolve_default_model(cfg, None, None)
 }
 
-/// Resolve the compression auxiliary: `PANTHEON_COMPRESSION_PROVIDER` /
-/// `PANTHEON_COMPRESSION_MODEL` win field-wise, then the `[compression]`
-/// section; `"default"`/absent inherits the default model - the TUI's
-/// `resolve_aux_target` rule.
+/// compression auxiliary: `PANTHEON_COMPRESSION_PROVIDER`/`..._MODEL` win
+/// field-wise, then `[compression]`; `"default"`/absent inherits the default
+/// model - the TUI's `resolve_aux_target` rule.
 fn compression_aux(cfg: Option<&Config>, default: &DefaultModel) -> AuxiliaryModel {
     let section = cfg.and_then(|c| c.compression.as_ref());
     let cfg_str = |f: fn(&pantheon_api::config::AuxSection) -> &str| {
@@ -85,12 +79,11 @@ fn compression_aux(cfg: Option<&Config>, default: &DefaultModel) -> AuxiliaryMod
     }
 }
 
-/// Resolve the vision auxiliary: `PANTHEON_VISION_PROVIDER` /
-/// `PANTHEON_VISION_MODEL` win field-wise, then the `[vision]` section;
-/// `"default"`/absent inherits the default model - the TUI's
-/// `resolve_aux_target` rule. Returns `None` when nothing pins a
-/// vision model: the runtime treats that as `auto` (attached images
-/// ride the user row to the default model directly).
+/// vision auxiliary: `PANTHEON_VISION_PROVIDER`/`..._MODEL` win field-wise,
+/// then `[vision]`; `"default"`/absent inherits the default model - the TUI's
+/// `resolve_aux_target` rule. `None` when nothing pins a vision model: the
+/// runtime treats that as `auto` (attached images ride the user row to the
+/// default model).
 fn vision_aux(cfg: Option<&Config>, default: &DefaultModel) -> Option<AuxiliaryModel> {
     let section = cfg.and_then(|c| c.vision.as_ref());
     let cfg_str = |f: fn(&pantheon_api::config::AuxSection) -> &str| {
@@ -162,8 +155,8 @@ fn model_policy(cfg: Option<&Config>) -> ModelPolicy {
     let section = cfg.and_then(|c| c.model.as_ref());
     let default = default_model(cfg);
     let chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
-    // `PANTHEON_REASONING_BUDGET` / `PANTHEON_REASONING` win, then the
-    // `[model]` fields, then off - the TUI's resolution.
+    // `PANTHEON_REASONING_BUDGET` / `PANTHEON_REASONING` win, then `[model]`
+    // fields, then off - the TUI's resolution.
     let reasoning_budget = env_nonempty("PANTHEON_REASONING_BUDGET")
         .and_then(|v| v.parse::<u32>().ok())
         .or_else(|| section.and_then(|m| m.reasoning_budget));
@@ -189,11 +182,11 @@ fn model_policy(cfg: Option<&Config>) -> ModelPolicy {
     }
 }
 
-/// Resolve `[budget]` to the run [`Budget`]: max turns, tool calls,
-/// delegate depth, token cap. Absent = the runtime defaults. Mirrors
-/// `pantheon-tui`'s `config_budget`/`resolve_budget_section` (0 counts as
-/// unset); this crate must not depend on the TUI, so the mapping lives
-/// here and the two must be kept in sync.
+/// `[budget]` -> run [`Budget`]: max turns, tool calls, delegate depth, token
+/// cap. Absent = runtime defaults. Mirrors `pantheon-tui`'s
+/// `config_budget`/`resolve_budget_section` (0 counts as unset); this crate
+/// can't depend on the TUI, so the mapping lives here and they must stay in
+/// sync.
 fn budget_for(cfg: Option<&Config>) -> pantheon_agent::Budget {
     let nz = |v: Option<u32>, d: u32| v.filter(|&v| v > 0).unwrap_or(d);
     match cfg.and_then(|c| c.budget.as_ref()) {
@@ -211,11 +204,10 @@ fn budget_for(cfg: Option<&Config>) -> pantheon_agent::Budget {
     }
 }
 
-/// The `[budget].max_tokens` config tier, kept apart from the live
-/// budget - the TUI's `set_budget_max_tokens` block: `/tokens`
-/// overwrites `budget.max_tokens` for the session, and `/tokens off`
-/// must fall back to this configured value rather than forget it.
-/// (0 = unset, same as `budget_for`.)
+/// configured `[budget].max_tokens` tier, kept apart from the live budget -
+/// the TUI's `set_budget_max_tokens` block. `/tokens` overwrites
+/// `budget.max_tokens` for the session; `/tokens off` has to fall back to
+/// this config value, not forget it. (0 = unset, as in `budget_for`.)
 fn configured_max_tokens(cfg: Option<&Config>) -> Option<u32> {
     cfg.and_then(|c| c.budget.as_ref())
         .and_then(|b| b.max_tokens)
@@ -231,10 +223,9 @@ pub(crate) fn secrets_broker(cfg: Option<&Config>) -> pantheon_secrets::SecretsB
     broker
 }
 
-/// Resolve the maintenance-session policy, mirroring the TUI's
-/// `policy_for_config`: config preset, then `PANTHEON_POLICY`, then
-/// `PANTHEON_ALLOW_MEMORY`, then coder. The dashboard cannot depend on
-/// the TUI crate, so this small resolution lives here next to its use.
+/// maintenance-session policy, mirroring the TUI's `policy_for_config`:
+/// config preset, then `PANTHEON_POLICY`, then `PANTHEON_ALLOW_MEMORY`, then
+/// coder. The dashboard can't depend on the TUI crate, so this lives here.
 fn policy_for_config(cfg: Option<&Config>) -> Policy {
     if let Some(preset) = cfg.and_then(|c| c.policy) {
         return preset.to_policy();
@@ -254,21 +245,20 @@ fn policy_for_config(cfg: Option<&Config>) -> Policy {
     }
 }
 
-/// Open a session for a maintenance endpoint, mirroring
-/// `pantheon-tui`'s `resume_after_grant`. `data_dir` is the Pantheon data
-/// directory (the dashboard's `App::data_dir`).
+/// open a session for a maintenance endpoint, mirroring `pantheon-tui`'s
+/// `resume_after_grant`. `data_dir` is the Pantheon data directory (the
+/// dashboard's `App::data_dir`).
 pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
     let cfg = load_config(data_dir)?;
     let cfg_ref = cfg.as_ref();
-    // Policy preset honored verbatim, same precedence as the TUI's
-    // `policy_for_config`: config preset, then `PANTHEON_POLICY`, then
-    // `PANTHEON_ALLOW_MEMORY`, then coder. A Reader config must stay
-    // read-only here, not silently widen to coder.
+    // policy preset honored verbatim, same precedence as the TUI's
+    // `policy_for_config`. A Reader config must stay read-only here, not
+    // silently widen to coder.
     let policy = policy_for_config(cfg_ref);
     let model_policy = model_policy(cfg_ref);
     let secrets = secrets_broker(cfg_ref);
-    // `[memory]` wins over memory-backend.toml on load: sync BEFORE
-    // the session reads the selection, or the sync lands a session late.
+    // `[memory]` wins over memory-backend.toml on load: sync BEFORE the
+    // session reads the selection, or the sync lands a session late.
     if let Some(section) = cfg_ref.and_then(|c| c.memory.as_ref()) {
         if let Some(warning) = pantheon_memory::sync_selection_from_config(
             data_dir,
@@ -285,20 +275,15 @@ pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
         .map(pantheon_runtime::tool_config::ToolEnablement::from_section)
         .unwrap_or_default();
     session.set_tool_enablement(enablement);
-    // Run budgets from `[budget]` in config.toml (max turns, tool calls,
-    // delegate depth, token cap): the TUI threads these at startup
-    // (`config_budget`) and dashboard sessions must behave the same
-    // without this the `[budget].max_tokens` tier silently fell through
-    // to the model max / 16k fallback.
+    // run budgets from `[budget]` in config.toml, like the TUI threads them
+    // at startup (`config_budget`). without this the `[budget].max_tokens`
+    // tier silently fell through to the model max / 16k fallback.
     session.set_budget(budget_for(cfg_ref));
-    // The live `[budget]` section itself, so `delegate` turns spawned
-    // from maintenance sessions resolve delegation knobs
-    // (delegate_child_max_tokens, max_delegations) exactly as
-    // configured — same wiring as the TUI startup path.
+    // the live `[budget]` section too, so `delegate` turns spawned from
+    // maintenance sessions resolve the delegation knobs exactly as configured
     session.set_budget_section(cfg_ref.and_then(|c| c.budget.clone()).unwrap_or_default());
-    // The configured token cap, kept apart from the live budget exactly
-    // like the TUI's `set_budget_max_tokens` block, so `/tokens off`
-    // falls back to the configured value instead of forgetting it.
+    // configured token cap kept apart from the live budget, so `/tokens off`
+    // falls back to it instead of forgetting it
     session.set_budget_max_tokens(configured_max_tokens(cfg_ref));
     Ok(session)
 }
@@ -308,8 +293,8 @@ mod budget_tiering_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// Crate convention (env.rs, lib.rs tests): std-only temp dirs, no
-    /// tempfile dev-dependency.
+    /// crate convention (env.rs, lib.rs tests): std temp dirs, no tempfile
+    /// dev-dependency
     fn scratch_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "pantheon-budget-test-{}-{}-{}",
@@ -324,10 +309,9 @@ mod budget_tiering_tests {
         dir
     }
 
-    /// Fail-before: a dashboard-created session must carry the
-    /// `[budget].max_tokens` config tier exactly like the TUI's
-    /// interactive sessions (session.rs `set_budget` +
-    /// `set_budget_max_tokens`).
+    /// fail-before: a dashboard-created session must carry the
+    /// `[budget].max_tokens` config tier exactly like the TUI's interactive
+    /// sessions (session.rs `set_budget` + `set_budget_max_tokens`).
     #[test]
     fn budget_config_tier_reaches_dashboard_session() {
         let dir = scratch_dir("tier");
@@ -337,7 +321,7 @@ mod budget_tiering_tests {
         )
         .expect("write config");
         let session = open_maintenance_session(&dir).expect("open maintenance session");
-        // The live run budget carries the resolved tier ...
+        // the live run budget carries the resolved tier ...
         assert_eq!(
             session.budget_snapshot().max_tokens,
             Some(5000),
@@ -345,13 +329,12 @@ mod budget_tiering_tests {
         );
         assert_eq!(session.budget_snapshot().max_turns, 20);
         // ... and the kept-apart configured-cap slot must hold it too, so
-        // `/tokens off` semantics (fall back to the config tier) match
-        // the TUI.
+        // `/tokens off` semantics (fall back to the config tier) match the TUI
         let configured = *session.budget_max_tokens.lock().expect("budget lock");
         assert_eq!(configured, Some(5000));
-        // End to end through the real precedence function: config tier
-        // wins over the model max / 16k fallback when the session has no
-        // `/tokens` override.
+        // end to end through the real precedence function: config tier
+        // wins over the model max / 16k fallback when there's no `/tokens`
+        // override
         assert_eq!(
             pantheon_api::config::resolve_max_output_tokens(configured, configured, Some(8192)),
             5000
@@ -359,7 +342,7 @@ mod budget_tiering_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Absent `[budget]` = runtime defaults: no caps anywhere.
+    /// absent `[budget]` = runtime defaults, no caps anywhere
     #[test]
     fn no_budget_section_means_defaults() {
         let dir = scratch_dir("defaults");
@@ -402,7 +385,7 @@ mod default_model_tests {
         std::env::remove_var("PANTHEON_MODEL");
         let cfg = cfg_with_model("cfg-provider", "cfg-model");
         assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
-        // Env must not shadow config: single source of truth is config.
+        // env must not shadow config - config is the single source of truth
         std::env::set_var("PANTHEON_PROVIDER", "env-provider");
         assert_eq!(default_model(Some(&cfg)).provider, "cfg-provider");
         std::env::set_var("PANTHEON_PROVIDER", "  ");

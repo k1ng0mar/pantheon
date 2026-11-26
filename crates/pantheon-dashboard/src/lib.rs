@@ -1,38 +1,9 @@
-//! Pantheon's web dashboard: control plane in the browser.
+//! Pantheon’s browser dashboard, mounted on the gateway’s HTTP listener.
 //!
-//! Route handlers + PWA assets mounted on the gateway's single HTTP serve
-//! surface (`pantheon_gateway::http`): a self-contained vanilla SPA
-//! (embedded via `include_str!`, no build step, no npm) over Pantheon's
-//! real stores: the event ledger, the scheduler's `schedule.json`, the
-//! config file, the `.env` key store, log files, skills, MCP declarations,
-//! the gateway service, and the reflection/consolidation engines.
-//!
-//! Security model (hardened after past incidents):
-//! - A random 256-bit per-instance token is generated at startup and
-//!   printed on its own line (never in the URL: URLs leak into browser
-//!   history, server logs, and referers). Every `/api/*` request must
-//!   carry it as `X-Pantheon-Token`, or carry the short-lived session
-//!   cookie minted by `POST /api/session` (which is what the log
-//!   EventSource and the desktop WebSocket stream use, since they
-//!   cannot set headers).
-//! - `POST`/`PUT`/`PATCH`/`DELETE` additionally require the `Host` header to
-//!   match the bind address (DNS-rebinding guard) and reject a mismatched
-//!   `Origin`/`Referer` (an absent one means a non-browser client like
-//!   curl, which the token already authenticates).
-//! - Default bind is 127.0.0.1. Binding anywhere else prints a loud
-//!   warning: put a reverse proxy with auth in front.
-//!
-//! The token + mutation guards are enforced by the gateway's `check_auth`
-//! before dispatch, from the [`AuthCtx`] the mount builds; this crate no
-//! longer runs its own server - [`DashboardMount`] plugs the routing table
-//! into the gateway listener.
-//!
-//! Design references (named, per brief):
-//! - VibePrompt: metric-card row, sparklines, compact KPI tiles.
-//! - Raycast via Refero Styles ("midnight command center"): `#040506`
-//!   canvas, hairline borders, inset highlights, Inter + monospace
-//!   micro-labels, neutral buttons, mono footer metadata. Accent is a
-//!   restrained cyan (`#22d3ee`); green/amber/red are statuses only.
+//! Every `/api/*` request uses the per-instance token or a short-lived session
+//! cookie. Mutating requests also check the bound host and browser origin;
+//! non-loopback binds warn that a reverse proxy with authentication is needed.
+//! `DashboardMount` adds routes to the gateway; it does not run a second server.
 
 mod ops_group;
 mod plugins_group;
@@ -69,9 +40,8 @@ use workspace_group::templates;
 pub mod desktop;
 mod session_factory;
 /// Swarm routes: multi-agent fan-out through real subprocess turns.
-/// Public so hosts constructing [`App`] (the TUI mounts) can build the
-/// production orchestrator via
-/// [`swarm::orchestrator_for`].
+/// Public so hosts building an [`App`] (the TUI mounts) can build the
+/// production orchestrator via [`swarm::orchestrator_for`].
 pub mod swarm;
 mod system;
 /// Public so the turn child and integration tests can resolve upload ids
@@ -81,9 +51,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Callback fired with `(run_id, granted)` after an approval decision is
-/// durably recorded. The TUI wires this to its session-resume path;
-/// the dashboard itself never resumes runs.
+/// callback fired with `(run_id, granted)` after an approval decision is
+/// durably recorded. The TUI wires this to session-resume; the dashboard
+/// itself never resumes runs.
 pub type ApprovalCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Shared request state.
@@ -94,40 +64,37 @@ pub struct App {
     pub bind_all: bool,
     pub on_approval: Option<ApprovalCallback>,
     /// Per-run mutexes serializing turn-starting requests (`send_message`,
-    /// `retry_turn`, approval resume). Guards the busy-check → drain →
-    /// spawn sequence so two concurrent POSTs can't both see idle, both
-    /// spawn, and silently drop the loser's message when its turn dies
-    /// with RT_LEASE_BUSY.
+    /// `retry_turn`, approval resume). Guards busy-check -> drain -> spawn so
+    /// two concurrent POSTs can't both see idle, both spawn, and drop the
+    /// loser's message when its turn dies with RT_LEASE_BUSY.
     pub send_locks:
         std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
-    /// Per-run mutexes serializing UI-action submissions (`ui-actions`
-    /// route). The dashboard opens a fresh `Session` per request, so the
-    /// runtime's per-`Session` `ui_action_lock` does not span requests:
-    /// without this, two concurrent dashboard POSTs with the same nonce
-    /// could both pass the replay check and both execute. Hold the guard
-    /// across the whole `submit_ui_action` call.
+    /// Per-run mutexes serializing UI-action submissions (`ui-actions` route).
+    /// The dashboard opens a fresh `Session` per request, so the runtime's
+    /// per-`Session` `ui_action_lock` doesn't span requests: without this, two
+    /// concurrent dashboard POSTs with the same nonce could both pass the
+    /// replay check and both execute. Hold the guard across the whole
+    /// `submit_ui_action` call.
     pub ui_action_locks:
         std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
     /// PIDs of turn children spawned by this dashboard process
     /// (`run --taskID <run_id> --say ...`), keyed by run id. Powers
-    /// `POST /api/runs/:id/kill`: a PID recorded here is the only
-    /// process the dashboard will ever signal, and the runtime
-    /// identity-checks it against `/proc` before signaling.
+    /// `POST /api/runs/:id/kill`: a recorded PID is the only process the
+    /// dashboard will ever signal, and the runtime identity-checks it
+    /// against /proc before signaling.
     pub turn_children: std::sync::Mutex<std::collections::HashMap<String, u32>>,
-    /// Multi-agent swarm orchestrator (see `swarm.rs`): production agents
-    /// run as real subprocess turns via
-    /// [`swarm::SubprocessWorker`]; the `[judge]` aux transport resolves
-    /// from the dashboard's config.toml at construction.
+    /// Multi-agent swarm orchestrator (see `swarm.rs`): production agents run
+    /// as real subprocess turns via [`swarm::SubprocessWorker`]; the
+    /// `[judge]` aux transport resolves from config.toml at construction.
     pub swarm: std::sync::Arc<pantheon_runtime::swarm_exec::SwarmOrchestrator>,
-    /// Lazily-initialized Bot Screen (desktop watch + takeover) driver
-    /// handle; one per dashboard process, shared by all viewers.
+    /// Lazily-initialized Bot Screen (desktop watch + takeover) driver handle;
+    /// one per dashboard process, shared by all viewers.
     pub desktop: std::sync::Mutex<Option<std::sync::Arc<desktop::DesktopDriver>>>,
 }
 
 impl App {
-    /// The serialization lock for one run's turn-starting requests.
-    /// Cheap to clone; hold the guard across the whole check → spawn
-    /// sequence.
+    /// The serialization lock for one run's turn-starting requests. Cheap to
+    /// clone; hold the guard across the whole check -> spawn sequence.
     pub fn send_guard(&self, run_id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
         let mut map = self.send_locks.lock().unwrap_or_else(|e| e.into_inner());
         map.entry(run_id.to_string())
@@ -135,11 +102,10 @@ impl App {
             .clone()
     }
 
-    /// The serialization lock for one run's UI-action submissions.
-    /// Cheap to clone; hold the guard across the whole
-    /// `submit_ui_action` call so concurrent dashboard requests
-    /// serialize through the runtime's check → audit → dispatch
-    /// sequence.
+    /// The serialization lock for one run's UI-action submissions. Cheap to
+    /// clone; hold the guard across the whole `submit_ui_action` call so
+    /// concurrent dashboard requests serialize through the runtime's check ->
+    /// audit -> dispatch sequence.
     pub fn ui_action_guard(&self, run_id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
         let mut map = self
             .ui_action_locks
@@ -149,7 +115,6 @@ impl App {
             .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
             .clone()
     }
-    /// Record the turn child just spawned for `run_id`.
     pub fn register_turn_child(&self, run_id: &str, pid: u32) {
         let mut map = self.turn_children.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(run_id.to_string(), pid);
@@ -164,8 +129,7 @@ impl App {
             .copied()
     }
 
-    /// Forget the recorded turn child: after a kill, or when the PID
-    /// proved stale.
+    /// Forget the recorded turn child: after a kill, or when the PID proved stale
     pub fn forget_turn_child(&self, run_id: &str) {
         self.turn_children
             .lock()
@@ -174,25 +138,23 @@ impl App {
     }
 }
 
-/// Spawn the pantheon binary itself as a subprocess: the dashboard calls
-/// back into the real CLI code paths (`schedule run`, `gateway restart`,
-/// `reflect`, `consolidate`) instead of reimplementing them. Fire and
-/// forget - the caller already responded; the child must not inherit the
-/// socket.
+/// spawn the pantheon binary as a subprocess: the dashboard calls back into
+/// the real CLI paths (`schedule run`, `gateway restart`, `reflect`,
+/// `consolidate`) instead of reimplementing them. Fire and forget - the
+/// caller already responded, and the child must not inherit the socket.
 ///
 /// Returns the spawn result so turn-starting callers can keep the queued
-/// message on failure instead of dropping a queue head they already
-/// drained.
+/// message on failure instead of dropping a queue head they already drained.
 pub fn spawn_pantheon(args: &[&str]) -> std::io::Result<()> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pantheon"));
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args);
-    // Detach: the child must outlive this worker thread's handling, and
-    // must not inherit the socket.
+    // detach: the child outlives this worker thread's handling and must not
+    // inherit the socket
     #[cfg(unix)]
     {
-        // Double-fork via setsid is overkill; detaching stdio and not
-        // waiting is enough for a dashboard-triggered background job.
+        // double-fork via setsid is overkill; detaching stdio and not waiting
+        // is enough for a dashboard-triggered background job
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -200,12 +162,12 @@ pub fn spawn_pantheon(args: &[&str]) -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
-/// Spawn the pantheon binary as a turn child with the turn text piped on
-/// stdin while argv carries `--say -`. Keeps user message text out of
-/// argv (and out of process listings) - the child resolves the `-`
-/// through the same `resolve_say_stdin` path the CLI documents. The
-/// payload is written before returning; the child is already running so
-/// a large message cannot deadlock the pipe.
+/// spawn the pantheon binary as a turn child, piping the turn text on stdin
+/// while argv carries `--say -`. Keeps the user message out of argv (and
+/// out of process listings) - the child resolves the `-` through the same
+/// `resolve_say_stdin` path the CLI documents. The payload is written before
+/// returning; the child is already running, so a large message can't
+/// deadlock the pipe.
 pub fn spawn_turn_child_with_stdin(args: &[&str], stdin_payload: &[u8]) -> std::io::Result<u32> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pantheon"));
     let mut cmd = std::process::Command::new(exe);
@@ -215,8 +177,8 @@ pub fn spawn_turn_child_with_stdin(args: &[&str], stdin_payload: &[u8]) -> std::
     {
         cmd.stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        // Own process group: killpg(pid) later only ever signals
-        // this turn's processes, never the dashboard itself.
+        // own process group: killpg(pid) later only signals this turn's
+        // processes, never the dashboard itself
         use std::os::unix::process::CommandExt;
         unsafe {
             cmd.pre_exec(|| {
@@ -230,12 +192,12 @@ pub fn spawn_turn_child_with_stdin(args: &[&str], stdin_payload: &[u8]) -> std::
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
-        // Best-effort: if the write fails the child exits 1 on empty
-        // stdin rather than running a turn with no message.
+        // best-effort: if the write fails the child exits 1 on empty stdin
+        // rather than running a turn with no message
         let _ = stdin.write_all(stdin_payload);
         // stdin closes on drop, signalling EOF to the child's read.
     }
-    // Refuse to record PID 1 or our own PID, defensively.
+    // refuse to record PID 1 or our own PID, defensively
     let pid = child.id();
     if pid <= 1 || pid == std::process::id() {
         return Err(std::io::Error::other(format!(
@@ -245,18 +207,17 @@ pub fn spawn_turn_child_with_stdin(args: &[&str], stdin_payload: &[u8]) -> std::
     Ok(pid)
 }
 
-/// Spawn the pantheon binary as a turn child (`run --taskID <run_id>
+/// spawn the pantheon binary as a turn child (`run --taskID <run_id>
 /// --say ...`), in its own process group so `POST /api/runs/:id/kill`
-/// can signal the whole group without touching the dashboard. Returns
-/// the child PID (== its process group id after setsid).
+/// can signal the whole group without touching the dashboard. Returns the
+/// child PID (== its process group id after setsid).
 ///
-/// Detached like [`spawn_pantheon`]: the child outlives the request and
-/// must not inherit the socket. Callers register the PID with
+/// Detached like [`spawn_pantheon`]: the child outlives the request and must
+/// not inherit the socket. Callers register the PID with
 /// [`App::register_turn_child`] so the kill endpoint can find it.
 ///
-/// Prefer [`spawn_turn_child_with_stdin`] when the turn text is user
-/// content: this variant leaves the message on argv, visible in process
-/// listings.
+/// Prefer [`spawn_turn_child_with_stdin`] when the turn text is user content:
+/// this variant leaves the message on argv, visible in process listings.
 pub fn spawn_turn_child(args: &[&str]) -> std::io::Result<u32> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("pantheon"));
     let mut cmd = std::process::Command::new(exe);
@@ -266,8 +227,8 @@ pub fn spawn_turn_child(args: &[&str]) -> std::io::Result<u32> {
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        // Own process group: killpg(pid) later only ever signals
-        // this turn's processes, never the dashboard itself.
+        // own process group: killpg(pid) later only signals this turn's
+        // processes, never the dashboard itself
         use std::os::unix::process::CommandExt;
         unsafe {
             cmd.pre_exec(|| {
@@ -279,7 +240,7 @@ pub fn spawn_turn_child(args: &[&str]) -> std::io::Result<u32> {
         }
     }
     let child = cmd.spawn()?;
-    // Refuse to record PID 1 or our own PID, defensively.
+    // refuse to record PID 1 or our own PID, defensively
     let pid = child.id();
     if pid <= 1 || pid == std::process::id() {
         return Err(std::io::Error::other(format!(
@@ -302,9 +263,9 @@ pub fn created_json(v: serde_json::Value) -> Response {
     Response::created_json(serde_json::to_string(&v).unwrap_or_else(|_| "{}".into()))
 }
 
-/// 409 with the standard error envelope, for state conflicts (finished or
-/// parked runs, busy leases). `err_json` only maps 400/401/403/404, so
-/// this needs its own constructor.
+/// 409 with the standard error envelope for state conflicts (finished or
+/// parked runs, busy leases). `err_json` only maps 400/401/403/404, so this
+/// needs its own constructor.
 pub fn conflict(code: &str, msg: &str) -> Response {
     let body = serde_json::json!({"ok": false, "error": {"code": code, "message": msg}});
     Response::conflict_json(serde_json::to_string(&body).unwrap_or_else(|_| "{}".into()))
@@ -384,13 +345,12 @@ const ICON_512: &[u8] = include_bytes!("../assets/icon-512.png");
 
 /// THE single path-normalization point for the dashboard mount.
 ///
-/// Splits on '/', drops empty segments, then percent-decodes each segment,
-/// in exactly this order, so an encoded '/' (`%2F`) never creates a new
-/// segment. `auth_group` and `dispatch` MUST both go through this function:
-/// the auth decision and the route decision have to see the same path, or
-/// encoded/empty-segment variants (`/%61pi/runs`, `//api/runs`) slip past
-/// auth into the real handler (P0 auth bypass, 2026-10-01). Do not add a
-/// second normalizer; extend this one.
+/// Split on '/', drop empty segments, then percent-decode each segment -
+/// in exactly that order, so `%2F` can't create a new segment. `auth_group`
+/// and `dispatch` MUST both go through this: the auth decision and the route
+/// decision have to see the same path, or encoded/empty-segment variants
+/// (`/%61pi/runs`, `//api/runs`) slip past auth into the real handler.
+/// Don't add a second normalizer; extend this one.
 fn split_path(path: &str) -> Vec<String> {
     path.split('/')
         .filter(|s| !s.is_empty())
@@ -400,11 +360,11 @@ fn split_path(path: &str) -> Vec<String> {
 
 fn dispatch(app: &App, req: &Request) -> Response {
     let segs = split_path(&req.path);
-    // Static shell: no token needed (it cannot do anything without one).
+    // static shell: no token needed (it can't do anything without one)
     if req.method == "GET" && segs.is_empty() {
-        // Inject the build version so the sidebar can never drift from
-        // the binary: the placeholder lives in assets/index.html and is
-        // replaced from CARGO_PKG_VERSION at serve time.
+        // inject the build version so the sidebar never drifts from the
+        // binary: the placeholder lives in assets/index.html and is replaced
+        // from CARGO_PKG_VERSION at serve time
         let html = INDEX_HTML.replace("__PANTHEON_VERSION__", env!("CARGO_PKG_VERSION"));
         return Response::Buffered {
             status: 200,
@@ -431,14 +391,13 @@ fn dispatch(app: &App, req: &Request) -> Response {
     if req.method == "GET" && segs == ["app.js"] {
         return Response::ok_js(APP_JS);
     }
-    // PWA shell assets: no token needed (they cannot do anything without one).
+    // PWA shell assets: no token needed (they can't do anything without one)
     if req.method == "GET" && segs == ["manifest.json"] {
         return Response::ok_bytes("application/manifest+json", MANIFEST_JSON.as_bytes());
     }
     if req.method == "GET" && segs == ["sw.js"] {
-        // Versioned cache name: injecting the build version here retires
-        // the previous version's cached shell on upgrade instead of
-        // serving it forever.
+        // versioned cache name: injecting the build version retires the
+        // previous cached shell on upgrade instead of serving it forever
         let js = SW_JS.replace("__PANTHEON_VERSION__", env!("CARGO_PKG_VERSION"));
         return Response::Buffered {
             status: 200,
@@ -454,8 +413,8 @@ fn dispatch(app: &App, req: &Request) -> Response {
         return Response::ok_bytes("image/png", ICON_512);
     }
     if req.method == "GET" && segs == ["desktop.html"] {
-        // Bot Screen: standalone desktop viewer (live watch + takeover).
-        // Public like the shell: it cannot do anything without the token.
+        // Bot Screen: standalone desktop viewer. Public like the shell -
+        // it can't do anything without the token.
         return Response::Buffered {
             status: 200,
             content_type: "text/html; charset=utf-8",
@@ -466,22 +425,22 @@ fn dispatch(app: &App, req: &Request) -> Response {
     if segs.first().map(String::as_str) != Some("api") {
         return Response::not_found();
     }
-    // Auth (token for every /api/* request, Host/Origin guards for
-    // mutations) is enforced by the gateway's `check_auth` before
-    // dispatch, from the [`AuthGroup`] the mount declares for the path.
+    // auth (token for every /api/* request, Host/Origin guards for mutations)
+    // is enforced by the gateway's `check_auth` before dispatch, from the
+    // [`AuthGroup`] the mount declares for the path
     let rest: &[String] = &segs[1..];
     route(app, req, rest)
 }
 
 fn route(app: &App, req: &Request, rest: &[String]) -> Response {
     let s = |i: usize| rest.get(i).map(String::as_str).unwrap_or("");
-    // The table below destructures at most four path segments. A longer
-    // path is never a real route: reject it here instead of silently
-    // discarding the trailing segments (which once routed e.g.
-    // `DELETE /api/runs/:id/queue/999/extra` to `delete_queue_item`).
+    // the table below destructures at most four path segments. a longer path
+    // is never a real route: reject it here instead of silently discarding
+    // the trailing segments (which once routed e.g.
+    // `DELETE /api/runs/:id/queue/999/extra` to `delete_queue_item`)
     if rest.len() > 4 {
-        // An /api/* path with more than four segments is never a route:
-        // an API error, so the JSON envelope, not the plain 404 (B-15).
+        // an /api/* path with >4 segments is never a route: an API error, so
+        // the JSON envelope, not the plain 404 (B-15)
         return err_json(404, "not_found", "unknown api route");
     }
     match (req.method.as_str(), s(0), s(1), s(2), s(3)) {
@@ -524,13 +483,13 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("DELETE", "runs", id, "", "") if !id.is_empty() => runs::prune(app, req, id),
         // Link preview for chat link cards.
         ("GET", "link-preview", "", "", "") => link_preview::link_preview(req),
-        // Ideas: nightly-gated proactive suggestions (see ideas.rs).
-        // Additive section: no existing arm moved or reordered.
+        // Ideas: nightly-gated proactive suggestions (see ideas.rs). Additive
+        // section: no existing arm moved or reordered.
         ("GET", "ideas", "", "", "") => ideas::list(app),
         ("POST", "ideas", id, "accept", "") => ideas::accept(app, id),
         ("POST", "ideas", id, "dismiss", "") => ideas::dismiss(app, id),
         ("POST", "ideas", id, "feedback", "") => ideas::feedback(app, id, req),
-        // Swarm: multi-agent fan-out through real subprocess turns.
+        // Swarm
         ("POST", "swarm", "", "", "") => swarm::create(app, req),
         ("GET", "swarm", "", "", "") => swarm::list(app, req),
         ("GET", "swarm", "status", "", "") => swarm::status(app, req),
@@ -600,7 +559,7 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("GET", "browser", "status", "", "") => browser::status(app, req),
         ("GET", "browser", "stream", "", "") => browser::stream(app, req),
         ("POST", "browser", "input", "", "") => browser::input(app, req),
-        // Bot Screen: live desktop watch + human takeover (CUA driver)
+        // Bot Screen: desktop watch + takeover
         ("GET", "desktop", "status", "", "") => desktop::status(app, req),
         ("GET", "desktop", "stream", "", "") => desktop::stream(app, req),
         ("POST", "desktop", "takeover", "", "") => desktop::takeover(app, req),
@@ -649,10 +608,10 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
         ("POST", "reflect", "run", "", "") => system::reflect_run(app, req),
         ("GET", "consolidate", "status", "", "") => system::consolidate_status(app),
         ("POST", "consolidate", "run", "", "") => system::consolidate_run(app, req),
-        // Nightly enable toggle: the dashboard / mobile-app surface for
-        // the `[nightly] enabled` flag (enable path 4). Status reports
-        // the resolved rule; the POST writes the explicit flag through
-        // the shared config document.
+        // Nightly enable toggle: dashboard / mobile-app surface for the
+        // `[nightly] enabled` flag (enable path 4). Status reports the
+        // resolved rule; the POST writes the explicit flag through the shared
+        // config document.
         ("GET", "nightly", "status", "", "") => system::nightly_status(app),
         ("POST", "nightly", "enabled", "", "") => system::nightly_set_enabled(app, req),
         // File uploads backing chat attachments (mobile app): store first,
@@ -667,10 +626,10 @@ fn route(app: &App, req: &Request, rest: &[String]) -> Response {
     }
 }
 
-/// `GET /api/health/channels` - per-channel state from the gateway
-/// daemon's health snapshots (F-7): connected/degraded/dead, last error,
-/// last successful poll. The gateway and the HTTP listener are different
-/// processes, so the daemon writes JSON files and this route merges them.
+/// `GET /api/health/channels` - per-channel state from the gateway daemon's
+/// health snapshots (F-7): connected/degraded/dead, last error, last
+/// successful poll. The gateway and the HTTP listener are different processes,
+/// so the daemon writes JSON files and this route merges them.
 fn health_channels(app: &App) -> Response {
     json_ok(pantheon_gateway::daemon::channel_health_json(&app.data_dir))
 }
@@ -679,7 +638,7 @@ fn health_channels(app: &App) -> Response {
 // Gateway mount
 // ---------------------------------------------------------------------------
 
-/// The dashboard as a route group on the gateway's single HTTP listener:
+/// the dashboard as a route group on the gateway's single HTTP listener:
 /// PWA shell assets + the `/api/*` control-plane routes. Auth groups are
 /// declared per path; the gateway's `check_auth` enforces the dashboard's
 /// pre-move rules (token for `/api/*`, Host/Origin guards for mutations)
@@ -693,9 +652,9 @@ impl DashboardMount {
         Self { app }
     }
 
-    /// The one auth context for the listener, built from the same
-    /// token/bind the dashboard was configured with. The CLI hands this
-    /// to the gateway's [`ServerConfig`](pantheon_gateway::http::ServerConfig).
+    /// The one auth context for the listener, built from the same token/bind
+    /// the dashboard was configured with. The CLI hands this to the gateway's
+    /// [`ServerConfig`](pantheon_gateway::http::ServerConfig).
     pub fn auth_ctx(&self) -> AuthCtx {
         let mut trusted: Vec<String> = std::env::var("PANTHEON_DASHBOARD_TRUSTED_HOSTS")
             .ok()
@@ -726,16 +685,16 @@ impl DashboardMount {
 impl HttpMount for DashboardMount {
     fn auth_group(&self, req: &Request) -> Option<AuthGroup> {
         // ONE normalization point, shared with `dispatch` via `split_path`:
-        // the auth decision must see exactly the path the handler will
-        // route. Matching the raw request path here once let `/%61pi/runs`
-        // (which normalizes to `["api", "runs"]`) slip through as Public,
-        // running the real handler with no token and no Host/Origin check.
-        // Any new routing-relevant path check must go through `split_path`,
-        // never the raw `req.path`.
+        // the auth decision must see exactly the path the handler will route.
+        // Matching the raw path here once let `/%61pi/runs` (which normalizes
+        // to `["api", "runs"]`) slip through as Public, running the real
+        // handler with no token and no Host/Origin check. Any new
+        // routing-relevant path check must go through `split_path`, never the
+        // raw `req.path`.
         let segs = split_path(&req.path);
         let first = segs.first().map(String::as_str);
-        // Static shell assets (the exact set `dispatch` serves): public,
-        // exactly as before the move.
+        // static shell assets (the exact set `dispatch` serves): public, just
+        // as before the move
         if req.method == "GET"
             && (segs.is_empty()
                 || matches!(
@@ -759,22 +718,21 @@ impl HttpMount for DashboardMount {
         if first == Some("api") {
             return Some(AuthGroup::DashboardApi);
         }
-        // The AG-UI mount owns `/agui/*`: not ours.
+        // the AG-UI mount owns `/agui/*`: not ours
         if first == Some("agui") {
             return None;
         }
-        // Everything else requires the token. Defaulting unknown paths to
-        // Public made the auth decision depend on a second table (the
-        // route dispatch) staying in sync forever: any new top-level
-        // route added to `dispatch` and forgotten here would have been
-        // unauthenticated. Fail closed instead: an unknown path is a 401
-        // without the token and a 404 with it (audit LOW-13).
+        // everything else requires the token. Defaulting unknown paths to
+        // Public made the auth decision depend on a second table (the route
+        // dispatch) staying in sync forever: any new top-level route added to
+        // `dispatch` and forgotten here would've been unauthenticated. Fail
+        // closed instead: unknown path = 401 without the token, 404 with it
+        // (audit LOW-13).
         Some(AuthGroup::DashboardApi)
     }
 
     fn handle(&self, req: &Request) -> Response {
-        // The old serve surface rejected non GET/POST/PUT/PATCH/DELETE
-        // methods with 405 before dispatch; preserve that here.
+        // Non GET/POST/PUT/PATCH/DELETE methods get a 405 before dispatch.
         match req.method.as_str() {
             "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => dispatch(&self.app, req),
             _ => Response::method_not_allowed(),
@@ -786,7 +744,7 @@ impl HttpMount for DashboardMount {
 // Legacy entry point (kept for API compatibility)
 // ---------------------------------------------------------------------------
 
-/// Dashboard startup configuration, from `pantheon dashboard` flags.
+/// dashboard startup configuration, from `pantheon dashboard` flags
 pub struct DashboardConfig {
     pub data_dir: PathBuf,
     pub bind: String,
@@ -795,18 +753,17 @@ pub struct DashboardConfig {
     pub on_approval: Option<ApprovalCallback>,
 }
 
-/// Start the dashboard. Never returns.
+/// start the dashboard. never returns.
 ///
-/// Compatibility wrapper over the mount-based internals: builds the same
-/// `App` the gateway's unified listener uses (production swarm
-/// orchestrator) and serves it on `bind:port` via
-/// [`pantheon_gateway::http::serve`], preserving the old standalone
-/// behavior - per-instance token printed at startup, bind-all warning,
-/// `--open` handling.
+/// compatibility wrapper over the mount-based internals: builds the same `App`
+/// the gateway's unified listener uses (production swarm orchestrator) and
+/// serves it on `bind:port` via [`pantheon_gateway::http::serve`], w/ the
+/// standalone behavior: per-instance token printed at startup, bind-all
+/// warning, `--open` handling.
 pub fn run(cfg: DashboardConfig) -> ! {
     let token = pantheon_gateway::http::generate_token();
-    // Exposed = anything but loopback (audit SEC-05): a LAN bind is as
-    // reachable as a wildcard one.
+    // exposed = anything but loopback (audit SEC-05): a LAN bind is as
+    // reachable as a wildcard one
     let bind_all = !pantheon_gateway::http::is_loopback_bind(&cfg.bind);
     let url = format!("http://{}:{}", cfg.bind, cfg.port);
     println!("pantheon dashboard on {url}");
@@ -845,8 +802,7 @@ pub fn run(cfg: DashboardConfig) -> ! {
         label: "pantheon dashboard".to_string(),
     };
     match pantheon_gateway::http::serve(server_cfg) {
-        // `serve` diverges on success (`serve_on` is `-> !`); Ok is
-        // unreachable in practice.
+        // `serve` diverges on success (`serve_on` is `-> !`); Ok is unreachable
         Ok(()) => unreachable!("gateway serve() only returns on bind failure, as Err"),
         Err(e) => {
             eprintln!("dashboard: cannot serve {}:{}: {e}", cfg.bind, cfg.port);
@@ -855,7 +811,7 @@ pub fn run(cfg: DashboardConfig) -> ! {
     }
 }
 
-/// Best-effort `--open`: hand the URL to the OS browser; never fatal.
+/// best-effort `--open`: hand the URL to the OS browser, never fatal
 fn open_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let opener = "open";
@@ -899,8 +855,8 @@ mod route_tests {
 
     static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    /// A dashboard `App` over a fresh temp ledger containing one run
-    /// (`"run-1"`, seeded with a single `RunStarted` event).
+    /// dashboard App over a fresh temp ledger with one run (`"run-1"`, seeded
+    /// w/ a single `RunStarted` event)
     fn test_app() -> (App, PathBuf) {
         let n = TEST_DIR_SEQ.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!(
@@ -958,8 +914,8 @@ mod route_tests {
         !ledger.replay(run_id).expect("replay").is_empty()
     }
 
-    /// P0 #2: a DELETE to a nonexistent sub-resource must 404 - and must
-    /// NOT prune the run. (Before the fix the `("DELETE", "runs", id, _, _)`
+    /// P0 #2: a DELETE to a nonexistent sub-resource must 404 and must NOT
+    /// prune the run. (Before the fix the `("DELETE", "runs", id, _, _)`
     /// catch-all routed it to `runs::prune`, so `?confirm=true` silently
     /// deleted the whole run.)
     #[test]
@@ -1113,8 +1069,8 @@ mod route_tests {
     }
 
     /// P1 (trailing-segment truncation): `DELETE /api/runs/:id/queue/:idx`
-    /// with a 5th segment must 404, not delete queue item 999. Before the
-    /// fix the router discarded every segment past the 4th and routed this
+    /// with a 5th segment must 404, not delete queue item 999. Before the fix
+    /// the router discarded every segment past the 4th and routed this
     /// straight to `delete_queue_item`.
     #[test]
     fn delete_queue_item_with_extra_segment_404s_and_preserves_queue() {
@@ -1139,9 +1095,9 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Same class, mutating POST: `POST /api/runs/:id/cancel/extra` must
-    /// 404. Before the fix the trailing `_` arm swallowed the 4th segment
-    /// and routed it to `cancel_run` - the run was actually canceled (200).
+    /// same class, mutating POST: `POST /api/runs/:id/cancel/extra` must 404.
+    /// Before the fix the trailing `_` arm swallowed the 4th segment and
+    /// routed it to `cancel_run` - the run was actually canceled (200).
     #[test]
     fn post_cancel_with_extra_segment_404s_and_preserves_run() {
         let (app, dir) = test_app();
@@ -1161,7 +1117,7 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Same class, PATCH: `PATCH /api/runs/:id/queue/0/extra` must 404 and
+    /// same class, PATCH: `PATCH /api/runs/:id/queue/0/extra` must 404 and
     /// leave the queue item untouched. Before the fix it routed to
     /// `update_queue_item` and rewrote item 0 (200).
     #[test]
@@ -1189,9 +1145,9 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Same class on a read route: `GET /api/runs/:id/todos/extra` must
-    /// 404. Before the fix the trailing `_` arm accepted the 4th segment
-    /// and returned the todos (200).
+    /// same class on a read route: `GET /api/runs/:id/todos/extra` must 404.
+    /// Before the fix the trailing `_` arm accepted the 4th segment and
+    /// returned the todos (200).
     #[test]
     fn get_todos_with_extra_segment_404s() {
         let (app, dir) = test_app();
@@ -1244,10 +1200,10 @@ mod route_tests {
     #[test]
     fn post_cancel_exact_shape_still_reaches_handler() {
         let (app, dir) = test_app();
-        // A bare RunStarted seed looks crash-orphaned to startup recovery
-        // (running, no live lease) and gets settled before cancel runs.
-        // A real in-flight run holds a live lease, so take one: this test
-        // is about the route reaching the handler, not about recovery.
+        // a bare RunStarted seed looks crash-orphaned to startup recovery
+        // (running, no live lease) and gets settled before cancel runs. a real
+        // in-flight run holds a lease, so take one: this test is about the
+        // route reaching the handler, not about recovery.
         let leases = pantheon_storage::RunLeaseStore::open(&dir.join("ledger.db"))
             .expect("open lease store");
         leases
@@ -1275,15 +1231,14 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- P0 (2026-10-01): auth_group must classify on the SAME normalized
-    // path that dispatch routes. Before the fix it matched the RAW request
-    // path, so encoded/empty-segment variants of /api/* (`/%61pi/runs`,
-    // `//api/runs`) landed in AuthGroup::Public while dispatch decoded
-    // them to ["api", ...] and ran the real handler with no token and no
-    // Host/Origin check. ---
+    // --- auth_group must classify on the SAME normalized path that dispatch
+    // routes. Before the fix it matched the RAW request path, so encoded/
+    // empty-segment variants of /api/* (`/%61pi/runs`, `//api/runs`) landed
+    // in AuthGroup::Public while dispatch decoded them to ["api", ...] and
+    // ran the real handler with no token and no Host/Origin check. ---
 
-    /// Every raw path that normalizes to `["api", ...]` must be
-    /// `DashboardApi` - exactly the set `dispatch` routes as API.
+    /// every raw path that normalizes to `["api", ...]` must be `DashboardApi`
+    /// - exactly the set `dispatch` routes as API.
     #[test]
     fn auth_group_normalizes_api_prefix_before_classifying() {
         let (app, dir) = test_app();
@@ -1314,18 +1269,18 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Shapes that do NOT normalize to `["api", ...]` keep their old
-    /// groups: Public for unknown paths (dispatch 404s them), None for
-    /// the AG-UI mount's paths.
+    /// shapes that don't normalize to `["api", ...]` keep their old groups:
+    /// Public for unknown paths (dispatch 404s them), None for the AG-UI
+    /// mount's paths.
     #[test]
     fn auth_group_leaves_non_api_shapes_alone() {
         let (app, dir) = test_app();
         let mount = DashboardMount::new(app);
         let group = |method: &str, path: &str| mount.auth_group(&plain_req(method, path));
-        // Unknown shapes need the token (fail closed, audit LOW-13):
-        // "API" is not "api", "%2F" decodes after splitting, and a
-        // double-encoded "%2561pi" stays "%61pi" - none is a real route,
-        // and none may be reached without auth.
+        // unknown shapes need the token (fail closed, audit LOW-13):
+        // "API" isn't "api", "%2F" decodes after splitting, and a
+        // double-encoded "%2561pi" stays "%61pi" - none is a real route, and
+        // none may be reached without auth
         assert_eq!(group("GET", "/API/runs"), Some(AuthGroup::DashboardApi));
         assert_eq!(group("GET", "/api%2f/runs"), Some(AuthGroup::DashboardApi));
         assert_eq!(group("GET", "/%2561pi/runs"), Some(AuthGroup::DashboardApi));
@@ -1343,7 +1298,7 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The bundled monospace ships with the shell, and the retired JetBrains
+    /// The bundled monospace ships w/ the shell, and the retired JetBrains
     /// file stays gone: a bookmarked or precached URL must not resurrect it.
     #[test]
     fn cascadia_font_is_served_and_the_retired_mono_is_gone() {
@@ -1374,10 +1329,10 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `PUT/DELETE /api/memory/:id` dispatch to the memory handlers, not
-    /// the unknown-route 404: an unknown id must come back with the
-    /// handlers' uppercase `NOT_FOUND` code (the unknown-route arm uses
-    /// lowercase `not_found`).
+    /// `PUT/DELETE /api/memory/:id` dispatch to the memory handlers, not the
+    /// unknown-route 404: an unknown id must come back with the handlers'
+    /// uppercase `NOT_FOUND` code (the unknown-route arm uses lowercase
+    /// `not_found`).
     #[test]
     fn memory_item_routes_dispatch_to_handlers() {
         let (app, dir) = test_app();
@@ -1404,13 +1359,12 @@ mod route_tests {
     }
 
     /// The run detail transcript carries the message metadata the ledger
-    /// already persists: `ts_ms`, per-request `tool_calls` with
-    /// ledger-derived `started_ms`/`duration_ms`, and `tool_call_id` /
-    /// top-level `duration_ms` on tool-result rows. Arguments stay on the
-    /// redaction pass.
-    /// A delegate step's `tool_calls` entry carries the child run it
-    /// spawned, linked from the `AgentCompleted` ledger row; ordinary
-    /// calls carry null. pre-link rows (no fields) stay null.
+    /// already persists: `ts_ms`, per-request `tool_calls` with ledger-derived
+    /// `started_ms`/`duration_ms`, and `tool_call_id` / top-level `duration_ms`
+    /// on tool-result rows. Arguments stay on the redaction pass.
+    /// A delegate step's `tool_calls` entry carries the child run it spawned,
+    /// linked from the `AgentCompleted` ledger row; ordinary calls carry null.
+    /// pre-link rows (no fields) stay null.
     #[test]
     fn run_detail_transcript_carries_child_run_link() {
         let (app, dir) = test_app();
@@ -1795,9 +1749,9 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `GET /api/oauth/status` returns the mobile contract: four provider
-    /// rows with exactly `id`, `connected`, `scopes`, `expires_at` - and
-    /// no token material - on a fresh data dir.
+    /// `GET /api/oauth/status` returns the mobile contract: four provider rows
+    /// with exactly `id`, `connected`, `scopes`, `expires_at` - and no token
+    /// material - on a fresh data dir.
     #[test]
     fn oauth_status_route_returns_mobile_contract() {
         let (app, dir) = test_app();
@@ -1830,11 +1784,11 @@ mod route_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The double-spawn guard: `send_message` and `retry_turn` serialize
-    /// on one mutex per run id, so two concurrent turn-starting
-    /// requests cannot both observe idle and both spawn (the loser's
-    /// turn would die with RT_LEASE_BUSY after a 200). Same run id
-    /// must yield the same lock; different ids must not share one.
+    /// The double-spawn guard: `send_message` and `retry_turn` serialize on
+    /// one mutex per run id, so two concurrent turn-starting requests can't
+    /// both observe idle and both spawn (the loser's turn would die with
+    /// RT_LEASE_BUSY after a 200). Same run id must yield the same lock;
+    /// different ids must not share one.
     #[test]
     fn send_guard_is_per_run_and_stable() {
         let (app, dir) = test_app();

@@ -1,44 +1,36 @@
-//! Bot Screen: live desktop watch + human takeover for the CUA-driven desktop.
+//! Bot Screen: watch the CUA desktop live, take over when a human needs to.
 //!
-//! Mirrors `browser.rs`'s take-control pattern, but the "backend" is the
-//! CUA driver (`cua-driver`, trycua/cua) the agent loop drives as an MCP
-//! server. The dashboard owns its own [`McpManager`] with just the driver
-//! spec — the same sanctioned path the agent loop uses (same approval
-//! store, same tool projection), in this process. No second ad-hoc driver
-//! invocation: everything goes through the manager.
+//! Same take-control shape as `browser.rs`, except the backend is the CUA
+//! driver (`cua-driver`, trycua/cua) the agent loop already talks to over MCP.
+//! The dashboard gets its own [`McpManager`] w/ just that driver spec - same
+//! approval store, same tool projection, same sanctioned path. No ad-hoc
+//! second driver invocation.
 //!
-//! One deliberate difference from the agent path: screenshots go through
-//! [`McpManager::call_tool`] directly, not the projected registry tools.
-//! The registry projection keeps only text
-//! (`pantheon_mcp::result_text` drops image blocks); the stream needs the
-//! raw image bytes.
+//! One exception: screenshots call [`McpManager::call_tool`] directly instead
+//! of going through the projected registry. `result_text` drops image blocks,
+//! and the stream needs the raw bytes.
 //!
-//! Endpoints (all under `/api/`, so dashboard token auth applies):
+//! Endpoints, all under `/api/` so dashboard token auth applies:
 //!
-//! * `GET /api/desktop/status` → `{enabled, driver, controller, viewers,
-//!   taken_since, last_activity}`. Config-only; never fails.
-//! * `GET /api/desktop/stream?fps=<1-10>` → **WebSocket**. One
-//!   `{"type":"ready",...}` text frame, then binary PNG/JPEG frames at the
-//!   requested rate (default 2). Capture failures arrive as
-//!   `{"type":"error","message":...}` text frames; the stream keeps going.
-//!   Client → server messages are ignored - input goes through
-//!   `POST /api/desktop/input`.
-//! * `POST /api/desktop/takeover` → `{lease_id, expires_in_ms}`. Fails 409
-//!   while a live lease is held (or 503 when computer-use is disabled).
-//! * `POST /api/desktop/heartbeat` → `{lease_id}` keeps a lease alive.
-//! * `POST /api/desktop/input` → `{lease_id, action, ...}`; closed action
-//!   set: `click` (x, y), `type` (text), `press` (key), `scroll`
-//!   (dx, dy, x?, y?), `drag` (x1, y1, x2, y2). Coordinates clamp to the
-//!   reported screen size when known.
-//! * `POST /api/desktop/release` → `{lease_id}` → `{ok, summary}`; the
-//!   summary also lands in the agent's next computer-use tool result (see
+//! * `GET /api/desktop/status` → config-only, never fails.
+//! * `GET /api/desktop/stream?fps=<1-10>` → WebSocket: one
+//!   `{"type":"ready",...}` text frame, then binary PNG/JPEG at that rate
+//!   (default 2). Capture failures come as `{"type":"error",...}` and don't
+//!   kill the stream. Client messages are ignored; input goes through POST.
+//! * `POST /api/desktop/takeover` → `{lease_id, expires_in_ms}`. 409 while a
+//!   live lease is held, 503 if computer-use is off.
+//! * `POST /api/desktop/heartbeat` `{lease_id}` keeps a lease alive.
+//! * `POST /api/desktop/input` `{lease_id, action, ...}` - closed action set:
+//!   `click` (x, y), `type` (text), `press` (key), `scroll` (dx, dy, x?, y?),
+//!   `drag` (x1, y1, x2, y2). Coordinates clamp to the reported screen.
+//! * `POST /api/desktop/release` `{lease_id}` → `{ok, summary}`. The summary
+//!   also shows up in the agent's next computer-use tool result (see
 //!   `pantheon_runtime::desktop_takeover`).
 //!
-//! Takeover state lives in `<data_dir>/desktop-takeover.json` so the
-//! dashboard and the agent loop — possibly different processes — see the
-//! same lease. While a lease is live, the agent loop's `PreToolCall` path
-//! parks computer-use tools with "human has control". Frames go to the
-//! human viewer only and never enter model context.
+//! Lease state is `<data_dir>/desktop-takeover.json`, shared w/ the agent loop
+//! in case it's a different process. While the lease is live the agent's
+//! `PreToolCall` parks computer-use tools w/ "human has control". Frames only
+//! go to the human viewer, never into model context.
 
 use crate::{
     bad_json, body_json,
@@ -56,8 +48,8 @@ const DEFAULT_FPS: u32 = 2;
 const MAX_FPS: u32 = 10;
 const DRIVER_SERVER: &str = pantheon_runtime::computer::CUA_DRIVER_SERVER;
 
-/// Raw MCP tool names on the driver, discovered at runtime from the
-/// projected registry (the `mcp_cua-driver_` prefix is stripped).
+/// Raw driver tool names, discovered from the projected registry at startup.
+/// `mcp_cua-driver_` is stripped.
 #[derive(Debug)]
 pub(crate) struct DesktopTools {
     screenshot: String,
@@ -69,8 +61,7 @@ pub(crate) struct DesktopTools {
     screen_size: Option<String>,
 }
 
-/// The dashboard's own driver handle: one MCP manager (one driver
-/// process) per dashboard process, shared by all viewers/inputs.
+/// One MCP manager (one driver process) per dashboard, shared by every viewer.
 pub struct DesktopDriver {
     manager: Arc<pantheon_mcp::manager::McpManager>,
     tools: DesktopTools,
@@ -78,8 +69,8 @@ pub struct DesktopDriver {
     viewers: Mutex<HashSet<String>>,
 }
 
-/// `[computer_use]` resolution for the dashboard: the ComputerUse
-/// tool-group toggle decides, then the section's driver/binary pins.
+/// `[computer_use]` resolution: the ComputerUse toggle decides, then the
+/// section's driver/binary pins.
 fn computer_section(app: &App) -> Result<pantheon_api::config::ComputerUseSection, Response> {
     let cfg = crate::session_factory::load_config(&app.data_dir)
         .map_err(|e| err_json(500, "DESKTOP", &format!("load config: {e}")))?;
@@ -101,9 +92,8 @@ fn computer_section(app: &App) -> Result<pantheon_api::config::ComputerUseSectio
         .unwrap_or_default())
 }
 
-/// Lazily-initialized, process-shared driver handle. Slow path (driver
-/// spawn + MCP handshake) runs at most twice concurrently; the loser is
-/// dropped.
+/// Lazy shared driver handle. The slow path (spawn + MCP handshake) can run
+/// twice concurrently; whoever loses gets dropped.
 fn driver_for(app: &App) -> Result<Arc<DesktopDriver>, Response> {
     {
         let guard = app.desktop.lock().unwrap_or_else(|e| e.into_inner());
@@ -121,16 +111,13 @@ fn driver_for(app: &App) -> Result<Arc<DesktopDriver>, Response> {
 }
 
 fn init_driver(app: &App) -> Result<DesktopDriver, Response> {
-    // Thread the [mcp] master switch: the driver is an MCP server
-    // under the hood, so a switched-off [mcp] must not launch it
-    // from the dashboard behind the session's back.
+    // the driver is an MCP server, so [mcp] off means no launching it behind
+    // the session's back.
     //
-    // Policy note (operator-direct exception, like the CLI manager):
-    // this driver manager installs no capability policy and no
-    // secrets/env resolver beyond the default process env - the
-    // dashboard operator is the consenting party, the driver is the
-    // first-party bundled recipe, and its approval still gates the
-    // connect. A session policy (agent preset) has no meaning here.
+    // Like the CLI manager, this one installs no capability policy or
+    // secrets/env resolver beyond the default process env. The dashboard
+    // operator consents, the driver is a first-party bundled recipe, and
+    // approval still gates the connect. Session policy means nothing here.
     if std::env::var("PANTHEON_MCP_ENABLED")
         .map(|v| v == "0")
         .unwrap_or(false)
@@ -196,9 +183,8 @@ fn init_driver(app: &App) -> Result<DesktopDriver, Response> {
     Ok(driver)
 }
 
-/// Recover raw driver tool names from the projected
-/// `mcp_cua-driver_*` registry names. Screenshot is required; the rest
-/// are optional and checked per action.
+/// Strip `mcp_cua-driver_*` back to raw tool names. Screenshot is mandatory;
+/// the rest are optional and checked per action.
 fn resolve_tools(names: &[String]) -> Result<DesktopTools, String> {
     let prefix = format!("mcp_{DRIVER_SERVER}_");
     let bare: Vec<&str> = names
@@ -234,8 +220,8 @@ fn resolve_tools(names: &[String]) -> Result<DesktopTools, String> {
     })
 }
 
-/// Best-effort screen-size seed from the driver's own tool (it knows its
-/// display). PNG frames update the cache on every capture anyway.
+/// best-effort screen size from the driver's own tool. Frames update the
+/// cache on every capture anyway.
 fn seed_screen_size(driver: &DesktopDriver) {
     let Some(tool) = driver.tools.screen_size.as_deref() else {
         return;
@@ -252,7 +238,7 @@ fn seed_screen_size(driver: &DesktopDriver) {
         .zip(value.get("height").and_then(|v| v.as_u64()))
         .map(|(w, h)| (w as u32, h as u32))
         .or_else(|| {
-            // Fallback: first two plausible numbers in the JSON text.
+            // fallback: grab the first two plausible numbers out of the text
             let text = value.to_string();
             let mut nums = text
                 .split(|c: char| !c.is_ascii_digit())
@@ -265,8 +251,8 @@ fn seed_screen_size(driver: &DesktopDriver) {
     }
 }
 
-/// Standard base64 (not url-safe). Hand-rolled: the workspace has no
-/// base64 crate and this is the only place that needs one.
+/// standard base64, not url-safe. hand-rolled: no base64 crate in the
+/// workspace and this is the only place that needs one.
 fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     fn val(c: char) -> Result<u8, String> {
         match c {
@@ -319,9 +305,8 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// (width, height) from PNG IHDR or JPEG SOF; None when unrecognized.
-/// Bounds-checked throughout: malformed images degrade to None, never
-/// panic.
+/// (width, height) from PNG IHDR or JPEG SOF, None if unrecognized. Every
+/// read is bounds-checked - a bad image gives None, never a panic.
 fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let be_u32 = |i: usize| -> Option<u32> {
         Some(u32::from_be_bytes([
@@ -331,9 +316,8 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
             *bytes.get(i + 3)?,
         ]))
     };
-    // PNG: 8-byte signature, then length + "IHDR" + width + height.
-    // Only 24 bytes are read; a real file always carries the IHDR CRC
-    // and more, but the dimensions are valid with just these.
+    // PNG: signature, then length + "IHDR" + w + h. 24 bytes is enough;
+    // the CRC and rest of the file don't matter for dimensions.
     if bytes.len() >= 24
         && bytes.get(..8) == Some(&b"\x89PNG\r\n\x1a\n"[..])
         && bytes.get(12..16) == Some(&b"IHDR"[..])
@@ -368,9 +352,8 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-/// Pull PNG/JPEG bytes out of an MCP image content block. The registry
-/// projection drops image blocks (`result_text` keeps text only), which
-/// is why screenshots go through `call_tool` directly.
+/// Get image bytes out of an MCP image block. `result_text` drops images,
+/// hence the direct `call_tool` for screenshots.
 fn extract_image_bytes(value: &serde_json::Value) -> Result<Vec<u8>, String> {
     let blocks = value
         .get("content")
@@ -384,7 +367,6 @@ fn extract_image_bytes(value: &serde_json::Value) -> Result<Vec<u8>, String> {
             .get("data")
             .and_then(|d| d.as_str())
             .ok_or("image block has no data")?;
-        // Accept raw base64 or a data: URI.
         let b64 = data
             .strip_prefix("data:")
             .and_then(|r| r.split_once(";base64,"))
@@ -400,8 +382,7 @@ fn extract_image_bytes(value: &serde_json::Value) -> Result<Vec<u8>, String> {
     Err("screenshot result contained no image block".to_string())
 }
 
-/// One screenshot → validated image bytes. Updates the cached screen
-/// size from the frame itself.
+/// one screenshot -> validated bytes, and refresh the cached screen size.
 fn capture_png(driver: &DesktopDriver) -> Result<Vec<u8>, String> {
     let value = driver
         .manager
@@ -418,10 +399,9 @@ fn capture_png(driver: &DesktopDriver) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// Clamp a point to the reported screen. Unknown screen size passes
-/// through (the driver validates); the clamp is a client-bug backstop,
-/// not the security boundary — token auth and the closed action set
-/// are.
+/// clamp to the reported screen; unknown size passes through and the driver
+/// validates. This is a client-bug backstop, not the security boundary -
+/// token auth and the closed action set are.
 fn clamp_xy(x: f64, y: f64, screen: Option<(u32, u32)>) -> (i64, i64) {
     match screen {
         Some((w, h)) => (
@@ -432,10 +412,9 @@ fn clamp_xy(x: f64, y: f64, screen: Option<(u32, u32)>) -> (i64, i64) {
     }
 }
 
-/// Map one take-control action to (raw driver tool, args, audit detail).
-/// Pure function — unit-tested. `detail` is display-safe by construction:
-/// typed text never lands in it (it may contain credentials), mirroring
-/// `browser.rs`'s `takeover_activity`.
+/// action -> (raw driver tool, args, audit detail). Pure and unit-tested.
+/// `detail` is display-safe: typed text never goes in it, since it could be
+/// a credential. Same rule as `browser.rs`'s `takeover_activity`.
 pub(crate) fn input_plan(
     action: &str,
     body: &serde_json::Value,
@@ -501,8 +480,8 @@ pub(crate) fn input_plan(
                 body.get("y").and_then(|v| v.as_f64()),
             ) {
                 (Some(x), Some(y)) => clamp_xy(x, y, screen),
-                // Anchor at screen center when known; drivers scroll
-                // relative deltas, so the anchor only needs to be sane.
+                // screen center works as a scroll anchor; the driver
+                // applies deltas relative to it
                 _ => screen
                     .map(|(w, h)| (w as i64 / 2, h as i64 / 2))
                     .unwrap_or((0, 0)),
@@ -528,8 +507,7 @@ pub(crate) fn input_plan(
     }
 }
 
-/// `GET /api/desktop/status` → `{enabled, driver, controller, viewers,
-/// taken_since, last_activity}`. Config-only; never fails.
+/// `GET /api/desktop/status`. Config-only, so it never fails.
 pub fn status(app: &App, _req: &Request) -> Response {
     let (enabled, driver) = match computer_section(app) {
         Ok(s) => (true, s.driver.unwrap_or_else(|| "cua-driver".to_string())),
@@ -589,9 +567,8 @@ pub fn status(app: &App, _req: &Request) -> Response {
     }))
 }
 
-/// `POST /api/desktop/takeover` → `{lease_id, expires_in_ms}`.
-/// 409 while a live, heartbeating lease is held; a lease whose heartbeat
-/// lapsed >30s is claimable.
+/// `POST /api/desktop/takeover`. 409 while a live, heartbeating lease is
+/// held; a lease that's been silent >30s is claimable.
 pub fn takeover(app: &App, _req: &Request) -> Response {
     if let Err(r) = computer_section(app) {
         return r;
@@ -617,8 +594,8 @@ pub fn takeover(app: &App, _req: &Request) -> Response {
         };
         let id = lease.lease_id.clone();
         file.lease = Some(lease);
-        // A fresh takeover supersedes any release note: the new holder's
-        // actions are what the next tool result should narrate.
+        // new takeover clears any release note; the next tool result should
+        // narrate this holder's actions
         file.last_release = None;
         Ok(id)
     });
@@ -643,7 +620,7 @@ pub fn takeover(app: &App, _req: &Request) -> Response {
     }
 }
 
-/// `POST /api/desktop/heartbeat` `{lease_id}` → `{ok, expires_in_ms}`.
+/// `POST /api/desktop/heartbeat` `{lease_id}`.
 pub fn heartbeat(app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
         Ok(v) => v,
@@ -685,8 +662,8 @@ pub fn heartbeat(app: &App, req: &Request) -> Response {
     }
 }
 
-/// `POST /api/desktop/input` `{lease_id, action, ...}` — one human input
-/// action into the desktop. Requires a live, matching lease.
+/// `POST /api/desktop/input` `{lease_id, action, ...}`. One human input; a
+/// live, matching lease is required.
 pub fn input(app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
         Ok(v) => v,
@@ -710,8 +687,8 @@ pub fn input(app: &App, req: &Request) -> Response {
         Some(a) => a.to_string(),
         None => return bad_json("action is required"),
     };
-    // Verify the lease BEFORE touching the driver: a wrong lease_id must
-    // not spawn anything.
+    // verify the lease BEFORE touching the driver - a wrong lease_id must
+    // not spawn anything
     let live = takeover::with_takeover_locked(
         &app.data_dir,
         |file| matches!(&file.lease, Some(l) if l.lease_id == lease_id && takeover::now_ms() < l.expires_at_ms),
@@ -746,9 +723,9 @@ pub fn input(app: &App, req: &Request) -> Response {
         Ok(v) => pantheon_mcp::result_text(&v),
         Err(e) => return err_json(502, "DESKTOP_INPUT", &format!("driver input failed: {e}")),
     };
-    // Record the action for the audit trail and release summary.
-    // Best-effort: the input already happened; a dead ledger must not
-    // fail it. Re-verify the lease still matches before appending.
+    // record it for the audit + release summary. best-effort: the input
+    // already happened, a dead ledger shouldn't fail it. re-verify the lease
+    // matches before appending.
     let now = takeover::now_ms();
     let _ = takeover::with_takeover_locked(&app.data_dir, |file| {
         if let Some(l) = file.lease.as_mut() {
@@ -761,9 +738,8 @@ pub fn input(app: &App, req: &Request) -> Response {
             }
         }
     });
-    // Keep the result short; it may echo coordinates but never secrets
-    // (typed text is never in `detail`, and the result is the driver's
-    // terse acknowledgement).
+    // keep it short. may echo coordinates, never secrets - typed text is
+    // never in `detail`, and this is the driver's terse acknowledgement
     let short = {
         let line = result.lines().next().unwrap_or("ok");
         const MAX: usize = 300;
@@ -781,10 +757,9 @@ pub fn input(app: &App, req: &Request) -> Response {
     }))
 }
 
-/// `POST /api/desktop/release` `{lease_id}` → `{ok, summary}`. Ends the
-/// lease; the summary is returned here, kept for the agent's next
-/// computer-use tool result, and the lease file retains it as the audit
-/// record.
+/// `POST /api/desktop/release` `{lease_id}` → `{ok, summary}`. The summary
+/// also goes to the agent's next computer-use tool result, and the lease
+/// file keeps it as the audit record.
 pub fn release(app: &App, req: &Request) -> Response {
     let body = match body_json(req) {
         Ok(v) => v,
@@ -799,9 +774,8 @@ pub fn release(app: &App, req: &Request) -> Response {
         Some(id) => id.to_string(),
         None => return bad_json("lease_id is required"),
     };
-    // Distinguish corrupt state (409: take over again) from simply no
-    // lease (404/409): with_takeover_locked reads corrupt as default,
-    // which would hide the difference.
+    // corrupt state (409, take over again) is different from no lease at
+    // all - with_takeover_locked reads corrupt as default and hides that
     match std::fs::read_to_string(takeover::lease_path(&app.data_dir)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return err_json(409, "DESKTOP_NO_LEASE", "no live takeover to release")
@@ -851,9 +825,9 @@ pub fn release(app: &App, req: &Request) -> Response {
     }
 }
 
-/// Replays the already-consumed HTTP request head, then delegates to the
-/// socket, so `tungstenite::accept` can parse the WS handshake itself —
-/// the same trick `browser.rs` (and live voice) uses.
+/// replay the consumed request head, then hand the socket to `tungstenite`
+/// so it can parse the WS handshake itself - same trick `browser.rs` (and
+/// live voice) uses.
 fn ws_head(req: &Request) -> Vec<u8> {
     let qs: Vec<String> = req.query.iter().map(|(k, v)| format!("{k}={v}")).collect();
     let target = if qs.is_empty() {
@@ -869,8 +843,8 @@ fn ws_head(req: &Request) -> Vec<u8> {
     head.into_bytes()
 }
 
-/// `GET /api/desktop/stream?fps=<1-10>` — WebSocket upgrade; binary
-/// PNG/JPEG frames of the live desktop.
+/// `GET /api/desktop/stream?fps=<1-10>`: WebSocket upgrade, binary
+/// PNG/JPEG frames.
 pub fn stream(app: &App, req: &Request) -> Response {
     let driver = match driver_for(app) {
         Ok(d) => d,
@@ -889,10 +863,10 @@ pub fn stream(app: &App, req: &Request) -> Response {
     }
 }
 
-/// The stream loop: capture → PNG → binary frame, at `fps`. Runs on the
-/// connection thread until the client disconnects. Capture failures are
-/// reported as text frames; the loop survives them (the driver may be
-/// starting or the display sleeping).
+/// the stream loop: capture -> PNG -> binary frame at `fps`, on the
+/// connection thread until the client leaves. capture errors are text
+/// frames; the loop keeps going (driver may still be starting, display may
+/// be asleep).
 fn serve_stream(
     stream: TcpStream,
     head: Vec<u8>,
@@ -1093,7 +1067,7 @@ mod tests {
         base64_decode("TQ=TQ==").expect_err("data after padding");
     }
 
-    /// Minimal valid PNG: signature + IHDR (width 800, height 600).
+    /// minimal valid PNG: signature + IHDR (800x600)
     fn tiny_png() -> Vec<u8> {
         let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
         v.extend_from_slice(&13u32.to_be_bytes());
@@ -1111,7 +1085,7 @@ mod tests {
         assert_eq!(image_dimensions(&b"\x89PNG\r\n\x1a\n"[..]), None);
     }
 
-    /// Minimal JPEG: SOI, APP0, SOF0 with 480x640.
+    /// minimal JPEG: SOI, APP0, SOF0 w/ 480x640
     fn tiny_jpeg() -> Vec<u8> {
         let mut v = vec![0xFF, 0xD8]; // SOI
         v.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x10]); // APP0, len 16
@@ -1132,7 +1106,7 @@ mod tests {
     #[test]
     fn extract_image_bytes_handles_data_uri_and_raw() {
         let png_b64 = {
-            // base64 of tiny_png, computed here to avoid a literal
+            // base64 of tiny_png, computed in code to avoid a literal
             const ALPH: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
             let bytes = tiny_png();
             let mut s = String::new();

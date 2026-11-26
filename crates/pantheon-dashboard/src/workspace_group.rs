@@ -1,5 +1,3 @@
-//! workspace_group group: experts, memory, skills, teams, templates, ideas, profiles in one file.
-
 pub mod experts {
     //! Expert templates: a gallery of individual expert agents.
     //!
@@ -1093,10 +1091,9 @@ pub mod skills {
 
     /// `POST /api/skills/:name/enable` or `.../disable`.
     pub fn set_enabled(app: &App, name: &str, enabled: bool) -> Response {
-        // A typo used to write a stray `disabled.json` entry for a skill
-        // that does not exist, silently shadowing nothing today and
-        // everything if a skill of that name ever appears. Check
-        // existence against the same discovery the list endpoint uses.
+        // Check existence against the same discovery the list endpoint uses, so a typo
+        // can't write a stray `disabled.json` entry for a skill that does not exist and
+        // later shadow a real one.
         let known = discover_skills_ext(&app.data_dir, &project_root(), &[])
             .iter()
             .any(|s| s.meta.name == name);
@@ -2154,14 +2151,12 @@ pub mod teams {
     /// must resolve to a real expert, then every profile must resolve. Any
     /// failure is a 400 and nothing spawns.
     ///
-    /// Render the lead task from the team's brief template and the caller's
-    /// `task` override. `{{task}}` is a placeholder, not a task: an
-    /// override renders into the template when it has the placeholder, a
-    /// template containing the placeholder without an override is a
-    /// missing-task error (the old code launched a run whose transcript
-    /// literally started `Review brief: {{task}}`), and a template without
-    /// the placeholder keeps the old behavior (override wins, else the
-    /// template itself is the task).
+    /// Render the lead task from the team's brief template and the caller's `task`
+    /// override. `{{task}}` is a placeholder, not a task: an override renders into the
+    /// template when it has the placeholder; a template containing the placeholder with
+    /// no override is a missing-task error (otherwise the run's transcript starts with
+    /// `Review brief: {{task}}`); a template without the placeholder takes the override,
+    /// else the template itself is the task.
     fn render_brief(template: &str, task_override: &str) -> Result<String, &'static str> {
         if template.contains("{{task}}") {
             if task_override.is_empty() {

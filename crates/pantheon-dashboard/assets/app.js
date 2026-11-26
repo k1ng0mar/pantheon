@@ -5,7 +5,6 @@
    Inter/mono labels, neutral buttons, mono footer). */
 "use strict";
 
-/* ---------------- auth ---------------- */
 /* Auth: the token is NEVER in the URL (URLs leak into history, logs,
    and referers). It lives in this tab only (sessionStorage) and is
    sent as X-Pantheon-Token on fetch calls; pasting it also mints a
@@ -58,7 +57,6 @@ function showReauthGate() {
 const $ = (sel, el) => (el || document).querySelector(sel);
 const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
 
-/* ---------------- api ---------------- */
 async function api(method, path, body) {
   const res = await fetch(path, {
     method,
@@ -102,7 +100,6 @@ async function download(path, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/* ---------------- formatting ---------------- */
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -214,7 +211,6 @@ function spark(values, w, h) {
     '<polyline points="' + pts.join(" ") + '"/></svg>';
 }
 
-/* ---------------- theme ---------------- */
 function initTheme() {
   const saved = localStorage.getItem("pantheon_theme");
   document.documentElement.dataset.theme = saved === "light" ? "light" : "dark";
@@ -225,7 +221,6 @@ function toggleTheme() {
   localStorage.setItem("pantheon_theme", next);
 }
 
-/* ---------------- icons (inline SVG, stroke) ---------------- */
 function icon(name, size) {
   const s = size || 16;
   const paths = {
@@ -259,7 +254,6 @@ function icon(name, size) {
     (paths[name] || paths.home) + "</svg>";
 }
 
-/* ---------------- view chrome ---------------- */
 const view = $("#view");
 function setView(html) { view.innerHTML = html; view.focus({ preventScroll: true }); }
 function loading(msg) {
@@ -278,7 +272,6 @@ function viewHead(title, sub, actions) {
     '<span class="spacer"></span>' + (actions || "") + "</div>";
 }
 
-/* ---------------- toast & modal ---------------- */
 function toast(msg, kind) {
   const t = document.createElement("div");
   t.className = "toast";
@@ -318,7 +311,6 @@ async function previewThenApply({ title, intro, names, apply }) {
   return true;
 }
 
-/* ---------------- nav & routing ---------------- */
 const VIEWS = [
   ["overview", "Overview", "home"],
   ["runs", "Runs", "runs"],
@@ -371,7 +363,6 @@ function navigate() {
 }
 window.addEventListener("hashchange", navigate);
 
-/* ---------------- status (badges + gateway line) ---------------- */
 async function refreshStatus() {
   try {
     const ov = await api("GET", "/api/overview");
@@ -392,7 +383,6 @@ async function refreshStatus() {
 /* Pending run search from the topbar. Consumed by renderers.runs. */
 let pendingSearch = "";
 
-/* ---------------- overview ---------------- */
 function greeting() {
   const h = new Date().getHours();
   if (h < 12) return "Good morning";
@@ -441,7 +431,6 @@ renderers.overview = async function () {
     "</div></div>"
   );
 
-  // Tabs
   let activityData = { recent: "", upcoming: "" };
   const paintActivity = (which) => {
     $$('.tabs [data-tab]').forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === which)));
@@ -459,7 +448,6 @@ renderers.overview = async function () {
     state.pendingApprovals = appr.approvals.length;
     updateBadges();
 
-    // ---- recent runs table ----
     const recent = runs.runs.map((r) =>
       "<tr class='rowlink' data-run='" + esc(r.id) + "' tabindex='0'>" +
       "<td><span class='agent-id'><span class='agent-avatar'>" + esc((r.title || r.id).trim().charAt(0).toUpperCase() || "R") + "</span>" +
@@ -482,7 +470,6 @@ renderers.overview = async function () {
       tr.onkeydown = (e) => { if (e.key === "Enter") go(); };
     });
 
-    // ---- pending approvals ----
     const approvals = appr.approvals.map((a) =>
       "<tr><td><span class='agent-id'><span class='agent-avatar'>" + esc((a.tool || "?").charAt(0).toUpperCase()) + "</span>" +
       "<span><span class='agent-name'>" + esc(a.tool) + "</span><br>" +
@@ -497,7 +484,6 @@ renderers.overview = async function () {
       : emptyState("Nothing waiting", "Approval requests from running agents land here.");
     wireApprovalButtons($("#ov-approvals"));
 
-    // ---- system overview (real metrics only) ----
     const sysParts = [];
     try {
       const [stats, jobs, gw] = await Promise.all([
@@ -529,7 +515,6 @@ renderers.overview = async function () {
           : '<span class="pill" data-s="warn">stopped</span>')
           : '<span class="metric-value dim"> - </span>') + "</div></div>"
       );
-      // ---- activity tabs ----
       const items = [];
       runs.runs.slice(0, 6).forEach((r) => {
         items.push({
@@ -579,7 +564,6 @@ renderers.overview = async function () {
   }
 };
 
-/* ---------------- runs ---------------- */
 renderers.runs = async function () {
   if (state.param) return renderers.inspector();
   setView(viewHead("Runs", "search, export, prune") +
@@ -627,7 +611,6 @@ renderers.runs = async function () {
   load();
 };
 
-/* ---------------- run / subagent inspector ---------------- */
 /* Display metadata for the event kinds served by GET /api/runs/:id. */
 const INSP_KINDS = {
   run_started:        { label: "Run started",        milestone: true,  tone: "" },
@@ -714,8 +697,7 @@ renderers.inspector = async function () {
    approval decisions) post to POST /api/runs/:id/ui-action, which
    delegates to Session::submit_ui_action; see the agent-native UI
    actions section below. */
-/* ---------------- agent-native UI actions ----------------
-   Interactive client for the UI protocol (docs/ui-protocol.md).
+/* Interactive client for the UI protocol (docs/ui-protocol.md).
    Every submission goes to POST /api/runs/:id/ui-action, which
    delegates to Session::submit_ui_action. The dashboard never
    validates actions itself beyond JSON shape; the runtime is the
@@ -850,7 +832,6 @@ async function submitUiAction(btn, kind) {
     } else {
       uiSetState(btn, "success", "submitted");
     }
-    // Refresh the run view so revisions and results appear.
     setTimeout(function () { if (renderers.inspector) renderers.inspector(); }, 1200);
   } catch (e) {
     var msg = (e && e.message) || "submission failed";
@@ -1223,7 +1204,6 @@ function renderUiNode(node, ctx) {
 };
 
 
-/* ---------------- approvals ---------------- */
 function wireApprovalButtons(root) {
   $$("[data-grant], [data-deny]", root).forEach((b) => {
     b.onclick = async () => {
@@ -1275,7 +1255,6 @@ renderers.approvals = async function () {
   }
 };
 
-/* ---------------- schedule ---------------- */
 function kindLabel(k) {
   if (!k) return " - ";
   switch (k.type) {
@@ -1415,7 +1394,6 @@ async function showJobForm(editId) {
   $("#jf-task", root).focus();
 }
 
-/* ---------------- stats (VibePrompt delta tables) ---------------- */
 renderers.stats = async function () {
   let days = 30;
   const render = async () => {
@@ -1471,7 +1449,6 @@ renderers.stats = async function () {
   render();
 };
 
-/* ---------------- memory ---------------- */
 renderers.memory = async function () {
   setView(viewHead("Memory", "agent-layer records with provenance") +
     '<div class="toolbar"><input id="mq" class="input" placeholder="search keys and values" style="width:220px" aria-label="search memory">' +
@@ -1505,7 +1482,6 @@ renderers.memory = async function () {
   load();
 };
 
-/* ---------------- config ---------------- */
 function configInput(f) {
   const val = f.value;
   const id = "cfg-" + f.path.replace(/[^a-zA-Z0-9]/g, "_");
@@ -1678,7 +1654,6 @@ renderers.config = async function () {
   }
 };
 
-/* ---------------- keys (.env) ---------------- */
 renderers.keys = async function () {
   setView(viewHead("Keys", ".env: values are write-only, never shown") +
     '<div class="toolbar"><button class="btn primary" id="ek-add">Add key</button>' +
@@ -1750,7 +1725,6 @@ function keyForm(existingKey) {
   $("#kf-key", root).focus();
 }
 
-/* ---------------- secrets (secure forms) ---------------- */
 renderers.secrets = async function () {
   setView(viewHead("Secrets", "Broker secrets: values are write-only, never shown") +
     '<div class="toolbar"><button class="btn primary" id="es-add">Add secret</button>' +
@@ -1829,7 +1803,6 @@ function secretForm(existingName) {
   $("#sf-name", root).focus();
 }
 
-/* ---------------- logs ---------------- */
 let logSource = null; // EventSource for follow mode
 function stopFollow() { if (logSource) { logSource.close(); logSource = null; } }
 
@@ -1914,7 +1887,6 @@ renderers.logs = async function () {
   load();
 };
 
-/* ---------------- skills ---------------- */
 renderers.skills = async function () {
   let scope = "";
   setView(viewHead("Skills", "discover, toggle, import") +
@@ -1992,7 +1964,6 @@ function skillImportForm() {
   };
 }
 
-/* ---------------- MCP ---------------- */
 renderers.mcp = async function () {
   setView(viewHead("MCP", "declared servers. Ready means prepared, not attached") +
     '<div class="toolbar"><button class="btn primary" id="mcp-add">Add server</button>' +
@@ -2096,7 +2067,6 @@ function mcpAddForm() {
   $("#ma-name", root).focus();
 }
 
-/* ---------------- plugins ---------------- */
 /* Plugin imports, quarantine review, and approvals. Kept as one block;
    separate from the profile/swarm sections below. */
 function pluginErrMsg(e) {
@@ -2325,7 +2295,6 @@ async function pluginRegistrySearch() {
   } catch (e) { $("#pl-reg").innerHTML = '<p class="view-sub">Search failed: ' + esc(pluginErrMsg(e)) + "</p>"; }
 }
 
-/* ---------------- system: gateway, reflect, consolidate ---------------- */
 renderers.system = async function () {
   setView(viewHead("System", "gateway service, nightly pass, reflection, consolidation") + loading("system status"));
   try {
@@ -2407,7 +2376,6 @@ renderers.system = async function () {
   }
 };
 
-/* ------------------------------------------------------------------ */
 /* Swarm: launch a task across N subagents or picked profiles, with an  */
 /* optional judge ruling whether the work is done. Built against the    */
 /* mobile client's API contract                                         */
@@ -2421,7 +2389,6 @@ renderers.system = async function () {
 /* The backend routes HAVE landed (see src/swarm.rs); the contract has  */
 /* no list endpoint, so recently launched swarms are remembered         */
 /* client-side in sessionStorage.                                       */
-/* ------------------------------------------------------------------ */
 
 const SWARM_MISSING =
   "Swarm not found - it may have been pruned, or the id is wrong. " +
@@ -2478,7 +2445,7 @@ function swarmTranscriptHtml(t) {
     esc(JSON.stringify(t, null, 2)) + "</pre>";
 }
 
-/* ---------- team runs: a staged swarm reads as a multi-agent conversation ----------
+/* A staged swarm reads as a multi-agent conversation.
    Every message is labeled with the speaking expert (avatar + name, like the
    HERMES / MEDUSA labels); handoffs between experts render as @-mention
    chips; the header shows the participant stack. The lead's messages are the
@@ -2864,8 +2831,6 @@ renderers.swarmDetail = async function (id) {
   }
 };
 
-/* ---------------- boot ---------------- */
-/* ---------------- profiles: persona files ---------------- */
 const PROFILE_FILES = [
   ["soul", "SOUL", "Persona - who this agent is"],
   ["user", "USER", "User context - who it serves"],
@@ -3016,7 +2981,6 @@ async function profileEditFile(name, kind, file) {
   ta.focus();
 }
 
-/* ---------------- experts (Teams | Experts tabs) ---------------- */
 /* The /api/teams and /api/experts routes are live. If they 404, each tab
    degrades to a "backend unavailable" empty state instead of breaking the
    page, same pattern as the swarm view. */

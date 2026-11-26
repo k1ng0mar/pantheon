@@ -1,5 +1,3 @@
-//! ops_group group: approvals, runs, schedule, stats, logs in one file.
-
 pub mod approvals {
     //! Approval queue: the real [`pantheon_runtime::Supervisor`] decision path.
     //!
@@ -34,10 +32,9 @@ pub mod approvals {
             Ok(s) => s,
             Err(e) => return err_json(500, "SUPERVISOR", &format!("open supervisor: {e}")),
         };
-        // Fail closed, never fail empty: a list_runs or replay failure used to
-        // degrade to an empty approval queue, which reads to the operator as
-        // "nothing needs approval" while a parked run is actually waiting.
-        // A 500 says the queue itself is unreadable, which is the truth.
+        // Fail closed, never fail empty: a degraded list reads as "nothing needs
+        // approval" while a parked run is waiting. A 500 says the queue itself is
+        // unreadable, which is the truth.
         let runs = match ledger.list_runs(10_000) {
             Ok(r) => r,
             Err(e) => return err_json(500, "LEDGER", &format!("list runs: {e}")),
@@ -414,12 +411,10 @@ pub mod runs {
         // brings them back (the dashboard restores or prunes them from there).
         let include_archived = req.query.get("include_archived").map(String::as_str) == Some("1");
         let mut out = Vec::new();
-        // Archived exclusion happens in the SQL (`list_runs_visible`), so the
-        // LIMIT window only ever holds listable rows - no post-limit filtering
-        // that starved the page when the newest runs were mostly archived.
-        // Status/query filter in SQL before LIMIT (see
-        // `list_runs_visible_filtered`): the old Rust-side filter ran after
-        // the LIMIT window and starved filtered pages.
+        // Archived exclusion happens in the SQL (`list_runs_visible`), so the LIMIT
+        // window only holds listable rows. Status/query filters also run in SQL before
+        // the LIMIT (see `list_runs_visible_filtered`): a Rust-side filter after the
+        // window starves filtered pages whenever the newest runs are mostly archived.
         let rows = Ledger::pin_home_first(
             ledger
                 .list_runs_visible_filtered(
@@ -832,20 +827,15 @@ pub mod runs {
         );
         v["transcript"] = serde_json::Value::Array(transcript);
         v["timeline"] = serde_json::Value::Array(timeline);
-        // Richer run state the mobile app and dashboard need for a fully
-        // interactive run: the unanswered ask_user question (if any), the
-        // FIFO list of queued follow-ups (oldest first), the run's agent
-        // mode, and the UsageRecorded token totals. NOTE: `queued_message`
-        // used to be a single string (or null); it is now always an array
-        // (possibly empty). App clients must parse it as a list.
-        // All pending inputs, not just the first: a run can park on
-        // several ask_user questions, and the old code surfaced only the
-        // first while swallowing `Supervisor::open` and `pending_input`
-        // errors entirely (`.ok()` twice) - a broken supervisor looked
-        // identical to "nothing pending". `pending_input` keeps its old
-        // shape (first item or null) for existing clients; `pending_inputs`
-        // carries the full list and `pending_input_error` names the failure
-        // when the list could not be read.
+        // Richer run state the mobile app and dashboard need for an interactive run:
+        // the unanswered ask_user questions, the FIFO list of queued follow-ups (oldest
+        // first), the run's agent mode, and the UsageRecorded token totals.
+        // `queued_message` is always an array (possibly empty); app clients parse it as
+        // a list.
+        // All pending inputs, not just the first: a run can park on several ask_user
+        // questions. `pending_input` keeps its old shape (first item or null) for
+        // existing clients, `pending_inputs` carries the full list, and
+        // `pending_input_error` names the failure when the list could not be read.
         let (pending_inputs, pending_input_error): (Vec<serde_json::Value>, Option<String>) =
             match Supervisor::open(app.data_dir.clone()) {
                 Ok(sup) => match sup.pending_input(run_id) {
@@ -954,13 +944,10 @@ pub mod runs {
                 .unwrap_or_else(|_| DEFAULT_RUN_MODE.to_string()),
             Err(r) => return r,
         };
-        // The turn child runs in its own process group so `POST
-        // /api/runs/:id/kill` can hard-stop it; its PID is recorded for the
-        // kill endpoint.
-        // A spawn failure used to be swallowed and the 201 below still
-        // returned, claiming a turn was running that never started. Fail
-        // loudly: the run stays admitted in the ledger (visible, retryable
-        // via message), but the caller learns the turn never started.
+        // The turn child runs in its own process group so `POST /api/runs/:id/kill`
+        // can hard-stop it; its PID is recorded for the kill endpoint.
+        // A spawn failure fails loudly: the run stays admitted in the ledger (visible,
+        // retryable via message), but the caller learns the turn never started.
         match spawn_turn_child_with_stdin(
             &[
                 "run",
@@ -1699,9 +1686,8 @@ pub mod runs {
                     body.into_bytes(),
                 )
             }
-            // An unknown format used to fall through to JSON silently; a
-            // client asking for e.g. "yaml" got JSON labelled as a download
-            // and never knew. 400 instead.
+            // An unknown format is a 400, not a silent fall-through to JSON: a client
+            // asking for "yaml" would get JSON labelled as a download.
             _ => bad_json(&format!(
                 "unknown export format '{format}' (expected 'json' or 'markdown')"
             )),
@@ -2356,7 +2342,7 @@ pub mod schedule {
     };
     use std::collections::HashMap;
 
-    /// Only the three live kinds can be created. Rows in the old file format
+    /// Only the three live kinds can be created.
     fn kind_json(kind: &ScheduleKind) -> serde_json::Value {
         match kind {
             ScheduleKind::Cron { expr } => serde_json::json!({"type": "cron", "expr": expr}),
@@ -3018,10 +3004,9 @@ pub mod schedule {
         if !jobs.iter().any(|j| j.job.id == id) {
             return err_json(404, "NOT_FOUND", "unknown job");
         }
-        // `spawn_pantheon` only spawns the child (it does not wait for the
-        // job), so doing it synchronously costs nothing - but doing it in a
-        // detached thread used to swallow spawn failures and still answer
-        // `triggered`. A spawn failure now 500s with SPAWN.
+        // `spawn_pantheon` only spawns the child (it does not wait for the job), so
+        // doing it synchronously costs nothing. Detaching it would swallow spawn
+        // failures and still answer `triggered`; a spawn failure 500s with SPAWN.
         if let Err(e) = spawn_pantheon(&["schedule", "run", id]) {
             return err_json(500, "SPAWN", &format!("failed to trigger job: {e}"));
         }
