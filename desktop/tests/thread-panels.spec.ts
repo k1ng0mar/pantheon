@@ -33,7 +33,7 @@ async function open(page: Page): Promise<void> {
 async function select(page: Page, id: string): Promise<void> {
   await row(page, id).click();
   await expect(row(page, id)).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', id);
 }
 async function navigate(page: Page, url: string): Promise<void> {
   await page.locator('#browser-toggle').click();

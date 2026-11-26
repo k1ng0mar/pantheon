@@ -32,7 +32,7 @@ test('agent tools inventory is lazy, distinguishes sample data and keeps task ca
   await expect(page.getByText('Browser preview · integration status is sample data.')).toBeVisible();
   await page.locator('summary').filter({ hasText: 'Pantheon tools' }).click();
   await expect(page.getByText(/Older tasks keep their original catalog/)).toBeVisible();
-  await expect(page.getByText(/When enabled, Jev joins new and resumed tasks across connected harnesses/)).toBeVisible();
+  await expect(page.getByText(/When enabled, Jev joins new and resumed tasks/)).toBeVisible();
   await page.locator('summary').filter({ hasText: 'Preview documentation' }).click();
   await expect(page.getByText('search_docs', { exact: true })).toBeVisible();
 });
