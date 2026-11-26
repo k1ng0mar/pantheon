@@ -169,7 +169,7 @@ async function main() {
           if (visited > 200) break;
           const path = join(current, entry.name);
           if (entry.isDirectory()) pending.push(path);
-          else if (entry.isFile() && entry.name.toLowerCase() === 'pantheon.exe') {
+          else if (entry.isFile() && entry.name.toLowerCase() === 'pantheon-desktop.exe') {
             if (binary) throw new Error('NSIS installed more than one Pantheon executable.');
             binary = path;
           }
