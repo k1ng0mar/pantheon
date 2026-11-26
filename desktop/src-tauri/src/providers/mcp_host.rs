@@ -565,7 +565,7 @@ mod tests {
     fn host() -> ToolHost {
         ToolHost {
             tools: vec![
-                json!({"type":"function","name":"pantheon_delegate","description":"Assign a scoped worker","inputSchema":{"type":"object","properties":{"prompt":{"type":"string"}}}}),
+                json!({"type":"function","name":"pantheon_dispatch_workers","description":"Assign a scoped worker","inputSchema":{"type":"object","properties":{"prompt":{"type":"string"}}}}),
             ],
             approval_tools: HashSet::new(),
             handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
@@ -597,7 +597,7 @@ mod tests {
         )
     }
     fn call(id: Value, args: Value) -> Value {
-        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"pantheon_delegate","arguments":args}})
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"pantheon_dispatch_workers","arguments":args}})
     }
     #[tokio::test]
     async fn title_metadata_is_optional_and_does_not_emit_transcript_activity() {
@@ -825,7 +825,7 @@ mod tests {
                 let count = Arc::new(AtomicUsize::new(0));
                 let called = count.clone();
                 let mut protected = host();
-                protected.approval_tools.insert("pantheon_delegate".into());
+                protected.approval_tools.insert("pantheon_dispatch_workers".into());
                 protected.handler = Arc::new(move |_, _| {
                     called.fetch_add(1, Ordering::SeqCst);
                     Box::pin(async { Ok(json!({"started":true})) })
@@ -875,7 +875,7 @@ mod tests {
             let count = Arc::new(AtomicUsize::new(0));
             let called = count.clone();
             let mut protected = host();
-            protected.approval_tools.insert("pantheon_delegate".into());
+            protected.approval_tools.insert("pantheon_dispatch_workers".into());
             protected.handler = Arc::new(move |_, _| {
                 called.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async { Ok(json!({})) })
@@ -944,7 +944,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {
         let mut protected = host();
-        protected.approval_tools.insert("pantheon_delegate".into());
+        protected.approval_tools.insert("pantheon_dispatch_workers".into());
         let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
         let server = Server::start_with_approvals(
             protected,
@@ -958,7 +958,7 @@ mod tests {
         .unwrap();
         let args = json!({});
         let context = server.current();
-        let mut authorization = Box::pin(context.authorize("pantheon_delegate", &args));
+        let mut authorization = Box::pin(context.authorize("pantheon_dispatch_workers", &args));
         let event = tokio::select! {
             _ = &mut authorization => panic!("Approval resolved before user input"),
             event = events.recv() => event.unwrap(),
@@ -988,7 +988,7 @@ mod tests {
             "",
         )
         .await;
-        assert_eq!(list["result"]["tools"][0]["name"], "pantheon_delegate");
+        assert_eq!(list["result"]["tools"][0]["name"], "pantheon_dispatch_workers");
         assert!(list["result"]["tools"][0].get("type").is_none());
         let (_, result) = request(
             &server,
@@ -1041,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_protected_catalog_and_unknown_calls_and_reports_tool_errors() {
         let mut protected = host();
-        protected.approval_tools.insert("pantheon_delegate".into());
+        protected.approval_tools.insert("pantheon_dispatch_workers".into());
         assert!(Server::start(protected, "p".into(), Arc::new(|_| {}))
             .await
             .is_err());

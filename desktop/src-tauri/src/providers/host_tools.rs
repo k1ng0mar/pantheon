@@ -35,6 +35,9 @@ pub(super) fn bounded_json(value: &Value, limit: usize) -> Result<String, String
 }
 impl HostTools {
     pub fn new(host: ToolHost) -> Result<Self, String> {
+        // Pantheon owns the catalog. A desktop host may only advertise tools
+        // from the stable contract, never an ad hoc harness specific tool.
+        pantheon_api::desktop_tool_contract::validate_catalog(&host.tools)?;
         bounded_json(&json!(host.tools), 128 * 1024)?;
         let mut catalog: HashSet<(Option<String>, String)> = HashSet::new();
         for spec in &host.tools {
@@ -176,10 +179,10 @@ mod tests {
     fn host_tool_catalogs_are_validated_before_the_agent_sees_them() {
         let host = ToolHost {
             tools: vec![
-                json!({"type":"function","name":"pantheon_test","description":"test","inputSchema":{"type":"object"}}),
+                json!({"type":"function","name":"pantheon_list_tasks","description":"test","inputSchema":{"type":"object"}}),
             ],
             handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
-            approval_tools: HashSet::from(["pantheon_test".into()]),
+            approval_tools: HashSet::from(["pantheon_list_tasks".into()]),
         };
         assert!(HostTools::new(host.clone()).is_ok());
         let mut bad = host.clone();
@@ -206,5 +209,39 @@ mod tests {
         )
         .is_err());
         assert!(bounded_json(&json!({"text":"x".repeat(140000)}), 32 * 1024).is_err());
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests {
+
+    #[test]
+    fn dump_catalog_names() {
+        let mut tools = Vec::new();
+        tools.extend(crate::agent_tools::catalog());
+        tools.extend(crate::agent_tools::preview_catalog());
+        tools.extend(crate::agent_tools::optional_jev_catalog(true, true));
+        tools.extend(crate::architect::catalog());
+        tools.extend(crate::bots::tools::catalog());
+        tools.extend(crate::cloud::deploy::catalog());
+        tools.extend(crate::design::catalog());
+        tools.extend(crate::simulator::tools::catalog());
+        tools.extend(crate::vm::tools::catalog());
+        tools.extend(crate::architect::coordination::tools(false));
+        let names: Vec<String> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap_or("?").to_string())
+            .collect();
+        pantheon_api::desktop_tool_contract::validate_catalog(&tools)
+            .expect("every live desktop tool must be in the Pantheon contract");
+        let missing = [
+            crate::session_titles::TOOL,
+            crate::turn_changes::host::TOOL,
+        ]
+        .into_iter()
+        .filter(|name| !pantheon_api::desktop_tool_contract::is_desktop_tool(name))
+        .collect::<Vec<_>>();
+        assert!(missing.is_empty(), "uncontracted adapter tools: {missing:?}");
+        println!("CATALOG_NAMES:{}", names.join(","));
     }
 }

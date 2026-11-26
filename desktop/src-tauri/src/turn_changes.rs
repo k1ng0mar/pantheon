@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-mod host;
+pub(crate) mod host;
 mod team;
 pub(crate) use host::{instruction, with_host, TOOL as TRACK_TOOL};
 

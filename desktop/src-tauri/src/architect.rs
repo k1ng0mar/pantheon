@@ -1061,7 +1061,7 @@ pub async fn architect_worker_messages(
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({"type":"function","name":format!("pantheon_{name}"),"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
 }
-fn catalog() -> Vec<Value> {
+pub(crate) fn catalog() -> Vec<Value> {
     let id = json!({"type":"string","maxLength":80});
     let message = json!({"type":"string","maxLength":8192});
     vec![

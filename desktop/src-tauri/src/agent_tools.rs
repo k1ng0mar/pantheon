@@ -27,7 +27,7 @@ pub(crate) fn spec(name: &str, description: &str, properties: Value, required: &
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
 }
 
-fn preview_catalog() -> Vec<Value> {
+pub(crate) fn preview_catalog() -> Vec<Value> {
     vec![
         spec("run_project", "Run this task's pantheon-run.sh in a managed Pantheon terminal and open its declared preview when ready. Reuses an already-running Run terminal. Requires this task to be visible and authorization to execute the script. Read/review the script before running it. Returns launch status, not test success; inspect the app separately.", json!({}), &[]),
         spec("preview_file", "Open an HTML or SVG file from this task's checkout in Pantheon's browser. Use for static visual output after edits. Path must be relative to the checkout; requires this task to be visible. Opening a preview does not establish that tests passed.", json!({"path":{"type":"string","maxLength":4096}}), &["path"]),
@@ -121,7 +121,7 @@ pub fn enabled_jev_catalog() -> Vec<Value> {
     optional_jev_catalog(crate::jev::enabled(), crate::jev::decisions_enabled())
 }
 
-fn optional_jev_catalog(browser: bool, decisions: bool) -> Vec<Value> {
+pub(crate) fn optional_jev_catalog(browser: bool, decisions: bool) -> Vec<Value> {
     let mut tools = if browser { jev_catalog() } else { Vec::new() };
     if decisions {
         tools.extend(jev_assist_catalog());

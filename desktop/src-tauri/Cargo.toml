@@ -20,6 +20,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+pantheon-api = { path = "../../crates/pantheon-api" }
 tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
