@@ -198,6 +198,9 @@ test('saved history stays scoped and closing invalidates late async results', as
   const saved = await page.evaluate(()=>(window as any).__assistHistory[0]);
   await page.evaluate(saved=>{(window as any).__assistHistory.push({...saved,id:'foreign',sessionId:'other-task',title:'Foreign task data'});},saved);
   await page.locator('[data-assist-close]').click(); await open(page);
+  // Saved reports load over the async bridge; wait for the list rather than
+  // assuming the reopened view has settled before its first paint.
+  await expect.poll(()=>page.evaluate(()=>(window as any).__assistCalls.filter((c:any)=>c.command==='jev_assist_list').length)).toBeGreaterThan(0);
   await expect(page.getByRole('combobox',{name:'Saved Jev report'}).locator('option')).toHaveCount(1);
   await expect(page.locator('#dialog')).not.toContainText('Foreign task data'); await prepared(page);
   await page.evaluate(()=>{(window as any).__assistDelayRun=true;}); await page.locator('[data-assist-run]').click();
