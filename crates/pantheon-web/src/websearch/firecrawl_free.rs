@@ -1,31 +1,25 @@
-//! Anonymous Firecrawl search via its public cloud API.
-//!
-//! Keyless: `POST https://api.firecrawl.dev/v2/search` with
-//! `{"query","limit"}` and no auth header. The public endpoint runs on
-//! a shared quota (expect throttling), so this row is a fallback, never
-//! the recommended default. The response shape matches the keyed
-//! Firecrawl API, so the shared [`parse_firecrawl_response`] parser
-//! reads it.
+//! Anonymous Firecrawl via the public cloud API. Keyless, `POST .../v2/search`
+//! with `{"query","limit"}`, no auth. Shared quota -> throttling, so fallback
+//! not default. Hits nest under `data.web`, so this has its own parser.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Default public API base URL (no trailing path).
+/// public API base URL
 pub const DEFAULT_BASE_URL: &str = "https://api.firecrawl.dev";
 
-/// Anonymous Firecrawl search provider. Keyless - no constructor key.
+/// keyless, no constructor key
 pub struct FirecrawlFreeProvider {
     base_url: String,
 }
 
 impl FirecrawlFreeProvider {
-    /// Production constructor: the public keyless endpoint.
     pub fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the API base URL.
+    /// local mirror / test server
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -55,18 +49,17 @@ impl SearchProvider for FirecrawlFreeProvider {
     }
 }
 
-/// Parse the keyless `/v2/search` envelope. Pure and unit-testable.
-/// Unlike the keyed API (`data` array), the public endpoint nests hits
-/// under `data.web` (falling back to `data.results`, then a bare `data`
-/// array, then top-level `web`/`results`). A hit without a usable URL
-/// is skipped; no list anywhere is a `BadResponse`.
+/// Parse the keyless envelope. Unlike the keyed API (a `data` array), the
+/// public endpoint nests hits under `data.web`, then `data.results`, then a
+/// bare `data` array, then top-level `web`/`results`. Skip no-URL hits; no
+/// list anywhere -> `BadResponse`.
 pub fn parse_firecrawl_free_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;
     let data = v.get("data");
-    // Fall through on an empty list, not just on a missing key:
-    // `data.web: []` must not block the `data.results` fallback the
-    // docstring promises (or_else only fires on None).
+    // fall through on an empty list, not just a missing key:
+    // `data.web: []` must not block the `data.results` fallback
+    // (or_else only fires on None).
     let candidates = [
         data.and_then(|d| d.get("web")),
         data.and_then(|d| d.get("results")),
@@ -79,8 +72,7 @@ pub fn parse_firecrawl_free_response(body: &str) -> Result<Vec<SearchResult>, Se
         .flatten()
         .filter_map(|r| r.as_array())
         .collect();
-    // First non-empty list wins; if every present list is empty the
-    // result is genuinely empty, not a malformed envelope.
+    // first non-empty list wins; all empty means genuinely empty
     let list = arrays
         .iter()
         .copied()

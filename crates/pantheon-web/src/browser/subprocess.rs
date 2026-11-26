@@ -7,14 +7,14 @@
 //! Unix socket, and why the `Capability::Browser` gate is the authorization
 //! boundary instead).
 //!
-//! ## gsd-browser CLI shape (verified live against 0.1.24, 2026-09-29)
+//! ## gsd-browser CLI shape (verified against 0.1.24)
 //!
 //! * Invocation: `gsd-browser --session <name> --json <cmd> [args]`
 //!   global flags precede the subcommand. Verified via `--help` and a
 //!   live daemon attached to Chrome over `--cdp-url`.
 //! * `daemon stop` exists (`daemon {start,stop,health}`); GC uses it
 //!   best-effort (see [`crate::lifecycle`]).
-//! * `extract` **requires** `--schema <json>` shaped as
+//! * `extract` requires `--schema <json>` shaped as
 //!   `{"properties": {"title": {"_selector": "h1"}, ...}}` (properties
 //!   carry `_selector`/`_attribute` hints); `--selector` only scopes.
 //!   The tool layer builds this shape - see [`crate::tools`].

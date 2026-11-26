@@ -1,10 +1,7 @@
-//! Provider + model catalog (§5 + §14): where a provider lives, which wire
-//! format it speaks, and what a model can do - context limit, tool support,
-//! vision, reasoning, streaming, cost.
-//!
-//! Loaded from a YAML file at runtime. Default: `catalog.yaml` embedded at
-//! compile time via `include_str!`. Override: `PANTHEON_CATALOG=/path/to.yaml`.
-//! Static data; the runtime reads it, agents never choose from it.
+//! Provider + model catalog: endpoint, wire format, model capabilities + prices.
+//! YAML at runtime, embedded `catalog.yaml` by default,
+//! `PANTHEON_CATALOG=/path/to.yaml` to override. Read-only at runtime; agents
+//! don't pick from it.
 
 use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
@@ -39,9 +36,8 @@ impl ModelCost {
         Some(input_tokens as f64 * i / 1_000_000.0 + output_tokens as f64 * o / 1_000_000.0)
     }
 
-    /// Estimate with cache pricing. When `cache` is Some, input tokens are
-    /// priced at the cache rate instead of the regular input rate. This is
-    /// a conservative estimate: it assumes all input tokens are cached.
+    /// Estimate with cache pricing: if `cache` is set, all input tokens get
+    /// the cache rate. Conservative in that it assumes every input was cached.
     pub fn estimate_with_cache(
         &self,
         input_tokens: u64,
@@ -56,10 +52,9 @@ impl ModelCost {
     }
 }
 
-/// Catalog row: where the provider lives, which wire it speaks, key env vars.
-/// A row that has `auto: true` and `models: [...]` is a full provider entry;
-/// a row that has just a `base_url` and no `auto` is a known endpoint you can
-/// point at but no curated models yet.
+/// Row in the catalog: where the provider lives, wire format, key env vars.
+/// `auto: true` + `models: [...]` = full provider entry.
+/// Just a `base_url` and no `auto` = known endpoint, no curated models yet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderMeta {
@@ -67,34 +62,31 @@ pub struct ProviderMeta {
     pub label: String,
     pub base_url: String,
     pub api_mode: ApiMode,
-    /// Shell command whose stdout is the provider's bearer token, used
-    /// when no key is configured. Runs under `sh -c` as the Pantheon user,
-    /// on the host, without a sandbox, so it may only come from
-    /// operator-controlled sources: the embedded catalog or a
-    /// `PANTHEON_CATALOG` file. Custom providers from `config.toml` never
-    /// set it.
+    /// Shell command whose stdout is the bearer token when no key is set.
+    /// Runs under `sh -c` as the Pantheon user, on the host, unsandboxed.
+    /// Only operator-controlled sources may set it (embedded catalog or
+    /// `PANTHEON_CATALOG`); `config.toml` custom providers never do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_refresh_ms: Option<u64>,
     #[serde(default)]
     pub reserved: bool,
-    /// Sampling params this provider accepts. Absent = send everything.
-    /// Present = drop any param not in this list before the request goes
-    /// out. Providers that reject unknown fields (Azure, newer Anthropic)
-    /// need this to avoid 400s on params they do not recognize.
+    /// Params this provider accepts. Absent = send everything; present =
+    /// drop anything not listed before the request goes out. Azure and
+    /// newer Anthropic 400 on fields they don't recognize.
     #[serde(default)]
     pub allowed_params: Vec<String>,
-    /// OAuth apps that can authenticate this provider. Empty = API key only.
-    /// `key_for` checks these in order; the first connected app wins.
+    /// OAuth apps that can auth this provider. Empty = API key only.
+    /// `key_for` tries these in order, first connected app wins.
     #[serde(default)]
     pub oauth_apps: Vec<String>,
     /// Use SigV4 signing instead of Bearer auth (AWS Bedrock).
     #[serde(default)]
     pub sigv4: bool,
     /// Per-provider reasoning effort mapping. Empty = send `reasoning_effort`
-    /// verbatim. Present = rewrite the global level to the provider's wire
-    /// value (e.g. DeepSeek wants `max`, Anthropic wants `high`).
+    /// verbatim; else rewrite the global level (DeepSeek wants `max`,
+    /// Anthropic wants `high`).
     #[serde(default)]
     pub reasoning_map: std::collections::HashMap<String, String>,
     /// Env var that overrides the base URL, e.g. `PANTHEON_BASE_OPENAI`.
@@ -103,32 +95,26 @@ pub struct ProviderMeta {
     /// Env var that overrides the API key, e.g. `PANTHEON_KEY_OPENAI`.
     #[serde(default)]
     pub key_env: String,
-    /// HTTP header carrying the key. Default `Authorization` (sent as
-    /// `Bearer <key>`). Some vendors differ - Xiaomi MiMo wants the raw
-    /// key in an `api-key` header - so this is per-provider data, not a
-    /// protocol assumption. Any non-Authorization name sends the raw key.
+    /// Header carrying the key. Default `Authorization` (`Bearer <key>`).
+    /// Some vendors want the raw key elsewhere - Xiaomi MiMo uses `api-key`.
+    /// Any non-Authorization name sends the raw key.
     #[serde(default = "default_auth_header")]
     pub key_header: String,
-    /// Curated model rows for this provider (catalog says which models are
-    /// tested and their capabilities). Empty means "no curated models,
-    /// use the generic OpenAI/Anthropic adapter with whatever model name
-    /// you pass at runtime".
+    /// Curated models. Empty means "use the generic adapter with whatever
+    /// model name you pass at runtime".
     #[serde(default)]
     pub models: Vec<ModelMeta>,
-    /// Set true for prominent labs that should show in the picker UI.
-    /// Defaults to false (curated but hidden).
+    /// Show in the picker UI. Curated-but-hidden otherwise.
     #[serde(default)]
     pub prominent: bool,
-    /// Set true for the provider Pantheon recommends by default. At most
-    /// one provider should carry this: the setup wizard lists it first
-    /// and the `providers` verb marks it. Defaults to false.
+    /// The one provider we recommend by default (at most one row should
+    /// set this): setup wizard lists it first, `providers` verb marks it.
     #[serde(default)]
     pub recommended: bool,
-    /// A development-only endpoint, not a product provider. The local
-    /// llm-router is one: it is how the e2e suite reaches a model, and
-    /// offering it in a user's setup wizard would be offering a
-    /// `127.0.0.1` process that is usually not running. Hidden from every
-    /// picker; still resolvable by id, so the dev path keeps working.
+    /// Dev endpoint, not a product provider (the local llm-router is one).
+    /// The e2e suite needs it, but offering a `127.0.0.1` process that's
+    /// usually dead in the setup wizard is a terrible idea. Hidden from
+    /// pickers, still resolvable by id so the dev path keeps working.
     #[serde(default)]
     pub dev: bool,
     /// Short blurb for the picker UI ("Chinese lab", "fast inference", ...).
@@ -136,7 +122,8 @@ pub struct ProviderMeta {
     pub tag: String,
 }
 
-/// Static metadata for one model.
+/// Static metadata for one model. `provider` is filled from the parent
+/// provider's id at load time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMeta {
     /// Filled from the parent provider's id at load time; skipped in YAML.
@@ -153,8 +140,8 @@ pub struct ModelMeta {
     pub tools: bool,
     #[serde(default)]
     pub vision: bool,
-    /// True when the model can take a video file as native input
-    /// (bytes sent to the provider, not frames extracted locally).
+    /// Model takes a video file as native input (bytes to the provider,
+    /// not frames we extract locally).
     #[serde(default)]
     pub video: bool,
     #[serde(default)]
@@ -163,7 +150,7 @@ pub struct ModelMeta {
     pub streaming: bool,
     #[serde(default)]
     pub cost: ModelCost,
-    /// Cache pricing per million tokens (prompt caching). Absent = no cache.
+    /// Cache pricing per million tokens. Absent = no prompt caching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_cost: Option<ModelCost>,
     /// Short aliases for this model (e.g. "opus" for "claude-opus-4-8").
@@ -193,18 +180,16 @@ static CATALOG: OnceLock<Catalog> = OnceLock::new();
 /// Load the catalog once per process. Resolution order:
 /// 1. `PANTHEON_CATALOG` env var: a YAML file path (operator-controlled;
 ///    its rows may carry `auth_command`, which runs as the user).
-/// 2. The embedded default (compile-time `catalog.yaml`).
+/// 2. The embedded default (`catalog.yaml`, compile-time).
 ///
-/// There is no remote refresh. An unused remote fetch-and-merge path used
-/// to live here: it accepted remote rows wholesale (including
-/// `auth_command`, which runs under `sh -c`) and let any longer remote
-/// `base_url` replace a provider's endpoint, so wiring it up would have
-/// handed command execution and key redirection to whoever served the
-/// URL (audit ZA C2). It had no callers and was removed.
+/// No remote refresh, on purpose. We'd be accepting remote rows wholesale -
+/// including `auth_command` (runs under `sh -c`) - and a longer remote
+/// `base_url` could take over a provider's endpoint. That hands command
+/// execution and key redirection to whoever served the URL (audit ZA C2).
 ///
-/// Failures are loud, not silent: an unreadable `PANTHEON_CATALOG` and
-/// a catalog that does not parse are both reported on stderr with the
-/// path, so "every provider vanished" has a visible cause.
+/// Failures are loud, not silent: a bad `PANTHEON_CATALOG` and a catalog
+/// that won't parse both print to stderr with the path, so "every provider
+/// vanished" has a visible cause.
 fn load_catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| {
         let raw = if let Ok(p) = std::env::var("PANTHEON_CATALOG") {
@@ -246,13 +231,13 @@ fn load_catalog() -> &'static Catalog {
     })
 }
 
-/// Catalog accessor. Cheap to call; cached.
+/// Catalog accessor. Cheap, cached.
 pub fn catalog() -> &'static Catalog {
     load_catalog()
 }
 
 /// User-defined providers from `[custom_providers.*]` in config.toml.
-/// Registered at CLI startup; consulted by every lookup below so custom
+/// Registered at CLI startup; every lookup below consults these so custom
 /// endpoints behave exactly like cataloged ones.
 static CUSTOM: RwLock<Vec<ProviderMeta>> = RwLock::new(Vec::new());
 
@@ -282,8 +267,7 @@ pub fn providers() -> &'static [ProviderMeta] {
 }
 
 /// All providers: cataloged plus user-registered customs. The picker and
-/// the `providers` verb use this; the runtime path (`provider`) resolves
-/// either way.
+/// the `providers` verb use this; the runtime path resolves either way.
 pub fn all_providers() -> Vec<ProviderMeta> {
     let mut out: Vec<ProviderMeta> = catalog().providers.clone();
     if let Ok(customs) = CUSTOM.read() {
@@ -292,10 +276,9 @@ pub fn all_providers() -> Vec<ProviderMeta> {
     out
 }
 
-/// Every provider a user can actually choose, which is every provider minus
-/// the development-only ones. A setup wizard that offers `127.0.0.1` is
-/// offering a process that is not running; the row can stay in the catalog
-/// and still be absent from every picker.
+/// Providers a user can actually pick: everything minus dev-only ones.
+/// Offering `127.0.0.1` in a wizard is offering a process that isn't
+/// running; the row can stay in the catalog and be absent from pickers.
 pub fn selectable_providers() -> Vec<ProviderMeta> {
     all_providers().into_iter().filter(|p| !p.dev).collect()
 }
@@ -332,20 +315,18 @@ pub fn model(provider_id: &str, model_id: &str) -> Option<&'static ModelMeta> {
     })
 }
 
-/// Canonical wire id for a model: an alias match returns the row's
-/// real `model` id (e.g. `opus` → `claude-opus-4-8`); anything else
-/// passes through unchanged. The chain sends the canonical id: the
-/// old code looked the alias up for limits but sent the alias on the
-/// wire, which Anthropic rejects.
+/// Canonical wire id: an alias returns the row's real `model` id
+/// (`opus` -> `claude-opus-4-8`), anything else passes through. The chain
+/// sends the canonical id because Anthropic rejects aliases on the wire.
 pub fn canonical_model(provider_id: &str, model_id: &str) -> String {
     model(provider_id, model_id)
         .map(|m| m.model.clone())
         .unwrap_or_else(|| model_id.to_string())
 }
 
-/// Whether the catalog (or a user-registered custom) actually knows
-/// this model. Distinct from `model_meta`, whose conservative
-/// defaults make unknown models look like known non-reasoning ones.
+/// Does the catalog (or a registered custom) know this model? Distinct from
+/// `model_meta`, whose conservative defaults make unknown models look like
+/// known non-reasoning ones.
 pub fn model_known(provider_id: &str, model_id: &str) -> bool {
     if model(provider_id, model_id).is_some() {
         return true;
@@ -362,15 +343,14 @@ pub fn model_known(provider_id: &str, model_id: &str) -> bool {
     false
 }
 
-/// Model metadata with conservative defaults for unknown models:
-/// context unknown, tools on, vision off, reasoning off, streaming on,
-/// cost unknown.
+/// Model metadata with conservative defaults for unknown models: context
+/// unknown, tools on, vision/reasoning off, streaming on, cost unknown.
 pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
     if let Some(m) = model(provider_id, model_id) {
         return m.clone();
     }
-    // User-registered custom endpoints: their declared rows - including
-    // operator-declared capabilities like `video = true` - behave exactly
+    // User-registered custom endpoints: their declared rows (incl.
+    // operator-declared capabilities like `video = true`) behave exactly
     // like cataloged ones everywhere this lookup is consulted.
     if let Ok(customs) = CUSTOM.read() {
         if let Some(m) = customs
@@ -398,9 +378,9 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
 }
 
 /// Base URL for a provider: env override → catalog → the provider id
-/// itself (treated as a full base URL, legacy passthrough).
-/// NOTE: may still contain `{var}` template placeholders - use
-/// [`resolve_base_url`] when building requests.
+/// itself (treated as a full base URL, legacy passthrough). May still contain
+/// `{var}` template placeholders; use [`resolve_base_url`] when building
+/// requests.
 pub fn base_url_for(provider_id: &str) -> String {
     if let Some(p) = provider(provider_id) {
         if !p.base_env.is_empty() {

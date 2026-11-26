@@ -1,37 +1,9 @@
-//! STT/TTS provider plane (ARCHITECTURE §14). These are *services*, not
-//! models: a whisper binary or a cloud transcription endpoint is a
-//! swappable capability, never an entry in the model policy.
+//! STT and TTS provider adapters. Backends move audio bytes; callers own
+//! capability checks and resolve secrets before construction.
 //!
-//! Shape mirrors `pantheon-memory`'s backend registry: traits + a catalog
-//! of named backends (`stt_providers()` / `tts_providers()`, recommended
-//! first, for the setup wizard) + `open_*` constructors driven by config
-//! (`[stt]` / `[tts]`, each `{ backend, options }`).
-//!
-//! Backend families:
-//!
-//! - `command` (Subprocess): local binaries - whisper.cpp, piper,
-//!   espeak-ng. STT reads text from stdout (`{file}`/`{language}`
-//!   placeholders); TTS pipes text in on stdin and takes audio from
-//!   stdout. Every run is wall-clock bounded.
-//! - `piper-local` (Subprocess): piper with binary + voice-model
-//!   detection, mapped onto the `command` machinery.
-//! - `openai` / `groq` / `mistral` (HttpCloud): one OpenAI-compatible
-//!   implementation (`/audio/transcriptions`, `/audio/speech`), base URL +
-//!   key resolved through the core catalog like every other provider.
-//! - Bespoke cloud backends (deepgram, elevenlabs, xai, assemblyai STT;
-//!   elevenlabs, deepgram, gemini, fishaudio TTS; kokoro-local and
-//!   fishspeech-local subprocess TTS): live
-//!   implementations built from the documented wire shapes (pure request
-//!   builders / response parsers here, pinned by fixtures in
-//!   `eval/tests/providers_voice_wire.rs`). The wires have not been
-//!   exercised against the real APIs yet (no keys were available); treat
-//!   first runs as verification runs.
-//!
-//! Callers gate access upstream (capability policy on the gateway/CLI
-//! seam); backends only move bytes. Nothing here ever enters model
-//! context except the transcription text the caller passes on. Keys are
-//! resolved by the caller via the secrets broker and handed to
-//! constructors; this crate never logs key material.
+//! Local command backends and cloud APIs share the catalog and constructor
+//! seams. This crate never logs key material or places anything here directly
+//! into model context.
 
 use crate::catalog;
 use pantheon_api::config::VoiceSection;
@@ -2202,11 +2174,9 @@ pub fn piper_voice_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Bounded recursive file walk: collects files under `dir` (descending at
-/// most `depth` levels) for which `want` holds. One walker for the piper
-/// voice-model search and the kokoro asset search, which were previously
-/// two near-identical recursive functions differing only in the file
-/// predicate.
+/// Bounded recursive file walk: collects files under `dir` (descending at most `depth`
+/// levels) for which `want` holds. One walker for both the piper voice-model search and
+/// the kokoro asset search, which differ only in the file predicate.
 fn collect_files<F>(dir: &Path, depth: u8, want: &F, out: &mut Vec<PathBuf>)
 where
     F: Fn(&Path) -> bool,

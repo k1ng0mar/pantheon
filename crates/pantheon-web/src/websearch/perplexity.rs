@@ -1,42 +1,33 @@
-//! Perplexity Search-backed [`SearchProvider`]:
-//! `POST https://api.perplexity.ai/search`.
+//! Raw Perplexity Search API (ranked results, no LLM synthesis), not Sonar
+//! `/chat/completions` or the Agent API. `POST .../search`,
+//! `Authorization: Bearer <key>`. No free tier — prepaid credits only
+//! ($5/1K requests).
 //!
-//! This is the raw Search API (ranked results, no LLM synthesis)
-//! separate from Sonar `/chat/completions` and the Agent API. Auth is
-//! `Authorization: Bearer <key>`. There is no free tier: prepaid credits
-//! only ($5/1K requests).
-//!
-//! Perplexity's date fields are the best in the set: `date` maps to
-//! `published`, falling back to `last_updated` when `date` is absent.
-//! `include_domains` maps to `search_domain_filter`; there is no deny
-//! parameter, so `exclude_domains` is ignored by this provider.
-//!
-//! The API key is handed to the constructor by the caller (resolved from the
-//! secrets broker or the env by the parent) and never appears in any log
-//! line, error, or tool result.
+//! Best date fields in the set: `date` -> `published`, falling back to
+//! `last_updated` when `date` is missing. `include_domains` maps to
+//! `search_domain_filter`; no deny param exists, so `exclude_domains` is
+//! ignored. Key handed in by the parent, never logged.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Default API base URL (no trailing path; `/search` is appended).
+/// base URL, `/search` appended later
 pub const DEFAULT_BASE_URL: &str = "https://api.perplexity.ai";
-/// Env/secret name the parent resolves the Perplexity key from.
+/// secret/env name the parent resolves the key from
 pub const PERPLEXITY_API_KEY: &str = "PERPLEXITY_API_KEY";
 
-/// Perplexity Search provider.
 pub struct PerplexityProvider {
     api_key: String,
     base_url: String,
 }
 
 impl PerplexityProvider {
-    /// Production constructor: default Perplexity endpoint.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self::with_base_url(api_key, DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the API base URL.
+    /// local mirror / test server
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -44,7 +35,7 @@ impl PerplexityProvider {
         }
     }
 
-    /// The base URL in use (without the `/search` path).
+    /// base URL without `/search`
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -70,13 +61,9 @@ impl SearchProvider for PerplexityProvider {
     }
 }
 
-/// Parse a Perplexity `/search` JSON envelope. Pure and unit-testable.
-///
-/// Hits live at `results` with `title`/`url`/`snippet`. `date` maps to
-/// `published`, falling back to `last_updated` - both are real provider
-/// date fields, never fabricated. A single malformed hit is skipped,
-/// never fatal; a hit without a usable URL is skipped. A missing or
-/// non-array `results` field is a `BadResponse`.
+/// Parse the envelope. `date` -> `published`, fallback `last_updated` — both
+/// real provider fields, never fabricated. Skip bad hits / no-URL hits; no
+/// `results` array -> `BadResponse`.
 pub fn parse_perplexity_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;

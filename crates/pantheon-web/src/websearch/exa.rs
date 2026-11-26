@@ -1,36 +1,30 @@
-//! Exa-backed [`SearchProvider`]: `POST https://api.exa.ai/search`.
+//! Exa `POST .../search`. Key goes in `x-api-key`, not `Authorization`.
+//! `type` must be one of `instant|fast|auto|deep-lite|deep|deep-reasoning`:
+//! `neural` and `keyword` were removed server-side. We use `auto`, which is
+//! good enough for agents without paying for deep search.
 //!
-//! Auth is the `x-api-key` header (NOT `Authorization`). The `type` field
-//! accepts only `instant|fast|auto|deep-lite|deep|deep-reasoning` - the old
-//! `neural`/`keyword` values were removed server-side and must not be sent.
-//! We always send `auto`: agent-suitable quality without deep-search cost.
-//!
-//! The API key is handed to the constructor by the caller (resolved from the
-//! secrets broker or the env by the parent) and never appears in any log
-//! line, error, or tool result.
+//! Parent resolves the key and hands it in; no key in logs/errors/results.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Default API base URL (no trailing path; `/search` is appended).
+/// base URL, `/search` appended later
 pub const DEFAULT_BASE_URL: &str = "https://api.exa.ai";
-/// Env/secret name the parent resolves the Exa key from.
+/// secret/env name the parent resolves the key from
 pub const EXA_API_KEY: &str = "EXA_API_KEY";
 
-/// Exa search provider.
 pub struct ExaProvider {
     api_key: String,
     base_url: String,
 }
 
 impl ExaProvider {
-    /// Production constructor: default Exa endpoint.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self::with_base_url(api_key, DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the API base URL.
+    /// local mirror / test server
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -38,7 +32,7 @@ impl ExaProvider {
         }
     }
 
-    /// The base URL in use (without the `/search` path).
+    /// base URL without `/search`
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -53,8 +47,7 @@ impl SearchProvider for ExaProvider {
         let mut body = serde_json::json!({
             "query": query,
             "numResults": opts.max_results,
-            // `neural`/`keyword` were removed server-side; `auto` is the
-            // documented agent-suitable default.
+            // neural/keyword are gone server-side
             "type": "auto",
         });
         if !opts.include_domains.is_empty() {
@@ -69,12 +62,9 @@ impl SearchProvider for ExaProvider {
     }
 }
 
-/// Parse an Exa `/search` JSON envelope. Pure and unit-testable.
-///
-/// Defensive by contract: any of `title`, `url`, `text`,
-/// `publishedDate` may be missing or null. A single malformed result is
-/// skipped, never fatal; a result without a usable URL is skipped. A
-/// missing or non-array `results` field is a `BadResponse`.
+/// Parse the `/search` envelope. Any of `title`/`url`/`text`/`publishedDate`
+/// may be missing or null; skip bad hits and hits with no URL, no array ->
+/// `BadResponse`.
 pub fn parse_exa_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;

@@ -1,21 +1,18 @@
-//! Shared blocking HTTP plumbing for search providers.
-//!
-//! All providers go through [`post_json`] / [`get_json`]: a 30s timeout,
-//! accurate timeout errors, and failure descriptions that name the HTTP
-//! status plus a truncated slice of the response body - never request
-//! material (bodies carry API keys, headers carry tokens).
+//! Shared blocking HTTP for the search providers. Everything funnels through
+//! [`post_json`] / [`get_json`]: 30s timeout, accurate timeout errors, and
+//! failure descriptions that name the status plus a truncated slice of the
+//! response body — never request material (bodies carry API keys, headers
+//! carry tokens).
 
 use super::error::SearchError;
 use std::io::ErrorKind as IoKind;
 use std::time::Duration;
 
-/// Per-request upper bound shared by every search provider (all providers,
-/// Tavily included, go through [`post_json`] / [`get_json`]).
+/// per-request bound shared by every provider (Tavily included)
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// ureq 3 reports timeouts as a dedicated `Error::Timeout` variant; any
-/// error funneled through an `io::Error` keeps the `TimedOut` kind. Cover
-/// both so WEBSEARCH_TIMEOUT is accurate.
+/// ureq 3 gives a dedicated `Error::Timeout`; an `io::Error` keeps the
+/// `TimedOut` kind. Cover both so WEBSEARCH_TIMEOUT is accurate.
 pub fn is_timeout(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::Timeout(_) => true,
@@ -38,11 +35,9 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
-/// Credential diagnosis for a search-provider failure, mirroring
-/// `pantheon_providers::credential_error::classify` (this crate does
-/// not depend on pantheon-providers, so the three static mappings
-/// live here too; keep them in sync). The diagnosis is static text
-/// only, never the body, so no credential can pass through it.
+/// credential diagnosis mirroring `pantheon_providers::credential_error::classify`
+/// (this crate doesn't depend on pantheon-providers, so the three static
+/// mappings live here too; keep in sync). Static text only, never the body.
 fn credential_diagnosis(code: u16, body: &str) -> Option<&'static str> {
     if body.contains("error code: 1010") {
         return Some("Blocked at Cloudflare's edge by Browser Integrity Check: the request never reached the provider's auth layer. Do NOT replace the key. Fix: send a real User-Agent header.");
@@ -69,16 +64,14 @@ fn status_error(provider: &str, code: u16, r: ureq::http::Response<ureq::Body>) 
     SearchError::RequestFailed(message)
 }
 
-/// Branded User-Agent for search requests, matching the provider
-/// transport: edge checks rejecting default agents must not block us.
+/// branded User-Agent so edge checks rejecting default agents don't block us
 fn user_agent() -> String {
     format!("Pantheon/{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// `Retry-After` delta-seconds from a response, if present and sane.
-/// HTTP-date form is not parsed (same stance as the gateway channel
-/// transports). Capped at 10s: a longer hint still earns one retry
-/// after a bounded wait, not a hung tool call.
+/// `Retry-After` delta-seconds, if sane. HTTP-date form isn't parsed (same
+/// stance as gateway channel transports). Capped at 10s: long hints still
+/// get one retry after a bounded wait, not a hung tool call.
 fn retry_after_secs(response: &ureq::http::Response<ureq::Body>) -> Option<u64> {
     let v = response
         .headers()
@@ -92,12 +85,8 @@ fn retry_after_secs(response: &ureq::http::Response<ureq::Body>) -> Option<u64> 
     }
 }
 
-/// POST a JSON body with extra headers, returning the response text.
-///
-/// On a 429 with a `Retry-After` hint, waits (capped at 10s) and retries
-/// once before reporting the rate limit. Previously no provider honoured
-/// `Retry-After` at all, so a throttled call failed immediately even
-/// when the provider said exactly how long to wait.
+/// POST JSON, returns response text. On 429 with a `Retry-After` hint:
+/// wait (capped at 10s) and retry once — provider told us how long to wait.
 pub fn post_json(
     provider: &str,
     url: &str,
@@ -138,8 +127,7 @@ pub fn post_json(
     }
 }
 
-/// GET with extra headers, returning the response text. Same one-retry
-/// `Retry-After` behaviour as [`post_json`].
+/// GET, returns response text. Same one-retry `Retry-After` as [`post_json`].
 pub fn get_json(
     provider: &str,
     url: &str,
@@ -179,8 +167,8 @@ pub fn get_json(
     }
 }
 
-/// Minimal percent-encoding for query strings and path segments: keeps
-/// unreserved ASCII, `%`-escapes everything else (UTF-8 bytes included).
+/// minimal percent-encoding: keep unreserved ASCII, `%`-escape the rest
+/// (UTF-8 bytes included)
 pub fn percent_encode(s: &str) -> String {
     const UNRESERVED: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
     let mut out = String::with_capacity(s.len());
@@ -204,14 +192,13 @@ pub fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Text content of an anonymous MCP `tools/call` response: every
-/// non-empty text block, joined with newlines.
+/// Text content of an anonymous MCP `tools/call`: every non-empty text block,
+/// joined with newlines.
 ///
-/// Vendors answer in two framings: plain JSON bodies (Parallel) or SSE
-/// `data: {...}` lines (Exa). Split only on SSE line terminators
-/// (CR/LF) - never on Unicode line breaks, which legitimately occur
-/// inside CJK page text. A JSON-RPC `error` or an `isError` tool result
-/// (free-tier rate limit) is an error, not an empty result.
+/// Two framings in the wild: plain JSON (Parallel) and SSE `data: {...}` lines
+/// (Exa). Split only on SSE terminators (CR/LF) — never Unicode line breaks,
+/// those occur legitimately inside CJK text. A JSON-RPC `error` or `isError`
+/// tool result (free-tier rate limit) is an error, not an empty result.
 pub fn mcp_text_payload(body: &str) -> Result<String, super::error::SearchError> {
     use super::error::SearchError;
 
@@ -252,9 +239,9 @@ pub fn mcp_text_payload(body: &str) -> Result<String, super::error::SearchError>
                 msg
             }));
         }
-        // Concatenate every non-empty text block: taking only the
-        // first silently dropped later blocks (e.g. multi-part MCP
-        // results), which parsers then read as a truncated document.
+        // join every non-empty block: taking only the first silently
+        // dropped later blocks (multi-part MCP results), and parsers then
+        // read a truncated document
         let joined = texts
             .into_iter()
             .filter(|t| !t.is_empty())
@@ -272,7 +259,7 @@ pub fn mcp_text_payload(body: &str) -> Result<String, super::error::SearchError>
     if stripped.starts_with('{') {
         candidates.push(stripped);
     }
-    // SSE framing: split on transport terminators only.
+    // SSE framing: split on transport terminators only
     let mut rest = body;
     while let Some(pos) = rest.find(['\r', '\n']) {
         let (line, tail) = rest.split_at(pos);

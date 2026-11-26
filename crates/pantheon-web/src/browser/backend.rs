@@ -1,63 +1,40 @@
-//! Backend trait: the seam between the tool layer and whatever drives the
-//! browser. Every backend implements [`BrowserBackend`]; the tool layer in
-//! [`crate::tools`] builds backend-agnostic *canonical* argv (the
-//! gsd-browser command vocabulary: `navigate`, `snapshot`, `click-ref`,
+//! the seam between the tool layer and whatever actually drives the browser.
+//! the tool layer builds canonical argv (`navigate`, `snapshot`, `click-ref`,
 //! ...) and each backend translates it to its own transport.
 //!
-//! ## The lineup
+//!   gsd          default, gsd-browser subprocess, full command surface
+//!                including `act --intent` (checked against 0.1.24)
+//!   chromiumoxide  native CDP, no subprocess, pinned =0.9.1
+//!   steel        REST sessions + raw CDP ws, hosted or self-hosted
+//!   browserbase  POST /v1/sessions then raw CDP wss, no SDK
+//!   playwright   playwright-cli, ref-based snapshots
+//!   camofox      python shim over json-stdio, patched firefox, no CDP
 //!
-//! | Backend (`BackendKind`) | Transport | Role |
-//! |-------------------------|-----------|------|
-//! | `Gsd` (default) | `gsd-browser` CLI subprocess | Default interactive backend: full command surface incl. semantic `act --intent` (verified live against 0.1.24) |
-//! | `ChromiumOxide` | Native CDP via `chromiumoxide` (=0.9.1, pinned) | Local dependency-free fallback: no CLI/subprocess, single-binary friendly |
-//! | `Steel` | REST session management + raw CDP websocket | Hosted or self-hosted sessions; self-host Docker exposes the same API as cloud, so one implementation with a configurable base URL |
-//! | `Browserbase` | `POST /v1/sessions` → raw CDP `wss://` URL | Cloud fallback; driven over the websocket directly, no SDK |
-//! | `Playwright` | `playwright-cli` (`@playwright/cli`) subprocess | Mature fallback: industry-standard engine, ref-based snapshots |
-//! | `Camofox` | Long-lived Python shim over JSON-over-stdio (official `camoufox` launcher, Juggler - no CDP) | Anti-detect fallback: patched Firefox; fingerprint config in `[browser.camofox]` |
+//! selection is `[browser] backend` in config. see `registry` for per-backend
+//! settings and `tools::BrowserOptions` for how the surface adapts.
 //!
-//! Backend selection lives in config (`[browser] backend`, resolved to
-//! [`crate::registry::BackendKind`]); see [`crate::registry`] for the
-//! per-backend settings and [`crate::tools::BrowserOptions`] for how the
-//! tool surface adapts (`browser_act` only on GSD).
-//!
-//! Deliberately NOT backends: competing agent frameworks and sidecar
-//! transports are never wrapped - wrapping them would invert the
-//! architecture (Pantheon is the agent; the backend is infrastructure).
+//! we don't wrap other agent frameworks. they aren't browsers, and wrapping one
+//! turns the design inside out - pantheon is the agent, the backend is infra.
 
 use super::error::BrowserError;
 use std::time::Duration;
 
-/// The single wait cap for every browser wait path: CDP, Playwright,
-/// Camofox, and the gsd-browser `--timeout` passthrough. No `wait-for`
-/// may run longer than this, whatever per-backend command timeout is
-/// configured. Previously each path capped differently (CDP 30 s, the
-/// Playwright/Camofox paths their full command timeout), so the same
-/// call waited different amounts depending on backend; there is now
-/// one cap, and every wait path reads this constant.
+/// one cap for every wait path, including the gsd `--timeout` passthrough. no
+/// wait-for runs longer than this whatever the backend timeout says, so the
+/// same call doesn't wait differently depending on which backend is active.
 pub const WAIT_CAP: Duration = Duration::from_secs(30);
 
-/// Drives a browser session identified by a sanitized session name.
+/// `argv` is one canonical command plus args. on success you get the parsed
+/// json back.
 ///
-/// `argv` is one canonical browser command and its arguments
-/// (e.g. `["navigate", "https://example.com"]`); each backend translates
-/// the canonical vocabulary to its own transport (gsd-browser passes it
-/// through with `--session`/`--json` global flags; the CDP backends map
-/// it onto CDP domains; Playwright maps it onto `playwright-cli`).
-/// On success returns the command's structured output as JSON.
-///
-/// Backends must NOT hard-fail on transport-level unknowns they can
-/// safely ignore (e.g. unrecognized CDP event types - schema drift is a
-/// known maintenance tax on the native path); unknown *commands* in
-/// `argv` become [`BrowserError::UnsupportedCommand`].
+/// ignore transport-level unknowns you can safely skip (unrecognised CDP event
+/// types, the schema drifts). unknown *commands* in `argv` become
+/// [`BrowserError::UnsupportedCommand`].
 pub trait BrowserBackend: Send + Sync {
-    /// Invoke one canonical browser command in `session`, returning
-    /// parsed JSON.
+    /// run one command in `session`
     fn invoke(&self, argv: &[String], session: &str) -> Result<serde_json::Value, BrowserError>;
 
-    /// Stop the backend state backing `session` (gsd daemon, CDP page,
-    /// remote session, playwright-cli session). Best-effort:
-    /// implementations should return `Ok` when the state is already
-    /// gone, and callers (see [`crate::lifecycle`]) must treat failures
-    /// as non-fatal.
+    /// tear down whatever backs `session`. best effort: Ok if it's already
+    /// gone, and callers treat failures as non-fatal.
     fn stop_daemon(&self, session: &str) -> Result<(), BrowserError>;
 }

@@ -9,13 +9,13 @@
 //!
 //! Cascade - the user always gets the best available, never a silent gap:
 //!
-//! 1. **Native, Gemini only.** When the resolved model is flagged
+//! 1. Native, Gemini only. When the resolved model is flagged
 //!    `video: true` and speaks the Gemini wire (Google provider or a
 //!    `gemini` api_mode row), the video bytes go to the model as-is
 //!    through `generateContent` + `inline_data`. Any failure of this
 //!    call (4xx, transport error, missing key, oversize) falls through
 //!    to step 2; the native error is never surfaced directly.
-//! 2. **Frames + audio fallback.** `ffmpeg` extracts a bounded set of
+//! 2. Frames + audio fallback. `ffmpeg` extracts a bounded set of
 //!    frames; the audio track is extracted and transcribed through the
 //!    configured `[stt]` provider when one exists. Frames are described
 //!    through the vision path ([`VisionClient`], with its fail-closed
@@ -23,7 +23,7 @@
 //!    synthesized into one summary. `ffmpeg` absent = a clear error naming
 //!    it, never a silent skip. No `[stt]` or no audio = frames only, noted
 //!    honestly.
-//! 3. **Honest error.** When the vision leg fails closed too (no
+//! 3. Honest error. When the vision leg fails closed too (no
 //!    vision-capable model either), `describe` returns
 //!    `VIDEO_UNAVAILABLE`, naming the remedy.
 //!

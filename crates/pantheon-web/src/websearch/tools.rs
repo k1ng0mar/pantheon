@@ -1,11 +1,9 @@
-//! The `web_search` tool: web **lookup**, deliberately distinct from browser
-//! automation.
+//! The `web_search` tool: web lookup, not browser automation.
 //!
-//! Registration policy: a tool that can never work must not appear in the
-//! model's tool list. When web search is disabled or no API key was resolved,
-//! `register_websearch_tools` registers nothing and returns `Ok(0)`; the
-//! parent logs the reason. The API key is passed in via [`WebsearchOptions`]
-//! and never logged or embedded in errors.
+//! Don't register a tool that can't work. If search is disabled or the key
+//! wasn't resolved, `register_websearch_tools` registers nothing and returns
+//! `Ok(0)`; the parent logs why. Key comes in via [`WebsearchOptions`], never
+//! logged or embedded in errors.
 
 use super::provider::{SearchOptions, SearchProvider};
 use super::tavily::TavilyProvider;
@@ -15,17 +13,17 @@ use pantheon_api::message::ToolSchema;
 use pantheon_tools::tools::{parse_args, ToolRegistry};
 use std::sync::Arc;
 
-/// Env/secret name the parent resolves the Tavily key from.
+/// secret/env name the parent resolves the Tavily key from
 pub const TAVILY_API_KEY: &str = "TAVILY_API_KEY";
 
-/// Snippets longer than this are cut before they hit context.
+/// cut long snippets before they hit context
 const SNIPPET_MAX_CHARS: usize = 500;
-/// Hard ceiling on per-call results, regardless of what the args ask for.
+/// hard per-call cap, whatever the args ask for
 const MAX_RESULTS_CEILING: u8 = 10;
 
-/// Options for `register_websearch_tools`. The `api_key` is resolved by the
-/// caller (via `pantheon_secrets::SecretsBroker` or the env) and handed in as
-/// a plain string; this crate never reads env or the vault itself.
+/// Options for `register_websearch_tools`. Caller resolves `api_key` via
+/// `pantheon_secrets::SecretsBroker` or env and hands it in; this crate
+/// doesn't read env or the vault itself.
 pub struct WebsearchOptions {
     pub enabled: bool,
     pub max_results: u8,
@@ -44,9 +42,8 @@ impl Default for WebsearchOptions {
 
 /// Register the Tavily-backed `web_search` tool.
 ///
-/// Returns the number of tools registered. When `enabled` is false or the
-/// key is missing/blank, registers **nothing** and returns `Ok(0)` - the
-/// parent logs why; the model must not see a tool that can never work.
+/// Returns how many tools were registered. Disabled or missing/blank key ->
+/// nothing, `Ok(0)`; parent logs why. Don't show the model a tool that can't work.
 pub fn register_websearch_tools(
     reg: &mut ToolRegistry,
     opts: WebsearchOptions,
@@ -61,10 +58,9 @@ pub fn register_websearch_tools(
     register_search_tools(reg, Arc::new(TavilyProvider::new(key)), opts.max_results)
 }
 
-/// Register `web_search` against any [`SearchProvider`]. This is the seam the
-/// mock-provider contract test drives; [`register_websearch_tools`] is the
-/// Tavily-backed production entry point. Returns the number of tools
-/// registered (always 1).
+/// Register `web_search` against any [`SearchProvider`]. The mock-provider
+/// contract test drives this; [`register_websearch_tools`] is the Tavily-backed
+/// production entry. Returns the number registered (always 1).
 pub fn register_search_tools(
     reg: &mut ToolRegistry,
     provider: Arc<dyn SearchProvider>,
@@ -119,8 +115,8 @@ pub fn register_search_tools(
             let max = v
                 .get("max_results")
                 .and_then(serde_json::Value::as_u64)
-                // Clamp in u64 first: casting to u8 first wrapped
-                // (256 -> 0 -> clamped to 1, 300 -> 44 -> clamped to 10).
+                // clamp in u64 first: casting to u8 first wrapped
+                // (256 -> 0 -> 1, 300 -> 44 -> 10)
                 .map(|n| n.clamp(1, u64::from(MAX_RESULTS_CEILING)) as u8)
                 .unwrap_or(default_max);
             let domains = |key: &str| -> Vec<String> {
@@ -144,11 +140,9 @@ pub fn register_search_tools(
                     exclude_domains: exclude.clone(),
                 },
             )?;
-            // Client-side domain filtering: only a few providers honour
-            // include/exclude natively, but the tool schema promises
-            // them for every provider. Filtering here makes the promise
-            // true uniformly (native filtering + this pass is harmless:
-            // both keep the same set).
+            // client-side domain filtering: only a few providers honour
+            // include/exclude natively, but the schema promises them for
+            // all providers, so do it here. native + this pass is fine.
             let results = filter_domains(results, &include, &exclude);
             let compact: Vec<serde_json::Value> = results
                 .into_iter()
@@ -164,11 +158,10 @@ pub fn register_search_tools(
                     o
                 })
                 .collect();
-            // An empty array used to read as silence: the model could
-            // not tell "nothing matched" from "the call returned
-            // nothing". A single note object says it plainly (and a
-            // provider error still fails the call instead, so a note
-            // always means "searched, found nothing").
+            // empty array reads as silence: the model can't tell "nothing
+            // matched" from "the call returned nothing". a single note object
+            // says it. errors still fail the call, so a note means
+            // "searched, found nothing".
             if compact.is_empty() {
                 return Ok(
                     r#"[{"note":"no results found for this query"}]"#.to_string(),
@@ -180,9 +173,9 @@ pub fn register_search_tools(
     Ok(1)
 }
 
-/// Host of a result URL, lowercased, without port or userinfo.
-/// Returns `None` for URLs with no usable host, which then match no
-/// include list and are dropped when one is given.
+/// host of a result URL, lowercased, no port/userinfo. `None` for URLs with
+/// no usable host — those match no include list and get dropped when one is
+/// given.
 fn url_host(url: &str) -> Option<String> {
     let after = url.split("://").nth(1).unwrap_or(url);
     let host_port = after.split(['/', '?', '#']).next().unwrap_or("");
@@ -199,14 +192,13 @@ fn url_host(url: &str) -> Option<String> {
     }
 }
 
-/// True when `host` is `domain` or a subdomain of it.
+/// true when `host` is `domain` or a subdomain of it
 fn host_matches_domain(host: &str, domain: &str) -> bool {
     let domain = domain.trim().trim_start_matches('.').to_ascii_lowercase();
     !domain.is_empty() && (host == domain || host.ends_with(&format!(".{domain}")))
 }
 
-/// Apply include/exclude domain filters to a provider's results.
-/// Empty lists mean "no constraint" on that side.
+/// apply include/exclude filters; empty lists mean no constraint on that side
 pub fn filter_domains(
     results: Vec<super::provider::SearchResult>,
     include: &[String],
@@ -232,7 +224,7 @@ pub fn filter_domains(
         .collect()
 }
 
-/// Char-boundary-safe truncation.
+/// truncate on char boundaries so we never split UTF-8
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();

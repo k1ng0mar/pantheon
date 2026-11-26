@@ -13,49 +13,43 @@
 
 use pantheon_api::error::{Layer, PantheonError};
 
-/// Install instructions surfaced whenever the binary is missing. Never
-/// crash or panic on a missing optional binary - tell the user how to get
-/// it and let the run continue.
+/// install instructions for when the binary is missing. never crash/panic on
+/// a missing optional binary — tell the user how to get it and keep going.
 ///
-/// Verified 2026-09-29 against the real project (open-gsd/gsd-browser):
-/// the npm package is `@opengsd/gsd-browser` (npm registry, latest 0.2.2
-/// at verification time) and the repo is `github.com/open-gsd/gsd-browser`
-/// (GitHub API). An earlier revision of this string named
-/// `install.gsd.build` and the `gsd-build` org - both wrong.
+/// Verified against the real project (open-gsd/gsd-browser): npm package is
+/// `@opengsd/gsd-browser` (latest 0.2.2 at verification time), repo is
+/// `github.com/open-gsd/gsd-browser`. An earlier revision named
+/// `install.gsd.build` and the `gsd-build` org — both wrong.
 pub const INSTALL_INSTRUCTIONS: &str = "gsd-browser is not installed or not executable. \
 Install it with `npm install -g @opengsd/gsd-browser` \
 or build from source: https://github.com/open-gsd/gsd-browser. \
 Then make sure `gsd-browser` is on PATH, or point the browser config at it explicitly (`[browser] binary`).";
 
-/// Failures from the browser backend. Kept as a plain enum (not a
-/// `PantheonError`) so the trait seam in [`crate::backend`] stays
-/// decoupled from the API crate's error type; the `From` impl below is
-/// the single place the mapping lives.
+/// backend failures. plain enum (not `PantheonError`) so the trait seam in
+/// [`crate::backend`] stays decoupled from the API crate's error type; the
+/// `From` impl below is the one place the mapping lives.
 #[derive(Debug)]
 pub enum BrowserError {
-    /// The binary is missing from PATH or not executable. Carries the
-    /// install instructions so the tool layer can hand the user a fix,
-    /// not just a failure.
+    /// binary missing from PATH / not executable; carries install instructions
+    /// so the tool layer can hand the user a fix
     BinaryMissing { binary: String, detail: String },
-    /// The binary ran but the command failed (non-zero exit).
+    /// binary ran but the command failed (non-zero exit)
     Failed {
         argv: Vec<String>,
         exit: Option<i32>,
         stderr: String,
     },
-    /// The child was killed after `timeout_secs` without finishing.
+    /// child killed after `timeout_secs` without finishing
     Timeout { argv: Vec<String>, secs: u64 },
-    /// Stdout was not parseable as the expected JSON.
+    /// stdout wasn't parseable as the expected JSON
     BadOutput { argv: Vec<String>, detail: String },
-    /// A ref (`@v1:e1`) was used after its page version expired. The
-    /// message is passed through so the model re-snapshots; the tool
-    /// layer must NOT silently retry the same ref.
+    /// a ref (`@v1:e1`) used after its page version expired; message passes
+    /// through so the model re-snapshots — the tool layer must NOT silently
+    /// retry the same ref
     StaleRef { message: String },
-    /// The active backend does not implement this canonical command
-    /// (e.g. `act-instruction` on the raw-CDP backends, or any
-    /// interactive command the backend does not implement).
-    /// Not a failure of the page or session - pick a different command
-    /// or backend.
+    /// backend doesn't implement this command (e.g. `act-instruction` on raw
+    /// CDP, or any interactive command it can't do). not a page/session
+    /// failure — pick a different command or backend
     UnsupportedCommand { command: String, backend: String },
 }
 
@@ -102,10 +96,9 @@ fn perr(code: &str, cause: String, retryable: bool, remediation: &str) -> Panthe
 impl From<BrowserError> for PantheonError {
     fn from(e: BrowserError) -> Self {
         match e {
-            // The gsd-specific install block only applies to the gsd
-            // backend's binary. Other backends (e.g. camofox's Python
-            // shim) carry their own install guidance in `detail` - the
-            // gsd text would be actively misleading there.
+            // gsd install block only applies to gsd's binary. other
+            // backends (camofox's Python shim) carry their own guidance in
+            // `detail` — gsd text would be actively misleading there.
             BrowserError::BinaryMissing { binary, detail } if binary.contains("gsd") => perr(
                 "BROWSER_BINARY_MISSING",
                 format!("{detail}\n{INSTALL_INSTRUCTIONS}"),
@@ -138,18 +131,18 @@ impl From<BrowserError> for PantheonError {
                 false,
                 "the gsd-browser CLI may have changed its output format; check its version",
             ),
-            // Stale refs are a *model* problem, not a retry problem: the
+            // stale ref is a *model* problem, not a retry problem: the
             // message goes through verbatim so the model knows to take a
-            // fresh snapshot and pick new refs.
+            // fresh snapshot and pick new refs
             BrowserError::StaleRef { message } => perr(
                 "BROWSER_STALE_REF",
                 message,
                 false,
                 "take a fresh browser_snapshot and use the new refs; never reuse refs across page changes",
             ),
-            // Unsupported command is a *configuration* problem: the
-            // active backend can't do this. The remediation names the
-            // fix (different command or different backend).
+            // unsupported command is a *configuration* problem: this
+            // backend can't do it. remediation names the fix (different
+            // command or different backend)
             BrowserError::UnsupportedCommand { command, backend } => perr(
                 "BROWSER_UNSUPPORTED_COMMAND",
                 format!("backend '{backend}' does not implement '{command}'"),

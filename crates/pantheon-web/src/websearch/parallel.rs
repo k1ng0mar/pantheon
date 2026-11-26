@@ -1,31 +1,26 @@
-//! Anonymous Parallel search via its public MCP endpoint.
-//!
-//! Keyless: `POST https://search.parallel.ai/mcp` with a JSON-RPC
-//! `tools/call` for `web_search` (`objective`, `search_queries`,
-//! `session_id`). No auth header. The public endpoint runs on a shared
-//! quota (expect throttling), so this row is a fallback, never the
-//! recommended default. The tool answers with JSON text shaped
+//! Anonymous Parallel via the public MCP endpoint. Keyless JSON-RPC
+//! `tools/call` for `web_search`. Shared quota -> throttling, so fallback not
+//! default. Tool answers with JSON text shaped
 //! `{results:[{url,title,excerpts[]}]}`.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Default MCP endpoint URL.
+/// public MCP endpoint
 pub const DEFAULT_BASE_URL: &str = "https://search.parallel.ai/mcp";
 
-/// Anonymous Parallel search provider. Keyless - no constructor key.
+/// keyless, no constructor key
 pub struct ParallelFreeProvider {
     base_url: String,
 }
 
 impl ParallelFreeProvider {
-    /// Production constructor: the public keyless endpoint.
     pub fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the endpoint URL.
+    /// local mirror / test server
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -39,9 +34,8 @@ impl Default for ParallelFreeProvider {
     }
 }
 
-/// Per-process correlation id for the free tier (rate limiting only,
-/// never persisted). Timestamp + pid hex: unique enough without a uuid
-/// dependency.
+/// per-process correlation id for the free tier (rate limiting only, never
+/// persisted). timestamp + pid hex: unique enough, no uuid dep.
 fn session_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -83,10 +77,8 @@ impl SearchProvider for ParallelFreeProvider {
     }
 }
 
-/// Parse Parallel's JSON result text. Pure and unit-testable. Hits live
-/// at `results` with `url`/`title` and joined `excerpts`. A hit without
-/// a usable URL is skipped; a missing or non-array `results` is a
-/// `BadResponse`.
+/// Parse Parallel's JSON result text. Hits at `results` with `url`/`title`
+/// and joined `excerpts`; skip no-URL hits; no `results` array -> `BadResponse`.
 pub fn parse_parallel_results(body: &str, limit: u8) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;

@@ -7,7 +7,7 @@
 //! condition probe through `eval`; `act`/`act-instruction` are unsupported
 //! (no agent in this loop).
 //!
-//! Verified against the live CLI on 2026-09-29 (`npx -y @playwright/cli
+//! Verified against the live CLI (`npx -y @playwright/cli
 //! --help`): `playwright-cli -s=<session> --json <command>...` (`--json`
 //! is a global option). `snapshot` captures the page to obtain element
 //! refs (`e15`-style); `click`/`fill`/`hover` take a ref or unique

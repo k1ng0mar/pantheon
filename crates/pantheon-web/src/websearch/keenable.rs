@@ -1,32 +1,28 @@
-//! Anonymous Keenable search (`POST {base}/v1/search/public`).
-//!
-//! Keyless: no auth header, just the `X-Keenable-Title` app id. The
-//! public endpoint runs on a shared quota (expect throttling), so this
-//! row is a fallback, never the recommended default. Results are plain
-//! `results[].{url,title,snippet|description}` JSON.
+//! Anonymous Keenable, `POST {base}/v1/search/public`. Keyless, just the
+//! `X-Keenable-Title` app id. Shared quota -> throttling, so fallback not
+//! default. Plain `results[].{url,title,snippet|description}` JSON.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Default API base URL (no trailing path).
+/// base URL
 pub const DEFAULT_BASE_URL: &str = "https://api.keenable.ai";
 
-/// App id header Keenable's public endpoints require.
+/// app id header their public endpoints want
 pub const APP_TITLE: &str = "pantheon";
 
-/// Keenable anonymous search provider. Keyless - no constructor key.
+/// keyless, no constructor key
 pub struct KeenableFreeProvider {
     base_url: String,
 }
 
 impl KeenableFreeProvider {
-    /// Production constructor: the public keyless endpoint.
     pub fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the API base URL.
+    /// local mirror / test server
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -61,10 +57,8 @@ impl SearchProvider for KeenableFreeProvider {
     }
 }
 
-/// Parse the Keenable public-search JSON envelope. Pure and
-/// unit-testable. Hits live at `results` with `url`/`title` and
-/// `snippet` (falling back to `description`). A hit without a usable
-/// URL is skipped; a missing or non-array `results` is a `BadResponse`.
+/// Parse the envelope. Hits at `results`, snippet from `snippet` falling back
+/// to `description`. Skip no-URL hits; no `results` array -> `BadResponse`.
 pub fn parse_keenable_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;

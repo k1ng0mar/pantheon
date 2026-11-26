@@ -1,5 +1,3 @@
-//! Auxiliary helpers in one file.
-
 pub mod judge {
     //! Provider-agnostic judge-model adapter.
     //!
@@ -1283,17 +1281,13 @@ pub mod answer_line {
     //! Shared preamble for pulling the answer line out of a chatty aux-model
     //! reply: drop code-fence lines, then keep the non-empty trimmed lines.
     //!
-    //! Both the judge (`judge.rs`) and the adversarial verifier (`verify.rs`)
-    //! grew their own copy of this preamble and DIVERGED in the matcher that
-    //! picks the answer line - so the preamble lives here, but the two matchers
-    //! stay separate on purpose. Unifying the matchers would change untested
-    //! behavior: for trailing prose *after* the answer line, the verifier picks
-    //! the `ANSWER`-prefixed line while the judge falls back to the last line
-    //! (its strict matcher only fires on a bare `ANSWER` or an `answer:`-prefixed
-    //! line). No existing test discriminates between them - every test in both
-    //! suites puts the answer on the last line, where both matchers agree - so
-    //! the two-matcher split is the honest outcome: both matchers are frozen
-    //! as-is rather than silently "fixed" into one.
+    //! The judge (`judge.rs`) and the adversarial verifier (`verify.rs`) share this
+    //! preamble but keep separate answer-line matchers on purpose. For trailing prose
+    //! *after* the answer line, the verifier picks the `ANSWER`-prefixed line while
+    //! the judge falls back to the last line (its strict matcher only fires on a bare
+    //! `ANSWER` or an `answer:`-prefixed line). No test discriminates between them,
+    //! since every test in both suites puts the answer on the last line; unifying the
+    //! matchers would change untested behavior, so both stay frozen as-is.
 
     /// Code-fence-stripped, non-empty, trimmed lines of a model reply.
     ///

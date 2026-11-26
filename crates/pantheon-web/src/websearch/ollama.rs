@@ -1,39 +1,28 @@
-//! Ollama Web Search-backed [`SearchProvider`]:
-//! `POST https://ollama.com/api/web_search`.
-//!
-//! This is the hosted Ollama search API (a free Ollama account API key),
-//! not the local model daemon. Auth is `Authorization: Bearer <key>`.
-//! Responses carry no date fields: `published` is always `None` rather
-//! than fabricated.
-//!
-//! The API key is handed to the constructor by the caller (resolved from the
-//! secrets broker or the env by the parent) and never appears in any log
-//! line, error, or tool result.
+//! Hosted Ollama search API (free account key), not the local model daemon.
+//! `POST .../api/web_search`, `Authorization: Bearer <key>`. No date fields,
+//! so `published` stays `None`. Key handed in by the parent, never logged.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Default API base URL (no trailing path; `/api/web_search` is appended).
+/// base URL, `/api/web_search` appended later
 pub const DEFAULT_BASE_URL: &str = "https://ollama.com";
-/// Env/secret name the parent resolves the Ollama key from.
+/// secret/env name the parent resolves the key from
 pub const OLLAMA_API_KEY: &str = "OLLAMA_API_KEY";
 
-/// Ollama Web Search provider.
 pub struct OllamaProvider {
     api_key: String,
     base_url: String,
 }
 
 impl OllamaProvider {
-    /// Production constructor: default Ollama endpoint.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self::with_base_url(api_key, DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the API base URL (e.g. a
-    /// local daemon at `http://localhost:11434` proxies the same path when
-    /// signed in).
+    /// local mirror / test server, or a local daemon on
+    /// http://localhost:11434 that proxies the same path when signed in
     pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -41,7 +30,7 @@ impl OllamaProvider {
         }
     }
 
-    /// The base URL in use (without the `/api/web_search` path).
+    /// base URL without `/api/web_search`
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -53,7 +42,7 @@ impl SearchProvider for OllamaProvider {
     }
 
     fn search(&self, query: &str, opts: &SearchOptions) -> Result<Vec<SearchResult>, SearchError> {
-        // The API caps max_results at 10.
+        // API caps max_results at 10
         let body = serde_json::json!({
             "query": query,
             "max_results": opts.max_results.min(10),
@@ -65,12 +54,8 @@ impl SearchProvider for OllamaProvider {
     }
 }
 
-/// Parse an Ollama web-search JSON envelope. Pure and unit-testable.
-///
-/// Hits live at `results` with `title`/`url`/`content`. Ollama returns no
-/// date fields, so `published` is always `None`. A single malformed hit is
-/// skipped, never fatal; a hit without a usable URL is skipped. A missing
-/// or non-array `results` field is a `BadResponse`.
+/// Parse the envelope. Hits at `results`; no date fields so `published` stays
+/// `None`. Skip bad hits / no-URL hits; no `results` array -> `BadResponse`.
 pub fn parse_ollama_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;

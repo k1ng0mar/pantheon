@@ -1,39 +1,32 @@
-//! Shared raw-CDP driver over `chromiumoxide` (=0.9.1, pinned).
-//!
-//! [`CdpDriver`] translates the canonical browser argv (see
-//! [`super::backend`]) into CDP commands. It is shared by three
-//! backends: the native local backend ([`super::native`], launched
-//! Chrome), Steel ([`super::steel`]) and Browserbase
-//! ([`super::browserbase`]) - both of which hand us a websocket URL
-//! (raw-CDP subset).
+//! Shared raw-CDP driver over `chromiumoxide` (=0.9.1, pinned) that turns
+//! canonical browser argv (see [`super::backend`]) into CDP commands. Shared
+//! by native (launched Chrome), Steel and Browserbase (both hand us a
+//! websocket URL, raw-CDP subset).
 //!
 //! ## CDP schema drift
 //!
-//! Chrome's CDP schema moves under the client (Chrome 142 broke
-//! chromiumoxide 0.6's protocol types). Two defenses:
-//!
-//! * the crate version is pinned exact (`=0.9.1` in `Cargo.toml`);
-//! * unknown protocol *events* never hard-fail: chromiumoxide 0.9
-//!   deserializes unrecognized event methods into
-//!   `CdpEvent::Other(serde_json::Value)` and the handler keeps going
-//!   verified in the vendored source
-//!   (`chromiumoxide_cdp-0.9.1/src/cdp.rs`, the `_ => CdpEvent::Other(..)`
-//!   arm of the `CdpEventMessage` deserializer). Command responses ignore
-//!   unknown fields by default serde behavior.
+//! Chrome's CDP schema moves under the client (Chrome 142 broke chromiumoxide
+//! 0.6's protocol types). Two defenses: pin the crate exact (`=0.9.1`), and
+//! never hard-fail on unknown *events* — chromiumoxide 0.9 deserializes
+//! unrecognized event methods into `CdpEvent::Other(serde_json::Value)` and
+//! the handler keeps going (verified in the vendored source,
+//! `chromiumoxide_cdp-0.9.1/src/cdp.rs`, the
+//! `_ => CdpEvent::Other(..)` arm). Command responses drop unknown fields via
+//! default serde behavior.
 //!
 //! ## Ref model
 //!
-//! `snapshot` walks `Accessibility.getFullAXTree` and assigns versioned
-//! refs (`@v{n}:e{m}`) anchored on `backendDOMNodeId`. Refs invalidate on
-//! every new snapshot; using a ref from an older version is
-//! [`BrowserError::StaleRef`], mirroring gsd-browser semantics.
+//! `snapshot` walks `Accessibility.getFullAXTree` and assigns versioned refs
+//! (`@v{n}:e{m}`) anchored on `backendDOMNodeId`. Refs invalidate every new
+//! snapshot; using an old version is [`BrowserError::StaleRef`], matching
+//! gsd-browser.
 //!
 //! ## Threading
 //!
-//! chromiumoxide is async (tokio). The [`BrowserBackend`] trait is sync,
-//! so the driver owns one shared multi-thread tokio runtime and
-//! `block_on`s each call. The handler future is parked on a spawned task
-//! per connection (chromiumoxide requires the handler to be polled).
+//! chromiumoxide is async (tokio); [`BrowserBackend`] is sync, so the driver
+//! owns one shared multi-thread tokio runtime and `block_on`s each call. The
+//! handler future is parked on a spawned task per connection (chromiumoxide
+//! needs it polled).
 
 use super::backend::WAIT_CAP;
 use super::error::BrowserError;
@@ -47,13 +40,13 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Per-command operation timeout default (seconds).
+/// per-command op timeout default (seconds)
 pub const DEFAULT_OP_TIMEOUT_SECS: u64 = 120;
 
-/// Poll interval for `wait-for` conditions.
+/// poll interval for `wait-for` conditions
 const WAIT_POLL: Duration = Duration::from_millis(250);
 
-/// One shared tokio runtime for all CDP drivers in the process.
+/// one shared tokio runtime for all CDP drivers in the process
 pub(crate) fn shared_runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
@@ -65,7 +58,7 @@ pub(crate) fn shared_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// One versioned ref target: an AX node anchored on its backend DOM id.
+/// one versioned ref target: an AX node anchored on its backend DOM id
 #[derive(Debug, Clone)]
 pub struct RefTarget {
     pub backend_node_id: i64,
@@ -73,7 +66,7 @@ pub struct RefTarget {
     pub name: String,
 }
 
-/// Versioned ref table for one session page.
+/// versioned ref table for one session page
 #[derive(Debug, Default)]
 pub struct RefTable {
     version: u64,
@@ -81,8 +74,8 @@ pub struct RefTable {
 }
 
 impl RefTable {
-    /// Rebuild from a fresh AX snapshot; returns the new version and the
-    /// JSON-serializable element list.
+    /// rebuild from a fresh AX snapshot; returns the new version and the
+    /// JSON-serializable element list
     pub fn rebuild(&mut self, nodes: &[(i64, String, String)]) -> (u64, Vec<serde_json::Value>) {
         self.version += 1;
         self.entries.clear();
@@ -107,7 +100,7 @@ impl RefTable {
         (v, out)
     }
 
-    /// Resolve a ref string, enforcing version freshness.
+    /// resolve a ref string, enforcing version freshness
     pub fn resolve(&self, r: &str) -> Result<&RefTarget, BrowserError> {
         let v: u64 = r
             .strip_prefix("@v")
@@ -130,7 +123,7 @@ impl RefTable {
     }
 }
 
-/// Per-session driver state: one page plus its ref table.
+/// per-session driver state: one page plus its ref table
 struct SessionState {
     page: Page,
     refs: RefTable,
@@ -138,20 +131,20 @@ struct SessionState {
 
 struct DriverInner {
     browser: Option<Browser>,
-    /// Parked handler-poll task; dropped with the driver.
+    /// parked handler-poll task; dropped with the driver
     _handler_task: Option<tokio::task::JoinHandle<()>>,
     sessions: HashMap<String, SessionState>,
 }
 
-/// How the driver reaches a browser.
+/// how the driver reaches a browser
 enum Connector {
     Launch {
         chrome_path: Option<PathBuf>,
         headless: bool,
         request_timeout: Duration,
-        /// Explicit `--no-sandbox` opt-in. `false` unless
-        /// [`CdpDriver::with_no_sandbox`] was called with `true`:
-        /// never default to unsandboxed.
+        /// explicit `--no-sandbox` opt-in; `false` unless
+        /// [`CdpDriver::with_no_sandbox`] was called with `true`. never
+        /// default to unsandboxed.
         no_sandbox: bool,
     },
     Connect {
@@ -159,22 +152,21 @@ enum Connector {
     },
 }
 
-/// Raw-CDP driver shared by the native, Steel and Browserbase
-/// backends. Connection is lazy: nothing dials out until the
-/// first command.
+/// raw-CDP driver shared by native, Steel and Browserbase. lazy: nothing
+/// dials out until the first command.
 pub struct CdpDriver {
     connector: Connector,
-    /// Async mutex: `Browser::new_page` needs `&Browser` across an await,
-    /// which a std mutex cannot lend. One lock guards init + page
-    /// creation; command dispatch itself runs unlocked.
+    /// async mutex: `Browser::new_page` needs `&Browser` across an await,
+    /// which a std mutex can't lend. one lock guards init + page creation;
+    /// command dispatch runs unlocked.
     inner: tokio::sync::Mutex<DriverInner>,
     op_timeout_secs: u64,
-    /// Backend name used in [`BrowserError::UnsupportedCommand`].
+    /// backend name used in [`BrowserError::UnsupportedCommand`]
     backend_name: String,
 }
 
 impl CdpDriver {
-    /// Lazy local-Chrome driver (chromiumoxide launch).
+    /// lazy local-Chrome driver
     pub fn launch_lazy(
         chrome_path: Option<PathBuf>,
         headless: bool,
@@ -197,8 +189,7 @@ impl CdpDriver {
         }
     }
 
-    /// Lazy websocket driver (Steel/Browserbase session URL).
-    /// Returns `Err` immediately when the URL is empty - fail fast at
+    /// lazy websocket driver (Steel/Browserbase URL). Empty URL fails at
     /// construction, not on first tool call.
     pub fn connect_lazy(
         url: String,
@@ -223,14 +214,13 @@ impl CdpDriver {
         })
     }
 
-    /// Explicit `--no-sandbox` opt-in for local Chrome launches.
-    /// Default off: [`launch_lazy`] never passes the flag unless this
-    /// is called with `true` (wired from `[browser] no_sandbox`). The
-    /// flag is kept for environments that need it - headless CI
-    /// containers running as root, where Chrome refuses to launch
-    /// without it - but opting in prints a loud warning at launch
-    /// (see [`start_browser`]). Remote (`Connect`) drivers ignore it:
-    /// they launch nothing locally.
+    /// explicit `--no-sandbox` opt-in for local Chrome. off by default:
+    /// [`launch_lazy`] never passes it unless this is called with `true`
+    /// (wired from `[browser] no_sandbox`). kept for environments that
+    /// need it — headless CI containers running as root, where Chrome
+    /// refuses to launch without it — but opting in warns loudly at launch
+    /// (see [`start_browser`]). remote (`Connect`) drivers ignore it: they
+    /// launch nothing locally.
     pub fn with_no_sandbox(mut self, no_sandbox: bool) -> Self {
         if let Connector::Launch {
             no_sandbox: flag, ..
@@ -253,8 +243,8 @@ impl CdpDriver {
     }
 
     fn cdp_err(&self, argv: &[String], e: impl std::fmt::Display) -> BrowserError {
-        // Never include the websocket URL (it can carry an API key query
-        // param, e.g. Steel's `&apiKey=`).
+        // never include the websocket URL (it can carry an API key query
+        // param, e.g. Steel's `&apiKey=`)
         BrowserError::Failed {
             argv: argv.to_vec(),
             exit: None,
@@ -272,18 +262,14 @@ impl CdpDriver {
                     request_timeout,
                     no_sandbox,
                 } => {
-                    // `--no-sandbox` is Chrome's own sandbox flag, not
-                    // Pantheon's, and it is opt-in only: it is passed
-                    // solely when the operator explicitly set it (see
-                    // `with_no_sandbox`), never by default. The browser
-                    // backends are documented as unsandboxed by design
-                    // (see browser/mod.rs) - the control is the
-                    // capability gate, not the Chrome sandbox - but
-                    // that design choice must not silently become a
-                    // sandboxed-off Chrome: warn loudly at every
-                    // launch that opts in. Remote CDP (`Connect`) never
-                    // launches a browser, so this flag touches only the
-                    // local-launch path.
+                    // `--no-sandbox` is Chrome's own flag, not Pantheon's,
+                    // and strictly opt-in (see `with_no_sandbox`), never
+                    // default. backends are documented as unsandboxed by
+                    // design — the control is the capability gate, not
+                    // Chrome's sandbox — but that choice must not silently
+                    // become a sandboxed-off Chrome, so warn loudly at every
+                    // opting-in launch. remote (`Connect`) never launches a
+                    // browser, so this touches only the local path.
                     let mut builder = BrowserConfig::builder().request_timeout(*request_timeout);
                     if *no_sandbox {
                         eprintln!(
@@ -308,8 +294,8 @@ impl CdpDriver {
         start.await.map_err(|e| self.cdp_err(argv, e))
     }
 
-    /// Get (creating) the page for a Pantheon session, initializing the
-    /// browser on first use.
+    /// get (creating) the page for a session, initializing the browser on
+    /// first use
     async fn session_page(&self, session: &str, argv: &[String]) -> Result<Page, BrowserError> {
         let mut inner = self.inner.lock().await;
         if let Some(s) = inner.sessions.get(session) {
@@ -317,10 +303,10 @@ impl CdpDriver {
         }
         if inner.browser.is_none() {
             let (browser, mut handler) = self.start_browser(argv).await?;
-            // chromiumoxide requires the handler future to be polled;
-            // park it on a task for the connection's lifetime. Unknown
-            // CDP events arrive as `CdpEvent::Other` and are ignored
-            // schema drift never wedges the driver.
+            // chromiumoxide needs the handler future polled; park it on a
+            // task for the connection's lifetime. unknown CDP events arrive
+            // as `CdpEvent::Other` and are ignored — schema drift never
+            // wedges the driver.
             inner._handler_task = Some(tokio::spawn(async move {
                 while handler.next().await.is_some() {}
             }));
@@ -343,7 +329,7 @@ impl CdpDriver {
         Ok(page)
     }
 
-    /// Close the page for `session`, dropping its ref table.
+    /// close the page for `session`, dropping its ref table
     pub fn close_session(&self, session: &str) {
         let page = shared_runtime().block_on(async {
             self.inner
@@ -358,7 +344,7 @@ impl CdpDriver {
         }
     }
 
-    /// Execute one canonical command in `session`.
+    /// execute one canonical command in `session`
     pub fn execute(
         &self,
         argv: &[String],
@@ -500,7 +486,7 @@ impl CdpDriver {
         }
     }
 
-    /// History navigation via getNavigationHistory + navigateToHistoryEntry.
+    /// history navigation via getNavigationHistory + navigateToHistoryEntry
     async fn history_step(
         &self,
         page: &Page,
@@ -529,7 +515,7 @@ impl CdpDriver {
         Ok(())
     }
 
-    /// `snapshot`: AX tree → versioned refs.
+    /// `snapshot`: AX tree -> versioned refs
     async fn snapshot(
         &self,
         page: &Page,
@@ -539,7 +525,7 @@ impl CdpDriver {
         let err = |e: chromiumoxide::error::CdpError| self.cdp_err(argv, e);
         let params = accessibility::GetFullAxTreeParams::builder().build();
         let tree = page.execute(params).await.map_err(err)?;
-        // Keep interactive roles; skip ignored/subtree-hidden nodes.
+        // keep interactive roles; skip ignored / subtree-hidden nodes
         let mut nodes: Vec<(i64, String, String)> = Vec::new();
         for n in &tree.nodes {
             if n.ignored {
@@ -579,7 +565,7 @@ impl CdpDriver {
         Ok(serde_json::json!({"version": version, "elements": elements}))
     }
 
-    /// Resolve `argv[1]` to the live remote object id of the ref's node.
+    /// resolve `argv[1]` to the live remote object id of the ref's node
     async fn resolve_ref_object_id(
         &self,
         page: &Page,
@@ -614,7 +600,7 @@ impl CdpDriver {
     }
 
     /// `Runtime.callFunctionOn` against a remote object id, with an
-    /// optional single string argument.
+    /// optional single string arg
     async fn call_fn_on(
         &self,
         page: &Page,
@@ -639,10 +625,9 @@ impl CdpDriver {
         Ok(())
     }
 
-    /// `wait-for --condition <enum> [--value <v>]`: canonical
-    /// gsd-browser conditions (see [`super::backend`]); conditions the
-    /// raw-CDP path cannot implement honestly become
-    /// `UnsupportedCommand` via [`wait_plan`].
+    /// `wait-for --condition <enum> [--value <v>]`: canonical gsd-browser
+    /// conditions (see [`super::backend`]); ones the raw-CDP path can't do
+    /// honestly become `UnsupportedCommand` via [`wait_plan`].
     async fn wait_for(
         &self,
         page: &Page,
@@ -660,8 +645,8 @@ impl CdpDriver {
                 loop {
                     let hit: bool = self.eval_js(page, argv, &js).await?;
                     if hit {
-                        // gsd-browser's verified shape carries "met";
-                        // keep "ok" for the existing unit expectations.
+                        // gsd-browser's verified shape carries "met"; keep
+                        // "ok" for the existing unit expectations
                         return Ok(serde_json::json!({"ok": true, "met": true}));
                     }
                     if tokio::time::Instant::now() >= deadline {
@@ -681,8 +666,8 @@ impl CdpDriver {
     }
 
     /// `extract [--schema <json>] [--selector <sel>]`: structured
-    /// extraction driven by `_selector`/`_attribute` hints per property,
-    /// or readable text when no schema is given.
+    /// extraction driven by `_selector`/`_attribute` hints per property, or
+    /// readable text when no schema is given
     async fn extract(
         &self,
         page: &Page,
@@ -695,7 +680,7 @@ impl CdpDriver {
         Ok(v)
     }
 
-    /// `screenshot --output <path> --format <png|jpeg>`.
+    /// `screenshot --output <path> --format <png|jpeg>`
     async fn screenshot(
         &self,
         page: &Page,
@@ -720,7 +705,7 @@ impl CdpDriver {
         Ok(serde_json::json!({"ok": true, "path": path, "bytes": bytes.len()}))
     }
 
-    /// Evaluate JS and deserialize the by-value result.
+    /// evaluate JS and deserialize the by-value result
     async fn eval_js<T: serde::de::DeserializeOwned>(
         &self,
         page: &Page,
@@ -751,7 +736,7 @@ impl CdpDriver {
     }
 }
 
-/// Roles worth exposing as refs (interactive elements).
+/// roles worth exposing as refs (interactive elements)
 fn is_interactive_role(role: &str) -> bool {
     matches!(
         role,
@@ -773,7 +758,7 @@ fn is_interactive_role(role: &str) -> bool {
     )
 }
 
-/// `argv` flag lookup: `["--flag", "value"]`.
+/// `argv` flag lookup: `["--flag", "value"]`
 fn flag_value(argv: &[String], flag: &str) -> Option<String> {
     argv.iter()
         .position(|a| a == flag)
@@ -781,7 +766,7 @@ fn flag_value(argv: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
-/// The ref argument of a `*-ref` command (`argv[1]`).
+/// the ref arg of a `*-ref` command (`argv[1]`)
 fn ref_arg(argv: &[String]) -> Result<&str, BrowserError> {
     argv.get(1).map(String::as_str).ok_or(BrowserError::Failed {
         argv: argv.to_vec(),
@@ -790,22 +775,21 @@ fn ref_arg(argv: &[String]) -> Result<&str, BrowserError> {
     })
 }
 
-/// Render a Rust string as a JS string literal.
+/// render a Rust string as a JS string literal
 pub(crate) fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-/// Build the extraction JS. With a schema, each property's
-/// `_selector`/`_attribute` hints drive per-property scraping (a string
-/// value is shorthand for `{"_selector": value}`); without one, the
-/// readable text of the scope (or whole page) is returned. The schema
-/// may carry gsd's `{"properties": {...}}` envelope or a bare property
-/// map; both work.
+/// build the extraction JS. with a schema, each property's
+/// `_selector`/`_attribute` hints drive per-property scraping (string value
+/// = shorthand for `{"_selector": value}`); without one, return the
+/// readable text of the scope (or whole page). schema may be gsd's
+/// `{"properties": {...}}` envelope or a bare property map; both work.
 fn build_extract_js(schema: Option<&str>, selector: Option<&str>) -> String {
     format!("(()=>{{{}}})()", extract_js_body(schema, selector))
 }
 
-/// The same extraction as an arrow function, for `playwright-cli eval`.
+/// same extraction as an arrow function, for `playwright-cli eval`
 pub(crate) fn build_extract_arrow(schema: Option<&str>, selector: Option<&str>) -> String {
     format!("()=>{{{}}}", extract_js_body(schema, selector))
 }
@@ -817,10 +801,10 @@ fn extract_js_body(schema: Option<&str>, selector: Option<&str>) -> String {
     };
     match schema {
         Some(s) => {
-            // The canonical `--schema` shape is gsd's `{"properties":
-            // {...}}` envelope (see `normalize_extract_schema` in
-            // [`super::tools`]); unwrap it so the same argv works on
-            // every backend. A bare property map passes through.
+            // canonical `--schema` shape is gsd's `{"properties": {...}}`
+            // envelope (see `normalize_extract_schema` in [`super::tools`]);
+            // unwrap it so the same argv works on every backend. bare map
+            // passes through.
             let schema_js = js_str(&unwrap_properties_envelope(s));
             format!(
                 r#"
@@ -851,8 +835,8 @@ fn extract_js_body(schema: Option<&str>, selector: Option<&str>) -> String {
     }
 }
 
-/// Unwrap a gsd-style `{"properties": {...}}` schema envelope, so the
-/// canonical `--schema` shape works on the raw-CDP backends too.
+/// unwrap a gsd-style `{"properties": {...}}` envelope so the canonical
+/// `--schema` shape works on the raw-CDP backends too
 fn unwrap_properties_envelope(schema: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(schema) {
         Ok(serde_json::Value::Object(mut map)) => match map.remove("properties") {
@@ -863,8 +847,8 @@ fn unwrap_properties_envelope(schema: &str) -> String {
     }
 }
 
-/// Parse `wait-for --condition <c> [--value <v>]`, using the canonical
-/// gsd-browser condition names (see [`super::backend`]).
+/// parse `wait-for --condition <c> [--value <v>]`, using canonical
+/// gsd-browser condition names (see [`super::backend`])
 pub(crate) fn parse_wait_args(argv: &[String]) -> Result<(String, String), BrowserError> {
     let condition = flag_value(argv, "--condition").ok_or_else(|| BrowserError::Failed {
         argv: argv.to_vec(),
@@ -875,24 +859,23 @@ pub(crate) fn parse_wait_args(argv: &[String]) -> Result<(String, String), Brows
     Ok((condition, value))
 }
 
-/// How a canonical `wait-for` is satisfied on the raw-CDP backends
-/// (native, Steel, Browserbase, Playwright).
+/// how a canonical `wait-for` is satisfied on the raw-CDP backends
+/// (native, Steel, Browserbase, Playwright)
 pub(crate) enum WaitPlan {
-    /// Poll a JS boolean expression until it is true.
+    /// poll a JS boolean expression until true
     Probe(String),
-    /// Sleep once for N milliseconds, then succeed.
+    /// sleep once for N ms, then succeed
     Delay(u64),
 }
 
 /// Build the [`WaitPlan`] for a canonical `wait-for`.
 ///
-/// Conditions the raw-CDP path cannot implement honestly
-/// `network_idle` (no request tracker), `request_completed`,
-/// `console_message`, `element_count`, `region_stable` - become
-/// [`BrowserError::UnsupportedCommand`] naming the backend, never silent
-/// approximations. `selector_visible` probes *presence* (a true
-/// visibility check needs per-element layout info; the approximation is
-/// documented, not hidden).
+/// Conditions the raw-CDP path can't do honestly — `network_idle` (no
+/// request tracker), `request_completed`, `console_message`, `element_count`,
+/// `region_stable` — become [`BrowserError::UnsupportedCommand`] naming the
+/// backend, never silent approximations. `selector_visible` probes *presence*
+/// (a true visibility check needs per-element layout info; the approximation
+/// is documented, not hidden).
 pub(crate) fn wait_plan(argv: &[String], backend: &str) -> Result<WaitPlan, BrowserError> {
     let (condition, value) = parse_wait_args(argv)?;
     let v = js_str(&value);

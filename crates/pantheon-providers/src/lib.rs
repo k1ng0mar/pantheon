@@ -1,6 +1,5 @@
-//! Providers (spec section 5 + 14): default model, ordered fallbacks
-//! (failure-only, runtime-controlled), auxiliary models for scoped
-//! capabilities. NO routing - locked decision.
+//! Provider catalog and fallback chain. Routing stays in the runtime; this
+//! crate owns provider construction, model policy types, and streaming.
 
 pub mod adapters;
 pub mod auxiliary;

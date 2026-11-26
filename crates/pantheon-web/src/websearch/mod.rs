@@ -1,22 +1,20 @@
 //! `pantheon-web`: web lookup as a tool, distinct from browser automation.
 //!
-//! The model reaches for `web_search` to **look something up** (facts, news,
-//! docs, prices, "what is X") and for the `browser_*` tools to **do something
-//! on a live site** (forms, JS-heavy pages, authenticated flows, extraction
-//! from a specific page). Search providers sit behind the [`SearchProvider`]
-//! trait seam; the tool registration takes any provider.
+//! Model reaches for `web_search` to find something out (facts, news, docs,
+//! prices, "what is X") and for the `browser_*` tools to act on a live site
+//! (forms, JS-heavy pages, authenticated flows, extraction from a page).
+//! Providers sit behind the [`SearchProvider`] trait seam; tool registration
+//! takes any provider.
 //!
-//! Built-in providers ([`registry::all_providers`], in picker order):
-//! TinyFish (recommended default), Tavily, Ollama Web Search, Exa,
-//! Marginalia (keyless), Brave, Firecrawl, SearXNG (self-hosted),
-//! Perplexity Search, plus keyless fallbacks (Exa/Parallel/Firecrawl/
-//! Keenable anonymous endpoints, local `ddgs` binary).
+//! Built-ins ([`registry::all_providers`], picker order): TinyFish
+//! (recommended), Tavily, Ollama Web Search, Exa, Marginalia (keyless),
+//! Brave, Firecrawl, SearXNG (self-hosted), Perplexity, plus keyless
+//! fallbacks (Exa/Parallel/Firecrawl/Keenable anonymous, local `ddgs`).
 //!
-//! API keys are resolved by the caller (via `pantheon_secrets::SecretsBroker`
-//! or the env) and passed in through [`WebsearchOptions::api_key`] or the
-//! provider constructors. This crate never reads the environment, never
-//! touches the vault, and never puts a key in a log line or an error
-//! message.
+//! Caller resolves keys (via `pantheon_secrets::SecretsBroker` or env) and
+//! passes them through [`WebsearchOptions::api_key`] or the constructors.
+//! This crate never reads env, never touches the vault, never puts a key in a
+//! log line or error.
 
 pub mod brave;
 pub mod ddgs;

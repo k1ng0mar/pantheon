@@ -12,7 +12,7 @@
 //!
 //! GC calls [`BrowserBackend::stop_daemon`], which this crate implements
 //! as `gsd-browser --session <s> daemon stop`. Verified against
-//! gsd-browser 0.1.24 on 2026-09-29: the subcommand exists, prints
+//! gsd-browser 0.1.24: the subcommand exists, prints
 //! `Daemon stopped.`, and exits 0. If a future CLI ever drops it, the
 //! stop fails, the failure is logged to stderr, the session entry is
 //! *kept* (so a later touch can retry), and nothing else breaks - GC

@@ -1,26 +1,22 @@
-//! DuckDuckGo metasearch through the local `ddgs` binary.
+//! DuckDuckGo metasearch via the local `ddgs` binary: shells out to
+//! `ddgs text -q <query> -m <n> -o <owned tmp file>` and parses the
+//! `[{title,href,body}]` JSON it writes. No key, but the binary has to be
+//! installed (setup wizard detects it and offers to install). Fragile —
+//! selectors and rate limits shift without notice — so fallback, not default.
 //!
-//! Local: shells out to `ddgs text -q <query> -m <n> -o <owned tmp
-//! file>`, then parses the `[{title,href,body}]` JSON it writes. No key,
-//! but the binary must exist - the setup wizard detects it and offers
-//! the install. Scraping-adjacent metasearch is inherently fragile
-//! (selectors and rate limits shift without notice), so this row is a
-//! fallback, never the recommended default.
-//!
-//! The temp file lives in the OS temp dir under a pid+timestamp name
-//! and is removed after parsing, whatever the outcome.
+//! Temp file is in the OS temp dir under a pid+nanos+counter name, removed
+//! after parsing regardless of outcome.
 
 use super::error::SearchError;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Binary this provider shells out to.
+/// binary we shell out to
 pub const DDGS_BINARY: &str = "ddgs";
 
-/// DuckDuckGo metasearch provider. Local - shells out to [`DDGS_BINARY`].
 pub struct DdgsProvider;
 
 impl DdgsProvider {
-    /// Production constructor: uses `ddgs` from `PATH`.
+    /// uses `ddgs` from `PATH`
     pub fn new() -> Self {
         Self
     }
@@ -32,9 +28,8 @@ impl Default for DdgsProvider {
     }
 }
 
-/// Owned temp path for one `ddgs -o` run. Pid + nanos + a process-local
-/// counter: pid+nanos alone collided for concurrent same-nanos calls in
-/// one process, mixing two searches' outputs into one file.
+/// one owned temp path per run. Pid+nanos alone collided for concurrent
+/// same-nanos calls in one process, mixing two searches' outputs in one file.
 fn tmp_path() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CTR: AtomicU64 = AtomicU64::new(0);
@@ -58,9 +53,9 @@ impl SearchProvider for DdgsProvider {
 
     fn search(&self, query: &str, opts: &SearchOptions) -> Result<Vec<SearchResult>, SearchError> {
         let out = tmp_path();
-        // `output()` blocks forever; spawn + try_wait gives ddgs the
-        // same 30s bound the HTTP providers get, instead of hanging the
-        // tool call on a wedged binary.
+        // `output()` blocks forever; spawn + try_wait gives ddgs the same
+        // 30s bound the HTTP providers get instead of hanging the tool call
+        // on a wedged binary
         let mut child = std::process::Command::new(DDGS_BINARY)
             .args([
                 "text",
@@ -110,13 +105,12 @@ impl SearchProvider for DdgsProvider {
                 }
             }
         };
-        // The output file is ours: remove it whether the run
-        // succeeded or not, then report the outcome.
+        // the output file is ours: remove it whether we succeeded or not
         let text = std::fs::read_to_string(&out);
         let _ = std::fs::remove_file(&out);
         if !output.status.success() {
-            // Surface stderr (truncated): the old error hid it, so
-            // rate-limit / bot-block reasons were lost entirely.
+            // surface stderr (truncated): hiding it loses the rate-limit /
+            // bot-block reason entirely
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stderr = stderr.trim();
             let detail = if stderr.is_empty() {
@@ -137,9 +131,8 @@ impl SearchProvider for DdgsProvider {
     }
 }
 
-/// Parse the `[{title,href,body}]` JSON `ddgs -o` writes. Pure and
-/// unit-testable. A hit without a usable `href` is skipped; a
-/// non-array envelope is a `BadResponse`.
+/// Parse the `[{title,href,body}]` JSON. Skip hits without a usable `href`;
+/// non-array envelope -> `BadResponse`.
 pub fn parse_ddgs_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;

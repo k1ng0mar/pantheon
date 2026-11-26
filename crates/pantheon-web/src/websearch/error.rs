@@ -1,29 +1,29 @@
 //! Search errors and their mapping to structured `PantheonError`s.
 //!
-//! Invariant: the API key never appears in any error message. Request bodies
-//! carry the key, so failures describe the failure class (HTTP status,
-//! transport, timeout, unreadable payload) without echoing anything sent.
+//! Invariant: the API key never appears in an error message. Bodies carry the
+//! key, so failures name the class (HTTP status, transport, timeout,
+//! unreadable payload) without echoing anything sent.
 
 use pantheon_api::error::{Layer, PantheonError};
 use std::fmt;
 
-/// What can go wrong in a web search call.
+/// what can go wrong in a search call
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchError {
-    /// No API key was configured; the tool is not registered in this state,
-    /// so this surfaces only from direct provider use.
+    /// no key configured; tool not registered in this state, so this only
+    /// surfaces from direct provider use
     NotConfigured,
-    /// The HTTP request failed (transport error or non-2xx status). The
-    /// detail names the failure class, never the request body.
+    /// HTTP request failed (transport or non-2xx); detail names the class,
+    /// never the body
     RequestFailed(String),
-    /// The response could not be understood as a search envelope.
+    /// response wasn't a search envelope
     BadResponse(String),
-    /// The request hit the 30s timeout.
+    /// hit the 30s timeout
     Timeout,
 }
 
-/// Parse the `{provider} HTTP {code}: ...` shape `status_error` puts
-/// on failures (the provider name precedes the code).
+/// parse `{provider} HTTP {code}: ...` as `status_error` formats it (provider
+/// name precedes the code)
 fn parse_http_status(detail: &str) -> Option<u16> {
     let idx = detail.find(" HTTP ")?;
     let rest = &detail[idx + 6..];
@@ -36,7 +36,7 @@ fn parse_http_status(detail: &str) -> Option<u16> {
 }
 
 impl SearchError {
-    /// The structured error code carried into the ledger.
+    /// structured error code carried into the ledger
     pub fn code(&self) -> &'static str {
         match self {
             SearchError::NotConfigured => "WEBSEARCH_NOT_CONFIGURED",
@@ -50,9 +50,8 @@ impl SearchError {
         match self {
             SearchError::Timeout => true,
             SearchError::RequestFailed(detail) => {
-                // 4xx (bad key, bad request shape) is not fixed by a
-                // retry; 429 (rate limit) and 5xx/transport errors are.
-                // Status errors are formatted as "HTTP {code}: ...".
+                // 4xx (bad key/request) isn't fixed by retrying; 429 and
+                // 5xx/transport are. status errors format as "HTTP {code}: ...".
                 !matches!(parse_http_status(detail), Some(code) if (400..500).contains(&code) && code != 429)
             }
             _ => false,
@@ -61,8 +60,8 @@ impl SearchError {
 
     fn remediation(&self) -> &'static str {
         match self {
-            // Generic: the variant carries no provider, so naming
-            // Tavily here misled every other provider's users.
+            // variant carries no provider, so naming Tavily here would mislead
+            // every other provider's users
             SearchError::NotConfigured => {
                 "resolve the provider's API key and enable web search before calling"
             }

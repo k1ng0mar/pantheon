@@ -1,14 +1,14 @@
 //! Provider registry for the setup wizard's web-search picker.
 //!
-//! [`all_providers`] enumerates every built-in provider with its auth
-//! requirement and a one-line blurb, so the TUI setup wizard can present
-//! the choice without knowing any provider's details. Provider ids are
-//! stable: they are the values accepted for `[websearch] provider` in
-//! config.toml and the strings returned by [`SearchProvider::name`].
+//! [`all_providers`] lists every built-in provider with its auth requirement
+//! and a one-line blurb so the TUI wizard can present the choice without
+//! knowing any provider internals. Ids are stable: they are the values
+//! accepted for `[websearch] provider` in config.toml and the strings from
+//! [`SearchProvider::name`].
 //!
-//! [`build_provider`] is the runtime's construction seam: given a provider
-//! id, an optional resolved API key, and an optional base-URL override, it
-//! returns a boxed [`SearchProvider`] or a human-readable reason it can't.
+//! [`build_provider`] is the runtime construction seam: given an id, an
+//! optional resolved key, and an optional base-URL override, it returns a
+//! boxed [`SearchProvider`] or a human-readable reason it can't.
 
 use super::brave::{BraveProvider, BRAVE_API_KEY, DEFAULT_BASE_URL as BRAVE_BASE};
 use super::ddgs::DdgsProvider;
@@ -30,19 +30,19 @@ use super::tinyfish::{TinyFishProvider, DEFAULT_BASE_URL as TINYFISH_BASE, TINYF
 use super::tools::TAVILY_API_KEY;
 use std::sync::Arc;
 
-/// How a provider authenticates, as the setup picker needs to know.
+/// how a provider authenticates, as the picker needs to know
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAuth {
-    /// User-supplied API key. `env_var` is the default secret/env name the
-    /// parent resolves the key from (e.g. `"EXA_API_KEY"`).
+    /// user-supplied API key; `env_var` is the default secret/env name the
+    /// parent resolves the key from (e.g. `"EXA_API_KEY"`)
     ApiKey { env_var: &'static str },
-    /// No key at all: works out of the box.
+    /// no key, works out of the box
     Keyless,
-    /// Self-hosted: no key, but the user must point it at their instance.
-    /// `default_url` is the prefill when nothing is configured.
+    /// self-hosted: no key, but the user must point it at their instance;
+    /// `default_url` is the prefill when nothing is configured
     SelfHosted { default_url: &'static str },
-    /// Local binary: no key, but a program must exist on `PATH`. The
-    /// wizard detects it and offers install-or-skip.
+    /// local binary: no key, but a program must exist on `PATH`; the wizard
+    /// detects it and offers install-or-skip
     Local {
         detect_cmd: &'static str,
         install_hint: &'static str,
@@ -50,30 +50,28 @@ pub enum ProviderAuth {
     },
 }
 
-/// One row in the setup picker's provider list. All fields are
-/// `&'static str`: the registry is a compile-time constant table.
+/// one picker row; all `&'static str` because the registry is a compile-time
+/// constant table
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderInfo {
-    /// Stable id: the `[websearch] provider` config value and the
-    /// [`SearchProvider::name`] string. Never rename an id.
+    /// stable id: the `[websearch] provider` config value and
+    /// [`SearchProvider::name`]. never rename an id.
     pub id: &'static str,
-    /// Human display name for the picker.
+    /// display name for the picker
     pub name: &'static str,
-    /// What the user must supply to use it.
+    /// what the user must supply to use it
     pub auth: ProviderAuth,
-    /// One-line picker blurb. Cost honesty lives here: free tiers, cards,
-    /// and prepaid-only plans are stated plainly.
+    /// one-line blurb. cost honesty lives here: free tiers, cards, prepaid
+    /// only, all stated plainly.
     pub blurb: &'static str,
-    /// Whether the picker should highlight this as the recommended
-    /// default. Exactly one provider is recommended at a time, and
-    /// [`all_providers`] sorts recommended providers first.
+    /// whether the picker highlights this as recommended; exactly one at a
+    /// time, and [`all_providers`] sorts recommended ones first
     pub recommended: bool,
 }
 
-/// Every built-in provider, pre-sorted for the picker: recommended
-/// providers first (TinyFish today), then the rest. Add new providers
-/// here (and only here) to surface them in the setup wizard; set
-/// `recommended` on at most one.
+/// every provider, pre-sorted: recommended first (TinyFish today), then the
+/// rest. add new providers here and only here; set `recommended` on at most
+/// one.
 pub fn all_providers() -> Vec<ProviderInfo> {
     vec![
         ProviderInfo {
@@ -139,9 +137,8 @@ pub fn all_providers() -> Vec<ProviderInfo> {
             blurb: "Raw ranked results with best-in-class dates; prepaid only, no free tier.",
             recommended: false,
         },
-        // Keyless fallbacks below: shared public quotas, expect rate
-        // limits. Never recommended; they catch what the keyed
-        // providers miss when no key is configured.
+        // keyless fallbacks: shared quotas, expect rate limits. never
+        // recommended; they catch what keyed providers miss with no key
         ProviderInfo {
             id: "exa_free",
             name: "Exa (anonymous)",
@@ -184,15 +181,15 @@ pub fn all_providers() -> Vec<ProviderInfo> {
     ]
 }
 
-/// Look up one provider's [`ProviderInfo`] by id (case-insensitive).
+/// look up one provider's [`ProviderInfo`] by id, case-insensitive
 pub fn provider_info(id: &str) -> Option<ProviderInfo> {
     all_providers()
         .into_iter()
         .find(|p| p.id.eq_ignore_ascii_case(id.trim()))
 }
 
-/// Default secret/env name holding `id`'s API key, or `None` when the
-/// provider needs no key (keyless / self-hosted).
+/// default secret/env name for `id`'s key, or `None` for keyless /
+/// self-hosted
 pub fn default_key_env(id: &str) -> Option<&'static str> {
     match provider_info(id)?.auth {
         ProviderAuth::ApiKey { env_var } => Some(env_var),
@@ -202,15 +199,12 @@ pub fn default_key_env(id: &str) -> Option<&'static str> {
     }
 }
 
-/// Provider wrapper enforcing the empty-query rule at the provider
-/// layer: the trait doc used to call an empty query "the provider's
-/// problem", but no provider rejected one, so direct provider use
-/// silently sent empty queries upstream. The tool layer rejects empty
-/// queries too; this guard covers direct `build_provider` use. It also
-/// normalizes `max_results == 0` to 1 (see
-/// [`super::provider::SearchOptions::max_results`]) so a registry-built
-/// provider never sees the value, even if a provider's own trim
-/// forgets `.max(1)`.
+/// wrapper enforcing the empty-query rule at the provider layer for direct
+/// `build_provider` use (the tool layer rejects them too). No provider
+/// rejects one on its own, so without this an empty query goes upstream.
+/// Also normalizes `max_results == 0` to 1 (see
+/// [`super::provider::SearchOptions::max_results`]), so a registry-built
+/// provider never sees it even if its own trim forgets `.max(1)`.
 struct QueryGuardProvider {
     inner: Arc<dyn SearchProvider>,
 }
@@ -238,19 +232,17 @@ impl SearchProvider for QueryGuardProvider {
 
 /// Build a boxed provider for `id` (case-insensitive).
 ///
-/// - `api_key`: the already-resolved key for keyed providers; blank or
-///   missing is an error naming the provider and its env var.
-/// - `base_url_override`: used for self-hosted providers (SearXNG instance
-///   URL) and as a test mirror for any provider. When `None`, each
-///   provider uses its default base URL. PER-PROVIDER ONLY: callers
-///   must pass the override for the `id` being built, never a global
-///   value - a global override follows a provider switch and sends
-///   another provider's calls (and key) to the wrong host. The
-///   session passes `WebsearchSection::base_url_for(&provider)`; the
+/// - `api_key`: already-resolved key for keyed providers; blank/missing is
+///   an error naming the provider and its env var.
+/// - `base_url_override`: for self-hosted providers (SearXNG instance URL)
+///   and as a test mirror for any provider. `None` -> each provider's
+///   default. PER-PROVIDER ONLY: pass the override for the `id` being
+///   built, never a global value — a global override follows a provider
+///   switch and sends another provider's calls (and key) to the wrong host.
+///   The session passes `WebsearchSection::base_url_for(&provider)`; the
 ///   legacy global `[websearch] base_url` is deprecated and ignored.
 ///
-/// The error is a human-readable string for logs/diagnostics; it never
-/// contains key material.
+/// Error is a human-readable string for logs/diagnostics, never key material.
 pub fn build_provider(
     id: &str,
     api_key: Option<String>,
@@ -304,8 +296,7 @@ pub fn build_provider(
     Ok(Arc::new(QueryGuardProvider { inner: provider }))
 }
 
-/// The env var carrying the SearXNG instance URL override, for the
-/// config-resolution layer.
+/// env var carrying the SearXNG instance URL override, for the config layer
 pub fn searxng_url_env() -> &'static str {
     SEARXNG_URL
 }
@@ -329,8 +320,8 @@ mod tests {
         ));
     }
 
-    /// The guard's `max_results` normalization, driven through a stub
-    /// (no network): 0 arrives at the inner provider as 1.
+    /// guard's `max_results` normalization through a stub (no network):
+    /// 0 arrives at the inner provider as 1.
     #[test]
     fn query_guard_clamps_zero_max_results_to_one() {
         use super::super::error::SearchError;

@@ -355,10 +355,9 @@ impl<T: ChatTransport> ProviderChain<T> {
         // A session model below the 32k context floor is refused before
         // any request goes out (unknown window fails open).
         pantheon_api::config::check_context_window(&model.model, meta.context_limit)?;
-        // Per-attempt vision gate, not just the default-model gate in
-        // `run()`: a vision-capable default can fall back to a
-        // non-vision model, which used to receive image parts and 400
-        // (or silently drop them) mid-turn.
+        // Per-attempt vision gate, not just the default-model gate in `run()`: a
+        // vision-capable default can fall back to a non-vision model, which would
+        // otherwise receive image parts and 400 mid-turn.
         if messages.iter().any(|m| !m.images.is_empty()) && !meta.vision {
             return Err(PantheonError::new(
                 "VISION_UNSUPPORTED",
@@ -566,9 +565,9 @@ impl<T: ChatTransport> ProviderChain<T> {
                     opts,
                 ),
             };
-            // Reasoning/thinking that never reached the wire used to
-            // vanish silently (budget outside 1024..max_tokens, or a
-            // model that cannot take it): warn with the cause instead.
+            // Reasoning/thinking that never reaches the wire (budget outside
+            // 1024..max_tokens, or a model that cannot take it) warns with the cause
+            // rather than vanishing.
             let reasoning_wanted = self.policy.reasoning
                 != pantheon_api::model::ReasoningLevel::Off
                 || self.policy.reasoning_budget.is_some_and(|b| b > 0);
@@ -742,9 +741,8 @@ impl<T: ChatTransport> ProviderChain<T> {
                         code,
                         Layer::Provider,
                         false,
-                        // Previously only `e.code` survived here, losing
-                        // the original cause (the event above kept the
-                        // snippet, the returned error did not).
+                        // Keep the original cause alongside `e.code`, so the returned
+                        // error carries more than the status.
                         format!(
                             "provider stream failed after partial output: {} ({})",
                             e.code,
@@ -762,17 +760,14 @@ impl<T: ChatTransport> ProviderChain<T> {
                     // case above it must enter the fallback walk in run()
                     // (no evidence marker), so the chain moves to a
                     // different model immediately instead of stalling.
-                    // CAVEAT, deliberately not acted on here: the
-                    // underlying error (e.code / e.retryable) is still
-                    // available at this point, so telemetry CAN tell a
-                    // transient transport break (e.g. PROVIDER_READ) from
-                    // a genuine output-limit finish (which arrives as an
-                    // Ok turn with finish_reason length, not as this
-                    // error). Making transport-caused reasoning-only
-                    // interruptions retryable would change the decided
-                    // terminal behaviour for exactly the canonical
-                    // transport-break shape, so it stays terminal unless
-                    // Umar explicitly overrides the decision above.
+                    // The underlying error (e.code / e.retryable) is still
+                    // available here, so telemetry can tell a transient
+                    // transport break (e.g. PROVIDER_READ) from a genuine
+                    // output-limit finish (which arrives as an Ok turn with
+                    // finish_reason length, not this error). Making
+                    // transport-caused reasoning-only interruptions
+                    // retryable would change the terminal behaviour for the
+                    // canonical transport-break shape, so it stays terminal.
                     let code = "PROVIDER_STREAM_INTERRUPTED";
                     sink.emit(ModelEvent::AttemptFailed {
                         provider: model.provider.clone(),
@@ -1086,11 +1081,8 @@ impl<T: ChatTransport> ProviderChain<T> {
                         turn.finish_reason.as_deref(),
                         Some("length") | Some("max_tokens")
                     );
-                    // A non-empty `length` finish still returns its
-                    // partial text, but it used to do so silently: the
-                    // loop reported it as a successful answer with no
-                    // hint anything was cut. Warn so the truncation is
-                    // visible in `pantheon logs`.
+                    // A non-empty `length` finish returns its partial text, and warns so
+                    // the truncation is visible in `pantheon logs`.
                     if hit_cap && !output_empty {
                         pantheon_api::logging::warn(
                             "provider",
@@ -1578,11 +1570,9 @@ mod fix_model_chain_tests {
 
     #[test]
     fn stream_options_survive_a_retryable_stream_failure() {
-        // Item 6 at the chain level: a streaming turn whose first
-        // post_stream fails retryably (500) then succeeds must carry
-        // stream_options on BOTH attempts, so usage is not lost on
-        // retry. The provider carries a non-empty allowed_params list,
-        // which is what used to strip stream_options from the body.
+        // A streaming turn whose first post_stream fails retryably (500) then succeeds
+        // must carry stream_options on both attempts, so usage isn't lost on retry. The
+        // provider's non-empty allowed_params list is what would strip it.
         crate::catalog::register_custom_provider(crate::catalog::ProviderMeta {
             id: "dec-rt-stream-retry".to_string(),
             label: "dec-rt-stream-retry".to_string(),

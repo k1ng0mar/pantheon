@@ -1,31 +1,26 @@
-//! Anonymous Exa search via its public MCP endpoint.
-//!
-//! Keyless: `POST https://mcp.exa.ai/mcp` with a JSON-RPC `tools/call`
-//! for `web_search_exa` (`query`, `numResults`). No auth header. The
-//! public endpoint runs on a shared quota (expect throttling), so this
-//! row is a fallback, never the recommended default. The tool answers
-//! with `---`-separated `Title:/URL:/Published:/Author:/Highlights:`
-//! text blocks.
+//! Anonymous Exa via their public MCP endpoint. Keyless, JSON-RPC
+//! `tools/call` for `web_search_exa`. Shared quota, expect throttling, so
+//! this is a fallback not the default. Answers come back as `---`-separated
+//! `Title:/URL:/Published:/Author:/Highlights:` text blocks.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{SearchOptions, SearchProvider, SearchResult};
 
-/// Default MCP endpoint URL.
+/// public MCP endpoint
 pub const DEFAULT_BASE_URL: &str = "https://mcp.exa.ai/mcp";
 
-/// Anonymous Exa search provider. Keyless - no constructor key.
+/// keyless, no constructor key
 pub struct ExaFreeProvider {
     base_url: String,
 }
 
 impl ExaFreeProvider {
-    /// Production constructor: the public keyless endpoint.
     pub fn new() -> Self {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
-    /// Test/local-mirror constructor: overrides the endpoint URL.
+    /// local mirror / test server
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -67,27 +62,24 @@ impl SearchProvider for ExaFreeProvider {
             body,
         )?;
         let payload = http::mcp_text_payload(&text)?;
-        // `max_results == 0` means one, like every other provider (see
-        // `SearchOptions::max_results`): passing 0 through would uncap
-        // the parse and return the whole page.
+        // 0 means "give me one", same as everywhere else (see
+        // SearchOptions::max_results); passing 0 through would parse the
+        // whole page.
         Ok(parse_exa_text_blocks(&payload, opts.max_results.max(1)))
     }
 }
 
-/// Labels that start a new field inside an Exa text block. Highlights
-/// run until the next labelled field.
+/// labels that start a new field; highlights run until the next one
 const EXA_LABELS: [&str; 5] = ["Title:", "URL:", "Highlights:", "Published:", "Author:"];
 
 fn after(line: &str, prefix: &str) -> String {
     line.strip_prefix(prefix).unwrap_or(line).trim().to_string()
 }
 
-/// Parse Exa's `---`-separated text blocks. Pure and unit-testable. A
-/// block without a usable URL is skipped; highlights join with spaces.
-/// `limit == 0` means no cap. Line endings are normalized first: a
-/// CRLF payload used to defeat the `\n---\n` block split (the
-/// separator arrived as `\r\n---\r\n`), collapsing every hit into one
-/// block and returning only the first result.
+/// Parse the `---`-separated blocks. Skip blocks with no usable URL, join
+/// highlights with spaces, `limit == 0` means no cap. Must normalize line
+/// endings first: a CRLF payload breaks the `\n---\n` split (separator
+/// arrives as `\r\n---\r\n`) and collapses everything into one block.
 pub fn parse_exa_text_blocks(text: &str, limit: u8) -> Vec<SearchResult> {
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut out = Vec::new();

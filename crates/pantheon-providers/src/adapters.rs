@@ -1,5 +1,3 @@
-//! Provider adapters: anthropic, openai, gemini in one file.
-
 pub mod anthropic {
     //! Anthropic Messages adapter (spec §5): different wire shape, same
     //! normalized `ModelEvent`s as the OpenAI-compat adapter.
@@ -683,7 +681,7 @@ pub mod anthropic {
         let end = transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
         if state.finish_reason.is_none() {
             // No stop_reason on ANY stream end: a terminator without one
-            // is not a completed turn either — a proxy or provider can
+            // is not a completed turn either: a proxy or provider can
             // end the stream after cutting it short, and accepting it
             // would present truncated output as finished. Fail retryable
             // so the chain retries or falls back instead of presenting a
@@ -703,9 +701,8 @@ pub mod anthropic {
         use crate::http::TurnOptions;
 
         /// Item 4: the resolved per-request output cap reaches the Anthropic
-        /// wire body as `max_tokens` (this adapter already sent one; the
-        /// test pins that the *resolved* value - not the old unwrap_or
-        /// is what goes out).
+        /// wire body as `max_tokens`: the test pins that the resolved value, not
+        /// an unwrap_or fallback, is what goes out.
         #[test]
         fn request_body_carries_resolved_max_tokens() {
             let req = request(
@@ -1115,10 +1112,9 @@ pub mod openai {
                 }
                 _ => m.content.clone(),
             };
-            // Vision models get OpenAI-style content parts; text-only rows keep
-            // the plain string shape byte-identically to before. (The chain
-            // refuses image parts for non-vision models before this runs, so a
-            // parts array here always means the model can see pictures.)
+            // Vision models get OpenAI-style content parts; text-only rows keep the
+            // plain string shape. The chain refuses image parts for non-vision models
+            // before this runs, so a parts array here means the model can see pictures.
             let content = if m.images.is_empty() {
                 serde_json::Value::String(text)
             } else {
@@ -1193,18 +1189,16 @@ pub mod openai {
         opts: &TurnOptions,
     ) -> WireRequest {
         let mut body = body_value(model, messages, tools);
-        // Per-request output cap (session /tokens > [budget].max_tokens >
-        // the model's known maximum, resolved by the chain). Sent on every
-        // chat request: previously the OpenAI wire path never sent one, so
-        // the directive was dead here even when set.
+        // Per-request output cap (session /tokens > [budget].max_tokens > the model's
+        // known maximum, resolved by the chain). Sent on every chat request; without it
+        // the directive is dead on this wire path.
         body["max_tokens"] = serde_json::Value::Number(max_tokens.into());
-        // Reasoning effort is opt-in only: `Off` leaves the body exactly as
-        // before, so endpoints that reject unknown fields never see one.
-        // Mapped to OpenAI's `reasoning_effort` verbatim (low|medium|high).
-        // A model the catalog *knows* cannot take reasoning never gets
-        // the field: sending it earns a non-retryable 400, and the chain
-        // then burns every fallback with the same poisoned body.
-        // Uncatalogued models keep the old behaviour (unknown, not known-bad).
+        // Reasoning effort is opt-in only: `Off` leaves the body unchanged, so endpoints
+        // that reject unknown fields never see one. Mapped to OpenAI's
+        // `reasoning_effort` verbatim (low|medium|high). A model the catalog knows cannot
+        // take reasoning never gets the field: sending it earns a non-retryable 400, and
+        // the chain then burns every fallback with the same poisoned body. Uncatalogued
+        // models are unknown, not known-bad, so they get it.
         let known_no_reasoning = crate::catalog::model_known(provider_id, model)
             && !crate::catalog::model_meta(provider_id, model).reasoning;
         if !matches!(reasoning, pantheon_api::model::ReasoningLevel::Off) && !known_no_reasoning {
@@ -1487,8 +1481,8 @@ pub mod openai {
             payload: &str,
             sink: &dyn ModelEventSink,
         ) -> Result<(), PantheonError> {
-            // Fully trimmed: `data: [DONE] ` (trailing space) previously
-            // fell through to JSON parsing instead of terminating.
+            // Fully trimmed, so `data: [DONE] ` (trailing space) terminates instead of
+            // falling through to JSON parsing.
             if payload.trim() == "[DONE]" {
                 return Ok(());
             }
@@ -1535,11 +1529,11 @@ pub mod openai {
             }
             if let Some(frag) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc in frag {
-                    // Gateways that omit `index` used to merge every call
-                    // into slot 0, concatenating distinct calls' arguments
-                    // into one corrupt call (audit COR-11). Without an index:
-                    // a known id continues its call, a new id opens a slot,
-                    // and an id-less fragment continues the latest call.
+                    // Gateways that omit `index` must not merge every call into slot 0,
+                    // which concatenates distinct calls' arguments into one corrupt call
+                    // (audit COR-11). Without an index: a known id continues its call, a
+                    // new id opens a slot, and an id-less fragment continues the latest
+                    // call.
                     let idx = match tc.get("index").and_then(|i| i.as_u64()) {
                         Some(i) => i as u32,
                         None => {
@@ -1672,7 +1666,7 @@ pub mod openai {
         let end = transport.post_stream(&req, &mut |payload| state.push(payload, sink))?;
         if state.finish_reason.is_none() {
             // No finish_reason on ANY stream end: a `[DONE]` terminator
-            // without one is not a completed turn either — a proxy or
+            // without one is not a completed turn either: a proxy or
             // provider can emit `[DONE]` after cutting the stream short,
             // and accepting it would present truncated output as finished.
             // Fail retryable so the chain retries or falls back instead

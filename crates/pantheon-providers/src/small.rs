@@ -1,5 +1,3 @@
-//! Small helpers in one file.
-
 pub mod embeddings {
     //! Embeddings auxiliary client: OpenAI-compatible `POST /embeddings`
     //! plus a local fallback (`Embedder::Local` hashing embedder) so the
@@ -289,7 +287,7 @@ pub mod credential_error {
     //! Why this exists: providers disagree about what a status means, and
     //! the raw status alone misleads. A 403 whose body reads
     //! `error code: 1010` is Cloudflare's Browser Integrity Check rejecting
-    //! the request headers at the edge — the request never reached the
+    //! the request headers at the edge: the request never reached the
     //! provider's auth layer, so replacing the key cannot help. A Telegram
     //! 404 on a bot path means the token's *shape* is wrong, while a 401
     //! means the token itself is wrong or revoked. The classifier names

@@ -78,9 +78,8 @@ pub enum ToolChoice {
     Named(String),
 }
 
-/// Per-turn wire knobs, threaded from the chain into both adapters.
-/// Everything defaults to "as before", so turns built without options
-/// are byte-identical on the wire to turns built before this existed.
+/// Per-turn wire knobs, threaded from the chain into both adapters. Everything
+/// defaults to "as before", so a turn built without options produces the same bytes.
 #[derive(Debug, Clone, Default)]
 pub struct TurnOptions {
     /// Opt-in structured output: JSON Schema the response must conform
@@ -568,7 +567,7 @@ pub fn retry_after_secs(err: &PantheonError) -> Option<u64> {
 /// to leave `""`, which failed JSON parsing downstream. Invalid JSON
 /// is never passed to the tool runner as an ordinary tool error: on a
 /// `length`/`max_tokens` finish it is a truncation
-/// (`PROVIDER_TRUNCATED`, retryable — the args were cut off, not
+/// (`PROVIDER_TRUNCATED`, retryable: the args were cut off, not
 /// wrong), otherwise a parse error.
 pub fn normalise_tool_args(
     args: &str,
@@ -594,11 +593,9 @@ pub fn normalise_tool_args(
     }
 }
 
-/// Retryability of an HTTP status for `send()`: 5xx / 408-class
-/// server trouble and transport errors are retryable; 4xx is a
-/// client/config problem — except 429, which is transient. (408 was
-/// previously non-retryable despite the comment claiming otherwise:
-/// it falls in 400..500 and is not 429.)
+/// Retryability of an HTTP status for `send()`: 5xx / 408-class server trouble and
+/// transport errors are retryable; 4xx is a client/config problem, except 429, which
+/// is transient.
 pub fn is_retryable_status(code: u16) -> bool {
     !(400..500).contains(&code) || code == 429 || code == 408
 }
@@ -858,21 +855,16 @@ impl ChatTransport for HttpTransport {
         req: &WireRequest,
         on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>,
     ) -> Result<StreamEnd, PantheonError> {
-        // No total timeout: a stream may run long, and a slow-but-alive
-        // provider must not be cut off mid-answer. NOTE the old code
-        // capped streams at 15s via `timeout_per_call`, believing it
-        // covered only "connect through response headers" - that is
-        // wrong for ureq 3.5.0: `timeout_per_call` is the max total
-        // duration for one HTTP exchange, headers AND body included,
-        // which is exactly how long streamed answers were being cut
-        // off with PROVIDER_STREAM_INTERRUPTED after partial output.
-        // Hang protection for a stream is therefore the per-read
-        // deadline (each transport read must complete within
-        // `self.timeout`; a provider that stops sending trips it) plus
-        // the connection-setup deadline, plus the existing turn
-        // watchdog for process liveness - never a wall-clock cap on a
-        // live stream. Single-shot `post` above keeps its overall
-        // `timeout_global` deadline.
+        // No total timeout: a stream may run long, and a slow-but-alive provider must
+        // not be cut off mid-answer. `timeout_per_call` cannot be used here - in ureq
+        // 3.5.0 it caps the max total duration of one HTTP exchange, headers and body
+        // included, which cuts streamed answers off with PROVIDER_STREAM_INTERRUPTED
+        // after partial output.
+        //
+        // Hang protection for a stream is the per-read deadline (each transport read
+        // completes within `self.timeout`), the connection-setup deadline, and the turn
+        // watchdog for process liveness. Never a wall-clock cap on a live stream.
+        // Single-shot `post` above keeps its `timeout_global` deadline.
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_connect(Some(self.timeout))
             .timeout_per_read(Some(self.timeout))
@@ -899,19 +891,15 @@ impl ChatTransport for HttpTransport {
         }
         let resp = send(&agent, &req2)?;
         let reader = BufReader::new(resp.into_body().into_reader());
-        // SSE events are separated by blank lines, and one event's
-        // `data:` field may span several lines (joined with `\n`).
-        // Accumulate consecutive `data:` lines and deliver one payload
-        // per event; a buffer that already parses as complete JSON is
-        // flushed before the next `data:` line so providers that omit
-        // the blank separator still deliver promptly. `[DONE]` is
-        // handled here, before adapter parsing, and fully trimmed:
-        // `data: [DONE] ` previously reached the adapters, where
-        // OpenAI tried to JSON-parse it and Anthropic failed outright.
-        // NOTE: `lines()` still only yields a chunk once its newline
-        // arrives, so a provider that sends a JSON payload with no
-        // trailing newline stalls until EOF. Fixing that needs a
-        // byte-level reader, not this line loop (listed as a remainder).
+        // SSE events are separated by blank lines, and one event's `data:` field may
+        // span several lines (joined with `\n`). Accumulate consecutive `data:` lines
+        // and deliver one payload per event; a buffer that already parses as complete
+        // JSON is flushed before the next `data:` line, so providers that omit the blank
+        // separator still deliver promptly. `[DONE]` is handled here, before adapter
+        // parsing, and fully trimmed - adapters would otherwise try to JSON-parse it.
+        // `lines()` only yields a chunk once its newline arrives, so a provider sending
+        // JSON with no trailing newline stalls until EOF; fixing that needs a byte-level
+        // reader.
         let mut pending = String::new();
         let flush = |pending: &mut String,
                      on_payload: &mut dyn FnMut(&str) -> Result<(), PantheonError>|

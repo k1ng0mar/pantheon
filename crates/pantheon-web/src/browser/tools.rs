@@ -746,15 +746,12 @@ pub fn register_browser_tools(
     if !opts.enabled {
         return Ok(());
     }
-    // Fail fast on *config* misconfiguration (missing API key, bad
-    // endpoint shape) instead of registering dead tools: that is what
-    // `build_backend` validates. It deliberately does NOT prove the
-    // backend works - the GSD/Playwright binary's presence on PATH and
-    // endpoint reachability are only observable on first `invoke`
-    // (construction is lazy: no network, no subprocess, no browser
-    // launch happens here), so a missing binary still surfaces on the
-    // first tool call, not at registration. The old comment claimed
-    // fail-fast on "unreachable endpoint" too; that was an overclaim.
+    // Fail fast on config misconfiguration (missing API key, bad endpoint shape) instead
+    // of registering dead tools: that is what `build_backend` validates. It deliberately
+    // does not prove the backend works - the GSD/Playwright binary's presence on PATH and
+    // endpoint reachability are only observable on first `invoke` (construction is lazy:
+    // no network, no subprocess, no browser launch), so a missing binary surfaces on the
+    // first tool call, not at registration.
     let backend = build_backend(opts.backend, &opts.backend_config)?;
     let kind = opts.backend;
     let ctx = Ctx {
@@ -999,11 +996,10 @@ pub fn register_browser_tools(
     // so the run loop parks for human approval. The description steers
     // the model to the safer pattern first.
     //
-    // On every other backend the tool is still registered, but as an
-    // erroring stub: silently omitting it used to surface as a bare
-    // TOOL_UNKNOWN, which reads like a registry bug and invites
-    // retries. The stub names the backend, the GSD-only reason, and
-    // the safer pattern, so the model self-corrects in one step.
+    // On every other backend the tool is still registered, but as an erroring stub:
+    // omitting it surfaces as a bare TOOL_UNKNOWN, which reads like a registry bug and
+    // invites retries. The stub names the backend, the GSD-only reason, and the safer
+    // pattern, so the model self-corrects in one step.
     if kind != BackendKind::Gsd {
         let backend_name = kind.id().to_string();
         reg.register_with(

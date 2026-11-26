@@ -1,41 +1,34 @@
-//! SearXNG-backed [`SearchProvider`]:
-//! `GET {instance}/search?q=...&format=json`.
+//! SearXNG `GET {instance}/search?q=...&format=json`. Self-hosted only:
+//! instance URL comes from config `[websearch] base_url` or the
+//! `SEARXNG_URL` env override (env wins). Do NOT point this at a public
+//! instance — they bot-gate the JSON API (403/429) and silently break. No
+//! auth sent.
 //!
-//! Self-hosted only: the instance base URL is user-configured (config
-//! file `[websearch] base_url`, or the `SEARXNG_URL` env override, which
-//! wins over the config file).
-//! **Do not point this at a public instance** - public instances bot-gate
-//! the JSON API (403/429) and silently break. No auth is sent.
-//!
-//! Responses carry no date fields: `published` is always `None` rather
-//! than fabricated. SearXNG has no result-count request parameter; the
-//! instance's own page size applies.
+//! No date fields, so `published` stays `None`. No result-count request
+//! parameter; the instance's own page size applies.
 
 use super::error::SearchError;
 use super::http;
 use super::provider::{opt_str, SearchOptions, SearchProvider, SearchResult};
 
-/// Env var the parent checks (winning over the config file) for the
-/// SearXNG instance base URL.
+/// env override for the instance URL (wins over config file)
 pub const SEARXNG_URL: &str = "SEARXNG_URL";
-/// Last-resort default when no instance URL is configured anywhere: the
-/// stock SearXNG docker-compose port on localhost.
+/// last-resort default: stock SearXNG docker-compose port on localhost
 pub const DEFAULT_INSTANCE_URL: &str = "http://localhost:8080";
 
-/// SearXNG search provider. Self-hosted - takes an instance URL, no key.
+/// self-hosted, takes an instance URL, no key
 pub struct SearxngProvider {
     base_url: String,
 }
 
 impl SearxngProvider {
-    /// Production constructor: the configured self-hosted instance URL.
     pub fn new(instance_url: impl Into<String>) -> Self {
         Self {
             base_url: instance_url.into(),
         }
     }
 
-    /// The instance base URL in use (without the `/search` path).
+    /// instance base URL without `/search`
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -54,21 +47,17 @@ impl SearchProvider for SearxngProvider {
         );
         let text = http::get_json("searxng", &url, &[])?;
         let mut results = parse_searxng_response(&text)?;
-        // SearXNG has no count parameter: trim client-side. `0`
-        // means one (see `SearchOptions::max_results`): truncating to
-        // 0 used to return an empty page for a `max_results: 0` call.
+        // no count param, trim client-side. 0 means one (see
+        // SearchOptions::max_results) — truncating to 0 gives an empty page.
         results.truncate(usize::from(opts.max_results.max(1)));
         Ok(results)
     }
 }
 
-/// Parse a SearXNG `/search?format=json` envelope. Pure and unit-testable.
-///
-/// Hits live at `results` with `title`/`url`/`content` (plus `engine`).
-/// SearXNG returns no date fields, so `published` is always `None`. A
-/// single malformed hit is skipped, never fatal; a hit without a usable
-/// URL is skipped. A missing or non-array `results` field is a
-/// `BadResponse`.
+/// Parse the `/search?format=json` envelope. Hits at `results`
+/// (`title`/`url`/`content`, `engine` ignored); no date fields so
+/// `published` stays `None`. Skip bad hits / no-URL hits; no `results`
+/// array -> `BadResponse`.
 pub fn parse_searxng_response(body: &str) -> Result<Vec<SearchResult>, SearchError> {
     let v: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| SearchError::BadResponse(format!("response is not valid JSON: {e}")))?;
