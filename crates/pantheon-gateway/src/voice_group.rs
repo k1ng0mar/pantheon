@@ -1,5 +1,3 @@
-//! Gateway voice_group merged group.
-
 pub mod voice {
     //! Voice edge for the mobile app: audio in → transcript out, text in →
     //! audio out.
@@ -554,7 +552,7 @@ pub mod live_voice {
     use std::time::{Duration, Instant};
     use tungstenite::{Message, WebSocket};
 
-    /// Route served by `pantheon-runtime/src/serve.rs`.
+    /// Route served by `pantheon-runtime/src/control_group.rs`.
     pub const LIVE_VOICE_PATH: &str = "/agui/voice/live";
     /// Marks a live transcript so the agent knows it came from speech, not
     /// typed text (mirrors the channel `[voice message]` prefix).

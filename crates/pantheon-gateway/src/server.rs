@@ -1,5 +1,3 @@
-//! Gateway server merged group.
-
 pub mod http {
     //! Pantheon's single HTTP serve surface.
     //!
@@ -9,9 +7,9 @@ pub mod http {
     //! websocket). One listener, one port, one token.
     //!
     //! This module is std-only (no tokio, no axum): a hand-rolled HTTP/1.1
-    //! server with a thread per connection. It merges the two servers it
-    //! replaces (`pantheon-dashboard`'s pool server and `pantheon-runtime`'s
-    //! AG-UI shim) and keeps the stronger hardening of each:
+    //! server with a thread per connection. It keeps the stronger hardening of the
+    //! servers it replaced (`pantheon-dashboard`'s pool server and
+    //! `pantheon-runtime`'s AG-UI shim):
     //! - at most [`MAX_CONNS`] in-flight connections (a flood of half-open
     //!   connections must not exhaust threads/fds),
     //! - a 10 s read timeout on the request head (slowloris),
@@ -98,10 +96,9 @@ pub mod http {
         pub fn ok_json(body: String) -> Self {
             Self::buffered(200, "application/json", body.into_bytes())
         }
-        /// JSON error body with a real HTTP error status. The pre-parse
-        /// guards used to return `ok_json` (200) with an error body, so a
-        /// client that checked only the status saw oversize requests
-        /// succeed; the docstrings already promised 431/413.
+        /// JSON error body with a real HTTP error status. A client that checks only the
+        /// status must see oversize requests fail; the docstrings already promise
+        /// 431/413.
         pub fn status_json(status: u16, body: String) -> Self {
             Self::buffered(status, "application/json", body.into_bytes())
         }
@@ -995,10 +992,9 @@ pub mod http {
                 // Slowloris: a connection that trickles bytes must not hold a
                 // thread forever waiting for the request head.
                 let _ = s.set_read_timeout(Some(READ_TIMEOUT));
-                // Record what was asked for so a rejection leaves a trace. The
-                // control plane used to answer 401/403 with no log line at all,
-                // so a client hammering it (token probing, a misconfigured
-                // proxy, an origin-loop) was invisible (audit F13).
+                // Record what was asked for so a rejection leaves a trace. Without it a
+                // client hammering the control plane (token probing, a misconfigured
+                // proxy, an origin-loop) is invisible (audit F13).
                 let seen: std::cell::RefCell<Option<(String, String)>> =
                     std::cell::RefCell::new(None);
                 // A panicking handler must not drop the connection silently: a
@@ -1084,9 +1080,9 @@ pub mod http {
             };
             std::io::Error::new(e.kind(), remedy)
         })?;
-        // Report the port actually bound, not just the requested one: a
-        // `:0` (ephemeral) bind used to print `http://host:0`, a URL
-        // nothing could connect to, and remotes refused port 0 outright.
+        // Report the port actually bound, not just the requested one: a `:0` (ephemeral)
+        // bind would otherwise print `http://host:0`, a URL nothing can connect to, and
+        // remotes refuse port 0 outright.
         let actual = listener
             .local_addr()
             .map(|a| a.to_string())
@@ -1378,8 +1374,8 @@ pub mod http {
             handle.join().expect("server thread")
         }
 
-        /// Oversize heads used to answer 200 with an error body, contradicting
-        /// the docstring and the reason() table.
+        /// Oversize heads answer with an error status, matching the docstring and the
+        /// reason() table.
         #[test]
         fn oversize_headers_get_431_not_200() {
             let big = "x-pad: ".to_string() + &"a".repeat(40_000) + "\r\n\r\n";
@@ -1519,14 +1515,13 @@ pub mod http {
 pub mod mcp_boot {
     //! MCP health check at gateway boot (F-8).
     //!
-    //! A dead MCP server used to surface only as a mid-turn tool error. This
-    //! module handshakes every enabled, consented MCP server once at startup
-    //! with a timeout and logs the outcome, so a broken server is a startup
-    //! warning instead of a surprise mid-conversation.
+    //! Without it a dead MCP server surfaces only as a mid-turn tool error. This module
+    //! handshakes every enabled, consented MCP server once at startup with a timeout and
+    //! logs the outcome, so a broken server is a startup warning instead of a surprise
+    //! mid-conversation.
     //!
     //! The smaller surface was picked: log lines at startup. The dashboard's
-    //! `GET /api/mcp/health` (the session launcher's live snapshot) stays the
-    //! live view; dashboard surfacing of this boot report is another leaf's job.
+    //! `GET /api/mcp/health` (the session launcher's live snapshot) stays the live view.
     //!
     //! Hook (one line, in the gateway's boot path - `pantheon gateway run`):
     //! ```ignore
@@ -1744,12 +1739,10 @@ pub mod mcp_boot {
             .with_args(spec.args.clone())
             .with_env(env)
             .with_timeout(timeout);
-        // The probe spawns the server the way a session would: through
-        // the capability gate and its sandbox profile. `None` used to
-        // skip both, so the boot probe ran configured servers unsandboxed
-        // on the host (audit SEC-15). The policy only grants McpEnable;
-        // whether the server is allowed at all was decided by configuring
-        // it.
+        // The probe spawns the server the way a session would: through the capability
+        // gate and its sandbox profile. Skipping both runs configured servers
+        // unsandboxed on the host (audit SEC-15). The policy only grants McpEnable;
+        // whether the server is allowed at all was decided by configuring it.
         let probe_policy = pantheon_api::capability::Policy::default()
             .allow(pantheon_api::capability::Capability::McpEnable);
         match McpClient::connect(&cfg, Some(&probe_policy)) {
@@ -1825,16 +1818,14 @@ pub mod mcp_boot {
             }
         }
         for spec in specs {
-            // Consent gate: the canonical bundled recipe probes freely;
-            // anything else needs an approval record. A bundled NAME alone
-            // is not consent: a hand-written `[mcp.servers.playwright]`
-            // with an attacker command used to probe (spawn) at boot on
-            // name match alone. A name-colliding spec is a custom server
-            // and, without an approval record, is skipped exactly like any
-            // other unapproved third-party server. (Session time still
-            // enforces the hash/version gate and the capability policy
-            // before any tool call; the boot probe only ever handshakes
-            // already-consented servers.)
+            // Consent gate: the canonical bundled recipe probes freely; anything else
+            // needs an approval record. A bundled name alone is not consent: a
+            // hand-written `[mcp.servers.playwright]` with an attacker command must not
+            // probe at boot on a name match. A name-colliding spec is a custom server
+            // and, without an approval record, is skipped like any other unapproved
+            // third-party server. Session time still enforces the hash/version gate and
+            // the capability policy before any tool call; the boot probe only handshakes
+            // already-consented servers.
             let consented = pantheon_mcp::manager::is_canonical_bundled(&spec)
                 || approved.iter().any(|a| a == &spec.name);
             if !consented {

@@ -23,7 +23,6 @@ Write-Host "Preparing Pantheon installer...`n"
 Write-Host "  PANTHEON"
 Write-Host "  Agent runtime for autonomous work.`n"
 
-# --- Detect arch ---
 $arch = $env:PROCESSOR_ARCHITECTURE
 if ($arch -eq "AMD64") { $archId = "x86_64" }
 elseif ($arch -eq "ARM64") { $archId = "aarch64" }
@@ -39,13 +38,11 @@ Write-Host "Requested version: $Version"
 Write-Host "Install directory: $DataDir"
 Write-Host "Binary: $InstallDir/pantheon.exe"
 
-# --- [1/4] Checking environment ---
 Step "1/4" "Checking environment"
 Ok "windows detected"
 Ok "$archId detected"
 Ok "Required runtime dependencies found"
 
-# --- [2/4] Installing Pantheon ---
 Step "2/4" "Installing Pantheon"
 
 Run "Resolving $Version release"
@@ -99,7 +96,6 @@ if (-not ($env:PATH -split ';' | Where-Object { $_ -eq $InstallDir })) {
     Write-Host "`nAdd to your PATH:`n  $InstallDir"
 }
 
-# --- [3/4] Initializing ---
 Step "3/4" "Initializing"
 
 Run "Creating $DataDir"
@@ -128,7 +124,6 @@ if (Select-String -Path (Join-Path $DataDir "config.toml") -Pattern "api_key_env
 
 Ok "Pantheon initialized"
 
-# --- [4/4] Verifying installation ---
 Step "4/4" "Verifying installation"
 
 try {
@@ -163,7 +158,6 @@ else { Warn "no config.toml at $DataDir/config.toml; run ``pantheon setup``" }
 
 Ok "Storage check"
 
-# --- Done ---
 $installed = (& "$InstallDir/pantheon.exe" --version) -replace '.*\s', ''
 if (-not $installed) { $installed = $tag }
 

@@ -1,11 +1,6 @@
-//! Gateways (spec section 16): Telegram/Discord/Custom normalized into
-//! canonical messages. The agent never knows which surface sent it.
-//!
-//! The interactive path (AG-UI) lives here too:
-//! `stream` maps ledger events to UI frames, `sse` encodes frames as
-//! `text/event-stream` bytes, `channel` is the transport seam every
-//! surface (discord/slack/web/...) consumes, and `genui` mints
-//! task-id + signed-URL references (never embedded payloads).
+//! Gateway adapters normalize channel traffic into messages and frames. The
+//! agent does not know whether a request came from Telegram, Discord, AG-UI,
+//! or another surface. HTTP serving and channel delivery share this crate.
 use serde::{Deserialize, Serialize};
 
 pub mod channels;

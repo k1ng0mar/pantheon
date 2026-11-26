@@ -1,5 +1,3 @@
-//! Gateway channels merged group.
-
 pub mod channel {
     //! Channel transport seam (interactive path).
     //! One trait every surface implements: discord/slack/web/CLI consume the
@@ -2080,11 +2078,11 @@ pub mod schedule_delivery {
     ///
     /// Token resolution matches the gateway daemon's
     /// (`service::read_channel_tokens`): process environment first, then
-    /// `<data_dir>/gateway.env` - the file the setup wizard writes. The
-    /// old sender read only the process environment, so wizard-configured
-    /// installs had working channels but failing scheduled delivery and
-    /// `pantheon send`. A sender built without a data dir keeps the old
-    /// env-only behavior (its callers have no dir to offer).
+    /// `<data_dir>/gateway.env` - the file the setup wizard writes. Reading only the
+    /// process environment leaves wizard-configured installs with working channels
+    /// but failing scheduled delivery and `pantheon send`. A sender built without a
+    /// data dir reads the environment only, since its callers have no dir to
+    /// offer.
     pub struct RestChannelSender {
         data_dir: Option<PathBuf>,
     }

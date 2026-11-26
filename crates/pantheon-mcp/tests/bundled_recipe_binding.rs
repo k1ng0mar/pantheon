@@ -1,15 +1,12 @@
-//! Regression tests: the bundled MCP exemption binds the canonical
-//! recipe, not the name.
+//! Regression: the bundled MCP exemption binds the canonical recipe, not just
+//! the name.
 //!
-//! The adversarial shape: a config entry, migration declaration, or
-//! wizard entry borrows a bundled recipe name (`playwright`) but
-//! carries an arbitrary command (`python3 <fixture>`) instead of the
-//! recipe's `npx` invocation. Before the fix, the manager's
-//! name-only `is_bundled` checks skipped every approval gate, so the
-//! poisoned server never appeared in `pending_approval`, registered,
-//! connected, and executed with zero operator consent. After the fix,
-//! only the canonical recipe is exempt; the poisoned spec must go
-//! through full approval.
+//! A config entry (or migration/wizard entry) can borrow a bundled name like
+//! `playwright` while running `python3 <fixture>` instead of the recipe's
+//! `npx` command. The old name-only `is_bundled` check skipped every approval
+//! gate, so the poisoned server registered, connected and ran without the
+//! operator ever seeing it in `pending_approval`. Now only the canonical
+//! recipe gets the exemption.
 
 use pantheon_api::config::McpServerEntry;
 use pantheon_mcp::bundled::find_bundled;
@@ -20,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Unique scratch data dir (no tempfile dev-dependency in this crate).
+/// unique scratch dir (no tempfile dep in this crate)
 fn scratch_data_dir() -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
@@ -35,7 +32,7 @@ fn pending_names(mgr: &McpManager) -> Vec<String> {
     mgr.pending_approval().into_iter().map(|p| p.name).collect()
 }
 
-/// The exploit shape: bundled name, attacker's command, zero approvals.
+/// bundled name, attacker's command, zero approvals
 #[test]
 fn poisoned_playwright_spec_requires_approval() {
     let dir = scratch_data_dir();
@@ -65,7 +62,7 @@ fn poisoned_playwright_spec_requires_approval() {
     );
 }
 
-/// A name collision on any other bundled recipe behaves the same.
+/// Same deal for any other bundled recipe name.
 #[test]
 fn poisoned_notion_spec_requires_approval() {
     let dir = scratch_data_dir();
@@ -94,8 +91,7 @@ fn poisoned_notion_spec_requires_approval() {
     );
 }
 
-/// The genuine canonical recipe stays exempt: no approval friction for
-/// the first-party servers the operator actually enabled.
+/// The real recipe still sails through, no approval friction.
 #[test]
 fn canonical_playwright_recipe_stays_exempt() {
     let dir = scratch_data_dir();
@@ -114,8 +110,7 @@ fn canonical_playwright_recipe_stays_exempt() {
     );
 }
 
-/// Operator-controlled keys don't break the exemption: `enabled` and
-/// `timeout_secs` are not part of the recipe identity.
+/// Operator knobs like `enabled` / `timeout_secs` aren't part of recipe identity.
 #[test]
 fn canonical_recipe_with_custom_timeout_stays_exempt() {
     let dir = scratch_data_dir();

@@ -41,7 +41,6 @@ printf 'Preparing Pantheon installer...\n\n'
 printf '  PANTHEON\n'
 printf '  Agent runtime for autonomous work.\n\n'
 
-# --- Detect OS / arch (no assumptions, explicit failure) ---
 OS="$(uname -s 2>/dev/null || echo unknown)"
 ARCH="$(uname -m 2>/dev/null || echo unknown)"
 
@@ -68,7 +67,6 @@ printf 'Install directory: %s\n' "$BIN_DIR"
 printf 'Data directory: %s\n' "$DATA_DIR"
 printf 'Binary: %s/pantheon\n' "$BIN_DIR"
 
-# --- [1/4] Checking environment ---
 step "1/4" "Checking environment"
 
 for cmd in curl tar; do
@@ -83,7 +81,6 @@ ok "curl found"
 ok "tar found"
 ok "Required runtime dependencies found"
 
-# --- [2/4] Installing Pantheon ---
 step "2/4" "Installing Pantheon"
 
 run "Resolving $REQUESTED_VERSION release"
@@ -218,7 +215,6 @@ chmod +x "$BIN_DIR/pantheon"
 ok "Pantheon installed"
 ok "Binary linked at $BIN_DIR/pantheon"
 
-# --- PATH setup ---
 # Adds BIN_DIR to PATH by default (PANTHEON_NO_PATH=1 to skip). Detects the
 # user's login shell and appends to the right rc file: bash -> ~/.bashrc,
 # zsh -> ~/.zshrc, fish -> ~/.config/fish/config.fish. Works on Linux and
@@ -277,7 +273,6 @@ add_to_path() {
 
 add_to_path
 
-# --- [3/4] Initializing ---
 step "3/4" "Initializing"
 
 if [ "${PANTHEON_NO_INIT:-0}" = "1" ]; then
@@ -315,7 +310,6 @@ else
   ok "Pantheon initialized"
 fi
 
-# --- [4/4] Verifying installation ---
 step "4/4" "Verifying installation"
 
 if [ "${PANTHEON_NO_VERIFY:-0}" = "1" ]; then
@@ -368,7 +362,6 @@ else
   fi
 fi
 
-# --- Optional: Python dependencies for bundled plugins ---
 # The doc-pack plugin (Word/Excel/PowerPoint) needs python-docx, openpyxl
 # and python-pptx. Best-effort only: this never fails the install.
 if [ "${PANTHEON_NO_PYTHON_DEPS:-0}" = "1" ]; then
@@ -412,7 +405,6 @@ else
   fi
 fi
 
-# --- Done ---
 # Respect PANTHEON_NO_VERIFY=1 here too: the verify stage already ran the
 # binary when it wasn't skipped, and re-running it after an explicit skip
 # defeats the flag (I-14).

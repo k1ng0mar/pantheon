@@ -1,5 +1,3 @@
-//! Gateway runtime merged group.
-
 pub mod daemon {
     //! Channel daemon: standalone polling loop for surfaces.
     //!
@@ -1017,14 +1015,12 @@ pub mod scheduler {
         pub error: Option<String>,
     }
 
-    /// Receives one fired run's outcome: called with the job id, the
-    /// driver's [`RunOutcome`], and the task-level [`TaskOutcome`] (None
-    /// when the executor thread never reported one - panic or timeout
-    /// abandon) when the run finishes (or is abandoned on timeout).
-    /// Installed via [`SchedulerLoop::set_outcome_sink`]; the run-history
-    /// recorder and the self-heal pipeline are the intended consumers.
-    /// `None` (the default) keeps the old behavior of dropping the
-    /// completion channel.
+    /// Receives one fired run's outcome: called with the job id, the driver's
+    /// [`RunOutcome`], and the task-level [`TaskOutcome`] (None when the executor thread
+    /// never reported one - panic or timeout abandon) when the run finishes (or is
+    /// abandoned on timeout). Installed via [`SchedulerLoop::set_outcome_sink`]; the
+    /// run-history recorder and the self-heal pipeline are the intended consumers.
+    /// `None` (the default) drops the completion channel.
     pub type OutcomeSink = Arc<dyn Fn(&str, RunOutcome, Option<TaskOutcome>) + Send + Sync>;
 
     /// Short relative time for status lines: "now", "in 5m", "in 2h 5m",
@@ -1921,12 +1917,11 @@ pub mod service {
     }
 
     // ── gateway run startup ─────────────────────────────────────────────────
-    // `gateway run` is both the chat gateway and the always-on scheduler. The
-    // scheduler loop starts unconditionally - a scheduler-only install (no bot
-    // tokens) is the main always-on use case - while each chat surface starts
-    // only when its token and the allowlist are present. The old behavior was
-    // exit(2) when anything was missing, which turned a scheduler-only service
-    // into a crash-loop under the service manager.
+    // `gateway run` is both the chat gateway and the always-on scheduler. The scheduler
+    // loop starts unconditionally - a scheduler-only install (no bot tokens) is the main
+    // always-on use case - while each chat surface starts only when its token and the
+    // allowlist are present. Exiting when anything is missing would turn a
+    // scheduler-only service into a crash-loop under the service manager.
 
     /// Which chat surfaces `gateway run` should start, decided purely from env
     /// values. Pure: no process I/O, no exits - testable without spawning
@@ -2141,7 +2136,7 @@ pub mod service {
                         .launchd_agents_dir
                         .join(format!("{LAUNCHD_LABEL}.plist"));
                     // bootout first, ignoring "not loaded": restart must work
-                    // whether or not the old generation is still up.
+                    // whether or not the previous generation is still up.
                     let _ = run_cmd(
                         env,
                         "launchctl",
