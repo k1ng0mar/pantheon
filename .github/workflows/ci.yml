@@ -230,8 +230,6 @@ jobs:
         with:
           toolchain: 1.99.1
           components: clippy
-        with:
-          workspaces: desktop/src-tauri
       - name: install Linux native dependencies
         run: |
           sudo apt-get update
