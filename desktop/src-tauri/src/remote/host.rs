@@ -45,8 +45,6 @@ const PAGE_ROWS: i64 = 400;
 /// Buffered events per subscriber; a viewer that falls this far behind resyncs at run end.
 const MAX_BUFFER: usize = 4096;
 const CUT: &str = "\n…[cut on the host to fit a remote page]";
-/// Harness ids `providers.models` accepts (the same list `storage` allows).
-pub(crate) const PROVIDERS: [&str; 1] = ["pantheon"];
 
 pub(crate) fn untrusted(host_name: &str) -> String {
     format!("This computer isn't trusted on {host_name}. Trust it in Settings → Remote access on that computer.")
@@ -261,7 +259,7 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
         },
         "providers.models" => {
             let provider = name_param(params, "provider")?.ok_or("Missing provider.")?;
-            if !PROVIDERS.contains(&provider.as_str()) {
+            if provider != crate::providers::PROVIDER_ID {
                 return Err("Unknown provider.".into());
             }
             Call::Models {

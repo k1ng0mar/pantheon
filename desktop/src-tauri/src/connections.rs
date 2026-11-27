@@ -23,7 +23,6 @@ const MAX_NAME: usize = 60;
 // ponytail: assignments of deleted tasks stay until the cap trims them; prune
 // on task deletion if this ever matters.
 const MAX_TASKS: usize = 5000;
-const PROVIDERS: &[&str] = &["pantheon"];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -249,7 +248,7 @@ fn validated(
     input: Input,
     existing: Option<&Connection>,
 ) -> Result<(Connection, Vec<(String, String)>)> {
-    if !PROVIDERS.contains(&input.provider.as_str()) {
+    if input.provider != crate::providers::PROVIDER_ID {
         return Err("Choose an available agent.".into());
     }
     if let Some(existing) = existing {

@@ -139,7 +139,7 @@ impl Library {
 
 /// Whether `harness` reads skill folders, so a bot workspace gets files instead of prompt text.
 pub fn has_skill_folder(harness: &str) -> bool {
-    adapter::FILE_HARNESSES.contains(&harness)
+    harness == crate::providers::PROVIDER_ID
 }
 
 #[cfg(test)]

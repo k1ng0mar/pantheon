@@ -45,12 +45,8 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-pub(crate) const PROVIDERS: [(&str, &str); 1] = [("pantheon", "Pantheon")];
-
-/// Every provider `run_inner` can launch. This is the single allowlist: the model
-/// catalog, team rosters and connection checks all validate against it, so a
-/// provider cannot be advertised and then refused at launch.
-pub(crate) const HARNESSES: &[&str] = &["pantheon"];
+pub(crate) const PROVIDER_ID: &str = "pantheon";
+pub(crate) const PROVIDER_NAME: &str = "Pantheon";
 
 /// Never runs an agent-reviewed task under some other policy.
 /// Pantheon has no agent-reviewed approvals, so `review` has no peer mode to
@@ -577,20 +573,15 @@ fn version(path: &Path) -> Option<String> {
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
-    PROVIDERS
-        .into_iter()
-        .map(|(id, name)| {
-            let path = executable(id);
-            ProviderInfo {
-                id: id.into(),
-                name: name.into(),
-                installed: path.is_some(),
-                version: path.as_deref().and_then(version).unwrap_or_default(),
-                path: path.map(|p| p.to_string_lossy().into_owned()),
-                models: vec![ModelInfo::default_choice()],
-            }
-        })
-        .collect()
+    let path = executable(PROVIDER_ID);
+    vec![ProviderInfo {
+        id: PROVIDER_ID.into(),
+        name: PROVIDER_NAME.into(),
+        installed: path.is_some(),
+        version: path.as_deref().and_then(version).unwrap_or_default(),
+        path: path.map(|p| p.to_string_lossy().into_owned()),
+        models: vec![ModelInfo::default_choice()],
+    }]
 }
 
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
@@ -600,11 +591,11 @@ pub async fn list_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
 }
 
 fn model_discovery_index(provider: &str) -> Option<usize> {
-    PROVIDERS.iter().position(|(id, _)| *id == provider)
+    (provider == PROVIDER_ID).then_some(0)
 }
 
-fn model_discovery_semaphores() -> &'static [tokio::sync::Semaphore; PROVIDERS.len()] {
-    static DISCOVERY: OnceLock<[tokio::sync::Semaphore; PROVIDERS.len()]> = OnceLock::new();
+fn model_discovery_semaphores() -> &'static [tokio::sync::Semaphore; 1] {
+    static DISCOVERY: OnceLock<[tokio::sync::Semaphore; 1]> = OnceLock::new();
     DISCOVERY.get_or_init(|| std::array::from_fn(|_| tokio::sync::Semaphore::new(1)))
 }
 
@@ -1404,7 +1395,7 @@ async fn run_inner(
     input: UnboundedReceiver<RunInput>,
     host: Option<ToolHost>,
 ) -> Result<(), String> {
-    if !HARNESSES.contains(&config.provider.as_str()) {
+    if config.provider != PROVIDER_ID {
         return Err("Unknown provider".into());
     }
     if !crate::storage::valid_permission_mode(&config.mode) {
@@ -1698,24 +1689,15 @@ mod tests {
 
     #[test]
     fn every_registered_provider_has_a_model_discovery_slot() {
-        assert_eq!(model_discovery_semaphores().len(), PROVIDERS.len());
-        for (index, (id, _)) in PROVIDERS.iter().enumerate() {
-            assert_eq!(model_discovery_index(id), Some(index));
-            assert!(index < model_discovery_semaphores().len());
-        }
-        assert!(PROVIDERS.iter().any(|(id, _)| *id == "pantheon"));
+        assert_eq!(model_discovery_semaphores().len(), 1);
+        assert_eq!(model_discovery_index(PROVIDER_ID), Some(0));
         assert_eq!(model_discovery_index("not-a-provider"), None);
     }
 
     #[test]
-    fn every_advertised_provider_passes_the_launch_whitelist() {
-        for (id, _) in PROVIDERS {
-            assert!(
-                HARNESSES.contains(&id),
-                "{id} is advertised but run_inner refuses to launch it"
-            );
-        }
-        assert!(HARNESSES.contains(&"pantheon"));
+    fn advertised_provider_passes_the_launch_gate() {
+        assert_eq!(discover()[0].id, PROVIDER_ID);
+        assert_eq!(PROVIDER_ID, "pantheon");
     }
 
     #[test]

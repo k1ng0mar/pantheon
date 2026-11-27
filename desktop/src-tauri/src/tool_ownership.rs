@@ -7,10 +7,8 @@
 mod tests {
     #[test]
     fn only_pantheon_can_be_selected_or_launched() {
-        assert_eq!(crate::providers::PROVIDERS.len(), 1);
-        assert_eq!(crate::providers::PROVIDERS[0].0, "pantheon");
-        assert_eq!(crate::providers::HARNESSES, &["pantheon"]);
-        assert_eq!(crate::cloud_agents::setup::HARNESSES, ["pantheon"]);
+        assert_eq!(crate::providers::PROVIDER_ID, "pantheon");
+        assert_eq!(crate::providers::PROVIDER_NAME, "Pantheon");
     }
 
     #[test]

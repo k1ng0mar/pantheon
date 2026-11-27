@@ -168,7 +168,7 @@ pub(crate) async fn models(
         return Ok(None);
     };
     super::valid_device_id(&device)?;
-    if !super::host::PROVIDERS.contains(&provider) {
+    if provider != crate::providers::PROVIDER_ID {
         return Err("Unknown provider.".into());
     }
     cached(

@@ -1,6 +1,6 @@
 //! Local workflow recipes: `<project>/.pantheon/recipes/<name>.json` and a global folder.
 //! A recipe is a list of steps the UI queues as ordinary messages; `dry_run` reports, per
-//! step, whether the chosen harness can do it. Nothing here runs an agent or phones home.
+//! step, whether Pantheon can do it. Nothing here runs an agent or phones home.
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,9 +11,6 @@ const MAX_TEXT: usize = 4000;
 const MAX_DESCRIPTION: usize = 500;
 const MAX_FILE: u64 = 64 * 1024;
 const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
-/// Pantheon takes a message mid-turn, so a recipe that steers is supported.
-const STEERING: [&str; 1] = ["pantheon"];
-const HARNESSES: [&str; 1] = ["pantheon"];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -223,8 +220,8 @@ pub fn dry_run(
     provider: &str,
     slash: &[String],
 ) -> Result<Vec<StepReport>, String> {
-    if !HARNESSES.contains(&provider) {
-        return Err("Unknown agent.".into());
+    if provider != crate::providers::PROVIDER_ID {
+        return Err("Unknown provider.".into());
     }
     validate(recipe)?;
     let has = |name: &str| {
@@ -256,9 +253,6 @@ pub fn dry_run(
             for need in &step.requires {
                 match need.as_str() {
                     "mcp" => {}
-                    "steer" if !STEERING.contains(&provider) => {
-                        note(&mut report, "fallback", format!("{provider} cannot take a message mid-turn; it is queued until the run ends."))
-                    }
                     "steer" => {}
                     other => {
                         let name = other.trim_start_matches("slash:");
@@ -459,24 +453,15 @@ mod tests {
     }
 
     #[test]
-    fn every_harness_the_app_supports_can_run_a_recipe() {
+    fn pantheon_can_run_a_recipe() {
         let r = recipe(vec![step("prompt", Some("hi"), None, &[])]);
-        for (provider, _) in crate::providers::PROVIDERS {
-            assert!(
-                HARNESSES.contains(&provider),
-                "{provider} is missing from the recipe agents"
-            );
-            assert!(
-                dry_run(&r, provider, &[]).is_ok(),
-                "{provider} cannot run a recipe"
-            );
-        }
+        assert!(dry_run(&r, crate::providers::PROVIDER_ID, &[]).is_ok());
     }
 
     #[test]
-    fn a_steer_step_is_supported_only_where_the_turn_takes_a_message() {
+    fn a_steer_step_is_supported_on_pantheon() {
         let r = recipe(vec![step("check", Some("npm test"), None, &["steer"])]);
-        let reports = dry_run(&r, "pantheon", &[]).unwrap();
+        let reports = dry_run(&r, crate::providers::PROVIDER_ID, &[]).unwrap();
         assert_eq!(
             reports[0].status, "supported",
             "pantheon takes a message mid-turn"
@@ -484,7 +469,7 @@ mod tests {
         for provider in ["reviewer", "pantheon-old", "other"] {
             assert_eq!(
                 dry_run(&r, provider, &[]),
-                Err("Unknown agent.".to_string())
+                Err("Unknown provider.".to_string())
             );
         }
     }

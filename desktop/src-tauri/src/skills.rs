@@ -665,11 +665,8 @@ impl Library {
             scopes.push((Scope::Project, root, project.clone()));
         }
         let mut harnesses = Vec::new();
-        for harness in adapter::FILE_HARNESSES
-            .iter()
-            .chain(adapter::PROMPT_HARNESSES)
-        {
-            let prompt = !adapter::FILE_HARNESSES.contains(harness);
+        for harness in [crate::providers::PROVIDER_ID] {
+            let prompt = false;
             let in_use = metas
                 .iter()
                 .any(|m| m.activations.iter().any(|a| a.harness == *harness));

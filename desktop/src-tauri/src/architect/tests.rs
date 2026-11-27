@@ -1812,7 +1812,7 @@ fn auto_team_lead_chooses_worker_models() {
         &sid,
         "pantheon_dispatch_workers",
         json!({"assignments":[
-            auto_assignment("direct", json!({"provider":"pantheon","model":"gpt-6.1-sol"})),
+            auto_assignment("direct", json!({"model":"gpt-6.1-sol"})),
             auto_assignment("roster", json!({"profileId":"second"})),
             auto_assignment("own", json!({})),
         ]}),
@@ -1856,8 +1856,7 @@ fn auto_team_rejects_ambiguous_or_unknown_models() {
         .unwrap_err()
     };
     assert!(bad(json!({"profileId":"second","model":"m"})).contains("not both"));
-    assert!(bad(json!({"model":"m"})).contains("together"));
-    assert!(bad(json!({"provider":"other","model":"m"})).contains("Unknown agent"));
+    assert!(bad(json!({"provider":"other","model":"m"})).contains("Unknown provider"));
     assert!(bad(json!({"profileId":"missing"})).contains("Unknown worker profile"));
 }
 #[test]

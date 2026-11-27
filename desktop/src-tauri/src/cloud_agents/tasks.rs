@@ -129,7 +129,7 @@ fn prepare_machine(app: &tauri::AppHandle, sid: &str) -> Result<Ready> {
             store.session(sid)?,
         ))
     })?;
-    if !setup::HARNESSES.contains(&task.provider.as_str()) {
+    if task.provider != crate::providers::PROVIDER_ID {
         return Err(harness_refusal(&task.provider));
     }
     let local = PathBuf::from(
@@ -485,7 +485,7 @@ pub(crate) async fn cloud_agent_start(
     {
         return Err("This provider can't run cloud agents.".into());
     }
-    if !setup::HARNESSES.contains(&harness.as_str()) {
+    if harness != crate::providers::PROVIDER_ID {
         return Err(harness_refusal(&harness));
     }
     let prompt = prompt.trim().to_owned();

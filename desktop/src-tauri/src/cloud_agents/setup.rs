@@ -3,8 +3,6 @@ use crate::cloud::sandbox::Sandbox;
 use crate::Result;
 use std::time::Duration;
 
-/// The only agent runtime this app runs, on this computer or on a machine.
-pub(crate) const HARNESSES: [&str; 1] = ["pantheon"];
 /// Where a machine keeps the uploaded runtime.
 const REMOTE_BINARY: &str = ".pantheon/bin/pantheon";
 
@@ -17,11 +15,8 @@ pub(crate) fn ensure_runtime(
     harness: &str,
     progress: &dyn Fn(&str),
 ) -> Result<String> {
-    if !HARNESSES.contains(&harness) {
-        return Err(format!(
-            "Unsupported cloud agent '{harness}'. Supported agents: {}.",
-            HARNESSES.join(", ")
-        ));
+    if harness != crate::providers::PROVIDER_ID {
+        return Err(format!("Unsupported cloud agent '{harness}'."));
     }
     let marker = format!("$HOME/.pantheon/runtime/{harness}");
     let cached = execute(

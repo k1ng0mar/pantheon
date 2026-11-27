@@ -75,7 +75,7 @@ pub(crate) async fn command(
     if !is_cloud(&config.session_id) {
         return Ok(None);
     }
-    if !super::setup::HARNESSES.contains(&config.provider.as_str()) {
+    if config.provider != crate::providers::PROVIDER_ID {
         return Err(super::tasks::harness_refusal(&config.provider));
     }
     if !config.images.is_empty() {

@@ -10,12 +10,6 @@ use std::{
 
 use super::{sha256_hex, Kind, Scope, Written};
 
-/// Harnesses with file-based skills and instruction files.
-/// Pantheon keeps skills in folders, so it is the only file-based surface.
-pub const FILE_HARNESSES: &[&str] = &["pantheon"];
-/// No harness needs its skills pasted into the prompt any more.
-pub const PROMPT_HARNESSES: &[&str] = &[];
-
 pub enum Surface {
     /// A folder `<dir>/<id>/` holding the skill's files.
     Folder(PathBuf),
@@ -25,18 +19,20 @@ pub enum Surface {
 }
 
 pub fn known(harness: &str) -> bool {
-    FILE_HARNESSES.contains(&harness) || PROMPT_HARNESSES.contains(&harness)
+    harness == crate::providers::PROVIDER_ID
 }
 
 /// Where `harness` reads a `kind` at `scope`. `base` is the home folder for user scope and
 /// the checkout for project scope.
 pub fn surface(harness: &str, kind: Kind, _scope: Scope, base: &Path) -> Surface {
-    match (harness, kind) {
+    if harness != crate::providers::PROVIDER_ID {
+        return Surface::Prompt;
+    }
+    match kind {
         // `<home>/.pantheon/skills` for the user and `.pantheon/skills` per checkout:
         // the two folders `pantheon skills list` reads first.
-        ("pantheon", Kind::Skill) => Surface::Folder(base.join(".pantheon/skills")),
-        ("pantheon", Kind::Rule) => Surface::Block(base.join("AGENTS.md")),
-        _ => Surface::Prompt,
+        Kind::Skill => Surface::Folder(base.join(".pantheon/skills")),
+        Kind::Rule => Surface::Block(base.join("AGENTS.md")),
     }
 }
 
