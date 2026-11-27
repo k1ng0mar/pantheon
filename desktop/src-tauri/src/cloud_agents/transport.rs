@@ -76,7 +76,7 @@ pub(crate) async fn command(
         return Ok(None);
     }
     if config.provider != crate::providers::PROVIDER_ID {
-        return Err(super::tasks::harness_refusal(&config.provider));
+        return Err(super::tasks::provider_refusal(&config.provider));
     }
     if !config.images.is_empty() {
         return Err("Images can't be sent to a cloud machine yet.".into());

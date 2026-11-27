@@ -55,7 +55,7 @@ import { createThreadFind } from './thread-find';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import { CONNECT_SETUP, LOCAL, behindDialog, behindText, computerControl, computerItems } from './remote-target';
 import './cloud-agents.css';
-import { SETUP_CHOICE, cloudActionItems, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, type CloudStage, type CloudTarget } from './cloud-agents';
+import { SETUP_CHOICE, cloudActionItems, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, cloudRefusal, type CloudStage, type CloudTarget } from './cloud-agents';
 import { botsBarHtml, botsListHtml, botsPanelHeadHtml, storedSidebarView, storeSidebarView, syncSeen, type SidebarView } from './sidebar-bots';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
 import { createAgentInput, type AgentInput } from './agent-input';
@@ -3756,7 +3756,7 @@ function confirmDeleteMachine(s: Session): Promise<boolean> {
 /** A New task sent with a cloud provider chosen: the same message content as a Connect start, on a cloud machine. */
 async function sendCloud(s: Session, target: CloudTarget, draft: string, text: string): Promise<void> {
   const filePaths = [...state.attachments], promptItems = attachments.list(s.id);
-  const refusal = harnessRefusal(s.provider, provider(s.provider)?.name ?? s.provider);
+  const refusal = cloudRefusal(s.provider, provider(s.provider)?.name ?? s.provider);
   if (refusal) throw new Error(refusal);
   if ((state.browserAttachments.get(s.id) ?? []).length || (state.moodboardAttachments.get(s.id) ?? []).length || attachments.imageIds(promptItems).length) throw new Error(`Images and browser captures can’t be sent to a cloud machine yet. Remove them, or run on this computer.`);
   configuringSessions.add(s.id);
@@ -3793,7 +3793,7 @@ async function showComputerMenu(anchor: HTMLElement): Promise<void> {
     if (id === CONNECT_SETUP) { run(showSettings('remote')); return; }
     remoteChoice = id; renderHeader();
     const task = session();
-    if (cloudProvider(id)) { if (task && newTaskView()) { const refusal = harnessRefusal(task.provider, provider(task.provider)?.name ?? task.provider); if (refusal) notify(refusal); } return; }
+    if (cloudProvider(id)) { if (task && newTaskView()) { const refusal = cloudRefusal(task.provider, provider(task.provider)?.name ?? task.provider); if (refusal) notify(refusal); } return; }
     if (task && newTaskView()) run(adaptPickerToComputer(task, id, remoteTargets.find(item => item.deviceId === id)?.name ?? 'That computer'));
   } });
 }

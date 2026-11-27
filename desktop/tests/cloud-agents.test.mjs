@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // The pure parts of cloud agents in the webview: "Run on" choices, harness support and stage text.
-const { SETUP_CHOICE, busyStage, cloudChoice, cloudItems, cloudProvider, harnessRefusal, stageText } = await import('../src/cloud-agents.ts');
+const { SETUP_CHOICE, busyStage, cloudChoice, cloudItems, cloudProvider, cloudRefusal, stageText } = await import('../src/cloud-agents.ts');
 
 test('cloud choices round-trip and never collide with this computer or Connect devices', () => {
   assert.equal(cloudProvider(cloudChoice('e2b')), 'e2b');
@@ -26,17 +26,17 @@ test('the Cloud section lists connected providers only, then setup', () => {
 // harness. Only the Pantheon provider is accepted; any other id is refused
 // with the one-line reason.
 test('only the Pantheon runtime runs in the cloud', () => {
-  assert.equal(harnessRefusal('pantheon', 'Pantheon'), '');
-  assert.equal(harnessRefusal('unsupported', 'Unsupported'), 'Unsupported can’t run on a cloud machine yet.');
+  assert.equal(cloudRefusal('pantheon', 'Pantheon'), '');
+  assert.equal(cloudRefusal('unsupported', 'Unsupported'), 'Unsupported can’t run on a cloud machine yet.');
 });
 
 test('stages read as short phrases; busy ones spin', () => {
   // Every harness installs Pantheon itself on the cloud machine, so the
   // installing text no longer varies by harness.
-  assert.equal(stageText('installing', null, 'pantheon'), 'Installing Pantheon');
-  assert.equal(stageText('installing', null, 'legacy'), 'Installing Pantheon');
-  assert.equal(stageText('error', 'E2B refused the key', 'pantheon'), 'Error: E2B refused the key');
-  assert.equal(stageText('reconnecting', null, 'pantheon'), 'Reconnecting…');
+  assert.equal(stageText('installing', null), 'Installing Pantheon');
+  assert.equal(stageText('installing', null), 'Installing Pantheon');
+  assert.equal(stageText('error', 'E2B refused the key'), 'Error: E2B refused the key');
+  assert.equal(stageText('reconnecting', null), 'Reconnecting…');
   assert.equal(busyStage('uploading'), true);
   assert.equal(busyStage('ready'), false);
   assert.equal(busyStage('error'), false);

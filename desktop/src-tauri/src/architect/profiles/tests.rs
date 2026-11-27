@@ -394,7 +394,7 @@ fn profile_validation_uniqueness_capacity_and_invalid_ids_are_atomic() {
     }
     let mut bad = setup.clone();
     bad.architect.provider = "unknown".into();
-    assert!(save_profile(&store, None, "Bad harness".into(), bad).is_err());
+    assert!(save_profile(&store, None, "Bad provider".into(), bad).is_err());
     let mut bad = setup.clone();
     bad.architect.reasoning_effort = Some("invalid effort".into());
     assert!(save_profile(&store, None, "Bad effort".into(), bad).is_err());

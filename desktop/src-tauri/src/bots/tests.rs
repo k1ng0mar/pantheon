@@ -920,7 +920,7 @@ fn capabilities_persist_as_references_and_rebrief() {
     );
     assert!(
         get(&f.store, &b.id).unwrap().skills.is_empty(),
-        "same harness, separate selections"
+        "same provider, separate selections"
     );
     assert!(set_capabilities(&f.store, &a.id, &["../x".into()], &[]).is_err());
     // Editing the profile keeps the references.

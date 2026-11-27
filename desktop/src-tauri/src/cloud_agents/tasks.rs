@@ -18,8 +18,8 @@ const EXIT_GRACE: Duration = Duration::from_secs(30);
 /// Providers whose machines can't run commands, so never run agents.
 const NO_AGENTS: [&str; 2] = ["agentcore", "railway"];
 
-pub(crate) fn harness_refusal(harness: &str) -> String {
-    format!("{harness} can't run on a cloud machine. Run this task on this computer instead.")
+pub(crate) fn provider_refusal(provider: &str) -> String {
+    format!("{provider} can't run on a cloud machine. Run this task on this computer instead.")
 }
 
 fn with_store<T>(app: &tauri::AppHandle, f: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
@@ -130,7 +130,7 @@ fn prepare_machine(app: &tauri::AppHandle, sid: &str) -> Result<Ready> {
         ))
     })?;
     if task.provider != crate::providers::PROVIDER_ID {
-        return Err(harness_refusal(&task.provider));
+        return Err(provider_refusal(&task.provider));
     }
     let local = PathBuf::from(
         task.worktree_path
@@ -420,7 +420,7 @@ fn task_row(
     store: &Store,
     draft: Option<&str>,
     project_id: &str,
-    harness: &str,
+    agent: &str,
     model: &str,
     mode: Option<&str>,
     effort: Option<&str>,
@@ -435,14 +435,14 @@ fn task_row(
         Some(id) => (id.to_owned(), false),
         None => (
             crate::architect::profiles::create_user_task(
-                store, project_id, harness, model, mode, None,
+                store, project_id, agent, model, mode, None,
             )?
             .id,
             true,
         ),
     };
     if !created {
-        store.configure(&id, harness, model, None)?;
+        store.configure(&id, agent, model, None)?;
         if let Some(mode) = mode {
             store.update(&id, None, None, None, Some(mode.to_owned()))?;
         }
@@ -475,7 +475,7 @@ pub(crate) async fn cloud_agent_start(
     project_id: String,
     provider: String,
     prompt: String,
-    harness: String,
+    agent: String,
     model: String,
     mode: Option<String>,
     effort: Option<String>,
@@ -485,8 +485,8 @@ pub(crate) async fn cloud_agent_start(
     {
         return Err("This provider can't run cloud agents.".into());
     }
-    if harness != crate::providers::PROVIDER_ID {
-        return Err(harness_refusal(&harness));
+    if agent != crate::providers::PROVIDER_ID {
+        return Err(provider_refusal(&agent));
     }
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() || prompt.len() > 128 * 1024 {
@@ -506,7 +506,7 @@ pub(crate) async fn cloud_agent_start(
                 store,
                 session_id.as_deref(),
                 &project_id,
-                &harness,
+                &agent,
                 &model,
                 mode.as_deref(),
                 effort.as_deref(),
