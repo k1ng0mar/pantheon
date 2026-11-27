@@ -506,6 +506,13 @@ pub mod http {
                 if path == "/agui/health" {
                     return Ok(());
                 }
+                // Cookies are not port-scoped: a page on another loopback port
+                // can send the session cookie here. Require the request's
+                // Origin to name this exact listener before accepting any
+                // authenticated AG-UI call.
+                if !origin_matches_host(req) {
+                    return Err(agui_forbidden());
+                }
                 // EventSource and WebSocket clients cannot set headers;
                 // they authenticate with the session cookie instead.
                 let provided = req
@@ -598,6 +605,23 @@ pub mod http {
             }
         }
         Ok(())
+    }
+
+    /// Whether the request's `Origin` names the same authority as its `Host`.
+    /// Cookies are host-scoped, not port-scoped, so a page on any other
+    /// loopback port can send them to this listener; the bare loopback check
+    /// in [`origin_allowed`] is not enough to stop that cross-port CSRF.
+    /// Missing `Origin` (curl, scripts) passes: a non-browser client cannot be
+    /// tricked into attaching a cookie it does not already control.
+    fn origin_matches_host(req: &Request) -> bool {
+        let host = match req.headers.get("host") {
+            Some(host) => host.to_ascii_lowercase(),
+            None => return false,
+        };
+        match req.headers.get("origin") {
+            None => true,
+            Some(origin) => authority_of(origin).as_deref() == Some(host.as_str()),
+        }
     }
 
     /// Constant-time token comparison: the time taken does not depend on
@@ -707,6 +731,49 @@ pub mod http {
         /// `"pantheon dashboard"`. The listener is shared by both commands;
         /// the label keeps the banner honest about which one started it.
         pub label: String,
+    }
+
+    /// Per-client request cap. A local tool still sits behind a tunnel, and
+    /// the listener is thread-per-connection: without a request cap a client
+    /// can pin every worker with cheap 404s. The window is generous enough
+    /// for the dashboard (including SSE reconnects) and still stops a flood.
+    pub const RATE_LIMIT_REQUESTS: u32 = 600;
+    pub const RATE_LIMIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Fixed-window request counter, keyed by peer address. Pruning happens
+    /// on the request path so a scan from many source ports cannot grow the
+    /// map forever.
+    struct RateLimiter {
+        clients: std::sync::Mutex<HashMap<std::net::IpAddr, (std::time::Instant, u32)>>,
+    }
+
+    impl RateLimiter {
+        fn new() -> Self {
+            Self {
+                clients: std::sync::Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn allow(&self, peer: std::net::IpAddr) -> bool {
+            let now = std::time::Instant::now();
+            let Ok(mut clients) = self.clients.lock() else {
+                // A poisoned limiter must not take the listener down; fail
+                // open on the lock, not on the request.
+                return true;
+            };
+            if clients.len() > 4096 {
+                clients.retain(|_, (start, _)| now.duration_since(*start) < RATE_LIMIT_WINDOW * 2);
+            }
+            let entry = clients.entry(peer).or_insert((now, 0));
+            if now.duration_since(entry.0) >= RATE_LIMIT_WINDOW {
+                *entry = (now, 0);
+            }
+            if entry.1 >= RATE_LIMIT_REQUESTS {
+                return false;
+            }
+            entry.1 += 1;
+            true
+        }
     }
 
     /// Decrements the in-flight connection count when a handler thread exits,
@@ -882,6 +949,16 @@ pub mod http {
         }
     }
 
+    /// Baseline browser hardening added to every response the server writes
+    /// itself, including streams. The websocket takeover writes its own 101
+    /// response through tungstenite and cannot use this list.
+    const BASE_HEADERS: &str = concat!(
+        "X-Content-Type-Options: nosniff\r\n",
+        "X-Frame-Options: DENY\r\n",
+        "Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'\r\n",
+        "Referrer-Policy: no-referrer\r\n"
+    );
+
     /// Serialize one response onto the socket. `ChunkedStream` and
     /// `RawStream` hand the socket to the closure after the head;
     /// `Takeover` hands it over wholesale and performs no further I/O.
@@ -900,20 +977,7 @@ pub mod http {
                     content_type,
                     body.len()
                 );
-                // Baseline browser hardening on every buffered response. The
-                // dashboard is a control plane holding a live session cookie:
-                // without `frame-ancestors` an attacker page can frame it and
-                // overlay clicks on destructive buttons, and the Origin guard
-                // never sees those requests because they originate inside the
-                // same-origin frame (audit F13). `nosniff` stops a mistyped
-                // upload being sniffed as script; `no-referrer` keeps run and
-                // upload ids out of third-party Referer headers.
-                head.push_str("X-Content-Type-Options: nosniff\r\n");
-                head.push_str("X-Frame-Options: DENY\r\n");
-                head.push_str(
-                    "Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'\r\n",
-                );
-                head.push_str("Referrer-Policy: no-referrer\r\n");
+                head.push_str(BASE_HEADERS);
                 for (k, v) in extra_headers {
                     head.push_str(&format!("{k}: {v}\r\n"));
                 }
@@ -926,10 +990,12 @@ pub mod http {
                 content_type,
                 stream: run,
             } => {
-                let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                let mut head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n",
                 content_type
             );
+                head.push_str(BASE_HEADERS);
+                head.push_str("Connection: close\r\n\r\n");
                 if stream.write_all(head.as_bytes()).is_err() {
                     return;
                 }
@@ -942,10 +1008,9 @@ pub mod http {
                 content_type,
                 stream: run,
             } => {
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nConnection: close\r\n\r\n",
-                    content_type
-                );
+                let mut head = format!("HTTP/1.1 200 OK\r\nContent-Type: {}\r\n", content_type);
+                head.push_str(BASE_HEADERS);
+                head.push_str("Connection: close\r\n\r\n");
                 if stream.write_all(head.as_bytes()).is_err() {
                     return;
                 }
@@ -972,6 +1037,7 @@ pub mod http {
     pub fn serve_on(listener: TcpListener, cfg: ServerConfig) -> ! {
         let cfg = Arc::new(cfg);
         let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rate_limiter = Arc::new(RateLimiter::new());
         for stream in listener.incoming() {
             let s = match stream {
                 Ok(s) => s,
@@ -987,6 +1053,7 @@ pub mod http {
             }
             let flights = Arc::clone(&in_flight);
             let cfg = Arc::clone(&cfg);
+            let rate_limiter = Arc::clone(&rate_limiter);
             std::thread::spawn(move || {
                 let _guard = ConnGuard { n: flights };
                 // Slowloris: a connection that trickles bytes must not hold a
@@ -1007,6 +1074,16 @@ pub mod http {
                         Ok(None) => Response::bad_request("bad request"),
                         Ok(Some(req)) => {
                             *seen.borrow_mut() = Some((req.method.clone(), req.path.clone()));
+                            if let Some(peer) = s.peer_addr().ok().map(|a| a.ip()) {
+                                if !rate_limiter.allow(peer) {
+                                    return Response::Buffered {
+                                        status: 429,
+                                        content_type: "application/json",
+                                        body: br#"{"error":"too_many_requests"}"#.to_vec(),
+                                        extra_headers: vec![("Retry-After", "60".to_string())],
+                                    };
+                                }
+                            }
                             if req.path == "/api/session" {
                                 return handle_session(&cfg.auth, &req);
                             }
@@ -1509,6 +1586,133 @@ pub mod http {
                 Response::Buffered { status, .. } => assert_eq!(status, 401),
                 _ => panic!("expected a buffered 401"),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod agui_origin_tests {
+        use super::*;
+
+        fn ctx_with_session() -> AuthCtx {
+            let ctx = AuthCtx::new("test-token".to_string(), "127.0.0.1".to_string(), false);
+            ctx.sessions.lock().unwrap().insert(
+                "sid".to_string(),
+                std::time::Instant::now() + std::time::Duration::from_secs(SESSION_TTL_SECS),
+            );
+            ctx
+        }
+
+        fn request(origin: Option<&str>, cookie: bool) -> Request {
+            let mut headers = HashMap::new();
+            headers.insert("host".to_string(), "127.0.0.1:7171".to_string());
+            if let Some(origin) = origin {
+                headers.insert("origin".to_string(), origin.to_string());
+            }
+            if cookie {
+                headers.insert("cookie".to_string(), format!("{SESSION_COOKIE}=sid"));
+            }
+            Request {
+                method: "POST".to_string(),
+                path: "/agui/rpc".to_string(),
+                query: HashMap::new(),
+                headers,
+                body: b"{}".to_vec(),
+            }
+        }
+
+        fn status(result: Result<(), Response>) -> Option<u16> {
+            match result {
+                Err(Response::Buffered { status, .. }) => Some(status),
+                _ => None,
+            }
+        }
+
+        /// A page on another loopback port can send this host's cookies; the
+        /// cookie alone must not authorize its AG-UI call.
+        #[test]
+        fn cross_port_loopback_origin_is_rejected_for_cookie_auth() {
+            let res = check_auth(
+                &request(Some("http://localhost:3000"), true),
+                AuthGroup::Agui,
+                &ctx_with_session(),
+            );
+            assert_eq!(status(res), Some(403));
+        }
+
+        #[test]
+        fn same_origin_cookie_auth_is_accepted() {
+            let res = check_auth(
+                &request(Some("http://127.0.0.1:7171"), true),
+                AuthGroup::Agui,
+                &ctx_with_session(),
+            );
+            assert!(res.is_ok());
+        }
+
+        #[test]
+        fn header_auth_without_origin_is_accepted() {
+            let mut req = request(None, false);
+            req.headers
+                .insert("authorization".to_string(), "Bearer test-token".to_string());
+            assert!(check_auth(&req, AuthGroup::Agui, &ctx_with_session()).is_ok());
+        }
+    }
+
+    #[cfg(test)]
+    mod response_header_tests {
+        use super::*;
+        use std::io::Read;
+
+        fn serve(resp: Response) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                write_response(stream, resp);
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+
+        #[test]
+        fn streamed_responses_carry_baseline_security_headers() {
+            let chunked = serve(Response::ChunkedStream {
+                content_type: "text/plain",
+                stream: Box::new(|mut stream| {
+                    let _ = stream.write_all(b"hi");
+                }),
+            });
+            let raw = serve(Response::RawStream {
+                content_type: "text/plain",
+                stream: Box::new(|mut stream| {
+                    let _ = stream.write_all(b"hi");
+                }),
+            });
+            for response in [chunked, raw] {
+                assert!(response.contains("X-Content-Type-Options: nosniff"));
+                assert!(response.contains("X-Frame-Options: DENY"));
+                assert!(response.contains("Content-Security-Policy: frame-ancestors 'none'"));
+                assert!(response.contains("Referrer-Policy: no-referrer"));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod rate_limit_tests {
+        use super::*;
+
+        #[test]
+        fn request_budget_is_per_peer_and_caps_within_the_window() {
+            let limiter = RateLimiter::new();
+            let peer: std::net::IpAddr = "192.0.2.10".parse().unwrap();
+            let other: std::net::IpAddr = "192.0.2.11".parse().unwrap();
+            for _ in 0..RATE_LIMIT_REQUESTS {
+                assert!(limiter.allow(peer));
+            }
+            assert!(!limiter.allow(peer), "over-budget peer must be refused");
+            assert!(limiter.allow(other), "another peer keeps its own budget");
         }
     }
 }

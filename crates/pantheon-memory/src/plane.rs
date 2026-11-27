@@ -2846,6 +2846,26 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
             }
             let conn = Connection::open(path).map_err(|e| serr("MEM_OPEN", e.to_string()))?;
             tune_connection(&conn)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                // The data dir is 0700, but memory rows can outlive a copied
+                // directory or a loosened umask. Tighten the db and its WAL
+                // sidecars the first time they exist, before any row is read.
+                for suffix in ["", "-wal", "-shm"] {
+                    let mut raw = path.as_os_str().to_os_string();
+                    raw.push(suffix);
+                    let candidate = std::path::PathBuf::from(raw);
+                    if let Ok(meta) = std::fs::metadata(&candidate) {
+                        if meta.permissions().mode() & 0o077 != 0 {
+                            let _ = std::fs::set_permissions(
+                                &candidate,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
+                    }
+                }
+            }
             conn.execute_batch(SCHEMA)
                 .map_err(|e| serr("MEM_SCHEMA", e.to_string()))?;
             migrate_trust_column(&conn)?;
@@ -3558,6 +3578,39 @@ ALTER TABLE memories ADD COLUMN trust TEXT NOT NULL DEFAULT 'memory';";
                 store.get(LayerKind::Agent, "test", "k1").unwrap().is_some(),
                 "a failed forget must leave the row intact"
             );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn open_tightens_the_memory_db_and_sidecars() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = std::env::temp_dir().join(format!(
+                "pantheon-mem-perms-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("memory.db");
+            {
+                let _store = MemoryStore::open(&path).unwrap();
+            }
+            for suffix in ["", "-wal", "-shm"] {
+                let mut raw = path.as_os_str().to_os_string();
+                raw.push(suffix);
+                let candidate = std::path::PathBuf::from(raw);
+                if let Ok(meta) = std::fs::metadata(&candidate) {
+                    let mode = meta.permissions().mode() & 0o777;
+                    assert_eq!(
+                        mode,
+                        0o600,
+                        "{} must be owner-only, got {mode:o}",
+                        candidate.display()
+                    );
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

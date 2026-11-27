@@ -893,7 +893,14 @@ pub mod backup {
             return;
         }
         let dest = root.join(stamp_dir_name());
-        if let Err(e) = std::fs::create_dir_all(&dest) {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        if let Err(e) = builder.create(&dest) {
             eprintln!("backup: cannot create {}: {e}", dest.display());
             std::process::exit(1);
         }

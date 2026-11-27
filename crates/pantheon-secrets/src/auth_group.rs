@@ -2651,10 +2651,33 @@ pub mod migration {
             std::fs::create_dir_all(&backup_dir).map_err(|e| format!("create backup dir: {e}"))?;
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
+                .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let backup = backup_dir.join(format!("{file_name}.{stamp}.bak"));
-            std::fs::write(&backup, &text).map_err(|e| format!("backup: {e}"))?;
+            // The backup is the source dotenv verbatim, so it holds the same
+            // plaintext secrets. Create it owner-only; `fs::write` would take
+            // the process umask and leave it 0644 on a default install.
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut backup_file = opts.open(&backup).map_err(|e| format!("backup: {e}"))?;
+            {
+                use std::io::Write as _;
+                backup_file
+                    .write_all(text.as_bytes())
+                    .map_err(|e| format!("backup: {e}"))?;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                backup_file
+                    .set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| format!("backup perms: {e}"))?;
+            }
         }
         let vault = EncryptedFileVault::open(vault_path, key_path)
             .map_err(|e| format!("open vault: {e}"))?;
@@ -2682,6 +2705,35 @@ pub mod migration {
             migrated,
             verified: true,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[cfg(unix)]
+        #[test]
+        fn dotenv_backup_is_owner_only() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".env"), "FOO=bar\n").unwrap();
+            migrate_dotenv_to_filevault(
+                dir.path(),
+                ".env",
+                &dir.path().join("secrets.json"),
+                &dir.path().join(".secrets.key"),
+            )
+            .unwrap();
+            let backups = dir.path().join("backups");
+            let backup = std::fs::read_dir(&backups)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let mode = std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "plaintext dotenv backup must be owner-only");
+        }
     }
 }
 

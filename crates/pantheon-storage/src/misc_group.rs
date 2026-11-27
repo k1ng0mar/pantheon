@@ -232,6 +232,16 @@ pub mod backup {
         let literal = dest.to_string_lossy().replace('\'', "''");
         conn.execute_batch(&format!("VACUUM INTO '{literal}'"))
             .map_err(|e| format!("snapshot {}: {e}", src.display()))?;
+        // SQLite creates the output with the process umask (0644 on a default
+        // install), even when the source database was tightened to 0600. The
+        // snapshot holds the same transcripts and tool output, so make it
+        // owner-only before returning.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("snapshot {}: chmod: {e}", dest.display()))?;
+        }
         Ok(())
     }
 
@@ -282,6 +292,22 @@ pub mod backup {
             let d = tmp("missing");
             let err = snapshot_db(&d.join("nope.db"), &d.join("out.db")).unwrap_err();
             assert!(err.contains("nope.db"), "unexpected: {err}");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn snapshot_is_owner_only() {
+            use std::os::unix::fs::PermissionsExt;
+            let d = tmp("perms");
+            let src = d.join("ledger.db");
+            {
+                let c = rusqlite::Connection::open(&src).unwrap();
+                c.execute_batch("CREATE TABLE t(x TEXT);").unwrap();
+            }
+            let dest = d.join("snap.db");
+            snapshot_db(&src, &dest).unwrap();
+            let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "snapshot must be owner-only");
         }
 
         #[test]

@@ -105,6 +105,79 @@ fn berr(code: &str, cause: String) -> PantheonError {
     )
 }
 
+/// Refuse browser navigations that turn the browser into a local-file reader
+/// or a cloud-metadata SSRF primitive. `file:` reads anything the user can
+/// read; link-local addresses (169.254.0.0/16, fe80::/10) and the cloud
+/// metadata names resolve to instance credentials. Ordinary loopback and LAN
+/// URLs stay allowed: local dev servers are a real browser use, and the
+/// capability gate still covers actions on the page.
+fn guard_navigate_url(url: &str) -> Result<String, PantheonError> {
+    let trimmed = url.trim();
+    let (scheme, rest) = match trimmed.split_once(':') {
+        Some(parts) => parts,
+        None => {
+            return Err(berr(
+                "BROWSER_BAD_URL",
+                format!("navigate needs an absolute URL, got {trimmed:?}"),
+            ))
+        }
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme == "about" {
+        return if rest.trim_start_matches('/').eq_ignore_ascii_case("blank") {
+            Ok(trimmed.to_string())
+        } else {
+            Err(berr(
+                "BROWSER_BAD_URL",
+                "only about:blank is allowed for the about scheme".to_string(),
+            ))
+        };
+    }
+    if scheme != "http" && scheme != "https" {
+        return Err(berr(
+            "BROWSER_BAD_URL",
+            format!("navigate only accepts http(s) URLs, got {scheme}:"),
+        ));
+    }
+    // Parse, don't pattern-match the authority: browsers accept decimal,
+    // octal and hex IPv4 spellings (http://2852039166/ is 169.254.169.254).
+    // The URL parser normalizes all of them, so the address checks below see
+    // the real host.
+    let parsed = url::Url::parse(trimmed)
+        .map_err(|e| berr("BROWSER_BAD_URL", format!("navigate URL is not valid: {e}")))?;
+    let link_local = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => v4.is_link_local(),
+        Some(url::Host::Ipv6(v6)) => {
+            v6.is_unicast_link_local()
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4: std::net::Ipv4Addr| v4.is_link_local())
+        }
+        Some(url::Host::Domain(host)) => {
+            matches!(
+                host.to_ascii_lowercase().as_str(),
+                "metadata.google.internal" | "metadata" | "instance-data"
+            ) || host.eq_ignore_ascii_case("fd00:ec2::254")
+        }
+        None => {
+            return Err(berr(
+                "BROWSER_BAD_URL",
+                format!("navigate URL has no host: {trimmed:?}"),
+            ))
+        }
+    };
+    if link_local {
+        return Err(berr(
+            "BROWSER_BLOCKED_URL",
+            format!(
+                "navigate refused a link-local or metadata host: {}",
+                parsed.host_str().unwrap_or("?")
+            ),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn arg_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
@@ -773,7 +846,10 @@ pub fn register_browser_tools(
         &["url"],
         false,
         None,
-        |_, v| Ok(vec!["navigate".into(), arg_str(&v, "url")?]),
+        |_, v| {
+            let url = arg_str(&v, "url")?;
+            Ok(vec!["navigate".into(), guard_navigate_url(&url)?])
+        },
     );
     // The interactive surface: history, snapshots, refs, typing,
     // waiting. Every remaining backend serves it.
@@ -1287,5 +1363,41 @@ mod tools_tests {
         };
         register_browser_tools(&mut reg, opts).expect("register");
         assert!(reg.names().contains(&"browser_act".to_string()));
+    }
+
+    #[test]
+    fn navigate_refuses_local_files_and_cloud_metadata() {
+        for url in [
+            "file:///home/ubuntu/.ssh/id_rsa",
+            "data:text/html,<h1>x</h1>",
+            "javascript:alert(1)",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://2852039166/latest/meta-data/",
+            "http://0xa9fea9fe/latest/meta-data/",
+            "http://[fe80::1]/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://metadata.google.internal/computeMetadata/v1/",
+            "http://metadata/",
+            "http://instance-data/",
+        ] {
+            let err = guard_navigate_url(url).expect_err(url);
+            assert!(
+                err.code == "BROWSER_BAD_URL" || err.code == "BROWSER_BLOCKED_URL",
+                "{url}: {}",
+                err.code
+            );
+        }
+    }
+
+    #[test]
+    fn navigate_allows_ordinary_http_and_local_dev_servers() {
+        for url in [
+            "https://example.com/path?q=1",
+            "http://localhost:3000",
+            "http://127.0.0.1:8080/",
+            "about:blank",
+        ] {
+            assert_eq!(guard_navigate_url(url).unwrap(), url);
+        }
     }
 }

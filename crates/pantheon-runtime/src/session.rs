@@ -602,6 +602,17 @@ struct RegistryToolAdapter<'a> {
     loop_guard: Option<&'a crate::loop_guard::LoopGuard>,
 }
 
+/// Scrub a tool failure before it becomes model-facing text or a ledger row.
+/// Provider and sandbox errors can quote the request URL or a response
+/// snippet, so the secret that caused the failure would otherwise ride out in
+/// `cause`, `remediation`, or `evidence`.
+fn scrub_tool_error(redaction: &RedactionRegistry, mut e: PantheonError) -> PantheonError {
+    e.cause = redaction.scrub(&e.cause);
+    e.remediation = redaction.scrub(&e.remediation);
+    e.evidence = redaction.scrub(&e.evidence);
+    e
+}
+
 impl<'a> RegistryToolAdapter<'a> {
     /// Execute the tool with this call's context installed, so
     /// context-aware tools (delegate) can link their durable side
@@ -763,7 +774,9 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
                     "[blocked by extension policy] {reason}"
                 )));
             }
-            let out = self.run_registered(name, args)?;
+            let out = self
+                .run_registered(name, args)
+                .map_err(|e| scrub_tool_error(&self.redaction, e))?;
             // Transform last: the plugin sees the real output and may replace
             // it. Fails OPEN, so redaction degrades to no-op, never to outage.
             let transformed = mgr.fire_transform(
@@ -779,8 +792,12 @@ impl<'a> ToolOperationAdapter for RegistryToolAdapter<'a> {
             // to reintroduce a secret after the scrub ran. Fails open.
             self.redaction.scrub(&transformed)
         } else {
-            // No hooks: still scrub; see RegRunner::run.
-            let out = self.run_registered(name, args)?;
+            // No hooks: still scrub; see RegRunner::run. Errors are scrubbed
+            // too: a provider or tool failure can quote the request URL or a
+            // response snippet that carries the injected secret.
+            let out = self
+                .run_registered(name, args)
+                .map_err(|e| scrub_tool_error(&self.redaction, e))?;
             self.redaction.scrub(&out)
         };
         if computer_use {
@@ -10073,6 +10090,30 @@ mod delegate_tool_tests {
         let other = serde_json::json!({"name": "echo", "args": r#"{"x":2}"#});
         assert_eq!(adapter.execute(&other).unwrap().as_str(), Some("ok"));
         assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    /// A failing tool can quote the secret it was given (a provider error
+    /// embeds the request URL or a response snippet). The scrubber must clean
+    /// error text too, not only successful output.
+    #[test]
+    fn tool_errors_are_scrubbed_like_tool_output() {
+        let secret = "sk-test-error-redaction-1234567890";
+        let redaction = RedactionRegistry::for_scope("test-error-redaction");
+        redaction.register(secret);
+        let err = scrub_tool_error(
+            &redaction,
+            PantheonError::new(
+                "TEST_FAIL",
+                Layer::Execution,
+                false,
+                format!("provider rejected key {secret}"),
+                format!("rotate {secret}"),
+                format!("request had {secret}"),
+            ),
+        );
+        for field in [&err.cause, &err.remediation, &err.evidence] {
+            assert!(!field.contains(secret), "secret leaked in error: {field}");
+        }
     }
 
     /// Crash-resume idempotency: `execute_keyed` runs the tool once and

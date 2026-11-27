@@ -951,10 +951,17 @@ pub mod filevault {
                 fs::create_dir_all(parent)?;
             }
         }
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(path)?;
+        // Ratchet again for an existing file on platforms where the creation
+        // mode is not honoured; the file is never group/world-readable before
+        // the key bytes are written.
         set_private_perms(&file)?;
         file.write_all(key)?;
         file.sync_all()?;

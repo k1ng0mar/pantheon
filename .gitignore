@@ -4,6 +4,15 @@
 *.db-journal
 *.log
 .env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*service-account*.json
+*.db-wal
+*.db-shm
 /data/
 .pantheon/
 .pantheon-data/
