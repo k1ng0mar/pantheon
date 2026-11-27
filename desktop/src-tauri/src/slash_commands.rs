@@ -578,8 +578,14 @@ fn resolve_from_catalog(
         return Ok(result);
     };
     let local = local_control(provider, name);
-    let command = local.as_ref().or_else(|| catalog.commands.iter().find(|command| command.name == name))
-        .ok_or_else(|| format!("Unknown command {name}. Type / to browse Pantheon commands, or refresh the list."))?;
+    let command = local
+        .as_ref()
+        .or_else(|| catalog.commands.iter().find(|command| command.name == name))
+        .ok_or_else(|| {
+            format!(
+                "Unknown command {name}. Type / to browse Pantheon commands, or refresh the list."
+            )
+        })?;
     match &command.invocation {
         Invocation::Native => {
             // Kimi ACP recognizes a literal space separator, not tabs/newlines.

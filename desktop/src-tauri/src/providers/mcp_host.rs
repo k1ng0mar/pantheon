@@ -825,7 +825,9 @@ mod tests {
                 let count = Arc::new(AtomicUsize::new(0));
                 let called = count.clone();
                 let mut protected = host();
-                protected.approval_tools.insert("pantheon_dispatch_workers".into());
+                protected
+                    .approval_tools
+                    .insert("pantheon_dispatch_workers".into());
                 protected.handler = Arc::new(move |_, _| {
                     called.fetch_add(1, Ordering::SeqCst);
                     Box::pin(async { Ok(json!({"started":true})) })
@@ -875,7 +877,9 @@ mod tests {
             let count = Arc::new(AtomicUsize::new(0));
             let called = count.clone();
             let mut protected = host();
-            protected.approval_tools.insert("pantheon_dispatch_workers".into());
+            protected
+                .approval_tools
+                .insert("pantheon_dispatch_workers".into());
             protected.handler = Arc::new(move |_, _| {
                 called.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async { Ok(json!({})) })
@@ -944,7 +948,9 @@ mod tests {
     #[tokio::test]
     async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {
         let mut protected = host();
-        protected.approval_tools.insert("pantheon_dispatch_workers".into());
+        protected
+            .approval_tools
+            .insert("pantheon_dispatch_workers".into());
         let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
         let server = Server::start_with_approvals(
             protected,
@@ -988,7 +994,10 @@ mod tests {
             "",
         )
         .await;
-        assert_eq!(list["result"]["tools"][0]["name"], "pantheon_dispatch_workers");
+        assert_eq!(
+            list["result"]["tools"][0]["name"],
+            "pantheon_dispatch_workers"
+        );
         assert!(list["result"]["tools"][0].get("type").is_none());
         let (_, result) = request(
             &server,
@@ -1041,7 +1050,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_protected_catalog_and_unknown_calls_and_reports_tool_errors() {
         let mut protected = host();
-        protected.approval_tools.insert("pantheon_dispatch_workers".into());
+        protected
+            .approval_tools
+            .insert("pantheon_dispatch_workers".into());
         assert!(Server::start(protected, "p".into(), Arc::new(|_| {}))
             .await
             .is_err());

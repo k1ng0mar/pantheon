@@ -1,7 +1,5 @@
 mod agent_tools;
 mod appearance;
-#[cfg(test)]
-mod tool_ownership;
 mod architect;
 mod bots;
 mod browser;
@@ -54,6 +52,8 @@ mod task_deletion;
 mod terminal;
 mod terminal_preferences;
 mod token_saver;
+#[cfg(test)]
+mod tool_ownership;
 mod tray;
 mod turn_changes;
 mod vm;

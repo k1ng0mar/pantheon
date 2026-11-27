@@ -337,12 +337,17 @@ mod tests {
             "by_day": [{"day": "2026-11-26", "totals": {"calls": 2, "input_tokens": 1200, "output_tokens": 600, "total_tokens": 1800, "cost_usd": 0.3}}]
         }"#;
         let stats: Value = serde_json::from_str(raw).unwrap();
-        let daily: Vec<Value> = stats["by_day"].as_array().unwrap().iter().filter_map(|day| {
-            Some(json!({
-                "date": day["day"].as_str()?,
-                "tokens": day["totals"]["total_tokens"].as_u64().unwrap_or(0),
-            }))
-        }).collect();
+        let daily: Vec<Value> = stats["by_day"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|day| {
+                Some(json!({
+                    "date": day["day"].as_str()?,
+                    "tokens": day["totals"]["total_tokens"].as_u64().unwrap_or(0),
+                }))
+            })
+            .collect();
         let model = &stats["by_model"][0];
         let description = format!(
             "{} calls · {} tokens · ${:.2}",
