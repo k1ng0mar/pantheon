@@ -1135,6 +1135,43 @@ impl Protocol {
                 ..Step::default()
             });
         }
+        if self.config.provider == "pantheon" && value["method"] == "_pantheon/usage" {
+            let params = &value["params"];
+            if params["sessionId"].as_str().is_some_and(|id| !id.is_empty() && id != self.remote_id)
+                || !params["totalTokens"].is_u64()
+            {
+                return Ok(Step::default());
+            }
+            let mut event = self.event("usage_report", "", None);
+            event.data = Some(json!({
+                "inputTokens": params["inputTokens"].as_u64().unwrap_or(0),
+                "outputTokens": params["outputTokens"].as_u64().unwrap_or(0),
+                "totalTokens": params["totalTokens"].as_u64().unwrap_or(0),
+                "costUsd": params["costUsd"].as_f64().unwrap_or(0.0),
+            }));
+            return Ok(Step {
+                events: vec![event],
+                ..Step::default()
+            });
+        }
+        if self.config.provider == "pantheon" && value["method"] == "_pantheon/uiDocument" {
+            let params = &value["params"];
+            if params["sessionId"].as_str().is_some_and(|id| !id.is_empty() && id != self.remote_id)
+                || params["document"].is_null()
+            {
+                return Ok(Step::default());
+            }
+            let mut event = self.event("ui_document", "", None);
+            event.data = Some(json!({
+                "uiId": field(params, "uiId"),
+                "revision": params["revision"].as_u64().unwrap_or(0),
+                "document": params["document"],
+            }));
+            return Ok(Step {
+                events: vec![event],
+                ..Step::default()
+            });
+        }
         self.acp(value)
     }
     fn commands_changed(&self, value: &Value, step: &mut Step) {
@@ -1777,6 +1814,32 @@ mod tests {
         let step = p.receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{"mcpCapabilities":{"http":false}},"authMethods":[{"id":"cached_token","name":"cached_token"}],"_meta":{"defaultAuthMethodId":"cached_token"}}})).unwrap();
         assert_eq!(step.write[0]["method"], "session/new");
         assert_eq!(step.write[0]["params"]["mcpServers"], json!([]));
+    }
+
+    #[test]
+    fn pantheon_usage_and_ui_notifications_reach_the_client() {
+        let mut p = Protocol::new(config("pantheon"));
+        p.remote_id = "run-1".into();
+        let usage = p.receive(json!({
+            "jsonrpc":"2.0",
+            "method":"_pantheon/usage",
+            "params":{"sessionId":"run-1","model":"m","inputTokens":120,"outputTokens":30,"totalTokens":150,"costUsd":0.01}
+        })).unwrap();
+        assert_eq!(usage.events[0].kind, "usage_report");
+        assert_eq!(usage.events[0].data.as_ref().unwrap()["totalTokens"], 150);
+        let other = p.receive(json!({
+            "jsonrpc":"2.0",
+            "method":"_pantheon/usage",
+            "params":{"sessionId":"other","totalTokens":999}
+        })).unwrap();
+        assert!(other.events.is_empty());
+        let ui = p.receive(json!({
+            "jsonrpc":"2.0",
+            "method":"_pantheon/uiDocument",
+            "params":{"sessionId":"run-1","uiId":"d-1","revision":2,"document":{"version":1,"id":"d-1","root":{"id":"r","type":"markdown","text":"hello"}}}
+        })).unwrap();
+        assert_eq!(ui.events[0].kind, "ui_document");
+        assert_eq!(ui.events[0].data.as_ref().unwrap()["uiId"], "d-1");
     }
 
     #[test]

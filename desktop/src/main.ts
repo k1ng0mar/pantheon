@@ -39,6 +39,7 @@ import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
+import { uiDocumentSpec } from './ui-document';
 import { approvalMode, approvalModes } from './approval-modes';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
@@ -84,7 +85,7 @@ import { isChatProject, NO_PROJECT } from './chats';
 
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
-type Stream = { text: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };
+type Stream = { text: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; usageReport?: { inputTokens: number; outputTokens: number; totalTokens: number; costUsd: number }; documents?: Map<string, { spec: string; revision: number }> };
 const state = {
   projects: [] as Project[], sessions: [] as Session[], providers: [] as Provider[],
   projectId: '', sessionId: '', messages: [] as Message[], messagesLoading: false, messagesError: '', streams: new Map<string, Stream>(),
@@ -1276,6 +1277,33 @@ function visibleMessages(): Message[] {
   }
   return state.messages.slice();
 }
+/** Native UI documents arrive beside their markdown fallback. Render once per revision. */
+function paintNativeDocuments(region: HTMLElement, current: Stream): void {
+  const host = region.querySelector<HTMLElement>('.live-documents');
+  if (!host) return;
+  const wanted = new Set<string>();
+  for (const [id, entry] of current.documents ?? []) {
+    wanted.add(id);
+    let view = [...host.children].find(node => (node as HTMLElement).dataset.uiId === id) as HTMLElement | undefined;
+    if (!view) {
+      view = document.createElement('div');
+      view.dataset.uiId = id;
+      view.className = 'native-ui-document';
+      host.append(view);
+    }
+    if (view.dataset.revision === String(entry.revision)) continue;
+    view.dataset.revision = String(entry.revision);
+    view.replaceChildren();
+    const custom = document.createElement('pantheon-ui');
+    const code = document.createElement('code');
+    code.className = 'language-ui';
+    code.textContent = entry.spec;
+    custom.append(code);
+    view.append(custom);
+  }
+  for (const child of [...host.children]) if (!wanted.has((child as HTMLElement).dataset.uiId ?? '')) child.remove();
+}
+
 function renderStream(): void {
   if (!transcriptVisible()) { updateWorkTimer(); return; }
   const region = document.getElementById('stream-region'); if (!region) return;
@@ -1287,7 +1315,7 @@ function renderStream(): void {
   const transcript = $('#transcript');
   const scrollTop = transcript.scrollTop, readingTool = readingTranscriptTool();
   if (region.dataset.sessionId !== state.sessionId || !region.querySelector('.live-text')) {
-    region.innerHTML = activityHtml(current.turnKey, workingLabel(current), '<div class="live-tools"></div><div class="live-status"></div>', true) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
+    region.innerHTML = activityHtml(current.turnKey, workingLabel(current), '<div class="live-tools"></div><div class="live-status"></div><div class="live-usage"></div><div class="live-documents"></div>', true) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
     region.dataset.sessionId = state.sessionId; region.dataset.revision = '-1';
   }
   region.querySelector<HTMLElement>('.turn-activity')!.dataset.turnKey = current.turnKey;
@@ -1310,6 +1338,12 @@ function renderStream(): void {
   const status = region.querySelector<HTMLElement>('.live-status')!;
   const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
   status.hidden = Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0;
+  const usage = region.querySelector<HTMLElement>('.live-usage')!;
+  const report = current.usageReport;
+  const usageLabel = report ? `${report.totalTokens.toLocaleString()} tokens this turn · $${report.costUsd.toFixed(2)}` : '';
+  if (usage.textContent !== usageLabel) usage.textContent = usageLabel;
+  usage.hidden = !report;
+  paintNativeDocuments(region, current);
   updateWorkTimer();
   if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
@@ -2490,6 +2524,32 @@ function onAgent(event: AgentEvent): void {
   // Native reports each steer's pending, delivered or failed state.
   if (event.kind === 'steer') { steerEvent(event); return; }
   const s = state.sessions.find(s => s.id === event.sessionId);
+  if (event.kind === 'usage_report') {
+    const data = event.data as { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number } | undefined;
+    if (data && Number.isSafeInteger(data.totalTokens) && (data.totalTokens as number) >= 0) {
+      const current = stream(event.sessionId);
+      current.usageReport = {
+        inputTokens: Number.isSafeInteger(data.inputTokens) ? data.inputTokens as number : 0,
+        outputTokens: Number.isSafeInteger(data.outputTokens) ? data.outputTokens as number : 0,
+        totalTokens: data.totalTokens as number,
+        costUsd: typeof data.costUsd === 'number' && Number.isFinite(data.costUsd) ? data.costUsd : 0,
+      };
+      current.revision++;
+      if (event.sessionId === state.sessionId) renderStream();
+    }
+    return;
+  }
+  if (event.kind === 'ui_document') {
+    const spec = uiDocumentSpec(event.data);
+    const data = event.data as { uiId?: unknown; revision?: unknown } | undefined;
+    if (spec && typeof data?.uiId === 'string' && Number.isSafeInteger(data.revision)) {
+      const current = stream(event.sessionId);
+      (current.documents ??= new Map()).set(data.uiId, { spec, revision: data.revision as number });
+      current.revision++;
+      if (event.sessionId === state.sessionId) renderStream();
+    }
+    return;
+  }
   if (event.kind === 'usage') {
     const usage = parseContextUsage(event.data);
     if (s && usage) {
