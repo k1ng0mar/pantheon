@@ -164,3 +164,16 @@ test('goal workflow rejects invalid fast settings, keeps the draft, and reads us
   await expect(page.getByRole('listbox', { name: 'Daily token use' })).toBeFocused();
   await expect(page.locator('.heatmap-readout')).toContainText('3,420 tokens');
 });
+
+test('goal workflow opens plugin and hook panels from the task menu', async ({ page }) => {
+  await page.locator('#task-menu-trigger').click();
+  const menu = page.getByRole('dialog', { name: 'Task actions', exact: true });
+  await menu.getByRole('menuitem', { name: 'Installed plugins', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Installed plugins', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+
+  await page.locator('#task-menu-trigger').click();
+  await menu.getByRole('menuitem', { name: 'Lifecycle hooks', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Lifecycle hooks', exact: true })).toBeVisible();
+  await expect(page.getByText('after_turn')).toBeVisible();
+});

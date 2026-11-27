@@ -3215,7 +3215,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
     { id: 'archive-task', label: s.archived ? 'Restore task' : 'Archive task', icon: 'archive' },
-    ...s.provider === 'pantheon' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Running work', icon: 'terminal' }, { id: 'usage', label: 'Usage', icon: 'activity' }] : [],
+    ...s.provider === 'pantheon' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Running work', icon: 'terminal' }, { id: 'usage', label: 'Usage', icon: 'activity' }, { id: 'plugins', label: 'Installed plugins', icon: 'settings' }, { id: 'hooks', label: 'Lifecycle hooks', icon: 'check' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
@@ -3889,7 +3889,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'bot-task-menu': await showBotTaskMenu(element); break;
     case 'cloud-menu': await showCloudMenu(element); break;
     case 'toggle-bots-view': setSidebarView(sidebarView === 'bots' ? 'tasks' : 'bots'); break;
-    case 'goal': case 'jobs': case 'usage': if (session()) await performSlashAction(name, '', session()!); break;
+    case 'goal': case 'jobs': case 'usage': case 'plugins': case 'hooks': if (session()) await performSlashAction(name, '', session()!); break;
     case 'harness-console': if (session()) await openHarnessConsole(session()!); break;
     case 'task-menu': await showTaskMenu(element); break;
     case 'pin-task': if (session()) await pinTask(session()!.id); break;

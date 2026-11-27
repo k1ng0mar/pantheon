@@ -171,38 +171,41 @@ async fn plugins(cwd: &Path) -> Result<Value, String> {
     }))
 }
 
-/// Lifecycle hooks from the run's own config (`[hooks]` in config.toml).
+/// Lifecycle hooks from the plugin registry. Pantheon implements hooks as
+/// `kind: hook` plugins, with enablement in config.toml under `[plugins.<name>]`.
 async fn hooks(cwd: &Path) -> Result<Value, String> {
-    let path = config_path(cwd)?;
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
-    let document: toml::Value =
-        toml::from_str(&text).map_err(|e| format!("config.toml is not valid TOML: {e}"))?;
+    let raw = run(cwd, &["plugins", "list"])?;
     let mut items = Vec::new();
-    if let Some(hooks) = document.get("hooks").and_then(|h| h.as_table()) {
-        for (name, value) in hooks {
-            let enabled = value
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let command = value
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            items.push(json!({
-                "id": name,
-                "title": name,
-                "description": command,
-                "source": path.display().to_string(),
-                "enabled": enabled,
-            }));
+    for line in raw.lines() {
+        let line = line.trim_end();
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with("NAME") || trimmed.starts_with("usage:") {
+            continue;
+        }
+        // `NAME  KIND  VERSION  STATUS  DESCRIPTION`
+        let cells: Vec<&str> = line.split_whitespace().collect();
+        if cells.len() < 4 || cells[1] != "hook" {
+            continue;
+        }
+        let (name, status) = (cells[0], cells[3]);
+        let description = line
+            .split_once(status)
+            .map(|(_, rest)| rest.trim().to_string())
+            .unwrap_or_default();
+        items.push(json!({
+            "id": name,
+            "title": name,
+            "description": if description.is_empty() { "Lifecycle hook plugin".to_string() } else { description },
+            "enabled": status == "enabled",
+        }));
+        if items.len() >= MAX_ROWS {
+            break;
         }
     }
     Ok(json!({
         "kind": "hooks",
         "items": items,
-        "notes": if items.is_empty() { json!(["No lifecycle hooks are configured in config.toml."]) } else { json!([]) },
+        "notes": if items.is_empty() { json!(["No hook plugins are installed."]) } else { json!([]) },
     }))
 }
 
@@ -307,6 +310,23 @@ mod tests {
             items.push((cells[0], cells[3]));
         }
         assert_eq!(items, vec![("cf-ops", "disabled")]);
+    }
+
+    #[test]
+    fn hook_rows_come_from_the_plugin_registry() {
+        let table = "  NAME        KIND VERSION STATUS  DESCRIPTION\n  hookify     hook 1.0.0   disabled Rules for tool calls.\n  cf-ops      tool 1.0.0   disabled Cloudflare CLI.\n";
+        let mut items = Vec::new();
+        for line in table.lines() {
+            let cells: Vec<&str> = line.split_whitespace().collect();
+            if cells.len() < 4 || cells[1] != "hook" {
+                continue;
+            }
+            items.push(json!({
+                "id": cells[0],
+                "enabled": cells[3] == "enabled",
+            }));
+        }
+        assert_eq!(items, vec![json!({"id": "hookify", "enabled": false})]);
     }
 
     #[test]
