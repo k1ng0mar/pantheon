@@ -4974,6 +4974,27 @@ pub mod pty_tools {
             .unwrap_or(default)
     }
 
+    /// Classify typed PTY input the same way `shell` commands are classified.
+    /// `terminal_open` only sees its initial command, so this hook keeps later
+    /// `git push` / `cf write` input under the same approval gate.
+    fn terminal_write_capabilities(args: &str) -> Vec<Capability> {
+        let Ok(v) = parse_args(args) else {
+            return Vec::new();
+        };
+        let Some(data) = v.get("data").and_then(|d| d.as_str()) else {
+            return Vec::new();
+        };
+        let mut caps = Vec::new();
+        if pantheon_exec::danger::is_git_push(data) {
+            caps.push(Capability::GitPush);
+        } else if pantheon_exec::cloudflare::is_cf_command(data) {
+            if let Some(token) = pantheon_exec::cloudflare::classify(data).capability_token() {
+                caps.push(Capability::Other(token.to_string()));
+            }
+        }
+        caps
+    }
+
     /// Register `terminal_open/read/write/resize/close/list`. The caller owns
     /// the manager for the session's lifetime; registering without one is a
     /// programming error, so this function takes the manager explicitly.
@@ -5034,7 +5055,9 @@ pub mod pty_tools {
     );
 
         let m = manager.clone();
-        reg.register(
+        // `register_with` for the typed-input capability hook; the other PTY
+        // tools take the plain three-argument `register`.
+        reg.register_with(
         ToolSchema {
             name: "terminal_write".into(),
             description: "Write raw input to a persistent PTY. Include a trailing newline to submit a shell command.".into(),
@@ -5056,6 +5079,10 @@ pub mod pty_tools {
                 .ok_or_else(|| perr("PTY_BAD_ARGS", "missing 'data'".into()))?;
             m.write(&id, &data)
         },
+        // Typed input is a command too. `terminal_open` only sees the first
+        // command, so without this hook `git push` or `cf ... destroy` typed
+        // later skips the per operation approval gate.
+        Some(Box::new(terminal_write_capabilities)),
     );
 
         let m = manager.clone();
@@ -5228,6 +5255,15 @@ pub mod pty_tools {
             let err = manager.open(None, Some("/etc"), 24, 80, false).unwrap_err();
             assert!(err.to_string().contains("CONFINE"));
             let _ = std::fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn typed_input_is_classified_like_a_shell_command() {
+            let caps = super::terminal_write_capabilities(r#"{"data":"git push origin main\n"}"#);
+            assert!(caps.contains(&Capability::GitPush), "{caps:?}");
+            assert!(super::terminal_write_capabilities(r#"{"data":"ls -la\n"}"#).is_empty());
+            // An unparseable frame is left to the handler's error path.
+            assert!(super::terminal_write_capabilities("not json").is_empty());
         }
     }
 }
@@ -5791,7 +5827,49 @@ pub mod skill_tools {
                         skill.dir.as_path()
                     };
                     let path = dir.join(rel);
-                    let meta = std::fs::metadata(&path).map_err(|e| {
+                    // `dir.join(rel)` alone follows symlinks: a skill can ship
+                    // references/leak.md pointing at any file the user can read.
+                    // Reject symlinks, then canonicalize both sides and require
+                    // the target to stay under the skill directory.
+                    if let Ok(link) = std::fs::symlink_metadata(&path) {
+                        if link.file_type().is_symlink() {
+                            return Err(crate::tools::tool_err(
+                                "SKILL_BAD_PATH",
+                                Layer::Execution,
+                                false,
+                                format!("{rel:?} is a symlink"),
+                                "use a regular file inside the skill directory",
+                            ));
+                        }
+                    }
+                    let canon_dir = std::fs::canonicalize(dir).map_err(|e| {
+                        crate::tools::tool_err(
+                            "SKILL_FILE_IO",
+                            Layer::Execution,
+                            false,
+                            format!("skill directory: {e}"),
+                            "check the skill is installed correctly",
+                        )
+                    })?;
+                    let canon_path = std::fs::canonicalize(&path).map_err(|e| {
+                        crate::tools::tool_err(
+                            "SKILL_FILE_IO",
+                            Layer::Execution,
+                            false,
+                            format!("{}: {e}", path.display()),
+                            "list the skill directory or check the path",
+                        )
+                    })?;
+                    if !canon_path.starts_with(&canon_dir) {
+                        return Err(crate::tools::tool_err(
+                            "SKILL_BAD_PATH",
+                            Layer::Execution,
+                            false,
+                            format!("{rel:?} escapes the skill directory"),
+                            "pass a path like references/api.md",
+                        ));
+                    }
+                    let meta = std::fs::metadata(&canon_path).map_err(|e| {
                         crate::tools::tool_err(
                             "SKILL_FILE_IO",
                             Layer::Execution,
@@ -5809,7 +5887,7 @@ pub mod skill_tools {
                             "read a smaller section or ask for a summary",
                         ));
                     }
-                    return std::fs::read_to_string(&path).map_err(|e| {
+                    return std::fs::read_to_string(&canon_path).map_err(|e| {
                         crate::tools::tool_err(
                             "SKILL_FILE_IO",
                             Layer::Execution,
@@ -6198,6 +6276,43 @@ pub mod skill_tools {
             let escape = (tool.run)(r#"{"name":"notes","file_path":"../../etc/passwd"}"#)
                 .expect_err("traversal rejected");
             assert_eq!(escape.code, "SKILL_BAD_PATH");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn skill_read_rejects_a_symlink_out_of_the_skill_dir() {
+            use super::register_skill_tools;
+            use pantheon_exec::skills::{Skill, SkillMeta};
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let skill_dir = dir.path().join("notes");
+            std::fs::create_dir_all(skill_dir.join("references")).expect("dirs");
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: notes\ndescription: d\n---\n\nbody\n",
+            )
+            .expect("skill file");
+            let outside = dir.path().join("secret.txt");
+            std::fs::write(&outside, "top secret").expect("outside file");
+            std::os::unix::fs::symlink(&outside, skill_dir.join("references/leak.md"))
+                .expect("symlink");
+            let skill = Skill {
+                meta: SkillMeta {
+                    name: "notes".into(),
+                    description: "d".into(),
+                    origin: "user".into(),
+                    exec: Vec::new(),
+                    dependencies: Vec::new(),
+                },
+                path: skill_dir.join("SKILL.md"),
+                dir: skill_dir.clone(),
+            };
+            let mut reg = ToolRegistry::new();
+            register_skill_tools(&mut reg, vec![skill]);
+            let tool = reg.get("skill_read").expect("skill_read registered");
+            let err = (tool.run)(r#"{"name":"notes","file_path":"references/leak.md"}"#)
+                .expect_err("symlink must be rejected");
+            assert_eq!(err.code, "SKILL_BAD_PATH");
         }
 
         #[test]

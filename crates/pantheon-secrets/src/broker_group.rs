@@ -1054,11 +1054,14 @@ pub mod filevault {
         }
         let tmp = path.with_extension("tmp");
         {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)?;
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut file = opts.open(&tmp)?;
             set_private_perms(&file)?;
             file.write_all(bytes)?;
             file.sync_all()?;

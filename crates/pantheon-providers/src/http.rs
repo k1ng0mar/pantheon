@@ -26,6 +26,34 @@ use std::time::Duration;
 /// Upper bound for one SSE event's accumulated `data:` payload.
 const MAX_SSE_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
+/// Redact values we actually sent before an error body can carry them back.
+/// Pattern redaction alone misses custom provider keys with no known prefix,
+/// so scrub every credential-shaped header value out of the cause we create.
+fn scrub_error_text(text: &str, headers: &[(String, String)]) -> String {
+    let mut out = text.to_string();
+    for (name, value) in headers {
+        let secret_header = name.eq_ignore_ascii_case("authorization")
+            || name.eq_ignore_ascii_case("proxy-authorization")
+            || name.eq_ignore_ascii_case("x-api-key")
+            || name.to_ascii_lowercase().contains("token")
+            || name.to_ascii_lowercase().contains("key");
+        if secret_header && !value.is_empty() {
+            out = out.replace(value.as_str(), "[redacted]");
+            // An error body usually echoes the token alone, not the
+            // `Bearer <token>` header value, so scrub the credential part
+            // too. Short values stay untouched: replacing a 3-char token
+            // would shred the message without protecting anything.
+            if let Some((_scheme, rest)) = value.split_once(' ') {
+                let rest = rest.trim();
+                if rest.len() >= 8 {
+                    out = out.replace(rest, "[redacted]");
+                }
+            }
+        }
+    }
+    pantheon_api::logging::redact(&out)
+}
+
 pub(crate) fn perr(code: &str, cause: String, retryable: bool) -> PantheonError {
     PantheonError::new(
         code,
@@ -319,6 +347,27 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
         Some(h) => h,
         None => return Err(err("PROVIDER_URL", format!("no host in URL: {url}"))),
     };
+    // A provider key is sent in an Authorization header, so a public HTTP URL
+    // would put it on the wire in cleartext. Applied after the host checks:
+    // a private/loopback host is the more specific finding (`SSRF_BLOCKED`),
+    // and a URL that is allowed by them still may not use plain HTTP.
+    let require_tls = || {
+        if parsed.scheme() == "https" {
+            return Ok(());
+        }
+        let local = host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+            || host.eq_ignore_ascii_case("localhost")
+            || host.to_ascii_lowercase().ends_with(".localhost");
+        if parsed.scheme() == "http" && loopback_opt_in() && !goes_through_proxy(url) && local {
+            return Ok(());
+        }
+        Err(err(
+            "PROVIDER_TLS_REQUIRED",
+            format!("provider URL must use https, got {}", parsed.scheme()),
+        ))
+    };
     if !egress_allows_host(host) {
         return Err(err(
             "EGRESS_BLOCKED",
@@ -338,7 +387,7 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
         // permission for that.
         if ip.is_loopback() {
             if loopback_opt_in() && !goes_through_proxy(url) {
-                return Ok(());
+                return require_tls();
             }
             return Err(err(
                 "SSRF_BLOCKED",
@@ -351,14 +400,14 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
                 format!("{host} is not a public provider host"),
             ));
         }
-        return Ok(());
+        return require_tls();
     }
     // `localhost` (and any `.localhost` name) is loopback by definition,
     // with the same through-a-proxy caveat as a loopback literal.
     let host_lower = host.to_lowercase();
     if host_lower == "localhost" || host_lower.ends_with(".localhost") {
         if loopback_opt_in() && !goes_through_proxy(url) {
-            return Ok(());
+            return require_tls();
         }
         return Err(err(
             "SSRF_BLOCKED",
@@ -370,7 +419,7 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
     // not rejected here - the proxy resolves it, and TLS verifies the
     // hostname's certificate through the tunnel.
     if goes_through_proxy(url) {
-        return Ok(());
+        return require_tls();
     }
     let port = parsed.port_or_known_default().unwrap_or(0);
     use std::net::ToSocketAddrs;
@@ -394,7 +443,7 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
     // Never set this in production: a loopback provider is trusted with
     // the turn's transcript by construction.
     if loopback_opt_in() && !addrs.is_empty() && addrs.iter().all(|ip| ip.is_loopback()) {
-        return Ok(());
+        return require_tls();
     }
     for ip in &addrs {
         if !is_public_ip(*ip) {
@@ -404,9 +453,8 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
             ));
         }
     }
-    Ok(())
+    require_tls()
 }
-
 fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => is_public_v4(v4),
@@ -677,7 +725,11 @@ fn send(
         if let Some(d) = crate::credential_error::classify(code, &body) {
             cause.push_str(&format!(" [credential: {} {}]", d.summary, d.remediation));
         }
-        return Err(perr("PROVIDER_HTTP", cause, retryable));
+        return Err(perr(
+            "PROVIDER_HTTP",
+            scrub_error_text(&cause, &req.headers),
+            retryable,
+        ));
     }
     Ok(resp)
 }
@@ -1260,5 +1312,32 @@ mod tests {
         _env.clear_proxy();
         std::env::set_var("ALL_PROXY", "socks5://127.0.0.1:1080");
         assert!(!goes_through_proxy("https://example.com/v1"));
+    }
+
+    #[test]
+    fn public_provider_urls_require_tls() {
+        let _g = guard_env_lock();
+        let _env = SavedEnv::capture();
+        _env.clear_proxy();
+        std::env::remove_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS");
+        let err = validate_url("http://1.1.1.1/v1").expect_err("http must be rejected");
+        assert_eq!(err.code, "PROVIDER_TLS_REQUIRED");
+        assert!(validate_url("https://1.1.1.1/v1").is_ok());
+    }
+
+    #[test]
+    fn provider_error_causes_scrub_the_key_we_sent() {
+        let key = "opaque-custom-key-1234567890";
+        let headers = vec![
+            ("Authorization".to_string(), format!("Bearer {key}")),
+            ("Content-Type".to_string(), "application/json".into()),
+        ];
+        let cause = format!("provider echoed {key} in a 400 body");
+        let safe = scrub_error_text(&cause, &headers);
+        assert!(
+            !safe.contains(key),
+            "secret reached the error cause: {safe}"
+        );
+        assert!(safe.contains("[redacted]"));
     }
 }

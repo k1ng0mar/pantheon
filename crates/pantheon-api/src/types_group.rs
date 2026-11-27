@@ -2726,7 +2726,27 @@ pub mod logging {
         // Enforce the size cap before every write. Best-effort: a failed rotation
         // degrades to unbounded growth rather than losing the line.
         rotate_if_needed(path);
-        OpenOptions::new().create(true).append(true).open(path)
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Logs carry tool output and provider error snippets. A fresh log
+            // must be owner only from creation, not after the first chmod.
+            opts.mode(0o600);
+        }
+        let file = opts.open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Ratchet logs created by older versions or a looser umask.
+            if let Ok(meta) = file.metadata() {
+                if meta.permissions().mode() & 0o077 != 0 {
+                    let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
+        Ok(file)
     }
 
     /// Rotate `path` when it has reached `LOG_ROTATE_BYTES`: `path` becomes

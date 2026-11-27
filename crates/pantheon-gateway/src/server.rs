@@ -446,6 +446,12 @@ pub mod http {
             }
             }
             "DELETE" => {
+                // Same mutation guard as POST: a page on another origin or
+                // an untrusted Host must not be able to log the user out
+                // with their own cookie.
+                if let Err(r) = guard_mutation(req, ctx) {
+                    return r;
+                }
                 if let Some(id) = ctx.session_cookie(req) {
                     ctx.revoke_session(&id);
                 }
@@ -1570,11 +1576,40 @@ pub mod http {
             assert!(check_auth(&authed, AuthGroup::DashboardApi, &ctx).is_ok());
             let del = req(
                 "DELETE",
-                &[("cookie", &format!("{SESSION_COOKIE}={value}"))],
+                &[
+                    ("host", "127.0.0.1:7171"),
+                    ("cookie", &format!("{SESSION_COOKIE}={value}")),
+                ],
                 &[],
             );
             let _ = handle_session(&ctx, &del);
             assert!(check_auth(&authed, AuthGroup::DashboardApi, &ctx).is_err());
+        }
+
+        /// A foreign origin cannot revoke a session with the victim's cookie.
+        #[test]
+        fn session_logout_rejects_a_cross_origin_request() {
+            let ctx = ctx();
+            let value = ctx.mint_session();
+            let del = req(
+                "DELETE",
+                &[
+                    ("host", "127.0.0.1:7171"),
+                    ("origin", "http://127.0.0.1:3000"),
+                    ("cookie", &format!("{SESSION_COOKIE}={value}")),
+                ],
+                &[],
+            );
+            match handle_session(&ctx, &del) {
+                Response::Buffered { status, .. } => assert_eq!(status, 403),
+                _ => panic!("expected a buffered 403"),
+            }
+            let authed = req(
+                "GET",
+                &[("cookie", &format!("{SESSION_COOKIE}={value}"))],
+                &[],
+            );
+            assert!(check_auth(&authed, AuthGroup::DashboardApi, &ctx).is_ok());
         }
 
         /// Minting without the token header is a 401, not a cookie.

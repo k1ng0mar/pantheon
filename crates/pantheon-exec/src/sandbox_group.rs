@@ -64,6 +64,14 @@ pub mod confine {
             "~/.bash_profile".into(),
             "~/.profile".into(),
             "~/.gitconfig".into(),
+            ".git/hooks/**".into(),
+            "**/.git/hooks/**".into(),
+            ".git/config".into(),
+            "**/.git/config".into(),
+            ".cargo/config.toml".into(),
+            "**/.cargo/config.toml".into(),
+            ".envrc".into(),
+            "**/.envrc".into(),
             "/etc/**".into(),
         ]
     }
@@ -169,11 +177,27 @@ pub mod confine {
 
     fn pattern_matches(candidate: &str, pattern: &str) -> bool {
         let cand = candidate.trim_end_matches('/');
-        if let Some(prefix) = pattern.strip_suffix("/**") {
-            let prefix = prefix.trim_end_matches('/');
-            cand == prefix || cand.starts_with(&format!("{prefix}/"))
+        let pattern = pattern.trim_end_matches('/');
+        // `/**` means "the directory and everything under it". A leading
+        // `**/` means "at any depth": workspace files are matched by absolute
+        // path, so a root-relative pattern like `.git/config` would never hit
+        // `work/.git/config` without this.
+        let (pat, recursive) = match pattern.strip_suffix("/**") {
+            Some(p) => (p.trim_end_matches('/'), true),
+            None => (pattern, false),
+        };
+        let at_any_depth = |pat: &str| {
+            cand == pat
+                || cand.ends_with(&format!("/{pat}"))
+                || (recursive && cand.contains(&format!("/{pat}/")))
+        };
+        if let Some(rest) = pat.strip_prefix("**/") {
+            return at_any_depth(rest);
+        }
+        if recursive {
+            cand == pat || cand.starts_with(&format!("{pat}/"))
         } else {
-            cand == pattern.trim_end_matches('/')
+            cand == pat
         }
     }
 

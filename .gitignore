@@ -13,6 +13,10 @@
 *service-account*.json
 *.db-wal
 *.db-shm
+*.sqlite*
+gateway.env
+logins.env
+*credentials*.json
 /data/
 .pantheon/
 .pantheon-data/

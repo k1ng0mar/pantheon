@@ -203,6 +203,18 @@ impl Store {
 
     pub fn open(path: &Path) -> Result<Self> {
         let mut db = Connection::open(path).map_err(|e| e.to_string())?;
+        // The root storage crate tightens via configure_durability; this crate
+        // has its own connection, so the desktop DB (message bodies included)
+        // would otherwise inherit the umask. Ratchet before any schema write.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(path) {
+                if meta.permissions().mode() & 0o077 != 0 {
+                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
         db.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-1024; PRAGMA mmap_size=0;
             CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -504,7 +516,9 @@ impl Store {
                     .map_err(|e| e.to_string())?;
                 if old_column > 0 {
                     migration
-                        .execute_batch("ALTER TABLE sessions RENAME COLUMN codex_settings TO agent_settings;")
+                        .execute_batch(
+                            "ALTER TABLE sessions RENAME COLUMN codex_settings TO agent_settings;",
+                        )
                         .map_err(|e| e.to_string())?;
                 }
                 migration

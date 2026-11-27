@@ -137,6 +137,24 @@ fn ssh_and_etc_denied_by_glob() {
 }
 
 #[test]
+fn git_metadata_and_envrc_denied_by_glob() {
+    let home = fresh("home");
+    let work = home.join("work");
+    std::fs::create_dir_all(work.join(".git/hooks")).unwrap();
+    let _g = EnvGuard::new(Some(&home), None);
+
+    for rel in [
+        ".git/hooks/pre-commit",
+        ".git/config",
+        ".cargo/config.toml",
+        ".envrc",
+    ] {
+        let err = confine(&work.join(rel), &work).unwrap_err();
+        assert_eq!(code_of(&err), "CONFINE_DENIED", "{rel}: {err}");
+    }
+}
+
+#[test]
 #[cfg(unix)]
 fn symlink_into_denied_dir_rejected_as_denied_not_escape() {
     // A symlink inside the workspace pointing at ~/.ssh must hit the deny
