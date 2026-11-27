@@ -110,7 +110,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
     refreshButton.setAttribute('aria-label', loadError ? 'Retry commands' : 'Refresh commands');
     refreshButton.title = loadError ? 'Retry commands' : 'Refresh commands';
     list.setAttribute('aria-busy', String(loading && !commands.length));
-    status.textContent = loading ? `${slow ? 'Waiting for the harness to start…' : 'Loading commands…'}${commands.length ? ' Available commands can be used now.' : ''}` : loadError || (!matches.length ? query ? `Unknown command /${query}. Refresh commands or edit the name.` : 'No commands are available for this agent.' : `${visibleCommands.length}${matches.length > visibleCommands.length ? ` of ${matches.length}` : ''} command${matches.length === 1 ? '' : 's'}`);
+    status.textContent = loading ? `${slow ? 'Waiting for Pantheon to start…' : 'Loading commands…'}${commands.length ? ' Available commands can be used now.' : ''}` : loadError || (!matches.length ? query ? `Unknown command /${query}. Refresh commands or edit the name.` : 'No commands are available for this agent.' : `${visibleCommands.length}${matches.length > visibleCommands.length ? ` of ${matches.length}` : ''} command${matches.length === 1 ? '' : 's'}`);
     warning.hidden = !warnings.length;
     warning.textContent = warnings.slice(0, 3).join('\n');
     position();
@@ -143,7 +143,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
         return options.load(force);
       };
       const result = await Promise.race([discovery(), new Promise<never>((_, reject) => {
-        timeoutTimer = window.setTimeout(() => reject(new Error('Command discovery took too long. Retry to load harness commands.')), 75_000);
+        timeoutTimer = window.setTimeout(() => reject(new Error('Command discovery took too long. Retry to load Pantheon commands.')), 75_000);
       })]);
       if (!current()) return;
       accept(result); loadedAt = Date.now();
@@ -175,7 +175,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
       (textarea.closest('dialog[open]') ?? document.body).append(panel);
       render(); showPopover(panel, textarea);
     } else render();
-    // Runtime changes already refreshed the harness metadata. Only the explicit
+    // Runtime changes already refreshed the Pantheon metadata. Only the explicit
     // refresh button asks discovery to start a new provider process.
     void load();
   }

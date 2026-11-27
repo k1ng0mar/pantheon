@@ -235,7 +235,7 @@ fn validate_dir(dir: Option<String>, provider: &str) -> Result<Option<String>> {
         return Ok(None);
     };
     if config_dir_var(provider).is_none() {
-        return Err("Set this harness's config folder variable under Environment instead.".into());
+        return Err("Set Pantheon's config folder variable under Environment instead.".into());
     }
     if dir.len() > 4096 || dir.chars().any(char::is_control) || !Path::new(&dir).is_absolute() {
         return Err("Choose an absolute config folder path.".into());

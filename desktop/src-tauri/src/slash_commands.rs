@@ -60,7 +60,7 @@ static CACHE: LazyLock<Mutex<CommandCache>> = LazyLock::new(|| Mutex::new(Comman
 static DISCOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 const CACHE_AGE: Duration = Duration::from_secs(300);
 const REFRESH_WARNING: &str =
-    "Could not refresh harness commands. Try Refresh, or start a task to sync its command list.";
+    "Could not refresh Pantheon commands. Try Refresh, or start a task to sync its command list.";
 
 enum Commit {
     Ready(Catalog),
@@ -407,7 +407,7 @@ const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
     ("/new", "Start a new task in this project", "new", None),
     (
         "/model",
-        "Choose a harness, model, and reasoning effort",
+        "Choose a model and reasoning effort",
         "model",
         None,
     ),
@@ -427,7 +427,7 @@ const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
     ("/help", "Browse available slash commands", "help", None),
     (
         "/skills",
-        "Browse skills and commands from this harness",
+        "Browse Pantheon skills and commands",
         "skills",
         None,
     ),
@@ -445,7 +445,7 @@ const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
     ),
     (
         "/context",
-        "Show the context reported by this harness",
+        "Show the context reported by Pantheon",
         "status",
         None,
     ),
@@ -461,7 +461,7 @@ const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
     ("/pwd", "Show this task’s working directory", "pwd", None),
     (
         "/console",
-        "Open this harness in an interactive console",
+        "Open Pantheon in a console",
         "console",
         Some("[command]"),
     ),
@@ -579,7 +579,7 @@ fn resolve_from_catalog(
     };
     let local = local_control(provider, name);
     let command = local.as_ref().or_else(|| catalog.commands.iter().find(|command| command.name == name))
-        .ok_or_else(|| format!("Unknown command {name}. Type / to browse this harness’s commands, or refresh the list."))?;
+        .ok_or_else(|| format!("Unknown command {name}. Type / to browse Pantheon commands, or refresh the list."))?;
     match &command.invocation {
         Invocation::Native => {
             // Kimi ACP recognizes a literal space separator, not tabs/newlines.
