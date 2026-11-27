@@ -20,7 +20,6 @@ use tokio::{
 mod attachments;
 #[cfg(all(test, unix))]
 pub(crate) mod concurrent_process_tests;
-mod host_inputs;
 mod host_tools;
 mod mcp_host;
 use host_tools::apply_step;
@@ -719,14 +718,12 @@ struct Protocol {
     /// Steering messages this run has accepted but not yet delivered.
     acp_steers: acp::Steers,
     pending: HashMap<String, Value>,
-    inputs: HashMap<String, Value>,
     mcp_server: Option<Value>,
     mcp_required: bool,
     mcp_tool_names: HashSet<String>,
     text_streams: text_stream::TextStreams,
     text_sequence: u64,
     message_id: String,
-    resume_supported: bool,
     // ACP may publish commands before session/new responds. Keep at most one
     // small frame until the response confirms which session owns it.
     early_advertised_commands: Option<Vec<u8>>,
@@ -734,7 +731,6 @@ struct Protocol {
     file_write_tools: HashSet<String>,
     tool_order: VecDeque<String>,
     image_blocks: Vec<Value>,
-    reasoning_values: Vec<String>,
     acp_config: Value,
     subagents: subagents::Subagents,
 }
@@ -814,52 +810,19 @@ impl Protocol {
             phase: 0,
             acp_steers: Default::default(),
             pending: HashMap::new(),
-            inputs: HashMap::new(),
             mcp_server: None,
             mcp_required: true,
             mcp_tool_names: HashSet::new(),
             text_streams: text_stream::TextStreams::default(),
             text_sequence: 0,
             message_id: String::new(),
-            resume_supported: false,
             early_advertised_commands: None,
             tools: HashMap::new(),
             file_write_tools: HashSet::new(),
             tool_order: VecDeque::new(),
             image_blocks: Vec::new(),
-            reasoning_values: Vec::new(),
             acp_config: Value::Null,
             subagents: subagents::Subagents::default(),
-        }
-    }
-    fn usage(&self, used: u64, window: Option<u64>, step: &mut Step) {
-        // Match the storage/UI limit and never turn a negative/malformed metric
-        // into a fabricated zero or an unbounded percentage.
-        if used > 1_000_000_000 || window.is_some_and(|value| value == 0 || value > 1_000_000_000) {
-            return;
-        }
-        let mut event = self.event("usage", "", None);
-        event.data = Some(json!({"usedTokens":used,"contextWindow":window}));
-        step.events.push(event);
-    }
-    fn config_options(&mut self, result: &Value) {
-        if let Some(options) = result["configOptions"].as_array() {
-            self.reasoning_values.clear();
-            if let Some(thinking) = options
-                .iter()
-                .take(32)
-                .find(|option| option["id"] == "thinking")
-            {
-                self.reasoning_values = thinking["options"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .take(8)
-                    .filter_map(|option| option["value"].as_str())
-                    .filter(|value| ["on", "off"].contains(value))
-                    .map(str::to_owned)
-                    .collect();
-            }
         }
     }
     fn prompt_content(&mut self) -> Vec<Value> {
@@ -1088,7 +1051,7 @@ impl Protocol {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pantheon","version":"0.1.0"}}})
     }
     fn approval(&mut self, value: Value, text: String, step: &mut Step) -> Result<(), String> {
-        if self.pending.len() + self.inputs.len() >= 64 {
+        if self.pending.len() >= 64 {
             return Err("Too many simultaneous approval requests".into());
         }
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -1137,7 +1100,9 @@ impl Protocol {
         }
         if self.config.provider == "pantheon" && value["method"] == "_pantheon/usage" {
             let params = &value["params"];
-            if params["sessionId"].as_str().is_some_and(|id| !id.is_empty() && id != self.remote_id)
+            if params["sessionId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id != self.remote_id)
                 || !params["totalTokens"].is_u64()
             {
                 return Ok(Step::default());
@@ -1156,7 +1121,9 @@ impl Protocol {
         }
         if self.config.provider == "pantheon" && value["method"] == "_pantheon/uiDocument" {
             let params = &value["params"];
-            if params["sessionId"].as_str().is_some_and(|id| !id.is_empty() && id != self.remote_id)
+            if params["sessionId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id != self.remote_id)
                 || params["document"].is_null()
             {
                 return Ok(Step::default());
@@ -1181,132 +1148,6 @@ impl Protocol {
     }
     fn stream(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
-        if let Some(error) = value.get("error") {
-            // The agent reports model-level image capability failures in ACP error
-            // data. Keep that useful reason instead of only "Internal error".
-            if !self.config.images.is_empty() {
-                if let Some(detail) = error["data"]["error"].as_str() {
-                    return Err(format!(
-                        "Pantheon could not process the screenshot: {}",
-                        short(detail)
-                    ));
-                }
-            }
-            return Err(error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or(
-                    "Pantheon request failed. Run `pantheon login` if authentication is required.",
-                )
-                .into());
-        }
-        if let Some(id) = value["id"]
-            .as_u64()
-            .filter(|_| value.get("result").is_some())
-        {
-            match id {
-                1 => {
-                    if value["result"]["protocolVersion"] != 1 {
-                        return Err("This Pantheon build speaks an ACP protocol version this app does not. Update one of them.".into());
-                    }
-                    if !self.image_blocks.is_empty()
-                        && value["result"]["agentCapabilities"]["promptCapabilities"]["image"]
-                            != true
-                    {
-                        return Err("This Pantheon build does not accept screenshots over ACP. Update it, or remove the screenshots.".into());
-                    }
-                    self.resume_supported = value["result"]["agentCapabilities"]
-                        ["sessionCapabilities"]
-                        .get("resume")
-                        .is_some();
-                    if self.mcp_server.is_some()
-                        && value["result"]["agentCapabilities"]["mcpCapabilities"]["http"] != true
-                    {
-                        if self.mcp_required {
-                            return Err("This Pantheon build does not accept HTTP MCP servers over ACP, which team tools need.".into());
-                        }
-                        self.mcp_server = None;
-                    }
-                    let mut params = json!({"cwd":self.config.cwd,"mcpServers":self.mcp_server.iter().collect::<Vec<_>>()});
-                    let method = if self.remote_id.is_empty() {
-                        "session/new"
-                    } else {
-                        params["sessionId"] = json!(self.remote_id);
-                        if self.resume_supported {
-                            "session/resume"
-                        } else {
-                            "session/load"
-                        }
-                    };
-                    step.write
-                        .push(json!({"jsonrpc":"2.0","id":2,"method":method,"params":params}));
-                }
-                2 => {
-                    self.config_options(&value["result"]);
-                    let returned = string(&value["result"], "sessionId");
-                    if !returned.is_empty() {
-                        self.remote_id = returned;
-                    }
-                    if self.remote_id.is_empty() {
-                        return Err(
-                            "Pantheon did not return a session ID. Update it, or start a new task."
-                                .into(),
-                        );
-                    }
-                    if let Some(objective) = self.config.goal_objective.clone() {
-                        step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"_pantheon/goal","params":{"sessionId":self.remote_id,"action":"set","objective":objective}}));
-                    }
-                    if let Some(bytes) = self.early_advertised_commands.take() {
-                        if let Ok(commands) = serde_json::from_slice::<Value>(&bytes) {
-                            if commands["params"]["sessionId"] == self.remote_id {
-                                self.commands_changed(&commands, &mut step);
-                            }
-                        }
-                    }
-                    step.events
-                        .push(self.event("session", self.remote_id.clone(), None));
-                    let modes = value["result"]["modes"]["availableModes"].as_array();
-                    // The server names its own modes; ask for the first id it
-                    // advertises that matches the mode the user chose.
-                    // Pantheon advertises `build` and `plan`; anything that is
-                    // not `plan` is a build session, so the non-plan modes must
-                    // fall back to `build` before they reject the launch.
-                    let wanted: &[&str] = match self.config.mode.as_str() {
-                        "plan" => &["plan", "read-only", "readonly"],
-                        "auto" => &["build", "auto", "accept-edits", "acceptEdits", "yolo"],
-                        "full" => &[
-                            "build",
-                            "full",
-                            "bypass",
-                            "bypass-permissions",
-                            "unrestricted",
-                        ],
-                        _ => &["build", "default", "ask"],
-                    };
-                    let chosen = modes.and_then(|list| {
-                        wanted
-                            .iter()
-                            .find_map(|want| list.iter().find(|mode| string(mode, "id") == *want))
-                    });
-                    if let Some(mode) = chosen {
-                        step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
-                        return Ok(step);
-                    }
-                    return Err(format!(
-                        "Pantheon does not advertise the {} access mode. Update Pantheon, or choose another mode.",
-                        self.config.mode
-                    ));
-                }
-                4 => self.stream_model(&mut step)?,
-                5 => {
-                    self.config_options(&value["result"]);
-                    self.stream_effort(&mut step)?;
-                }
-                6 => self.prompt_turn(&mut step),
-                3 => step.done = true,
-                _ => {}
-            }
-        }
         let method = string(&value, "method");
         let params = &value["params"];
         match method.as_str() {
@@ -1324,14 +1165,12 @@ impl Protocol {
                 if params["sessionId"].as_str().is_some_and(|id| id != self.remote_id) {return Ok(step);}
                 let update=&params["update"];
                 if update["sessionUpdate"] == "available_commands_update" { self.commands_changed(&value, &mut step); }
-                if update["sessionUpdate"] == "config_option_update" { self.config_options(update); }
                 // session/load can replay history before its response; UI already owns that history.
                 if self.phase==0{return Ok(step);}
                 match string(update,"sessionUpdate").as_str() {
-                    "usage_update"=>{if let Some(used)=update["used"].as_u64() {self.usage(used,update["size"].as_u64(),&mut step);}},
                     "agent_message_chunk"=>{
                         let content=&update["content"];
-                        if content["type"]=="text" || content["type"].is_null() {
+                        if content["type"]== "text" || content["type"].is_null() {
                             let text=field(content,"text");
                             if !text.is_empty() {
                                 if let Some(id)=update["messageId"].as_str().filter(|id| !id.is_empty()) {
@@ -1358,7 +1197,7 @@ impl Protocol {
             },
             "session/request_permission"=>{
                 let options=params["options"].as_array();
-                let is_question=options.is_some_and(|options|options.iter().filter(|o|o["kind"]=="allow_once").count()>1 || options.iter().any(|o| {
+                let is_question=options.is_some_and(|options|options.iter().filter(|o|o["kind"]== "allow_once").count()>1 || options.iter().any(|o| {
                     let id=string(o,"optionId");
                     id.strip_prefix('q').and_then(|s|s.split_once("_opt_")).is_some_and(|(number,_)|number.parse::<usize>().is_ok())
                 }));
@@ -1373,26 +1212,6 @@ impl Protocol {
             _=>{},
         }
         Ok(step)
-    }
-    fn stream_model(&mut self, step: &mut Step) -> Result<(), String> {
-        if !self.config.model.is_empty() && self.config.model != "default" {
-            self.reasoning_values.clear();
-            step.write.push(json!({"jsonrpc":"2.0","id":5,"method":"session/set_model","params":{"sessionId":self.remote_id,"modelId":self.config.model}}));
-        } else {
-            self.stream_effort(step)?;
-        }
-        Ok(())
-    }
-    fn stream_effort(&mut self, step: &mut Step) -> Result<(), String> {
-        if let Some(effort) = &self.config.reasoning_effort {
-            if !self.reasoning_values.contains(effort) {
-                return Err("This Pantheon model does not advertise the selected reasoning effort. Choose another effort, or use the model default.".into());
-            }
-            step.write.push(json!({"jsonrpc":"2.0","id":6,"method":"session/set_config_option","params":{"sessionId":self.remote_id,"configId":"thinking","value":effort}}));
-        } else {
-            self.prompt_turn(step);
-        }
-        Ok(())
     }
     fn prompt_turn(&mut self, step: &mut Step) {
         let mut request = json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":self.remote_id}});
@@ -1827,11 +1646,13 @@ mod tests {
         })).unwrap();
         assert_eq!(usage.events[0].kind, "usage_report");
         assert_eq!(usage.events[0].data.as_ref().unwrap()["totalTokens"], 150);
-        let other = p.receive(json!({
-            "jsonrpc":"2.0",
-            "method":"_pantheon/usage",
-            "params":{"sessionId":"other","totalTokens":999}
-        })).unwrap();
+        let other = p
+            .receive(json!({
+                "jsonrpc":"2.0",
+                "method":"_pantheon/usage",
+                "params":{"sessionId":"other","totalTokens":999}
+            }))
+            .unwrap();
         assert!(other.events.is_empty());
         let ui = p.receive(json!({
             "jsonrpc":"2.0",

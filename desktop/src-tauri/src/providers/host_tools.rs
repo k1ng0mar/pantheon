@@ -107,22 +107,8 @@ pub(super) fn image_content(value: &Value) -> Result<Option<(String, String, Str
 }
 
 impl Protocol {
-    pub(super) fn user_input(&mut self, id: &str, response: Value) -> Result<Step, String> {
-        let request = self
-            .inputs
-            .get(id)
-            .ok_or("This input request is no longer active")?;
-        // Validation finishes before removing pending state. The run loop sends
-        // the UI an acknowledgement only after writing this exact response.
-        let result = host_inputs::answer(request, response)?;
-        let request = self.inputs.remove(id).unwrap();
-        let mut event = self.event("input_cancelled", "", None);
-        event.request_id = Some(id.into());
-        Ok(Step {
-            write: vec![json!({"id":request["id"],"result":result})],
-            events: vec![event],
-            ..Step::default()
-        })
+    pub(super) fn user_input(&mut self, _id: &str, _response: Value) -> Result<Step, String> {
+        Err("This input request is no longer active".into())
     }
     pub(super) fn cancel_requests(&mut self) -> Step {
         let mut step = Step::default();
@@ -130,20 +116,6 @@ impl Protocol {
         // be queued here; flushing the map keeps the event stream honest.
         for id in std::mem::take(&mut self.pending).into_keys() {
             let mut event = self.event("approval_cancelled", "", None);
-            event.request_id = Some(id);
-            step.events.push(event);
-        }
-        let requests: Vec<_> = self.inputs.drain().collect();
-        for (id, request) in requests {
-            let response = if request["method"] == "item/tool/requestUserInput" {
-                json!({"answers":{}})
-            } else {
-                json!({"action":"cancel","content":null})
-            };
-            if let Ok(result) = host_inputs::answer(&request, response) {
-                step.write.push(json!({"id":request["id"],"result":result}));
-            }
-            let mut event = self.event("input_cancelled", "", None);
             event.request_id = Some(id);
             step.events.push(event);
         }
@@ -234,14 +206,14 @@ mod inventory_tests {
             .collect();
         pantheon_api::desktop_tool_contract::validate_catalog(&tools)
             .expect("every live desktop tool must be in the Pantheon contract");
-        let missing = [
-            crate::session_titles::TOOL,
-            crate::turn_changes::host::TOOL,
-        ]
-        .into_iter()
-        .filter(|name| !pantheon_api::desktop_tool_contract::is_desktop_tool(name))
-        .collect::<Vec<_>>();
-        assert!(missing.is_empty(), "uncontracted adapter tools: {missing:?}");
+        let missing = [crate::session_titles::TOOL, crate::turn_changes::host::TOOL]
+            .into_iter()
+            .filter(|name| !pantheon_api::desktop_tool_contract::is_desktop_tool(name))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "uncontracted adapter tools: {missing:?}"
+        );
         println!("CATALOG_NAMES:{}", names.join(","));
     }
 }
