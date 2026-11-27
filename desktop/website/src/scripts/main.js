@@ -61,7 +61,6 @@ const revealObserver = new IntersectionObserver(entries => entries.forEach(entry
 document.documentElement.classList.add('motion-ready');
 document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
 
-const providerLabels = {claude: 'Claude Code', codex: 'Codex', kimi: 'Kimi Code', opencode: 'OpenCode'};
 document.querySelectorAll('.app-model').forEach(button => button.addEventListener('click', () => {
   const menu = button.closest('.app-main').querySelector('.model-menu');
   menu.hidden = !menu.hidden;
@@ -73,7 +72,7 @@ document.querySelectorAll('[data-model]').forEach(button => button.addEventListe
   const trigger = main.querySelector('.app-model');
   trigger.querySelector('img').replaceWith(button.querySelector('img').cloneNode());
   trigger.querySelector('span').textContent = button.textContent.trim();
-  main.querySelector('.response-provider').textContent = providerLabels[button.dataset.model];
+  main.querySelector('.response-provider').textContent = 'Pantheon';
   main.querySelector('.app-message > img').replaceWith(button.querySelector('img').cloneNode());
   main.querySelectorAll('[data-model]').forEach(option => option.setAttribute('aria-pressed', String(option === button)));
   main.querySelector('.model-menu').hidden = true;
@@ -115,9 +114,9 @@ document.querySelectorAll('[data-task]').forEach(button => button.addEventListen
 function closeTask() { document.querySelector('.board-task-detail').hidden = true; lastTaskButton?.focus({preventScroll: true}); }
 document.querySelector('.close-panel').addEventListener('click', closeTask);
 const workerCopy = {
-  interface: ['The interface · Codex', 'The main layout is in place. I’m checking spacing and keyboard navigation before handing it back to the architect.'],
-  details: ['The details · Kimi Code', 'I’m refining the smaller touches: readable colors, quiet hover states, and transitions that stay out of your way.'],
-  checks: ['The checks · OpenCode', 'The interaction checks are passing. Next I’m reviewing the smaller screen layouts and reduced-motion behavior.'],
+  interface: ['The interface · Pantheon', 'The main layout is in place. I’m checking spacing and keyboard navigation before handing it back to the architect.'],
+  details: ['The details · Pantheon', 'I’m refining the smaller touches: readable colors, quiet hover states, and transitions that stay out of your way.'],
+  checks: ['The checks · Pantheon', 'The interaction checks are passing. Next I’m reviewing the smaller screen layouts and reduced-motion behavior.'],
 };
 document.querySelectorAll('[data-worker]').forEach(button => button.addEventListener('click', () => {
   const note = document.querySelector('.team-note');
@@ -133,11 +132,10 @@ document.querySelectorAll('.quick-task').forEach(button => button.addEventListen
   lastQuickTask = button;
   const preview = document.querySelector('#quick-preview');
   preview.querySelector('.quick-reader h3').textContent = button.querySelector('strong').textContent;
-  const isCodex = button.querySelector('img').dataset.provider === 'codex';
   const response = preview.querySelector('.quick-response');
   response.querySelector('img').replaceWith(button.querySelector('img').cloneNode());
-  response.querySelector('strong').firstChild.textContent = isCodex ? 'Codex ' : 'Claude Code ';
-  response.querySelector('p').textContent = isCodex ? 'The interactions are working smoothly. I’m checking keyboard navigation and making sure the reduced-motion version feels just as clear.' : 'The layout is taking shape. I’m adding the responsive styles and checking the smaller screens next.';
+  response.querySelector('strong').firstChild.textContent = 'Pantheon ';
+  response.querySelector('p').textContent = button.dataset.quickModel === 'fast' ? 'The interactions are working smoothly. I’m checking keyboard navigation and making sure the reduced-motion version feels just as clear.' : 'The layout is taking shape. I’m adding the responsive styles and checking the smaller screens next.';
   preview.querySelector('.quick-reader').hidden = false;
   preview.querySelector('.quick-list').hidden = true;
   preview.querySelector('.quick-back').focus({preventScroll: true});

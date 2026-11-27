@@ -1,6 +1,6 @@
 /* Scroll-linked motion for the landing page: the hero landscape parallaxes, the hero
  * preview straightens as it scrolls up, a progress line fills the navigation, and
- * groups (harnesses, What's New cards) arrive together when they come into view.
+ * groups (What's New cards) arrive together when they come into view.
  * Scroll is only observed, never intercepted; reduced motion skips it all. */
 import { initNewFeatures } from './new-features';
 
@@ -36,7 +36,7 @@ const groups = new IntersectionObserver(entries => entries.forEach(entry => {
   entry.target.classList.add('is-visible');
   groups.unobserve(entry.target);
 }), { threshold: .12 });
-document.querySelectorAll('.harness-list, .nf-grid').forEach(el => groups.observe(el));
+document.querySelectorAll('.nf-grid').forEach(el => groups.observe(el));
 
 addEventListener('scroll', schedule, { passive: true });
 addEventListener('resize', schedule);

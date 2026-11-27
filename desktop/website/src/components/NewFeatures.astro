@@ -2,7 +2,6 @@
 /* What's new in 0.2.48: one card per feature, each with a small scene that plays while
  * it is on screen (scripts/new-features.ts). Without JavaScript, or with reduced motion,
  * every scene shows its finished state. */
-import { logo } from '../lib/demo';
 const svg = (path: string) => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 const also = [
   [svg('<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9a3 3 0 0 0-3-3h-4m2-2-2 2 2 2"/>'), 'Linked pull requests', 'A task’s PR, checks and comments in the inspector.'],
@@ -40,10 +39,10 @@ const also = [
       <div class="nf-visual" aria-hidden="true">
         <div class="nf-picker"><span class="nf-swatch"></span>Thoughtful makers<small>Agent team</small><span>⌄</span></div>
         <ul class="nf-roster">
-          <li data-step data-wait="700"><span set:html={logo('claude')}></span>Claude Opus<em>Architect</em></li>
-          <li data-step data-wait="450"><span set:html={logo('codex')}></span>GPT-6 Astra<em>Worker</em></li>
-          <li data-step data-wait="450"><span set:html={logo('kimi')}></span>Kimi K3<em>Worker</em></li>
-          <li class="nf-out"><span set:html={logo('glm')}></span>GLM 5<em>Not on this team</em></li>
+          <li data-step data-wait="700">Pantheon<em>Architect</em></li>
+          <li data-step data-wait="450">Pantheon<em>Worker</em></li>
+          <li data-step data-wait="450">Pantheon<em>Worker</em></li>
+          <li class="nf-out">Pantheon<em>Not on this team</em></li>
         </ul>
       </div>
       <div class="nf-copy"><span class="chapter-number">NEW · AGENT TEAMS</span><h3 id="nf-teams-title">Build a team.<br>Pick it like a model.</h3><p>Save a team in Settings and it appears in the model picker. Only your team’s models are ever orchestrated. The classic Architect & workers screen is one switch away.</p></div>

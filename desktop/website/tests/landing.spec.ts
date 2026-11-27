@@ -1,7 +1,9 @@
 import { test as base, expect, type Page, type TestInfo } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const screenshots = '/private/tmp/pantheon-landing-checks';
+const screenshots = join(tmpdir(), 'pantheon-landing-checks');
 const repo = 'https://github.com/k1ng0mar/pantheon';
 const releases = `${repo}/releases/latest`;
 const issues = `${repo}/issues`;
@@ -42,12 +44,12 @@ async function selectScene(page: Page, scene: string) {
   await expect(page.locator(`#story-demo [data-preview-scene="${scene}"]`)).toBeVisible();
 }
 
-test('hero, supported harnesses, and complete page have valid resources and responsive layout', async ({ page }, info) => {
+test('hero and complete page have valid resources and responsive layout', async ({ page }, info) => {
   await page.goto('/');
   await expect(page).toHaveTitle('Pantheon — A calmer place to build.');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Great work.A calmer place.');
   await expect(page.locator('.hero-landscape img')).toBeVisible();
-  await expect(page.locator('.hero-description')).toHaveText('Your favorite coding agents.One thoughtfully quiet workspace.');
+  await expect(page.locator('.hero-description')).toHaveText('One agent.One thoughtfully quiet workspace.');
   for (const id of ['hero-distribution', 'download-distribution']) {
     const disclosure = page.locator(`#${id}`);
     await expect(disclosure).toContainText('macOS · Windows · Linux');
@@ -61,15 +63,12 @@ test('hero, supported harnesses, and complete page have valid resources and resp
     await expect(page.locator(`[data-download][aria-describedby~="${id}"]`)).toHaveCount(1);
   }
   await capture(page, info, 'hero');
-  for (const name of ['Claude Code', 'Codex', 'Kimi Code', 'OpenCode', 'GLM', 'Antigravity']) {
-    await expect(page.locator('.harness-list')).toContainText(name);
-  }
   for (const section of ['#hero-demo', '#whats-new', '.nf-grid', '#experience', '.overlay-feature', '#your-space', '#open-source', '#comparison', '#download', '#preview-notes']) {
     await page.locator(section).scrollIntoViewIfNeeded();
     await expectNoOverflow(page);
   }
   await expect(page.locator('#preview-notes')).toContainText('free, open-source software');
-  await expect(page.locator('#preview-notes')).toContainText('provider subscriptions and model usage are separate');
+  await expect(page.locator('#preview-notes')).toContainText('model provider subscription and usage are separate');
   await expect(page.locator('#preview-notes')).toContainText('Apple silicon and Intel Macs, Windows x64 and arm64, and Linux x86_64 and aarch64 are published on GitHub Releases');
   await expect(page.locator('#preview-notes').getByRole('link', { name: 'Pantheon License' })).toHaveAttribute('href', '/license/');
   await expect(page.locator('#preview-notes').getByRole('link', { name: /Report an issue/ })).toHaveAttribute('href', issues);
@@ -227,7 +226,7 @@ test('the open-source section explains the license, privacy and building from so
   const section = page.locator('#open-source');
   await expect(section).toBeInViewport();
   await expect(section.getByRole('heading', { level: 2 })).toHaveText('Free to use.Open to everyone.');
-  for (const fact of ['MIT-based license.', 'No account.', 'No telemetry.', 'Bring your own agents.', 'Built in the open.']) await expect(section).toContainText(fact);
+  for (const fact of ['MIT-based license.', 'No account.', 'No telemetry.', 'Bring your own model.', 'Built in the open.']) await expect(section).toContainText(fact);
   const build = section.locator('pre');
   for (const command of [`git clone ${repo}.git`, 'cd pantheon', 'npm ci', 'npm run desktop']) await expect(build).toContainText(command);
   await expect(section.getByRole('link', { name: /Star on GitHub/ })).toHaveAttribute('href', repo);
@@ -287,7 +286,7 @@ test('scroll follows all four story chapters and manual controls remain selected
   }
 });
 
-test('model pickers select providers, dismiss outside, and return keyboard focus', async ({ page }) => {
+test('model pickers select models, dismiss outside, and return keyboard focus', async ({ page }) => {
   await page.goto('/');
   for (const host of ['#hero-demo', '#story-demo']) {
     if (host === '#story-demo') await selectScene(page, 'conversation');
@@ -296,10 +295,10 @@ test('model pickers select providers, dismiss outside, and return keyboard focus
     const menu = preview.locator('.model-menu');
     await trigger.click();
     await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    await expect(menu.locator('[data-model="claude"]')).toBeFocused();
-    await menu.getByRole('button', { name: 'GPT-6 Astra' }).click();
-    await expect(trigger).toContainText('GPT-6 Astra');
-    await expect(preview.locator('.response-provider')).toHaveText('Codex');
+    await expect(menu.locator('[data-model="balanced"]')).toBeFocused();
+    await menu.getByRole('button', { name: 'Fast model' }).click();
+    await expect(trigger).toContainText('Fast model');
+    await expect(preview.locator('.response-provider')).toHaveText('Pantheon');
     await expect(menu).toBeHidden();
     await expect(trigger).toBeFocused();
     await trigger.click();
@@ -329,7 +328,7 @@ test('task peeks, worker updates, and both diff layouts respond to controls', as
   await page.getByRole('button', { name: 'Close task preview' }).click();
   await expect(detail).toBeHidden();
   await selectScene(page, 'team');
-  for (const [worker, title] of [['interface', 'The interface · Codex'], ['details', 'The details · Kimi Code'], ['checks', 'The checks · OpenCode']]) {
+  for (const [worker, title] of [['interface', 'The interface · Pantheon'], ['details', 'The details · Pantheon'], ['checks', 'The checks · Pantheon']]) {
     await page.locator(`[data-worker="${worker}"]`).click();
     await expect(page.locator('.team-note strong')).toHaveText(title);
   }
@@ -349,19 +348,19 @@ test('task peeks, worker updates, and both diff layouts respond to controls', as
 test('quick look opens both active threads and returns to the list', async ({ page }) => {
   await page.goto('/');
   const quick = page.locator('#quick-preview');
-  for (const [name, provider, copy] of [
-    ['A home for your ideas', 'Claude Code', 'The layout is taking shape.'],
-    ['Make it feel effortless', 'Codex', 'The interactions are working smoothly.'],
+  for (const [name, copy] of [
+    ['A home for your ideas', 'The layout is taking shape.'],
+    ['Make it feel effortless', 'The interactions are working smoothly.'],
   ]) {
     const task = quick.getByRole('button', { name: new RegExp(name) });
     await task.click();
     await expect(quick.locator('.quick-reader')).toBeVisible();
     await expect(quick.locator('.quick-list')).toBeHidden();
     await expect(quick.getByRole('heading')).toHaveText(name);
-    await expect(quick.locator('.quick-response strong')).toContainText(provider);
+    await expect(quick.locator('.quick-response strong')).toContainText('Pantheon');
     await expect(quick.locator('.quick-response p')).toContainText(copy);
-    await expect(quick.getByRole('button', { name: 'Active agents' })).toBeFocused();
-    await quick.getByRole('button', { name: 'Active agents' }).click();
+    await expect(quick.getByRole('button', { name: 'Active tasks' })).toBeFocused();
+    await quick.getByRole('button', { name: 'Active tasks' }).click();
     await expect(quick.locator('.quick-reader')).toBeHidden();
     await expect(quick.locator('.quick-list')).toBeVisible();
     await expect(task).toBeFocused();

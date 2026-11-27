@@ -64,8 +64,7 @@ test('privacy policy says Pantheon collects nothing, with a contents rail', asyn
   for (const fact of [
     'Pantheon collects nothing.',
     'no accounts, no license checks, no telemetry, no analytics, no crash reports and no Pantheon servers',
-    'formulae.brew.sh', 'downloads.claude.ai', 'api.github.com', 'cdn.kimi.com', 'about every 6 hours',
-    'raw.githubusercontent.com', 'at most once a day',
+    'github.com', 'raw.githubusercontent.com', 'about every 6 hours',
     'It sets no cookies, runs no analytics',
     'our web host may keep standard server logs',
     'Agents act with the permissions you give them',
