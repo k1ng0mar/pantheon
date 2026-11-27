@@ -87,8 +87,8 @@ async fn usage(cwd: &Path) -> Result<Value, String> {
             days.iter()
                 .filter_map(|day| {
                     Some(json!({
-                        "date": day["date"].as_str()?,
-                        "tokens": day["total_tokens"].as_u64().unwrap_or(0),
+                        "date": day["day"].as_str()?,
+                        "tokens": day["totals"]["total_tokens"].as_u64().unwrap_or(0),
                     }))
                 })
                 .collect()
@@ -106,9 +106,9 @@ async fn usage(cwd: &Path) -> Result<Value, String> {
                         "title": model["model"].as_str().unwrap_or("unknown"),
                         "description": format!(
                             "{} calls · {} tokens · ${:.2}",
-                            model["calls"].as_u64().unwrap_or(0),
-                            model["total_tokens"].as_u64().unwrap_or(0),
-                            model["cost_usd"].as_f64().unwrap_or(0.0)
+                            model["totals"]["calls"].as_u64().unwrap_or(0),
+                            model["totals"]["total_tokens"].as_u64().unwrap_or(0),
+                            model["totals"]["cost_usd"].as_f64().unwrap_or(0.0)
                         ),
                         "source": "ledger",
                     })
@@ -310,15 +310,27 @@ mod tests {
     }
 
     #[test]
-    fn hooks_read_the_section_the_runtime_reads() {
-        let document: toml::Value =
-            toml::from_str("[hooks.after_turn]\ncommand = \"pantheon doctor\"\nenabled = false\n")
-                .unwrap();
-        let hooks = document.get("hooks").and_then(|h| h.as_table()).unwrap();
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(
-            hooks["after_turn"].get("command").and_then(|v| v.as_str()),
-            Some("pantheon doctor")
+    fn stats_breakdowns_read_the_ledger_shape() {
+        let raw = r#"{
+            "totals": {"calls": 2, "input_tokens": 1200, "output_tokens": 600, "total_tokens": 1800, "cost_usd": 0.3},
+            "by_model": [{"model": "anthropic:probe", "totals": {"calls": 2, "input_tokens": 1200, "output_tokens": 600, "total_tokens": 1800, "cost_usd": 0.3}}],
+            "by_day": [{"day": "2026-11-26", "totals": {"calls": 2, "input_tokens": 1200, "output_tokens": 600, "total_tokens": 1800, "cost_usd": 0.3}}]
+        }"#;
+        let stats: Value = serde_json::from_str(raw).unwrap();
+        let daily: Vec<Value> = stats["by_day"].as_array().unwrap().iter().filter_map(|day| {
+            Some(json!({
+                "date": day["day"].as_str()?,
+                "tokens": day["totals"]["total_tokens"].as_u64().unwrap_or(0),
+            }))
+        }).collect();
+        let model = &stats["by_model"][0];
+        let description = format!(
+            "{} calls · {} tokens · ${:.2}",
+            model["totals"]["calls"].as_u64().unwrap_or(0),
+            model["totals"]["total_tokens"].as_u64().unwrap_or(0),
+            model["totals"]["cost_usd"].as_f64().unwrap_or(0.0)
         );
+        assert_eq!(daily, vec![json!({"date": "2026-11-26", "tokens": 1800})]);
+        assert_eq!(description, "2 calls · 1800 tokens · $0.30");
     }
 }
