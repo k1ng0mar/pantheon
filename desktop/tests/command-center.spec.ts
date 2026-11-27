@@ -145,7 +145,7 @@ test('command center goal banner scopes pending controls and errors to the origi
 test('command center usage distinguishes unavailable values and renders untrusted text literally', async ({ page }) => {
   await setup(page, 'panel', { kind: 'usage', accountLabel: '<img src=x onerror=alert(1)>', plan: 'Pro', windows: [
     { id: 'short', label: '5-hour limit', usedPercent: 37, resetsAt: 1900000000 }, { id: 'week', label: 'Weekly limit', usedPercent: null },
-  ], stats: [{ label: 'Total tokens', value: '81,420' }], daily: [{ date: localDate(-11), tokens: 800 }, { date: localDate(-4), tokens: 120 }, { date: 'not-a-date', tokens: 5 }], notes: ['Shared across your Codex account.'] });
+  ], stats: [{ label: 'Total tokens', value: '81,420' }], daily: [{ date: localDate(-11), tokens: 800 }, { date: localDate(-4), tokens: 120 }, { date: 'not-a-date', tokens: 5 }], notes: ['Shared across your Pantheon account.'] });
   await expect(dialog(page).getByRole('progressbar')).toHaveCount(1);
   await expect(dialog(page).getByRole('progressbar', { name: '5-hour limit usage' })).toHaveAttribute('value', '37');
   await expect(dialog(page)).toContainText('Unavailable');

@@ -29,8 +29,5 @@
 .connection-model-actions{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
 .connection-model-actions button{font-size:.78rem}
 .connection-auth-label{display:flex;align-items:center;gap:.4rem;margin:.75rem 0 .45rem}.connection-auth-label label{margin:0}
-#claude-connection .connection-key-status{justify-content:flex-start}.claude-auth-source{min-width:0}.claude-auth-details{display:flex}#claude-connection [data-check-claude]{margin-left:auto}
-#claude-connection .claude-auth-endpoint{font-family:var(--mono,ui-monospace,monospace);font-size:.72rem;overflow-wrap:anywhere}
-#claude-connection .claude-auth-conflict{color:var(--accent-ink)}
 @media(max-width:500px){.connection-card{padding:.85rem}.connection-input-row{flex-wrap:wrap}.connection-input-row input{flex-basis:100%}.connection-key-status{align-items:flex-start;flex-direction:column}.connection-card h3{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.connection-path summary>.icon{transition:none}}

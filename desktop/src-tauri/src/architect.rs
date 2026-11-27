@@ -803,7 +803,7 @@ fn apply_setup_on(
     if setup.architect.provider != provider {
         crate::context_recovery::queue_on(conn, &team.session_id)?;
         conn.execute(
-            "UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL WHERE id=?1",
+            "UPDATE sessions SET resume_id=NULL,goal_state=NULL,agent_settings=NULL WHERE id=?1",
             [&team.session_id],
         )
         .map_err(|e| e.to_string())?;

@@ -44,7 +44,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
         )?;
         transaction
             .execute(
-                "UPDATE sessions SET title=?2,worktree_path=?3,reasoning_effort=?4,codex_settings=?5,task_stage='in_progress',worktree_branch=?6 WHERE id=?1",
+                "UPDATE sessions SET title=?2,worktree_path=?3,reasoning_effort=?4,agent_settings=?5,task_stage='in_progress',worktree_branch=?6 WHERE id=?1",
                 params![target_id, title, source.worktree_path, source.reasoning_effort, source.task_settings.map(|v| v.to_string()), source.worktree_branch],
             )
             .map_err(|e| e.to_string())?;

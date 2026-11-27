@@ -19,7 +19,7 @@ export function createAgentInput(
   requestId: string,
   data: unknown,
   resolved: () => void,
-  /** Set when the harness answers questions with its next prompt (Pantheon). */
+  /** Set when the agent answers questions with its next prompt (Pantheon). */
   submitAnswer?: (text: string) => Promise<void>,
 ): AgentInput {
   const request = object(data) ? data : {};

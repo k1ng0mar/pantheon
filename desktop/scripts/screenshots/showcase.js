@@ -9,10 +9,10 @@
     createdAt: at - ago - 60_000, updatedAt: at - ago, lastResponseAt: stage === 'pending' ? null : at - ago, resumeId: null, issue: undefined, ...extra,
   });
   sessions.push(
-    task('session-5', 'Offline sync for the reading list', 'opencode', '', 'in_progress', 40 * 60_000, { status: 'running' }),
-    task('session-6', 'Polish the onboarding flow', 'glm', 'glm-5.3', 'review', 3 * 3600_000),
-    task('session-7', 'Fix flaky date tests', 'codex', 'gpt-6-astra', 'completed', 26 * 3600_000, { completedAt: at - 26 * 3600_000 }),
-    task('session-8', 'Write the v2 migration guide', 'claude', 'opus', 'pending', 5 * 3600_000),
+    task('session-5', 'Offline sync for the reading list', 'pantheon', '', 'in_progress', 40 * 60_000, { status: 'running' }),
+    task('session-6', 'Polish the onboarding flow', 'pantheon', 'zhipu/glm-5.3', 'review', 3 * 3600_000),
+    task('session-7', 'Fix flaky date tests', 'pantheon', 'openai/gpt-6.1-sol', 'completed', 26 * 3600_000, { completedAt: at - 26 * 3600_000 }),
+    task('session-8', 'Write the v2 migration guide', 'pantheon', 'anthropic/claude-opus', 'pending', 5 * 3600_000),
   );
   for (const id of ['session-5', 'session-6', 'session-7', 'session-8']) messages[id] = [];
 

@@ -1,5 +1,5 @@
-//! Named provider connections: several setups of one harness (work and personal
-//! subscriptions, separate Pi profiles). Each has its own executable, extra
+//! Named provider connections: several setups of Pantheon (work and personal
+//! accounts, separate config folders). Each has its own executable, extra
 //! arguments, environment and config folder. Non-secret values live in
 //! `connections.json` beside the provider settings; secret values live in the
 //! OS secure store under one account per connection and variable, and never
@@ -447,7 +447,7 @@ mod tests {
         Input {
             id: None,
             provider: provider.into(),
-            name: "Claude Work".into(),
+            name: "Pantheon Work".into(),
             executable: None,
             args: vec![],
             env: vec![],
@@ -668,7 +668,7 @@ mod tests {
             args: vec!["--verbose".into()],
             env: BTreeMap::from([("PLAIN".into(), "1".into())]),
             secret_env: vec!["API_KEY".into()],
-            config_dir: Some("/Users/me/.claude-work".into()),
+            config_dir: Some("/Users/me/.pantheon-work".into()),
             ..Default::default()
         };
         let launch = launch_with(&connection, |account| {
@@ -690,7 +690,7 @@ mod tests {
             .collect();
         assert_eq!(envs["PLAIN"], "1");
         assert_eq!(envs["API_KEY"], "fixture-secret");
-        assert_eq!(envs["PANTHEON_DATA_DIR"], "/Users/me/.claude-work");
+        assert_eq!(envs["PANTHEON_DATA_DIR"], "/Users/me/.pantheon-work");
         assert_eq!(
             launch.redact("auth failed for fixture-secret"),
             "auth failed for [redacted]"
@@ -709,7 +709,7 @@ mod tests {
         .unwrap();
         assert!(other
             .env
-            .contains(&("PANTHEON_DATA_DIR".into(), "/Users/me/.claude-work".into())));
+            .contains(&("PANTHEON_DATA_DIR".into(), "/Users/me/.pantheon-work".into())));
     }
 
     #[test]

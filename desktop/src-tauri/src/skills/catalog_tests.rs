@@ -74,8 +74,7 @@ impl Fixture {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!("pantheon-catalog-{}", uuid::Uuid::new_v4()));
         let home = base.join("home");
-        fs::create_dir_all(home.join(".claude")).unwrap();
-        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::create_dir_all(home.join(".pantheon")).unwrap();
         Self {
             library: Library::new(base.join("library"), home),
             base,
@@ -192,7 +191,7 @@ fn collections_past_64_files_import_per_skill_with_provenance_and_no_activation(
     assert_eq!(item.meta.source.commit.as_deref(), Some("abc123"));
     // Importing is not activation: nothing written for any harness.
     assert!(all.items.iter().all(|i| i.meta.activations.is_empty()));
-    assert!(fs::read_dir(fx.base.join("home/.claude"))
+    assert!(fs::read_dir(fx.base.join("home/.pantheon"))
         .unwrap()
         .next()
         .is_none());

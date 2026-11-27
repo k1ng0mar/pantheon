@@ -203,35 +203,38 @@ async function openPicker(page: Page) {
   return harnesses(page);
 }
 
-test('picking another computer limits the picker to its catalog, and local is restored', async ({ page }) => {
+test('picking another computer lists that computer’s catalog, and local is restored', async ({ page }) => {
   await signedInNewTask(page);
   await chooseStudio(page);
   const picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Claude Code' })).toBeVisible();
-  await expect(picker.getByRole('region', { name: 'Codex' })).toBeVisible();
-  await expect(picker.getByRole('region', { name: 'Kimi Code' })).toHaveCount(0);
-  await expect(picker.getByRole('region', { name: 'OpenCode' })).toHaveCount(0);
+  await expect(picker.getByRole('region', { name: 'Pantheon' })).toBeVisible();
+  await expect(picker.getByRole('region')).toHaveCount(1);
   await page.keyboard.press('Escape');
 
   const computer = page.locator('#composer-computer');
   await computer.click();
   await page.getByRole('menuitemradio', { name: 'This computer' }).click();
   const local = await openPicker(page);
-  await expect(local.getByRole('region', { name: 'Kimi Code' })).toBeVisible();
+  await expect(local.getByRole('region', { name: 'Pantheon' })).toBeVisible();
+  await expect(local.getByRole('region')).toHaveCount(1);
 });
 
 test('a model missing on the chosen computer is swapped, with a notice', async ({ page }) => {
-  await page.addInitScript(() => { localStorage.setItem('pantheon.defaultProvider', 'kimi'); localStorage.setItem('pantheon.provider', 'kimi'); });
+  await page.addInitScript(() => {
+    localStorage.setItem('pantheon.defaultProvider', 'pantheon');
+    localStorage.setItem('pantheon.provider', 'pantheon');
+    localStorage.setItem('pantheon.defaultModel.pantheon', 'pantheon-balanced');
+  });
   await signedInNewTask(page);
   await chooseStudio(page);
-  await expect(page.locator('#toast')).toContainText('Studio iMac doesn’t have Kimi Code. Using Claude Code.');
+  await expect(page.locator('#toast')).toContainText('Studio iMac doesn’t have pantheon-balanced. Using Pantheon.');
   let picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Claude Code' }).locator('[aria-current="true"]')).toHaveCount(1);
+  await expect(picker.getByRole('region', { name: 'Pantheon' }).locator('[aria-current="true"]')).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.locator('#composer-computer').click();
   await page.getByRole('menuitemradio', { name: 'This computer' }).click();
   picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Kimi Code' }).locator('[aria-current="true"]')).toHaveCount(1);
+  await expect(picker.getByRole('region', { name: 'Pantheon' }).locator('[aria-current="true"]')).toHaveCount(1);
 });
 
 test('a task running on another computer lists that computer’s catalog', async ({ page }) => {
@@ -241,6 +244,6 @@ test('a task running on another computer lists that computer’s catalog', async
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#composer-area .composer-computer-fixed')).toHaveText('on Studio iMac');
   const picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Claude Code' })).toBeVisible();
-  await expect(picker.getByRole('region', { name: 'Kimi Code' })).toHaveCount(0);
+  await expect(picker.getByRole('region', { name: 'Pantheon' })).toBeVisible();
+  await expect(picker.getByRole('region')).toHaveCount(1);
 });

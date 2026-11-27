@@ -5,7 +5,7 @@ const menu = (page: Page) => page.locator('.slash-menu:not([aria-hidden="true"])
 const commands = [
   { id: 'review', name: '/review', description: 'Review changes in this project', argumentHint: '[instructions]', kind: 'prompt', source: 'Project' },
   { id: 'clear', name: '/clear', description: 'Start a fresh conversation', kind: 'action', source: 'Pantheon' },
-  { id: 'login', name: '/login', description: 'Sign in', kind: 'unsupported', source: 'Claude Code', reason: 'Sign in from the terminal.' },
+  { id: 'login', name: '/login', description: 'Sign in', kind: 'unsupported', source: 'Pantheon', reason: 'Sign in from the terminal.' },
 ];
 
 async function setup(page: Page, held = false, cached = false): Promise<void> {
@@ -23,7 +23,7 @@ async function setup(page: Page, held = false, cached = false): Promise<void> {
     const { mountSlashCommands } = await import(moduleUrl);
     fixture.controller = mountSlashCommands(textarea, {
       contextKey: () => fixture.context,
-      provider: () => 'claude',
+      provider: () => 'pantheon',
       snapshot: cached ? async () => ({ commands, warnings: [] }) : undefined,
       load: async (force: boolean) => {
         fixture.calls.push({ context: fixture.context, force });
@@ -156,7 +156,7 @@ test('slash commands explain slow discovery, time out, and retry without losing 
   await draft(page).fill('/');
   await expect(menu(page).getByRole('option')).toHaveCount(3);
   await page.clock.fastForward(5_000);
-  await expect(menu(page).getByRole('status')).toContainText('Waiting for the harness to start');
+  await expect(menu(page).getByRole('status')).toContainText('Waiting for Pantheon to start');
   await page.clock.fastForward(75_000);
   await expect(menu(page).getByRole('status')).toContainText('took too long');
   await menu(page).getByRole('button', { name: 'Retry commands' }).click();
@@ -303,20 +303,20 @@ test.describe('slash commands app integration', () => {
   test('loads catalogs for the current task and newly selected harness', async ({ page }) => {
     const prompt = page.locator('#prompt');
     await prompt.fill('/');
-    await expect(menu(page).locator('.slash-menu-source').filter({ hasText: /^claude$/ }).first()).toBeVisible();
+    await expect(menu(page).locator('.slash-menu-source').filter({ hasText: /^pantheon$/ }).first()).toBeVisible();
     await page.locator('.task-item[data-id="session-3"]').click();
     await expect(prompt).toBeEnabled();
-    await prompt.fill('/skill:');
-    await expect(menu(page).getByRole('option')).toContainText('/skill:project-guide');
+    await prompt.fill('/project');
+    await expect(menu(page).getByRole('option')).toContainText('/project-guide');
     await page.locator('.new-task-button').click();
     await expect(prompt).toBeEnabled();
     await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
-    await page.locator('.model-menu').getByRole('button', { name: 'Codex · GPT-6-Astra', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toContainText('GPT-6-Astra');
+    await page.locator('.model-menu').getByRole('button', { name: 'Pantheon · GPT-6.1 Sol', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toContainText('GPT-6.1 Sol');
     await prompt.fill('/review');
-    await expect(menu(page).getByRole('option')).toContainText('codex');
+    await expect(menu(page).getByRole('option')).toContainText('pantheon');
     const catalogs = (await appCalls(page, 'list_slash_commands')).filter(entry => !entry.args.cachedOnly);
-    expect(catalogs.map(entry => entry.provider)).toEqual(['claude', 'kimi', 'codex']);
+    expect(catalogs.map(entry => entry.provider)).toEqual(['pantheon', 'pantheon', 'pantheon']);
     expect(catalogs[0].args.sessionId).toBe('session-1');
     expect(catalogs[1].args.sessionId).toBe('session-3');
     expect(catalogs[2].args.sessionId).not.toBe('session-3');

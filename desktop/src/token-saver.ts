@@ -1,7 +1,7 @@
 /* Token saver: per-thread guidance that makes agents spend fewer tokens. Packs are
  * short, benchmarked or well-understood instructions sent as a folded context block
  * with a message — only when they change, and as an occasional reminder — so every
- * harness gets them and they don't cost more than they save.
+ * agent gets them and they don't cost more than they save.
  *
  * Caveman Full is caveman-micro (MIT, kuba-guzik/caveman-micro), the 85-token distillation
  * of Caveman (Apache-2.0, JuliusBrussee/caveman); Lite and Ultra and the exceptions follow

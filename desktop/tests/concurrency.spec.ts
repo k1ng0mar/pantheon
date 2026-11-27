@@ -20,7 +20,7 @@ async function installConcurrency(page: Page, count = 12): Promise<void> {
       if (!window.__concurrent) {
         sessions = Array.from({ length: ${count} }, (_, index) => ({
           id: 'session-' + (index + 1), projectId: 'project-1', title: 'Concurrent task ' + (index + 1),
-          provider: ['claude', 'codex', 'kimi'][index % 3], model: '', mode: 'ask', status: 'idle',
+          provider: 'pantheon', model: '', mode: 'ask', status: 'idle',
           createdAt: now - index, updatedAt: now - index, archived: false, worktreePath: null,
           resumeId: null, lastResponseAt: null, taskStage: 'pending', taskDescription: 'Prompt for task ' + (index + 1), completedAt: null
         }));

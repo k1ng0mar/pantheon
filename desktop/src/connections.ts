@@ -1,5 +1,6 @@
-// Named provider connections: several setups of one harness, each with its own
-// executable, arguments, environment and config folder. Secret values go to the
+// Named provider connections: several setups of Pantheon (work and personal
+// accounts, separate config folders). Each has its own executable, arguments,
+// environment and config folder. Secret values go to the
 // native secure store and never come back; the list only carries their names.
 //
 // The editor UI is provider-settings.ts; this module owns the shapes the app and

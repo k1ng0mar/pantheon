@@ -118,7 +118,7 @@ test('Settings → Cloud connects keyed providers and declares the runtime it up
   await expect(settings.getByLabel('Google Cloud Zone')).toBeVisible();
 
   // The desktop ships its own runtime, so there is no per-agent sign-in to store.
-  await expect(settings.getByRole('form', { name: 'Claude login for cloud agents' })).toHaveCount(0);
+  await expect(settings.getByRole('form', { name: /login for cloud agents/i })).toHaveCount(0);
   const note = settings.locator('.cloud-agent-note');
   await expect(note).toContainText("this app's own Pantheon runtime");
   await expect(note).toContainText('Only your GitHub token and git identity are sent');

@@ -698,7 +698,7 @@ fn stale_slash_resolution_cannot_follow_a_changed_harness_checkout_or_descriptio
             .unwrap();
         let mut command = resolved_command("pantheon", cwd, "/review", "/review");
         match mismatch {
-            "provider" => command.provider = "codex".into(),
+            "provider" => command.provider = "legacy".into(),
             "cwd" => command.cwd = command.cwd.join("other-checkout"),
             _ => command.original = "/compact".into(),
         }

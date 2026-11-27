@@ -38,7 +38,7 @@ mod tests {
 
     #[test]
     fn unknown_and_foreign_tools_cannot_be_registered() {
-        for name in ["shell", "codex_review", "pantheon_not_a_tool"] {
+        for name in ["shell", "legacy_review", "pantheon_not_a_tool"] {
             let tools = vec![serde_json::json!({
                 "type": "function",
                 "name": name,

@@ -30,16 +30,11 @@ pub fn known(harness: &str) -> bool {
 
 /// Where `harness` reads a `kind` at `scope`. `base` is the home folder for user scope and
 /// the checkout for project scope.
-pub fn surface(harness: &str, kind: Kind, scope: Scope, base: &Path) -> Surface {
-    let user = scope == Scope::User;
+pub fn surface(harness: &str, kind: Kind, _scope: Scope, base: &Path) -> Surface {
     match (harness, kind) {
-        // `<data dir>/skills` for the user and `.pantheon/skills` per checkout: the two
-        // folders `pantheon skills list` reads first.
-        ("pantheon", Kind::Skill) => Surface::Folder(if user {
-            base.join("skills")
-        } else {
-            base.join(".pantheon/skills")
-        }),
+        // `<home>/.pantheon/skills` for the user and `.pantheon/skills` per checkout:
+        // the two folders `pantheon skills list` reads first.
+        ("pantheon", Kind::Skill) => Surface::Folder(base.join(".pantheon/skills")),
         ("pantheon", Kind::Rule) => Surface::Block(base.join("AGENTS.md")),
         _ => Surface::Prompt,
     }
@@ -241,7 +236,7 @@ fn exclude_file(root: &Path) -> Option<PathBuf> {
     })
 }
 
-/// The exclude line for `path` inside `root` (`/CLAUDE.md`, `/.claude/skills/x/`).
+/// The exclude line for `path` inside `root` (`/AGENTS.md`, `/.pantheon/skills/x/`).
 pub fn exclude_entry(root: &Path, path: &Path, folder: bool) -> Option<String> {
     let relative = path
         .strip_prefix(root)

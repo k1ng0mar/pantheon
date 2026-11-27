@@ -32,7 +32,7 @@ async function installSubagents(page: Page, seeds: Record<string, Subagent[]> = 
       if (!window.__subagents) {
         sessions = Array.from({ length: 3 }, (_, index) => ({
           id: 'session-' + (index + 1), projectId: 'project-1', title: 'Delegated task ' + (index + 1),
-          provider: ['claude', 'codex', 'kimi'][index], model: '', mode: 'ask', status: 'running',
+          provider: 'pantheon', model: '', mode: 'ask', status: 'running',
           createdAt: now - index, updatedAt: now - index, archived: false, worktreePath: null,
           resumeId: null, lastResponseAt: now - index, taskStage: 'in_progress', taskDescription: '', completedAt: null
         }));

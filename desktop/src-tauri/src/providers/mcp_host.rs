@@ -640,7 +640,7 @@ mod tests {
             .create_session(&project.id, "pantheon", "sonnet", "ask")
             .unwrap()
             .id;
-        db.resume(&sid, "saved-claude-session").unwrap();
+        db.resume(&sid, "saved-native-session").unwrap();
         let saved_reference =
             json!({"type":"tool_reference","tool_name":"mcp__pantheon_architect__pantheon_title"});
         let mut original_spec = None;
@@ -741,7 +741,7 @@ mod tests {
             assert_eq!(result["prompt"], "Check parser tests");
             assert_eq!(
                 db.session(&sid).unwrap().resume_id.as_deref(),
-                Some("saved-claude-session")
+                Some("saved-native-session")
             );
             stopped.store(true, Ordering::SeqCst);
             drop(server);

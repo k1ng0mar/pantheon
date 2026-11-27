@@ -457,7 +457,7 @@ fn used_teams_switch_setup_in_place_and_composer_can_change_the_architect_model(
     store
         .conn()
         .execute(
-            "UPDATE sessions SET provider='codex' WHERE id=?1",
+            "UPDATE sessions SET provider='legacy' WHERE id=?1",
             [&task.id],
         )
         .unwrap();
@@ -623,7 +623,7 @@ fn enabling_a_team_keeps_the_transcript_and_starts_a_fresh_context() {
 }
 
 #[test]
-fn resaving_codex_team_settings_keeps_its_existing_harness_context() {
+fn resaving_team_settings_keeps_its_existing_provider_context() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let task = task(&store);
     let state = state(store);
@@ -651,7 +651,7 @@ fn resaving_codex_team_settings_keeps_its_existing_harness_context() {
 }
 
 #[test]
-fn codex_catalog_changes_replace_native_context_but_retain_local_transcript() {
+fn catalog_changes_replace_native_context_but_retain_local_transcript() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
@@ -711,7 +711,7 @@ fn codex_catalog_changes_replace_native_context_but_retain_local_transcript() {
 }
 
 #[test]
-fn failed_codex_team_configuration_preserves_resume_and_messages() {
+fn failed_team_configuration_preserves_resume_and_messages() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
@@ -823,14 +823,14 @@ fn auto_team_default_keeps_the_new_tasks_own_model_as_lead() {
         &store,
         &source.project_id,
         "pantheon",
-        "kimi-chosen",
+        "pantheon-chosen",
         None,
         None,
     )
     .unwrap();
     assert_eq!(
         (created.provider.as_str(), created.model.as_str()),
-        ("pantheon", "kimi-chosen")
+        ("pantheon", "pantheon-chosen")
     );
     let team = architect::load(&store, &created.id).unwrap().unwrap();
     assert!(team.config.auto);

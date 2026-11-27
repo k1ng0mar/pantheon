@@ -808,7 +808,7 @@ mod tests {
                     .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap()
             ),
-            (29, 29)
+            (30, 30)
         );
         let columns: i64 = store.conn().query_row("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('remote_device','remote_session','remote_synced_id')", [], |r| r.get(0)).unwrap();
         assert_eq!(columns, 3);

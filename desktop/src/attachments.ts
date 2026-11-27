@@ -24,7 +24,7 @@ export type AttachmentsHost = {
   sketch(taskId: string, existing?: PromptImage): void;
 };
 
-/** Every harness path accepts at most four images per turn. */
+/** Every agent path accepts at most four images per turn. */
 export const MAX_IMAGES = 4;
 const MAX_DOCUMENTS = 5;
 const MAX_FOLDERS = 3;
@@ -163,7 +163,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     }).join('');
   }
 
-  /** Text that travels with the message so every harness sees documents and folders. */
+  /** Text that travels with the message so every agent sees documents and folders. */
   function contextFor(attachments: PromptAttachment[]): string {
     return attachments.map(item => {
       if (item.kind === 'image') return item.source === 'sketch'

@@ -463,6 +463,8 @@ function form(spec: Extract<View, { type: 'form' }>): HTMLElement {
 
 const CUSTOM_BASE = ':host{display:block;color:var(--text);font:inherit;overflow:auto}*{box-sizing:border-box;max-width:100%}img{height:auto}a{color:var(--accent-ink)}button{font:inherit;color:inherit;background:var(--raised);border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}[hidden]{display:none!important}';
 
+const CUSTOM_DATA_ATTRS = new Set(['data-ui-toggle', 'data-ui-tab', 'data-ui-panel', 'data-ui-set', 'data-ui-bind', 'data-ui-prompt']);
+
 /** Sanitizes a custom view's HTML: no scripts, handlers, frames, forms or remote resources. */
 async function cleanCustom(html: string): Promise<DocumentFragment> {
   const purify = (await import('dompurify')).default;
@@ -470,12 +472,15 @@ async function cleanCustom(html: string): Promise<DocumentFragment> {
     USE_PROFILES: { html: true, svg: true },
     FORBID_TAGS: ['script', 'style', 'form', 'input', 'textarea', 'select', 'iframe', 'frame', 'object', 'embed', 'link', 'meta', 'base', 'video', 'audio', 'source', 'track', 'foreignObject'],
     FORBID_ATTR: ['srcset', 'action', 'formaction', 'background', 'ping'],
-    ALLOW_DATA_ATTR: false, RETURN_DOM_FRAGMENT: true,
+    // The view's declarative layer lives in data-ui-* attributes; allow those through
+    // DOMPurify, then drop every other data-* attribute below.
+    ALLOW_DATA_ATTR: true, RETURN_DOM_FRAGMENT: true,
   });
   for (const element of clean.querySelectorAll('*')) {
     for (const attribute of [...element.attributes]) {
       const name = attribute.name.toLowerCase(), value = attribute.value.trim();
       if (name.startsWith('on')) element.removeAttribute(attribute.name);
+      else if (name.startsWith('data-') && !CUSTOM_DATA_ATTRS.has(name)) element.removeAttribute(attribute.name);
       else if (name === 'style') element.setAttribute('style', scrubCss(value));
       else if ((name === 'href' || name === 'xlink:href') && element.tagName.toLowerCase() !== 'a' && !value.startsWith('#')) element.removeAttribute(attribute.name);
       else if (name === 'src' && !/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value)) element.removeAttribute(attribute.name);

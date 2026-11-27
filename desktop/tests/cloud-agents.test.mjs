@@ -23,21 +23,18 @@ test('the Cloud section lists connected providers only, then setup', () => {
 
 // The desktop is Pantheon-only (39af97a made the app Pantheon-only): a cloud
 // machine installs and runs Pantheon's own binary, never a third-party CLI
-// harness. Only the Pantheon provider is accepted; every other id is refused
+// harness. Only the Pantheon provider is accepted; any other id is refused
 // with the one-line reason.
 test('only the Pantheon runtime runs in the cloud', () => {
   assert.equal(harnessRefusal('pantheon', 'Pantheon'), '');
-  for (const id of ['claude', 'glm', 'mimo', 'codex', 'opencode', 'kimi']) {
-    assert.equal(harnessRefusal(id, id), `${id} can’t run on a cloud machine yet.`);
-  }
-  assert.equal(harnessRefusal('codex', 'Codex'), 'Codex can’t run on a cloud machine yet.');
+  assert.equal(harnessRefusal('unsupported', 'Unsupported'), 'Unsupported can’t run on a cloud machine yet.');
 });
 
 test('stages read as short phrases; busy ones spin', () => {
   // Every harness installs Pantheon itself on the cloud machine, so the
   // installing text no longer varies by harness.
   assert.equal(stageText('installing', null, 'pantheon'), 'Installing Pantheon');
-  assert.equal(stageText('installing', null, 'claude'), 'Installing Pantheon');
+  assert.equal(stageText('installing', null, 'legacy'), 'Installing Pantheon');
   assert.equal(stageText('error', 'E2B refused the key', 'pantheon'), 'Error: E2B refused the key');
   assert.equal(stageText('reconnecting', null, 'pantheon'), 'Reconnecting…');
   assert.equal(busyStage('uploading'), true);

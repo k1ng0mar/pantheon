@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const mod = process.platform === 'darwin' ? '⌘' : 'Ctrl';
+const inspectorChord = process.platform === 'darwin' ? '⌘ ⇧ B' : 'Ctrl Shift B';
+
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const separator = (page: Page) => page.getByRole('separator', { name: 'Resize sidebar', exact: true });
 const sidebarWidth = (page: Page) => page.locator('.sidebar').evaluate(node => node.getBoundingClientRect().width);
@@ -222,7 +225,7 @@ test('layout preferences leave an open model menu and its search focus stable wh
   await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
   const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   const search = menu.locator('.model-menu-search input');
-  await search.fill('Claude');
+  await search.fill('Pantheon');
   const menuNode = await menu.elementHandle();
   const promptNode = await prompt(page).elementHandle();
   const before = await search.evaluate(node => parseFloat(getComputedStyle(node).fontSize));
@@ -230,7 +233,7 @@ test('layout preferences leave an open model menu and its search focus stable wh
   await expect.poll(() => search.evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeCloseTo(before * 1.1, 2);
   await expect(menu).toBeVisible();
   await expect(search).toBeFocused();
-  await expect(search).toHaveValue('Claude');
+  await expect(search).toHaveValue('Pantheon');
   await expect(prompt(page)).toHaveValue('Do not lose this draft.');
   expect(await menuNode!.evaluate(node => node.isConnected)).toBe(true);
   expect(await promptNode!.evaluate(node => node === document.querySelector('#prompt'))).toBe(true);
@@ -264,7 +267,7 @@ test('layout preferences resize focused terminal text without restarting the PTY
   await recordTerminalCalls(page);
   await open(page);
   await prompt(page).fill('Keep the agent draft while resizing terminal text.');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   const screen = page.locator('#terminal-host .xterm-screen');
   const row = screen.locator('.xterm-rows > div').first();
   const input = page.locator('#terminal-host .xterm-helper-textarea');
@@ -314,7 +317,7 @@ test('layout preferences keep controls readable at 160 percent in wide and narro
     const inspector = page.getByRole('complementary', { name: 'Project inspector', exact: true });
     // The narrow-window media callback closes the inspector asynchronously in WebKit.
     if (width <= 920) await expect(inspector).toBeHidden();
-    if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+    if (!await inspector.isVisible()) await page.getByRole('button', { name: `Toggle inspector (${inspectorChord})`, exact: true }).click();
     await expect(inspector).toBeVisible();
     await expect.poll(() => rootSize(page)).toBeCloseTo(22.4, 2);
     await expect.poll(() => sidebarWidth(page)).toBe(190);
@@ -456,7 +459,7 @@ test('layout preferences collapse the sidebar without replacing the draft or liv
   await recordTerminalCalls(page);
   await open(page);
   await prompt(page).fill('Keep my composer and terminal while toggling the sidebar.');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   const terminal = page.locator('#terminal-host .xterm-screen');
   const terminalInput = page.locator('#terminal-host .xterm-helper-textarea');
   await expect(terminal).toBeVisible();

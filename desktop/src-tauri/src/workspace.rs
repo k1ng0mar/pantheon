@@ -658,7 +658,7 @@ pub fn worktree_branch_name(branch: &str) -> Result<String, String> {
     }
     // Keep explicitly named historical branches intact when creating worktrees.
     Ok(
-        if branch.starts_with("pantheon/") || branch.starts_with("codex/") {
+        if branch.starts_with("pantheon/") {
             branch.to_string()
         } else {
             format!("pantheon/{branch}")
@@ -1273,7 +1273,8 @@ pub fn legacy_worktree_parent(path: &Path, registered: &[PathBuf]) -> Option<Pat
     // Bound filesystem/Git discovery for malformed or unusually deep layouts.
     for _ in 0..16 {
         let leaf = checkout.file_name()?.to_str()?;
-        // Existing installations may still have either historical prefix on disk.
+        // Existing installations may still have a pre-rename prefix on disk;
+        // resolve it once during migration and never create new ones.
         if !leaf.starts_with("pantheon-") && !leaf.starts_with("codex-") {
             return None;
         }
@@ -2269,7 +2270,7 @@ mod tests {
             assert_eq!(unchanged.model, "sonnet");
             assert_eq!(unchanged.project_id, source.project_id);
             let changed = store
-                .configure(&task.id, "pantheon", "kimi-code", Some(&source.project_id))
+                .configure(&task.id, "pantheon", "pantheon-code", Some(&source.project_id))
                 .unwrap();
             assert_eq!(changed.provider, "pantheon");
             assert_eq!(changed.worktree_path, task.worktree_path);
@@ -2340,7 +2341,7 @@ mod tests {
             store
                 .conn()
                 .execute_batch(
-                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;",
+                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN agent_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;",
                 )
                 .unwrap();
         }
@@ -2436,7 +2437,7 @@ mod tests {
                         .unwrap();
                     store.resume(&yo_task.id, "nested-resume").unwrap();
                     if old_version == 3 {
-                        store.conn().execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;").unwrap();
+                        store.conn().execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN agent_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; ALTER TABLE sessions DROP COLUMN worktree_path; PRAGMA user_version=3;").unwrap();
                     } else {
                         // Match an installed v4 build: New is already a task,
                         // while its nested Yo checkout remains a project.
@@ -2449,7 +2450,7 @@ mod tests {
                             .unwrap();
                         store
                             .conn()
-                            .execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms;")
+                            .execute_batch("ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN agent_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms;")
                             .unwrap();
                         store.conn().pragma_update(None, "user_version", 4).unwrap();
                     }

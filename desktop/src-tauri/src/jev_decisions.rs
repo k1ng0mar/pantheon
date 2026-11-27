@@ -1134,7 +1134,7 @@ mod tests {
                 id: "worker-profile-a".into(),
                 name: "UI builder".into(),
                 provider: "pantheon".into(),
-                model: "test-claude".into(),
+                model: "test-model".into(),
                 reasoning_effort: None,
             }],
             max_parallel: 1,

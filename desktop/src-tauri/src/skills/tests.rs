@@ -10,8 +10,7 @@ impl Fixture {
     fn new() -> Self {
         let base = std::env::temp_dir().join(format!("pantheon-skills-{}", uuid::Uuid::new_v4()));
         let home = base.join("home");
-        fs::create_dir_all(home.join(".claude")).unwrap();
-        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::create_dir_all(home.join(".other-agent")).unwrap();
         // The skills matrix only lists a harness it detects as installed.
         // Pantheon lives in its own data dir, not `~/.pantheon` in a fake
         // HOME; make the fixture represent a machine with Pantheon present.
@@ -97,10 +96,10 @@ fn imports_activate_for_pantheon_and_report_drift() {
     fx.library
         .activate("release-notes", "pantheon", Scope::User, None, false)
         .unwrap();
-    let claude = fx.home.join("skills/release-notes");
-    assert_eq!(fs::read_to_string(claude.join("SKILL.md")).unwrap(), SKILL);
-    assert!(claude.join("templates/short.md").is_file());
-    assert!(fx.home.join("skills/release-notes/SKILL.md").is_file());
+    let surface = fx.home.join(".pantheon/skills/release-notes");
+    assert_eq!(fs::read_to_string(surface.join("SKILL.md")).unwrap(), SKILL);
+    assert!(surface.join("templates/short.md").is_file());
+    assert!(fx.home.join(".pantheon/skills/release-notes/SKILL.md").is_file());
     let matrix = fx.library.matrix(None).unwrap();
     assert_eq!(
         Fixture::cell(&matrix, "pantheon", "release-notes", Scope::User).status,
@@ -108,7 +107,7 @@ fn imports_activate_for_pantheon_and_report_drift() {
     );
 
     // A local edit is drift: the matrix says so and nothing overwrites or deletes it.
-    fs::write(claude.join("SKILL.md"), "my edit").unwrap();
+    fs::write(surface.join("SKILL.md"), "my edit").unwrap();
     assert_eq!(
         Fixture::cell(
             &fx.library.matrix(None).unwrap(),
@@ -130,10 +129,10 @@ fn imports_activate_for_pantheon_and_report_drift() {
         .unwrap();
     assert_eq!(change.kept.len(), 1);
     assert_eq!(
-        fs::read_to_string(claude.join("SKILL.md")).unwrap(),
+        fs::read_to_string(surface.join("SKILL.md")).unwrap(),
         "my edit"
     );
-    assert!(!claude.join("templates").exists());
+    assert!(!surface.join("templates").exists());
 
     // Nothing else claims the folder now, so the next removal takes it.
     fx.library.remove("release-notes").unwrap();
@@ -243,11 +242,11 @@ fn edited_rule_blocks_are_never_overwritten() {
 #[test]
 fn unmanaged_skills_are_reported_and_never_replaced() {
     let fx = Fixture::new();
-    let manual = fx.home.join("skills/release-notes");
+    let manual = fx.home.join(".pantheon/skills/release-notes");
     fs::create_dir_all(&manual).unwrap();
     fs::write(manual.join("SKILL.md"), "hand made").unwrap();
-    fs::create_dir_all(fx.home.join("skills/other")).unwrap();
-    fs::write(fx.home.join("skills/other/SKILL.md"), "other").unwrap();
+    fs::create_dir_all(fx.home.join(".pantheon/skills/other")).unwrap();
+    fs::write(fx.home.join(".pantheon/skills/other/SKILL.md"), "other").unwrap();
     fx.import(Kind::Skill, &fx.folder("release", &[("SKILL.md", SKILL)]));
     assert!(fx
         .library
@@ -318,7 +317,7 @@ fn findings_need_acknowledgement_and_updates_wait_for_activation() {
         .status,
         "outdated"
     );
-    assert!(fs::read_to_string(fx.home.join("skills/setup/SKILL.md"))
+    assert!(fs::read_to_string(fx.home.join(".pantheon/skills/setup/SKILL.md"))
         .unwrap()
         .contains("curl"));
     assert!(fx
@@ -379,8 +378,8 @@ fn bot_workspace_sync_and_prompt_text_stay_scoped() {
         .join(".pantheon/skills/release-notes/SKILL.md")
         .is_file());
     assert!(
-        !fx.home.join("skills/release-notes").exists(),
-        "never harness-global"
+        !fx.home.join(".pantheon/skills/release-notes").exists(),
+        "never user-global"
     );
     assert_eq!(fx.library.project_active("pantheon", &bot), ids);
     // Idempotent, then removing the reference turns it off again.

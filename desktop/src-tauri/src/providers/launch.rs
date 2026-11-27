@@ -245,7 +245,7 @@ fn shim_entry(shim: &Path, directory: &Path, name: &str) -> Option<PathBuf> {
     })
 }
 
-/// Standalone installers (pi.dev's managed install) write `"%node%" "%~dp0pi-launcher.js" %*`.
+/// Standalone installers write `"%node%" "%~dp0launcher.js" %*`.
 /// Accept only a Node script that sits beside the shim itself and is started by node.
 fn sibling_launcher(shim: &Path, directory: &Path) -> Option<PathBuf> {
     let directory = directory.canonicalize().ok()?;
@@ -597,8 +597,8 @@ mod tests {
         for (extended, ordinary) in [
             (r"\\?\C:\project", r"C:\project"),
             (
-                r"\\?\D:\npm path & spaces\node_modules\@openai\codex\bin\codex.js",
-                r"D:\npm path & spaces\node_modules\@openai\codex\bin\codex.js",
+                r"\\?\D:\npm path & spaces\node_modules\pantheon\bin\pantheon.js",
+                r"D:\npm path & spaces\node_modules\pantheon\bin\pantheon.js",
             ),
             (r"\\?\UNC\server\share\project", r"\\server\share\project"),
             (r"\\?\C:\", r"C:\"),
@@ -693,14 +693,14 @@ mod tests {
     #[test]
     fn windows_npm_launches_node_entry_without_a_batch_shell() {
         let f = Fixture::new();
-        let shim = f.file("npm path & spaces/codex.cmd", "@echo off\r\n");
+        let shim = f.file("npm path & spaces/pantheon.cmd", "@echo off\r\n");
         let node = f.file("npm path & spaces/node.exe", "");
         f.file(
-            "npm path & spaces/node_modules/@openai/codex/package.json",
-            r#"{"bin":{"codex":"bin/codex.js"}}"#,
+            "npm path & spaces/node_modules/pantheon/package.json",
+            r#"{"bin":{"pantheon":"bin/pantheon.js"}}"#,
         );
         let script = f.file(
-            "npm path & spaces/node_modules/@openai/codex/bin/codex.js",
+            "npm path & spaces/node_modules/pantheon/bin/pantheon.js",
             "#!/usr/bin/env node\n",
         );
         let launch = resolve(&shim, true).unwrap();
@@ -714,23 +714,23 @@ mod tests {
     #[test]
     fn windows_pnpm_shims_run_only_the_entry_their_package_declares() {
         let f = Fixture::new();
-        let package = "pnpm/global/v11/hash/node_modules/opencode-ai";
+        let package = "pnpm/global/v11/hash/node_modules/pantheon-cli";
         f.file(
             &format!("{package}/package.json"),
-            r#"{"bin":{"opencode":"./bin/opencode.exe"}}"#,
+            r#"{"bin":{"pantheon":"./bin/pantheon.exe"}}"#,
         );
-        let binary = f.file(&format!("{package}/bin/opencode.exe"), "");
+        let binary = f.file(&format!("{package}/bin/pantheon.exe"), "");
         f.file(&format!("{package}/bin/other.exe"), "");
         let shim = f.file(
-            "pnpm/bin/opencode.cmd",
-            "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\hash\\node_modules\\opencode-ai\\bin\\opencode.exe\"  %*\r\n",
+            "pnpm/bin/pantheon.cmd",
+            "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\hash\\node_modules\\pantheon-cli\\bin\\pantheon.exe\"  %*\r\n",
         );
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&binary, true));
         assert!(launch.args.is_empty());
         f.file(
-            "pnpm/bin/opencode.cmd",
-            "@\"%~dp0\\..\\global\\v11\\hash\\node_modules\\opencode-ai\\bin\\other.exe\" %*\r\n",
+            "pnpm/bin/pantheon.cmd",
+            "@\"%~dp0\\..\\global\\v11\\hash\\node_modules\\pantheon-cli\\bin\\other.exe\" %*\r\n",
         );
         assert!(resolve(&shim, true).is_err());
     }
@@ -739,15 +739,15 @@ mod tests {
     fn windows_pnpm_node_shims_run_the_declared_script_with_the_adjacent_node() {
         let f = Fixture::new();
         let node = f.file("pnpm/bin/node.exe", "");
-        let package = "pnpm/global/v11/hash/node_modules/@earendil-works/pi-coding-agent";
+        let package = "pnpm/global/v11/hash/node_modules/pantheon-cli";
         f.file(
             &format!("{package}/package.json"),
-            r#"{"bin":{"pi":"dist/bundle/cli.js"}}"#,
+            r#"{"bin":{"pantheon":"dist/bundle/cli.js"}}"#,
         );
         let script = f.file(&format!("{package}/dist/bundle/cli.js"), "");
         let shim = f.file(
-            "pnpm/bin/pi.cmd",
-            "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\..\\global\\v11\\hash\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js\" %*\r\n)\r\n",
+            "pnpm/bin/pantheon.cmd",
+            "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\..\\global\\v11\\hash\\node_modules\\pantheon-cli\\dist\\bundle\\cli.js\" %*\r\n)\r\n",
         );
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
@@ -858,11 +858,11 @@ mod tests {
     fn windows_shims_never_launch_a_shell_host() {
         let f = Fixture::new();
         f.file(
-            "npm/node_modules/opencode-ai/package.json",
+            "npm/node_modules/pantheon-cli/package.json",
             r#"{"bin":{"pantheon":"CMD.exe"}}"#,
         );
-        f.file("npm/node_modules/opencode-ai/CMD.exe", "");
-        let shim = f.file("npm/opencode.cmd", "");
+        f.file("npm/node_modules/pantheon-cli/CMD.exe", "");
+        let shim = f.file("npm/pantheon.cmd", "");
         assert!(resolve(&shim, true).is_err());
     }
 
@@ -871,9 +871,9 @@ mod tests {
         let f = Fixture::new();
         let unknown = f.file("custom.cmd", "@echo off\r\n");
         assert!(resolve(&unknown, true).is_err());
-        let shim = f.file("codex.cmd", "");
+        let shim = f.file("pantheon.cmd", "");
         f.file(
-            "node_modules/@openai/codex/package.json",
+            "node_modules/pantheon/package.json",
             r#"{"bin":{"pantheon":"../../outside.js"}}"#,
         );
         assert!(resolve(&shim, true).is_err());
@@ -882,9 +882,9 @@ mod tests {
     #[test]
     fn native_and_unix_program_paths_remain_direct() {
         for (path, windows) in [
-            ("C:/tools/codex.exe", true),
-            ("/opt/homebrew/bin/codex", false),
-            ("/home/user/.local/bin/claude", false),
+            ("C:/tools/pantheon.exe", true),
+            ("/opt/homebrew/bin/pantheon", false),
+            ("/home/user/.local/bin/pantheon", false),
         ] {
             let launch = resolve(Path::new(path), windows).unwrap();
             assert_eq!(launch.program, Path::new(path));

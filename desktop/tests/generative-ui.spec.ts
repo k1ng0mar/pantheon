@@ -68,7 +68,7 @@ test('custom views are sanitized, scoped and only fill the composer', async ({ p
   await render(page, 'Outside\n\n' + fence({
     type: 'custom', state: { picked: 'none' },
     css: 'p{color:red} .x{background:url(https://evil.test/a.png)}',
-    html: '<p class="x" onclick="window.__pwned=1">Pick</p><script>window.__pwned=1</script><img src="https://evil.test/i.png"><iframe src="https://evil.test"></iframe>'
+    html: '<p class="x" data-other="1" onclick="window.__pwned=1">Pick</p><script>window.__pwned=1</script><img src="https://evil.test/i.png"><iframe src="https://evil.test"></iframe>'
       + '<button data-ui-set="picked=blue">Blue</button><span data-ui-bind="picked"></span><button data-ui-toggle="#more">More</button><div id="more" hidden>Hidden</div>'
       + '<button data-ui-prompt="Use {picked}">Use it</button>',
   }));
@@ -76,9 +76,9 @@ test('custom views are sanitized, scoped and only fill the composer', async ({ p
   await expect(custom.getByText('Pick')).toBeVisible();
   const leftovers = await custom.evaluate(host => {
     const root = host.shadowRoot!;
-    return { script: root.querySelectorAll('script').length, iframe: root.querySelectorAll('iframe').length, onclick: root.querySelectorAll('[onclick]').length, remote: root.querySelectorAll('img[src]').length, css: root.innerHTML.includes('evil.test') };
+    return { script: root.querySelectorAll('script').length, iframe: root.querySelectorAll('iframe').length, onclick: root.querySelectorAll('[onclick]').length, remote: root.querySelectorAll('img[src]').length, css: root.innerHTML.includes('evil.test'), data: root.querySelectorAll('[data-other]').length };
   });
-  expect(leftovers).toEqual({ script: 0, iframe: 0, onclick: 0, remote: 0, css: false });
+  expect(leftovers).toEqual({ script: 0, iframe: 0, onclick: 0, remote: 0, css: false, data: 0 });
   // Scoped: the custom red paragraph rule does not reach the app.
   await expect(page.locator('#ui-probe > p')).not.toHaveCSS('color', 'rgb(255, 0, 0)');
   await expect(custom.getByText('Pick')).toHaveCSS('color', 'rgb(255, 0, 0)');
@@ -129,13 +129,13 @@ test('details collapse, follow-up directives become chips, code blocks copy and 
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied = text; } } }));
   await page.reload();
   await expect(page.locator('#prompt')).toBeVisible();
-  await render(page, '<details><summary>Why</summary>\n\nBecause **reasons**.\n\n</details>\n\nNext steps :codex-followup[Run tests]{prompt="Run the full test suite."}\n\n```ts\nconst a = 1;\n```\n\n```mermaid\ngraph TD; A-->B\n```\n\n> [!TIP]\n> Alerts still work.');
+  await render(page, '<details><summary>Why</summary>\n\nBecause **reasons**.\n\n</details>\n\nNext steps :followup[Run tests]{prompt="Run the full test suite."}\n\n```ts\nconst a = 1;\n```\n\n```mermaid\ngraph TD; A-->B\n```\n\n> [!TIP]\n> Alerts still work.');
   const probe = page.locator('#ui-probe');
   await expect(probe.locator('details > summary')).toHaveText('Why');
   await expect(probe.getByText('Because')).toBeHidden();
   await probe.locator('details > summary').click();
   await expect(probe.locator('details strong')).toHaveText('reasons');
-  await expect(probe.locator('p').filter({ hasText: 'Next steps' })).not.toContainText('codex-followup');
+  await expect(probe.locator('p').filter({ hasText: 'Next steps' })).not.toContainText(':followup');
   await probe.getByRole('button', { name: 'Run tests' }).click();
   await expect(page.locator('#prompt')).toHaveValue('Run the full test suite.');
   await expect(probe.locator('pantheon-code pre > code.language-ts')).toHaveText('const a = 1;\n');

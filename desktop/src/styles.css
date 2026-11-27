@@ -71,9 +71,6 @@ button .icon{pointer-events:none}
 .task-indicator.running{background:#ac8100;box-shadow:none;animation:breathe 1.5s infinite}
 .task-indicator.attention{background:#a45e13;box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .3)}
 .provider-logo{width:20px;height:20px;display:inline-block;object-fit:contain;flex-shrink:0;vertical-align:middle;pointer-events:none}
-.provider-logo[data-provider="github-copilot"],.provider-logo[data-provider="cline"]{color:var(--text)}
-.provider-logo[data-provider="codex"]{transform:scale(1.25)}
-.provider-logo[data-provider="pi"]{image-rendering:pixelated}
 .task-provider{width:18px;height:18px;opacity:.8;flex-shrink:0;align-self:center}
 .task-item:hover .task-provider,.task-item.selected .task-provider{opacity:1}
 .no-tasks,.sidebar-empty{padding:9px 11px 14px;font-size:.75rem;color:var(--faint);line-height:1.6}
@@ -567,7 +564,7 @@ button:not(:disabled):active{background-color:var(--accent-dim);transition:none}
 .task-item.selected { outline: 1px solid var(--focus); outline-offset: -1px; }
 }
 
-/* Transient harness/model picker, anchored to the composer. */
+/* Transient model picker, anchored to the composer. */
 .model-menu-search .icon{width:13px;height:13px}
 .model-menu-list{overflow:auto;min-height:0;max-height:410px;padding:0;overscroll-behavior:contain;scrollbar-gutter:stable}
 .model-menu-group+.model-menu-group{border-top:1px solid var(--border);margin-top:6px;padding-top:4px}
@@ -748,8 +745,6 @@ html[data-theme="dark"] .new-task-button kbd{color:color-mix(in srgb,var(--on-ac
 html[data-theme="dark"] .send-button.stop-button:not(:disabled){background:var(--text);color:var(--bg)}
 html[data-theme="dark"] :is(.task-indicator.running,.selected .task-indicator,.activity-dot){background:var(--accent)}
 html[data-theme="dark"] .task-indicator.attention{background:#edb464}
-html[data-theme="dark"] .provider-logo[data-provider="codex"]{filter:invert(1)}
-html[data-theme="dark"] .provider-logo[data-provider="kimi"]{border-radius:50%;box-shadow:0 0 0 1px rgb(255 255 255 / .22)}
 html[data-theme="dark"] .user-avatar{background:var(--raised)}
 html[data-theme="dark"] :is(.markdown pre,.tool-activity pre){background:#252522;border-color:var(--border);color:var(--text)}
 html[data-theme="dark"] .markdown :not(pre)>code{background:var(--raised);color:#dfdccb}

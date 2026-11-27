@@ -46,9 +46,9 @@ pub(crate) fn is_cloud(session_id: &str) -> bool {
     })
 }
 
-/// The harness's argv and explicit environment, as `configure` builds them locally.
+/// The runtime's argv and explicit environment, as `configure` builds them locally.
 fn argv(configure: impl FnOnce(&mut Command)) -> (Vec<String>, Vec<(String, String)>) {
-    let mut command = Command::new("harness");
+    let mut command = Command::new("pantheon");
     configure(&mut command);
     let command = command.as_std();
     let args = command

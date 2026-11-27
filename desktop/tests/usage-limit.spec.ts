@@ -28,7 +28,7 @@ async function hitLimit(page: Page, resetsAt: number | null): Promise<void> {
     Object.assign(task, { limitedAt: Date.now(), limitedUntil: resetsAt, resumeAtReset: false, status: 'idle' });
     const emit = (event: object) => (window as any).__limitEmit('agent-event', { sessionId: 'session-1', ...event });
     emit({ kind: 'limited', text: '5-hour usage limit reached', data: { resetsAt, window: 'five_hour' } });
-    emit({ kind: 'error', text: 'Claude AI usage limit reached' });
+    emit({ kind: 'error', text: 'Pantheon usage limit reached' });
     emit({ kind: 'done', text: '' });
   }, resetsAt);
 }

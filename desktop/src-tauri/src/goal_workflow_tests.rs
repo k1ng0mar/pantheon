@@ -53,7 +53,7 @@ fn goal_snapshots_are_validated_and_only_pantheon_tasks_hold_them() {
     store
         .conn()
         .execute(
-            "UPDATE sessions SET provider='codex' WHERE id=?1",
+            "UPDATE sessions SET provider='legacy' WHERE id=?1",
             [&legacy.id],
         )
         .unwrap();

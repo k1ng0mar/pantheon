@@ -258,7 +258,7 @@ fn apply_terminal_names(catalog: &mut Catalog, terminal_names: &HashSet<String>)
             command.kind = "action".into();
             command.invocation =
                 Invocation::Action(format!("console:{}", command.name.trim_start_matches('/')));
-            command.source = "Harness console".into();
+            command.source = "Pantheon console".into();
             command.reason = None;
         }
     }
@@ -588,7 +588,7 @@ fn resolve_from_catalog(
         })?;
     match &command.invocation {
         Invocation::Native => {
-            // Kimi ACP recognizes a literal space separator, not tabs/newlines.
+            // Pantheon's ACP surface accepts a literal space separator, not tabs/newlines.
             result.prompt = format!(
                 "{name}{}",
                 if arguments.is_empty() {
@@ -702,12 +702,12 @@ mod tests {
     fn local_actions_do_not_shadow_provider_commands() {
         let mut catalog = Catalog {
             commands: vec![SlashCommand {
-                id: "kimi:help".into(),
+                id: "pantheon:help".into(),
                 name: "/help".into(),
                 description: "Native help".into(),
                 argument_hint: None,
                 kind: "prompt".into(),
-                source: "Kimi".into(),
+                source: "Pantheon".into(),
                 reason: None,
                 invocation: Invocation::Native,
             }],

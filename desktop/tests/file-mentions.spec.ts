@@ -302,7 +302,7 @@ test('worktree conversation and board editing search by task instead of reusing 
   await page.locator('#branch-chip').click();
   await page.getByRole('dialog', { name: 'Branch and worktree', exact: true }).getByRole('menuitem', { name: /New task in a worktree/ }).click();
   const dialog = page.locator('#dialog');
-  await dialog.locator('input[name="branch"]').fill('codex/mention-scope');
+  await dialog.locator('input[name="branch"]').fill('pantheon/mention-scope');
   await dialog.getByRole('button', { name: 'Create worktree task', exact: true }).click();
   await expect(dialog).toBeHidden();
   const selected = page.locator('.task-item.selected');

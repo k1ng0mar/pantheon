@@ -12,7 +12,7 @@ async function mount(page: Page, slash: string[]): Promise<void> {
     const w = window as any;
     w.__queued = [];
     mountRecipes(root, {
-      projectId: 'p', provider: 'claude',
+      projectId: 'p', provider: 'pantheon',
       call: async (command: string, args: any) => { const r = recipesCommand(command, args ?? {}); if (!r.handled) throw new Error(command); return r.result as any; },
       slashCommands: async () => slash,
       enqueue: async (text: string) => { w.__queued.push(text); },

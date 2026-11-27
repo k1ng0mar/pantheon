@@ -162,7 +162,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 29;
+pub const SCHEMA_VERSION: i64 = 30;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -296,7 +296,7 @@ impl Store {
                 migration
                     .execute_batch(
                         "ALTER TABLE sessions ADD COLUMN goal_state TEXT;
-                    ALTER TABLE sessions ADD COLUMN codex_settings TEXT;
+                    ALTER TABLE sessions ADD COLUMN agent_settings TEXT;
                     PRAGMA user_version=10;",
                     )
                     .map_err(|e| e.to_string())?;
@@ -323,10 +323,10 @@ impl Store {
             }
             if version < 16 {
                 migration.execute_batch("CREATE TABLE IF NOT EXISTS architect_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,sender TEXT NOT NULL,recipient TEXT NOT NULL,request_key TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL,UNIQUE(parent_session_id,sender,request_key)); CREATE INDEX IF NOT EXISTS architect_messages_mailbox ON architect_messages(parent_session_id,recipient,id); CREATE INDEX IF NOT EXISTS architect_messages_team ON architect_messages(parent_session_id,id); PRAGMA user_version=16;").map_err(|e|e.to_string())?;
-                // Codex saves its dynamic-tool catalog in its native context. Start a
+                // An older build saved its dynamic-tool catalog in its native context. Start a
                 // fresh context once for team tasks so existing teams receive the new
                 // role-specific coordination tools, retaining only their own history.
-                migration.execute_batch("INSERT INTO context_recovery(session_id,through_message_id) SELECT s.id,MAX(m.id) FROM sessions s JOIN messages m ON m.session_id=s.id WHERE s.provider='codex' AND s.resume_id IS NOT NULL AND (s.id IN (SELECT session_id FROM architect_teams) OR s.id IN (SELECT session_id FROM architect_workers)) GROUP BY s.id ON CONFLICT(session_id) DO UPDATE SET through_message_id=MAX(through_message_id,excluded.through_message_id); UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE provider='codex' AND (id IN (SELECT session_id FROM architect_teams) OR id IN (SELECT session_id FROM architect_workers));").map_err(|e|e.to_string())?;
+                migration.execute_batch("INSERT INTO context_recovery(session_id,through_message_id) SELECT s.id,MAX(m.id) FROM sessions s JOIN messages m ON m.session_id=s.id WHERE s.provider<>'pantheon' AND s.resume_id IS NOT NULL AND (s.id IN (SELECT session_id FROM architect_teams) OR s.id IN (SELECT session_id FROM architect_workers)) GROUP BY s.id ON CONFLICT(session_id) DO UPDATE SET through_message_id=MAX(through_message_id,excluded.through_message_id); UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL WHERE provider<>'pantheon' AND (id IN (SELECT session_id FROM architect_teams) OR id IN (SELECT session_id FROM architect_workers));").map_err(|e|e.to_string())?;
             }
             if version < 17 {
                 migration.execute_batch("CREATE TABLE IF NOT EXISTS jev_assessments(id TEXT PRIMARY KEY,session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,created_at INTEGER NOT NULL,report TEXT NOT NULL CHECK(json_valid(report))); CREATE INDEX IF NOT EXISTS jev_assessments_task ON jev_assessments(session_id,created_at DESC,id); CREATE INDEX IF NOT EXISTS jev_assessments_retention ON jev_assessments(created_at DESC,id); CREATE TABLE IF NOT EXISTS jev_project_rules(project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,rules TEXT NOT NULL CHECK(json_valid(rules))); PRAGMA user_version=17;").map_err(|e|e.to_string())?;
@@ -491,6 +491,24 @@ impl Store {
                 crate::bots::migrate_capabilities(&migration)?;
                 migration
                     .execute_batch("PRAGMA user_version=29;")
+                    .map_err(|e| e.to_string())?;
+            }
+            if version < 30 {
+                // Task settings outlived the harness they were first named for.
+                let old_column: i64 = migration
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='codex_settings'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                if old_column > 0 {
+                    migration
+                        .execute_batch("ALTER TABLE sessions RENAME COLUMN codex_settings TO agent_settings;")
+                        .map_err(|e| e.to_string())?;
+                }
+                migration
+                    .execute_batch("PRAGMA user_version=30;")
                     .map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
@@ -750,7 +768,7 @@ impl Store {
         // fetched for the selected task or directly for an agent's Start prompt.
         let mut sessions = {
             let conn = self.conn();
-            let mut stmt = conn.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
+            let mut stmt = conn.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,agent_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
             let rows = stmt
                 .query_map([], Self::session_row)
                 .map_err(|e| e.to_string())?;
@@ -761,7 +779,7 @@ impl Store {
         Ok(sessions)
     }
     pub fn session(&self, sid: &str) -> Result<Session> {
-        let mut session = self.conn().query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
+        let mut session = self.conn().query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,agent_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
         self.attach_links(std::slice::from_mut(&mut session))?;
         Ok(session)
     }
@@ -1335,8 +1353,8 @@ impl Store {
             self.project(project_id)?;
         }
         let current = self.session(sid)?;
-        // Keep the project fixed once a conversation exists, but let another
-        // harness continue it.
+        // Keep the project fixed once a conversation exists, but let the
+        // conversation continue after a provider change.
         let switching = current.provider != provider;
         let needs_handoff = switching
             && (current.resume_id.is_some()
@@ -1354,7 +1372,7 @@ impl Store {
                 "UPDATE sessions SET provider=?2,model=?3,project_id=COALESCE(?5,project_id),
                resume_id=CASE WHEN provider<>?2 THEN NULL ELSE resume_id END,
                goal_state=CASE WHEN provider<>?2 THEN NULL ELSE goal_state END,
-               codex_settings=CASE WHEN provider<>?2 THEN NULL ELSE codex_settings END,
+               agent_settings=CASE WHEN provider<>?2 THEN NULL ELSE agent_settings END,
                reasoning_effort=CASE WHEN provider<>?2 OR model<>?3 THEN NULL ELSE reasoning_effort END,
                context_used_tokens=CASE WHEN provider<>?2 OR model<>?3 THEN NULL ELSE context_used_tokens END,
                context_window=CASE WHEN provider<>?2 OR model<>?3 THEN NULL ELSE context_window END,
@@ -2216,7 +2234,7 @@ mod tests {
             .unwrap();
         store.conn().execute("WITH RECURSIVE n(value) AS (SELECT 1 UNION ALL SELECT value+1 FROM n WHERE value<501)
             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
-            SELECT 'filler-'||value,?1,'Recent task','codex','default','ask','idle',1,1 FROM n", [&task.project_id]).unwrap();
+            SELECT 'filler-'||value,?1,'Recent task','legacy','default','ask','idle',1,1 FROM n", [&task.project_id]).unwrap();
         let recent = store.sessions().unwrap();
         assert_eq!(recent.len(), 500);
         assert!(recent.iter().all(|item| item.id != task.id));
@@ -2377,7 +2395,7 @@ mod tests {
             store
                 .conn()
                 .execute_batch(
-                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive;
+                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN agent_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive;
                 ALTER TABLE sessions DROP COLUMN task_stage;
                 ALTER TABLE sessions DROP COLUMN task_description;
                 ALTER TABLE sessions DROP COLUMN completed_at;
@@ -2488,7 +2506,7 @@ mod tests {
             store
                 .conn()
                 .execute_batch(
-                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive;
+                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN agent_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive;
                 ALTER TABLE sessions DROP COLUMN task_stage;
                 ALTER TABLE sessions DROP COLUMN task_description;
                 ALTER TABLE sessions DROP COLUMN completed_at;
@@ -2613,7 +2631,7 @@ mod tests {
             .unwrap();
         store.record_context_usage(&session.id, &usage).unwrap();
         let different_provider = store
-            .configure(&session.id, "codex", "sonnet", None)
+            .configure(&session.id, "legacy", "sonnet", None)
             .unwrap();
         assert!(different_provider.reasoning_effort.is_none());
         assert!(different_provider.context_usage.is_none());
@@ -2769,7 +2787,7 @@ mod tests {
             store
                 .conn()
                 .execute_batch(
-                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN codex_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; PRAGMA user_version=5;",
+                    "ALTER TABLE sessions DROP COLUMN goal_state; ALTER TABLE sessions DROP COLUMN agent_settings; DROP TABLE subagents; DROP INDEX sessions_completed_archive; ALTER TABLE sessions DROP COLUMN task_stage; ALTER TABLE sessions DROP COLUMN task_description; ALTER TABLE sessions DROP COLUMN completed_at; ALTER TABLE sessions DROP COLUMN reasoning_effort; ALTER TABLE sessions DROP COLUMN context_used_tokens; ALTER TABLE sessions DROP COLUMN context_window; ALTER TABLE messages DROP COLUMN turn_duration_ms; PRAGMA user_version=5;",
                 )
                 .unwrap();
         }
@@ -2899,7 +2917,7 @@ mod tests {
         store
             .message(&task.id, "assistant", "First response")
             .unwrap();
-        let claude_id = store.conn().last_insert_rowid();
+        let first_id = store.conn().last_insert_rowid();
         let other = store
             .create_session(&task.project_id, "pantheon", "default", "ask")
             .unwrap();
@@ -2916,7 +2934,7 @@ mod tests {
         store
             .message(&task.id, "assistant", "Second response")
             .unwrap();
-        let codex_id = store.conn().last_insert_rowid();
+        let second_id = store.conn().last_insert_rowid();
         store
             .configure(&task.id, "pantheon", "default", None)
             .unwrap();
@@ -2926,11 +2944,11 @@ mod tests {
         let recent = serde_json::to_value(store.message_page(&task.id, None).unwrap()).unwrap();
         let recent = recent["messages"].as_array().unwrap();
         assert_eq!(
-            recent.iter().find(|m| m["id"] == codex_id).unwrap()["authorProvider"],
+            recent.iter().find(|m| m["id"] == second_id).unwrap()["authorProvider"],
             "pantheon"
         );
         assert_eq!(recent.last().unwrap()["authorProvider"], "pantheon");
-        let old = serde_json::to_value(store.message_page(&task.id, Some(claude_id + 1)).unwrap())
+        let old = serde_json::to_value(store.message_page(&task.id, Some(first_id + 1)).unwrap())
             .unwrap();
         assert_eq!(old["messages"].as_array().unwrap().len(), 1);
         assert_eq!(old["messages"][0]["authorProvider"], "pantheon");
@@ -2968,7 +2986,7 @@ mod tests {
         store
             .conn()
             .execute(
-                "UPDATE sessions SET codex_settings=?2, provider='codex' WHERE id=?1",
+                "UPDATE sessions SET agent_settings=?2, provider='legacy' WHERE id=?1",
                 params![task.id, r#"{"personality":"friendly"}"#],
             )
             .unwrap();
@@ -3339,6 +3357,46 @@ mod tests {
     }
 
     #[test]
+    fn version_30_renames_legacy_task_settings_column() {
+        let directory = std::env::temp_dir().join(format!("pantheon-column-{}", id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        {
+            let store = Store::open(&path).unwrap();
+            store
+                .conn()
+                .execute_batch(
+                    "ALTER TABLE sessions RENAME COLUMN agent_settings TO codex_settings;
+                     PRAGMA user_version=29;",
+                )
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store
+            .conn()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let old: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='codex_settings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let current: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='agent_settings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((old, current), (0, 1));
+    }
+
+    #[test]
     fn schema_version_constant_matches_the_newest_migration_step() {
         let source = include_str!("storage.rs");
         let newest = source
@@ -3370,8 +3428,8 @@ mod tests {
                 CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id TEXT NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,created_at INTEGER NOT NULL);
                 PRAGMA user_version=1;
                 INSERT INTO projects VALUES ('project','Project','/tmp');
-                INSERT INTO sessions VALUES ('answered','project','Old task','claude','sonnet','ask','idle',1000,999999,0,NULL);
-                INSERT INTO sessions VALUES ('unanswered','project','Empty task','codex','default','ask','idle',1000,999999,0,NULL);
+                INSERT INTO sessions VALUES ('answered','project','Old task','legacy','sonnet','ask','idle',1000,999999,0,NULL);
+                INSERT INTO sessions VALUES ('unanswered','project','Empty task','legacy','default','ask','idle',1000,999999,0,NULL);
                 INSERT INTO messages(session_id,role,content,created_at) VALUES
                   ('answered','assistant','Latest response',6000),
                   ('answered','assistant','Older response inserted later',5000),
@@ -3615,7 +3673,7 @@ mod tests {
 
     #[test]
     fn configure_provider_change_preserves_history_outside_current_page() {
-        let (store, session) = legacy_session("codex");
+        let (store, session) = legacy_session("legacy");
         store
             .message(&session.id, "user", "Original prompt")
             .unwrap();
@@ -3658,7 +3716,7 @@ mod tests {
 
     #[test]
     fn configure_provider_change_clears_resume_without_inventing_missing_history() {
-        let (store, session) = legacy_session("codex");
+        let (store, session) = legacy_session("legacy");
         store.resume(&session.id, "provider-session-1").unwrap();
         let updated = store
             .configure(&session.id, "pantheon", "default", None)

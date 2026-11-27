@@ -18,7 +18,7 @@ pub const COMMAND_MAX: usize = 60 * 1024;
 /// What cloud agents need to know about a provider's machines.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Info {
-    /// Files (the checkout, installed CLIs, `~/.claude`) survive stop/start. When false, a
+    /// Files (the checkout, installed CLIs, `~/.pantheon`) survive stop/start. When false, a
     /// stopped machine is recreated and rehydrated from the local mirror worktree.
     pub persistent: bool,
     /// The longest a machine keeps running without any client request, in minutes, once

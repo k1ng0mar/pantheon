@@ -11,9 +11,6 @@ const showcase = readFileSync(new URL('./showcase.js', import.meta.url), 'utf8')
 
 // Preview-only wording reads as placeholder text in a screenshot; swap in realistic copy.
 const copy: [RegExp | string, string][] = [
-  [/Sample Claude Code model metadata\./g, 'Anthropic model via Claude Code.'],
-  [/Sample Codex model metadata\./g, 'OpenAI model via Codex.'],
-  [/Sample configured Kimi model\./g, 'Moonshot model via Kimi Code.'],
   [/Sample output — no command was executed\./g, ''],
   [/\/\/ Browser preview — sample source\\n/g, ''],
   [/const output = (["'])This is the browser preview\./, 'const output = window.__showcaseReply?.shift() ?? $1This is the browser preview.'],

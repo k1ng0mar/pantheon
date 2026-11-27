@@ -170,7 +170,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("providers.json"),
-            br#"{"executablePaths":{"pantheon":"/opt/pantheon/bin/pantheon"},"opencodeModels":["a"],"mimoEndpoint":"api","claudeConnectionMode":"inherit"}"#,
+            br#"{"executablePaths":{"pantheon":"/opt/pantheon/bin/pantheon"},"legacyModels":["a"],"legacyEndpoint":"api","legacyConnectionMode":"inherit"}"#,
         )
         .unwrap();
         setup(&dir).unwrap();

@@ -21,7 +21,7 @@ body:
       label: Steps to reproduce
       placeholder: |
         1. Open a project
-        2. Start a task with Claude Code
+        2. Start a task with Pantheon
         3. ...
     validations:
       required: true
@@ -51,10 +51,10 @@ body:
     validations:
       required: true
   - type: input
-    id: harness
+    id: runtime
     attributes:
-      label: Harness and version (if relevant)
-      placeholder: Claude Code 2.x, Codex 0.x, Kimi Code 2.x, ...
+      label: Pantheon version and model (if relevant)
+      placeholder: Pantheon 1.2.x, default model
   - type: textarea
     id: logs
     attributes:

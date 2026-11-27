@@ -143,30 +143,30 @@ test('an agent team sets the lead effort apart from its workers', async ({ page 
   await settings(page).getByRole('textbox', { name: 'Team name', exact: true }).fill('Deep');
   const models = settings(page).getByRole('group', { name: 'Team models' });
   const leadEffort = settings(page).getByRole('combobox', { name: 'Lead effort', exact: true });
-  await models.getByRole('checkbox', { name: 'Include DeepSeek V4 Pro · DeepSeek', exact: true }).check();
-  await models.getByRole('radio', { name: 'DeepSeek V4 Pro · DeepSeek leads', exact: true }).check();
+  await models.getByRole('checkbox', { name: 'Include Opus 5 · Pantheon', exact: true }).check();
+  await models.getByRole('radio', { name: 'Opus 5 · Pantheon leads', exact: true }).check();
   await expect(leadEffort).toBeVisible();
-  await leadEffort.selectOption('max');
-  await models.getByRole('combobox', { name: 'Worker effort for DeepSeek V4 Pro · DeepSeek', exact: true }).selectOption('low');
+  await leadEffort.selectOption('high');
+  await models.getByRole('combobox', { name: 'Worker effort for Opus 5 · Pantheon', exact: true }).selectOption('low');
   // Models that advertise no efforts get no effort choice.
   await expect(models.locator('.agent-team-model').filter({ hasNot: page.locator('select') }).first()).toBeAttached();
   await settings(page).getByRole('button', { name: 'Save team', exact: true }).click();
   await expect(settings(page).getByRole('listitem').filter({ hasText: 'Deep' })).toBeVisible();
   const { setup } = (await calls(page, 'architect_save_profile')).at(-1).args;
-  expect(setup.architect).toMatchObject({ provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: 'max' });
-  expect(setup.config.workers).toEqual([expect.objectContaining({ model: 'deepseek-v4-pro', reasoningEffort: 'low' })]);
+  expect(setup.architect).toMatchObject({ provider: 'pantheon', model: 'anthropic/opus-5', reasoningEffort: 'high' });
+  expect(setup.config.workers).toEqual([expect.objectContaining({ model: 'anthropic/opus-5', reasoningEffort: 'low' })]);
   // Editing shows the saved efforts again.
   await settings(page).getByRole('button', { name: 'Edit Deep', exact: true }).click();
-  await expect(leadEffort).toHaveValue('max');
-  await expect(models.getByRole('combobox', { name: 'Worker effort for DeepSeek V4 Pro · DeepSeek', exact: true })).toHaveValue('low');
+  await expect(leadEffort).toHaveValue('high');
+  await expect(models.getByRole('combobox', { name: 'Worker effort for Opus 5 · Pantheon', exact: true })).toHaveValue('low');
 });
 
 test('team model names keep space beside lead and effort controls', async ({ page }) => {
   await install(page);
   await openAgents(page);
   await settings(page).getByRole('button', { name: 'New team' }).click();
-  await settings(page).getByRole('searchbox', { name: 'Filter models' }).fill('Codex');
-  const row = settings(page).locator('.agent-team-model').filter({ has: page.getByRole('checkbox', { name: 'Include GPT-6-Astra · Codex', exact: true }) });
+  await settings(page).getByRole('searchbox', { name: 'Filter models' }).fill('GPT-6.1 Sol');
+  const row = settings(page).locator('.agent-team-model').filter({ has: page.getByRole('checkbox', { name: 'Include GPT-6.1 Sol · Pantheon', exact: true }) });
   await expect(row).toBeVisible();
   const label = row.locator('label').first().locator('span');
   for (const width of [1440, 900]) {

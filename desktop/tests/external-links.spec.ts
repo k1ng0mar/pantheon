@@ -1,12 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
-test('main window opens provider and Markdown web links in the system browser', async ({ page }) => {
+test('main window opens Markdown web links in the system browser', async ({ page }) => {
   await recordWindowOpens(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
-  await page.getByRole('link', { name: /Get the official ACP server/ }).click();
-  await expect.poll(() => page.evaluate(() => (window as any).__externalUrlOpens)).toEqual(['https://antigravity.google/docs/ide/extensions']);
 
   await page.evaluate(async () => {
     const { markdown } = await import('/src/dom.ts');
@@ -17,7 +13,6 @@ test('main window opens provider and Markdown web links in the system browser', 
   });
   await page.locator('#external-markdown-probe a').click();
   await expect.poll(() => page.evaluate(() => (window as any).__externalUrlOpens)).toEqual([
-    'https://antigravity.google/docs/ide/extensions',
     'https://example.com/transcript',
   ]);
 
@@ -27,14 +22,14 @@ test('main window opens provider and Markdown web links in the system browser', 
     document.body.append(anchor);
   });
   await page.locator('#internal-link-probe').click();
-  await expect.poll(() => page.evaluate(() => (window as any).__externalUrlOpens)).toHaveLength(2);
+  await expect.poll(() => page.evaluate(() => (window as any).__externalUrlOpens)).toHaveLength(1);
 });
 
 test('launcher thread Markdown links use the system browser too', async ({ page }) => {
   await page.setViewportSize({ width: 650, height: 510 });
   await recordWindowOpens(page);
   await instrumentLauncher(page, `if (command === 'overlay_thread') return {
-    provider:'codex', status:'idle', hasOlder:false, liveText:'', messages:[
+    provider:'pantheon', status:'idle', hasOlder:false, liveText:'', messages:[
       {id:1,sessionId:args.sessionId,role:'user',content:'[Open launcher guide](https://example.com/launcher)',createdAt:1},
     ]};`);
   await page.goto('/?view=launcher');

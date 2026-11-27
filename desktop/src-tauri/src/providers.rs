@@ -1,5 +1,5 @@
-//! Direct, bounded stdio adapters. CLI credentials stay with each harness;
-//! the optional GLM Coding Plan credential is supplied by native secure storage.
+//! Direct, bounded stdio adapters for Pantheon. Credentials stay with the
+//! Pantheon runtime and its own secure storage.
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -878,7 +878,7 @@ impl Protocol {
             self.tool_order.push_back(id.clone());
         }
         let previous = self.tools.get(&id);
-        // Claude may replay its complete tool_use after the corresponding result.
+        // Pantheon may replay its complete tool_use after the corresponding result.
         if previous.is_some_and(|tool| tool.status != "running") && status == Some("running") {
             return;
         }
@@ -1673,10 +1673,10 @@ mod tests {
         }
     }
 
-    /// Audit DESKTOP-1: the desktop's harness runs outside `pantheon_exec`, so
-    /// the TUI's credential masks do not apply. Every Claude-family launch must
-    /// carry deny rules for the credential paths, in every mode, and the payload
-    /// must be valid JSON in the shape Pantheon documents.
+    /// Audit DESKTOP-1: the desktop launches Pantheon directly, so the TUI's
+    /// credential masks do not apply. Every launch must carry deny rules for
+    /// the credential paths, in every mode, and the payload must be valid JSON
+    /// in the shape Pantheon documents.
 
     #[test]
     fn screenshot_only_prompts_do_not_include_invalid_empty_text_blocks() {
@@ -1786,16 +1786,15 @@ mod tests {
     }
 
     /// Explicitly opt in: this runs two small billable/subscription requests.
-    /// PANTHEON_SMOKE_PROVIDER=codex cargo test smoke_provider_from_env -- --ignored --nocapture
+    /// PANTHEON_SMOKE_PROVIDER=pantheon cargo test smoke_provider_from_env -- --ignored --nocapture
     #[tokio::test]
     #[ignore]
     async fn smoke_provider_from_env() {
         use std::sync::Mutex;
         let provider = std::env::var("PANTHEON_SMOKE_PROVIDER")
-            .expect("Set PANTHEON_SMOKE_PROVIDER to claude, codex, kimi, muse or pantheon");
+            .expect("Set PANTHEON_SMOKE_PROVIDER to pantheon");
         let model = std::env::var("PANTHEON_SMOKE_MODEL").unwrap_or_else(|_| "default".into());
-        assert!(["pantheon", "pantheon", "pantheon", "pantheon", "pantheon"]
-            .contains(&provider.as_str()));
+        assert_eq!(provider, "pantheon");
         let root =
             std::env::temp_dir().join(format!("pantheon-provider-smoke-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();

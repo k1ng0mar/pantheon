@@ -315,16 +315,16 @@ namespace repeated tool IDs. `task_settings` persists normalized, acknowledged
 collaboration settings. None of these metadata events invents
 assistant responses.
 
-`codex_command(sessionId, request)` exposes only the typed usage, hooks,
+`command_panel(sessionId, request)` exposes only the typed usage, hooks,
 preferences, selected imports, conversation inventory, and plugin operations.
-`codex_jobs(sessionId, stopId?)` lists live background commands or stops one
+`command_jobs(sessionId, stopId?)` lists live background commands or stops one
 verified process belonging to this running task. `set_task_preference` accepts
 only Plan/Fast toggles; the selected model is resolved and Fast availability is
 checked against its current native catalog.
 
-`fork_codex_task(sessionId, remoteId?)` forks the saved conversation or
+`fork_task(sessionId, remoteId?)` forks the saved conversation or
 adopts a verified conversation in this checkout. Adoption imports bounded history
-and indicates truncation. `archive_codex_task` updates both native and local task
+and indicates truncation. `archive_task` updates both native and local task
 state. `export_task` returns at most 8 MiB of Markdown; `save_task_export` writes
 the export to a selected absolute .md/.txt path.
 

@@ -35,10 +35,8 @@ test('the providers panel offers only the agent this desktop ships', async ({ pa
   await expect(panel.locator('.connection-card')).toHaveCount(1);
   await expect(panel.locator('.connection-card h3')).toContainText('Pantheon');
   await expect(panel.getByText('Pantheon reads its model and credentials from its own runtime, so there is nothing to paste here.', { exact: true })).toBeVisible();
-  for (const provider of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'mimo', 'copilot', 'antigravity', 'grok']) {
-    await expect(panel.locator(`[data-provider="${provider}"]`)).toHaveCount(0);
-    await expect(panel.locator(`.provider-logo[data-provider="${provider}"]`)).toHaveCount(0);
-  }
+  await expect(panel.locator('.connection-card:not([data-provider="pantheon"])')).toHaveCount(0);
+  await expect(panel.locator('.provider-logo:not([data-provider="pantheon"])')).toHaveCount(0);
   await expect(panel.locator('input[type="password"]')).toHaveCount(0);
 });
 

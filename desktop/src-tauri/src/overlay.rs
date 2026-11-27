@@ -1363,7 +1363,7 @@ mod tests {
         store
             .conn()
             .execute(
-                "UPDATE sessions SET provider='codex' WHERE id=?1",
+                "UPDATE sessions SET provider='legacy' WHERE id=?1",
                 [&task.id],
             )
             .unwrap();
@@ -1713,7 +1713,7 @@ mod tests {
     fn old_preferences_use_synced_model_until_an_explicit_selection_is_saved() {
         let preferences: Preferences = serde_json::from_value(serde_json::json!({
             "enabled": true, "shortcut": DEFAULT_SHORTCUT,
-            "context": {"projectId":"project", "provider":"pantheon", "model":"kimi-latest", "mode":"plan"}
+            "context": {"projectId":"project", "provider":"pantheon", "model":"pantheon-latest", "mode":"plan"}
         })).unwrap();
         assert!(preferences.model_selection.is_none());
         assert_eq!(preferences.effective_context(), preferences.context);

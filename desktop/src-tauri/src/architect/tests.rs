@@ -749,7 +749,7 @@ fn persisted_messages_and_checkpoint_survive_restart_without_auto_resuming() {
 }
 
 #[test]
-fn catalog_refresh_skips_current_codex_and_other_harness_contexts() {
+fn catalog_refresh_skips_current_provider_and_other_agent_contexts() {
     assert_eq!(
         serde_json::to_value(new_team("fresh".into(), config())).unwrap()["toolCatalogVersion"],
         TOOL_CATALOG_VERSION
@@ -795,7 +795,7 @@ fn catalog_refresh_rolls_back_context_handoff_when_team_persistence_fails() {
     store
         .conn()
         .execute(
-            "UPDATE sessions SET provider='codex',resume_id='old-context' WHERE id=?1",
+            "UPDATE sessions SET provider='legacy',resume_id='old-context' WHERE id=?1",
             [&sid],
         )
         .unwrap();

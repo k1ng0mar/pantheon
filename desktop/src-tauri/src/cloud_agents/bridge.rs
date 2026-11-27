@@ -757,12 +757,12 @@ pub(crate) mod tests {
     fn command_scripts_quote_every_word_and_refuse_bad_names() {
         let spec = Spec {
             remote_dir: "/h/a b".into(),
-            program: "/bin/claude".into(),
+            program: "/opt/pantheon/bin/pantheon".into(),
             args: vec!["-p".into(), "it's".into()],
             env: vec![("A_1".into(), "x y".into())],
             ..Spec::default()
         };
-        assert_eq!(command_script(&spec).unwrap(), "rm -f -- \"$0\"\ncd '/h/a b' || exit 126\nexport A_1='x y'\nexec '/bin/claude' '-p' 'it'\\''s'\n");
+        assert_eq!(command_script(&spec).unwrap(), "rm -f -- \"$0\"\ncd '/h/a b' || exit 126\nexport A_1='x y'\nexec '/opt/pantheon/bin/pantheon' '-p' 'it'\\''s'\n");
         assert!(command_script(&Spec {
             env: vec![("A;B".into(), String::new())],
             ..spec.clone()

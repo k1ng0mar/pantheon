@@ -256,8 +256,7 @@ export class OverlayThreadView {
     const heading = response.querySelector('header')!;
     const author = turn.final ? historicalProvider(turn.final, messages, this.task!.provider as ProviderId) : this.task!.provider;
     if (heading.dataset.provider !== author) {
-      // A response saved by an older build keeps its own label without naming
-      // a harness this app no longer ships.
+      // A response saved by an older build keeps its own label, or a neutral one.
       heading.innerHTML = `${providerLogo(author as ProviderId)}<span>${escape(names[author] || 'Earlier agent')}</span>`;
       heading.dataset.provider = author;
     }

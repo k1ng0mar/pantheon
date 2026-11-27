@@ -24,7 +24,6 @@ button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .tray-row:hover,.tray-row:focus-visible{background:var(--tray-hover)}
 .tray-logo{display:grid;place-items:center;width:18px;height:18px;flex-shrink:0}.tray-logo .provider-logo{width:16px;height:16px}
 .provider-logo{display:block;object-fit:contain;pointer-events:none}
-html[data-theme=dark] .provider-logo[data-provider=codex]{filter:invert(1)}
 .tray-text{display:flex;flex-direction:column;min-width:0;flex:1}
 .tray-title,.tray-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tray-sub{font-size:11px;color:var(--tray-muted)}

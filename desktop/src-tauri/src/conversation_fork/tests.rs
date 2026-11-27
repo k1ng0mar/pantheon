@@ -99,32 +99,32 @@ fn edit_forks_stop_before_the_message_and_start_a_fresh_harness_session() {
 }
 
 #[test]
-fn forks_before_handoffs_keep_historical_authors_and_the_current_harness() {
-    // A conversation begun under a removed harness, then continued on Pantheon:
+fn forks_before_handoffs_keep_historical_authors_and_the_current_provider() {
+    // A conversation begun under an older build, then continued on Pantheon:
     // the fork must carry the author of each response and note the handoff.
-    let (store, source) = fixture("codex");
+    let (store, source) = fixture("legacy");
     append(&store, &source.id, "user", "Original request");
-    let boundary = append(&store, &source.id, "assistant", "Original Claude response");
+    let boundary = append(&store, &source.id, "assistant", "Original response");
     for _ in 0..110 {
         append(&store, &source.id, "tool", "Later activity");
     }
     store
         .configure(&source.id, "pantheon", "default", None)
         .unwrap();
-    append(&store, &source.id, "assistant", "Later Codex response");
+    append(&store, &source.id, "assistant", "Later response");
     let fork = at_message(&store, &source.id, boundary).unwrap();
     assert_eq!(fork.provider, "pantheon");
     let copied = all_messages(&store, &fork.id);
-    assert_eq!(copied[1].content, "Original Claude response");
+    assert_eq!(copied[1].content, "Original response");
     assert_eq!(
         serde_json::to_value(&copied[1]).unwrap()["authorProvider"],
         "pantheon"
     );
-    assert!(!copied.iter().any(|m| m.content == "Later Codex response"));
+    assert!(!copied.iter().any(|m| m.content == "Later response"));
     // The prefix keeps its own authors, so no handoff notice is needed inside it.
     assert_eq!(copied.last().unwrap().role, "assistant");
-    assert_eq!(copied.last().unwrap().content, "Original Claude response");
-    append(&store, &fork.id, "assistant", "New Codex response");
+    assert_eq!(copied.last().unwrap().content, "Original response");
+    append(&store, &fork.id, "assistant", "New response");
     assert_eq!(
         serde_json::to_value(all_messages(&store, &fork.id).last().unwrap()).unwrap()
             ["authorProvider"],
@@ -339,7 +339,7 @@ fn running_team_and_worker_forks_preserve_preferences_without_execution_state() 
         .unwrap();
     store.conn().execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'worker-1',?2)", params![source.id, child.id]).unwrap();
     store.conn().execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'native-child','{}',1)", [&source.id]).unwrap();
-    store.conn().execute("UPDATE sessions SET status='running',resume_id='source-context',reasoning_effort='high',context_used_tokens=500,context_window=1000,goal_state='{}',codex_settings=?2,task_description='FUTURE_DESCRIPTION',task_stage='completed',completed_at=1,archived=1 WHERE id=?1", params![source.id, json!({"personality":"friendly"}).to_string()]).unwrap();
+    store.conn().execute("UPDATE sessions SET status='running',resume_id='source-context',reasoning_effort='high',context_used_tokens=500,context_window=1000,goal_state='{}',agent_settings=?2,task_description='FUTURE_DESCRIPTION',task_stage='completed',completed_at=1,archived=1 WHERE id=?1", params![source.id, json!({"personality":"friendly"}).to_string()]).unwrap();
     let source_before = serde_json::to_value(store.session(&source.id).unwrap()).unwrap();
     for (source_id, boundary) in [(&source.id, first), (&child.id, child_message)] {
         let original = store.session(source_id).unwrap();

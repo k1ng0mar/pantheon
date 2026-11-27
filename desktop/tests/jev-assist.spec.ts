@@ -110,7 +110,7 @@ test('task menu uses the current task and disappears when disabled', async ({pag
 test('team entry suggests configured workers and worker review uses the worker task', async ({page}) => {
   await setup(page);
   await page.evaluate(()=>{
-    const profile={id:'fast',name:'Fast worker',provider:'codex',model:'gpt-6-astra'};
+    const profile={id:'fast',name:'Fast worker',provider:'pantheon',model:'pantheon-balanced'};
     (window as any).__assistTeam={sessionId:'session-2',config:{workers:[profile],maxParallel:1,maxRounds:4,maxAssignments:8,workspace:'shared',summaryLimit:1800},status:'ready',round:1,revision:1,updatedAt:200,workers:[{...profile,id:'worker-1',profileId:'fast',sessionId:'worker-1-session',status:'completed',assignment:'Check keyboard navigation',summary:'Checked the task',dependsOn:[],files:['src/app.ts'],attempt:1,createdAt:100,updatedAt:200}]};
   });
   await page.locator('.task-item[data-id="session-2"]').click();

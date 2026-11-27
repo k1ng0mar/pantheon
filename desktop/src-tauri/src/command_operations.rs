@@ -2,9 +2,8 @@
 //!
 //! Every panel is answered from a local, authoritative source: `pantheon stats`
 //! for token and spend history, `pantheon plugins list` for the plugin
-//! registry, and the data dir's `config.toml` for lifecycle hooks. Nothing
-//! here talks to another agent's control channel - those panels were removed
-//! with the harnesses that served them.
+//! registry, and the data dir's `config.toml` for lifecycle hooks. Every panel
+//! is answered from Pantheon itself; there is no other control channel.
 //!
 //! The native caller owns authorization: these helpers receive a workspace and
 //! never accept a path, a command or an import body from the webview.

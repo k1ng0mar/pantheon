@@ -590,7 +590,7 @@ test('keeps the reasoning bar in the theme accent at every level while dragging,
     (window as any).__colorEffortSaves = [];
     (window as any).__closeColorEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: ['Low', 'Medium', 'High', 'Max'].map(name => ({ id: name.toLowerCase(), name, description: '' })) }] }],
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: ['Low', 'Medium', 'High', 'Max'].map(name => ({ id: name.toLowerCase(), name, description: '' })) }] }],
       current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {}, onEffortSelect: async effort => { (window as any).__colorEffortSaves.push(effort); },
     });
@@ -661,7 +661,7 @@ test('keeps an identical reasoning catalog refresh from rebuilding or scrolling 
     (window as any).__stableEffortCatalog = models;
     (window as any).__closeStableEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models }],
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample', models }],
       current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {}, onEffortSelect: async () => {},
       loadModels: () => new Promise(resolve => { (window as any).__resolveStableEffortCatalog = resolve; }),
@@ -803,7 +803,7 @@ test('hides unsupported reasoning and context metadata without inventing values'
     (window as any).__unsupportedEffortSaves = [];
     (window as any).__closeUnsupportedEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [] }],
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample', models: [] }],
       current: { provider: 'pantheon', model: 'retired-model', reasoningEffort: 'retired-effort' }, canSwitchProvider: false,
       onSelect: async () => {},
       onEffortSelect: async effort => { (window as any).__unsupportedEffortSaves.push(effort); },
@@ -848,7 +848,7 @@ test('keeps keyboard focus in the model picker when refreshed metadata removes t
     const { openModelPicker } = await import('/src/model-picker.ts');
     (window as any).__closeFocusPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'legacy', name: 'Legacy model', description: '' }] }],
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample', models: [{ id: 'legacy', name: 'Legacy model', description: '' }] }],
       current: { provider: 'pantheon', model: 'default' }, canSwitchProvider: false,
       onSelect: async () => {},
       loadModels: () => new Promise(resolve => { (window as any).__resolveFocusCatalog = resolve; }),
@@ -869,7 +869,7 @@ test('restores search focus when refreshed metadata removes the focused reasonin
     const { openModelPicker } = await import('/src/model-picker.ts');
     (window as any).__closeEffortFocusPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
       current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {}, onEffortSelect: async () => {},
       loadModels: () => new Promise(resolve => { (window as any).__resolveEffortFocusCatalog = resolve; }),
@@ -889,7 +889,7 @@ test('commits a Default thumb tap and rejects an effort removed from the catalog
     (window as any).__dragEffortSaves = [];
     (window as any).__closeDragEffortPicker = openModelPicker({
       anchor: document.querySelector<HTMLElement>('#model-picker-trigger')!,
-      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/claude', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
+      providers: [{ id: 'pantheon', name: 'Pantheon', installed: true, path: '/sample/bin/pantheon', version: 'Sample', models: [{ id: 'sonnet', name: 'Pantheon Standard', description: '', defaultReasoningEffort: 'low', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }] }] }],
       current: { provider: 'pantheon', model: 'sonnet', reasoningEffort: null }, canSwitchProvider: false,
       onSelect: async () => {},
       onEffortSelect: async effort => { (window as any).__dragEffortSaves.push(effort); },
@@ -2161,7 +2161,7 @@ async function expectApprovalInBounds(page: Page): Promise<void> {
 
 test('a very long command keeps the approval bar within its width', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page);
-  const long = `codex exec --sandbox read-only "${'The user asked about this repo and wants it faster. '.repeat(12)}"`;
+  const long = `pantheon exec --sandbox read-only "${'The user asked about this repo and wants it faster. '.repeat(12)}"`;
   await emitStatusEvents(page, sessionId, [{ kind: 'approval', requestId: 'long', text: `${long}\nin the project folder` }]);
   await expect(page.locator('.approval-bar')).toBeVisible();
   await expectApprovalInBounds(page);
@@ -3067,7 +3067,7 @@ test('creates a worktree task under its original project with an icon and fresh 
   await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Full access', exact: true }).click();
   await expect.poll(() => savedPermission(page)).toBe('full');
   await prompt(page).fill('Keep this draft in the original checkout');
-  await submitWorktree(page, 'codex/worktree-task');
+  await submitWorktree(page, 'pantheon/worktree-task');
   await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in orbit?');
   const selected = page.locator('.task-item.selected');
   const taskId = await selected.getAttribute('data-id');
@@ -3101,19 +3101,19 @@ test('creates a worktree task under its original project with an icon and fresh 
 
 test('routes worktree files, Git, and terminals by task and retains each checkout terminal', async ({ page }) => {
   await observeWorktreeCommands(page, `
-    if (command === 'git_status') return { ...git, branch: session(args.sessionId).worktreePath ? 'codex/worktree-routing' : 'main' };
+    if (command === 'git_status') return { ...git, branch: session(args.sessionId).worktreePath ? 'pantheon/worktree-routing' : 'main' };
     if (command === 'read_file') return JSON.stringify({ checkout: session(args.sessionId).worktreePath ? 'worktree' : 'root' });
   `);
   await page.getByRole('button', { name: `Toggle terminal (${mod} J)`, exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
-  await submitWorktree(page, 'codex/worktree-routing');
+  await submitWorktree(page, 'pantheon/worktree-routing');
   await expect(newTaskHeading(page)).toBeVisible();
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await expect(page.locator('#terminal-drawer')).toBeHidden();
   await expect.poll(() => page.evaluate(() => (window as any).__pantheonWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
-  await expect(page.locator('#inspector-content')).toContainText('codex/worktree-routing');
+  await expect(page.locator('#inspector-content')).toContainText('pantheon/worktree-routing');
   await page.locator('[data-action="open-diff"]').first().click();
   await expect(page.locator('.diff-viewer')).toBeVisible();
   await page.getByRole('button', { name: 'Files', exact: true }).click();
@@ -3155,7 +3155,7 @@ test('clears worktree inspector actions immediately and ignores stale same-proje
       return ['diff --git a/check.txt b/check.txt', '--- a/check.txt', '+++ b/check.txt', '@@ -1 +1 @@', '-previous', '+' + checkout, ''].join('\\n');
     }
   `);
-  await submitWorktree(page, 'codex/worktree-races');
+  await submitWorktree(page, 'pantheon/worktree-races');
   await expect(newTaskHeading(page)).toBeVisible();
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
@@ -3191,7 +3191,7 @@ test('keeps delayed worktree creation with its original task without stealing na
     if (command === 'create_worktree') await new Promise(resolve => { window.__pantheonReleaseWorktree = resolve; });
   `);
   const projects = await previewProjectNames(page);
-  await submitWorktree(page, 'codex/worktree-delayed');
+  await submitWorktree(page, 'pantheon/worktree-delayed');
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pantheonReleaseWorktree)).toBe('function');
   await page.locator('#dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.locator('.task-item[data-id="session-4"]').click();
@@ -3205,7 +3205,7 @@ test('keeps delayed worktree creation with its original task without stealing na
   expect(await previewProjectNames(page)).toEqual(projects);
   expect((await previewWorktreeTasks(page))[0]).toMatchObject({ projectId: 'project-1', provider: 'pantheon', model: 'openai/gpt-6.1-sol' });
   const request = await page.evaluate(() => (window as any).__pantheonWorktreeCalls.find((call: any) => call.command === 'create_worktree'));
-  expect(request.args).toMatchObject({ sessionId: 'session-1', branch: 'codex/worktree-delayed' });
+  expect(request.args).toMatchObject({ sessionId: 'session-1', branch: 'pantheon/worktree-delayed' });
 });
 
 test('does not dismiss Settings when canceled worktree creation finishes', async ({ page }) => {
@@ -3213,7 +3213,7 @@ test('does not dismiss Settings when canceled worktree creation finishes', async
     if (command === 'create_worktree') await new Promise(resolve => { window.__pantheonReleaseWorktree = resolve; });
   `);
   await prompt(page).fill('Keep the original task draft');
-  await submitWorktree(page, 'codex/worktree-canceled');
+  await submitWorktree(page, 'pantheon/worktree-canceled');
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pantheonReleaseWorktree)).toBe('function');
   await page.locator('#dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
   const settings = await openSettings(page);
@@ -3231,7 +3231,7 @@ test('keeps the original task and projects when worktree creation fails', async 
   `);
   const projects = await previewProjectNames(page);
   await prompt(page).fill('Do not discard this draft after a Git error');
-  await submitWorktree(page, 'codex/worktree-exists');
+  await submitWorktree(page, 'pantheon/worktree-exists');
   const dialog = page.locator('#dialog');
   await expect(dialog).toBeVisible();
   await expect(page.getByText('A branch with this name already exists.', { exact: true })).toBeVisible();
@@ -3252,7 +3252,7 @@ test('keeps the worktree terminal open when the previous checkout terminal fails
       });
     }
   `);
-  await submitWorktree(page, 'codex/worktree-terminal-race');
+  await submitWorktree(page, 'pantheon/worktree-terminal-race');
   await expect(newTaskHeading(page)).toBeVisible();
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await page.locator('.task-item[data-id="session-1"]').click();

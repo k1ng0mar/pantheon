@@ -816,7 +816,7 @@ mod tests {
     #[test]
     fn an_unadvertised_model_is_refused_rather_than_silently_defaulted() {
         let mut selected = config("pantheon");
-        selected.model = "kimi-k9".into();
+        selected.model = "pantheon-k9".into();
         let mut p = Protocol::new(selected);
         p.receive(json!({"jsonrpc":"2.0","id":1,"result":capabilities()}))
             .unwrap();

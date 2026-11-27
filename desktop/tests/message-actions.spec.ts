@@ -36,7 +36,7 @@ async function install(page: Page): Promise<void> {
         messages['session-2'] = ${JSON.stringify(history)};
         id = Math.max(id, 206);
         Object.assign(session('session-2'), {
-          title: 'Message action fixture', provider: 'codex', model: 'gpt-6-astra',
+          title: 'Message action fixture', provider: 'pantheon', model: 'pantheon-balanced',
           mode: 'ask', reasoningEffort: 'high', taskStage: 'review',
           resumeId: 'source-provider-conversation', worktreePath: '/sample/worktrees/message-actions',
           goalState: { threadId: 'source-provider-conversation', objective: 'Source goal', status: 'complete',
@@ -97,12 +97,12 @@ async function selectedFork(page: Page): Promise<string> {
 
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); });
 
-test('older history and forks preserve authors when the later harness switch is outside the page', async ({page}) => {
-  const oldResponse = {id:202,sessionId,role:'assistant',content:'Saved Claude answer\n\n```cpp\n#include <iostream>\nint main() { std::cout << "Hello, world!"; }\n```',createdAt:200};
+test('older history and forks preserve authors when the later model switch is outside the page', async ({page}) => {
+  const oldResponse = {id:202,sessionId,role:'assistant',content:'Saved Pantheon answer\n\n```cpp\n#include <iostream>\nint main() { std::cout << "Hello, world!"; }\n```',createdAt:200};
   const seeded = [history[0], oldResponse,
     ...Array.from({length:110}, (_, index) => ({id:203+index,sessionId,role:'tool',content:'Completed operation',createdAt:300+index})),
-    {id:400,sessionId,role:'handoff',content:JSON.stringify({fromProvider:'claude',toProvider:'codex',summary:'Saved harness switch'}),createdAt:500},
-    {id:401,sessionId,role:'assistant',content:'Current Codex answer',createdAt:600}];
+    {id:400,sessionId,role:'handoff',content:JSON.stringify({fromProvider:'pantheon',toProvider:'pantheon',summary:'Saved model switch'}),createdAt:500},
+    {id:401,sessionId,role:'assistant',content:'Current Pantheon answer',createdAt:600}];
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(), source = await response.text();
     const marker = /async function invoke\(command, args\) \{/;
@@ -110,28 +110,27 @@ test('older history and forks preserve authors when the later harness switch is 
     await route.fulfill({response,body:source.replace(marker, `async function invoke(command, args) {
       if (!window.__authorFixture) {
         window.__authorFixture = true; messages['session-2'] = ${JSON.stringify(seeded)}; id = Math.max(id,401);
-        Object.assign(session('session-2'),{provider:'codex',resumeId:'current-native-id',status:'idle'});
+        Object.assign(session('session-2'),{provider:'pantheon',resumeId:'current-native-id',status:'idle'});
       }`)});
   });
   await page.goto('/');
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(transcript(page).locator('[data-message-id="401"] .message-meta strong')).toHaveText('Codex');
+  await expect(transcript(page).locator('[data-message-id="401"] .message-meta strong')).toHaveText('Pantheon');
   await transcript(page).evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
   await transcript(page).dispatchEvent('wheel', { deltaY: -200 });
   await expect(transcript(page).locator('[data-message-id="202"]')).toHaveCount(1);
   await revealHistory(page);
   await expect(transcript(page).locator('.provider-handoff')).toHaveCount(1);
-  await expect(transcript(page).locator('[data-message-id="202"] .message-meta strong')).toHaveText('Claude Code');
+  await expect(transcript(page).locator('[data-message-id="202"] .message-meta strong')).toHaveText('Pantheon');
   const earlierReply = transcript(page).locator('[data-message-id="202"]');
   await expect(earlierReply.locator('pre code')).toContainText('Hello, world!');
   await earlierReply.scrollIntoViewIfNeeded();
   await page.screenshot({ path: '/tmp/pantheon-history-scroll.png', animations: 'disabled' });
   await action(page,202,'fork').click();
   await selectedFork(page);
-  const saved = transcript(page).locator('.agent-message').filter({hasText:'Saved Claude answer'});
-  await expect(saved.locator('.message-meta strong')).toHaveText('Claude Code');
-  await expect(transcript(page).locator('.provider-handoff')).toHaveCount(1);
-  await expect(transcript(page)).not.toContainText('Current Codex answer');
+  const saved = transcript(page).locator('.agent-message').filter({hasText:'Saved Pantheon answer'});
+  await expect(saved.locator('.message-meta strong')).toHaveText('Pantheon');
+  await expect(transcript(page)).not.toContainText('Current Pantheon answer');
 });
 
 test.describe('conversation message actions', () => {
@@ -286,7 +285,8 @@ test.describe('conversation message actions', () => {
     const earlier = transcript(page).locator('[data-message-action="copy"][data-message-key^="commentary:"]');
     await expect(earlier).toHaveCount(1);
     await revealHistory(page);
-    await earlier.click();
+    await earlier.focus();
+    await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(() => (window as any).__clipboardWrites.at(-1))).toBe(initial);
     expect(await calls(page, 'fork_session_at_message')).toEqual([]);
   });

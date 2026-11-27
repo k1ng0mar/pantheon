@@ -96,7 +96,7 @@ test.describe('team inheritance', () => {
     await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
     await page.locator('#branch-chip').click();
     await page.getByRole('dialog', { name: 'Branch and worktree', exact: true }).getByRole('menuitem', { name: /New task in a worktree/ }).click();
-    await page.locator('#dialog').getByRole('textbox', { name: 'Branch name', exact: true }).fill('codex/team-default-test');
+    await page.locator('#dialog').getByRole('textbox', { name: 'Branch name', exact: true }).fill('pantheon/team-default-test');
     await page.locator('#dialog').getByRole('button', { name: 'Create worktree task', exact: true }).click();
     await expect(page.locator('#dialog')).toBeHidden();
     const worktreeId = (await currentId(page))!;
