@@ -482,6 +482,7 @@ function commandPanel(task: Session, request: Record<string, any>): CommandPanel
   }
 }
 function slashCatalog(provider: ProviderId) {
+  void provider;
   const local = [
     ['new', 'Start a new task in this project', 'new'],
     ['model', 'Choose a harness, model, and reasoning effort', 'model'],
@@ -494,7 +495,7 @@ function slashCatalog(provider: ProviderId) {
     ['status', 'Show task and context status', 'status'],
     ['context', 'Show context usage', 'status'],
     ['mcp', 'Show configured integrations', 'integrations'],
-    ['resume', 'Choose a conversation to continue', provider === 'pantheon' ? 'conversations' : 'resume'],
+    ['resume', 'Choose a conversation to continue', 'conversations'],
     ['rename', 'Rename this task', 'rename'],
     ['copy', 'Copy the latest agent response', 'copy'],
     ['pwd', 'Show the working directory', 'pwd'],
@@ -516,9 +517,9 @@ function slashCatalog(provider: ProviderId) {
     ['stop', 'Choose jobs to stop', 'jobs'], ['clean', 'Choose jobs to stop', 'jobs'],
   ];
   const accepts = new Set(['rename', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
-  const commands = [...local, ...(provider === 'pantheon' ? extras : [])].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
-  const native = provider === 'pantheon' ? ['review', 'compact', 'project-guide'] : provider === 'pantheon' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
-  const terminal = provider === 'pantheon' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'pantheon' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "btw", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
+  const commands = [...local, ...extras].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
+  const native = ['review', 'compact', 'project-guide'];
+  const terminal = ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {

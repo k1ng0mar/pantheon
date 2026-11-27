@@ -355,13 +355,8 @@ fn search_directories(windows: bool, env: &impl Fn(&str) -> Option<OsString>) ->
     if let Some(home) = &home {
         for dir in [
             ".local/bin",
-            ".kimi-code/bin",
-            ".kimi-code/Scripts",
-            ".opencode/bin",
-            ".kilo/bin",
             ".cargo/bin",
             ".bun/bin",
-            ".grok/bin",
             ".volta/bin",
             ".npm-global/bin",
         ] {
@@ -383,8 +378,6 @@ fn search_directories(windows: bool, env: &impl Fn(&str) -> Option<OsString>) ->
             .or_else(|| home.as_ref().map(|home| home.join("AppData/Local")))
         {
             dirs.push(local.join("Microsoft/WinGet/Links"));
-            // The standalone Node the pi.dev installer can add.
-            dirs.push(local.join("pi-node/current"));
         }
         if let Some(programs) = env("ProgramFiles").filter(|value| !value.is_empty()) {
             dirs.push(PathBuf::from(programs).join("nodejs"));
@@ -697,24 +690,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn grok_installer_directory_is_searched() {
-        let f = Fixture::new();
-        // The official Grok Build installer puts the CLI in ~/.grok/bin only.
-        let grok = executable(&f, "home/.grok/bin/pantheon-fixture-grok");
-        let home = f.0.join("home").into_os_string();
-        let env = |key: &str| (key == "HOME").then(|| home.clone());
-        assert_eq!(
-            find_in_directories(
-                "pantheon-fixture-grok",
-                search_directories(false, &env),
-                false
-            ),
-            Some(grok)
-        );
-    }
-
     #[test]
     fn windows_npm_launches_node_entry_without_a_batch_shell() {
         let f = Fixture::new();
@@ -968,8 +943,6 @@ mod tests {
         let dirs = search_directories(true, &env);
         for path in [
             "C:/Users/Person/.local/bin",
-            "C:/Users/Person/.kilo/bin",
-            "C:/Users/Person/.kimi-code/Scripts",
             "D:/Roaming Data/npm",
             "D:/Local Data/Microsoft/WinGet/Links",
             "C:/Program Files/nodejs",
