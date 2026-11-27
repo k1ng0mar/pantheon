@@ -224,7 +224,7 @@ pub fn dry_run(
     slash: &[String],
 ) -> Result<Vec<StepReport>, String> {
     if !HARNESSES.contains(&provider) {
-        return Err("Unknown harness.".into());
+        return Err("Unknown agent.".into());
     }
     validate(recipe)?;
     let has = |name: &str| {
@@ -464,7 +464,7 @@ mod tests {
         for (provider, _) in crate::providers::PROVIDERS {
             assert!(
                 HARNESSES.contains(&provider),
-                "{provider} is missing from the recipe harnesses"
+                "{provider} is missing from the recipe agents"
             );
             assert!(
                 dry_run(&r, provider, &[]).is_ok(),
@@ -484,7 +484,7 @@ mod tests {
         for provider in ["reviewer", "pantheon-old", "other"] {
             assert_eq!(
                 dry_run(&r, provider, &[]),
-                Err("Unknown harness.".to_string())
+                Err("Unknown agent.".to_string())
             );
         }
     }

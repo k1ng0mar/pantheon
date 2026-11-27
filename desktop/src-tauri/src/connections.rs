@@ -250,12 +250,12 @@ fn validated(
     existing: Option<&Connection>,
 ) -> Result<(Connection, Vec<(String, String)>)> {
     if !PROVIDERS.contains(&input.provider.as_str()) {
-        return Err("Choose an available harness.".into());
+        return Err("Choose an available agent.".into());
     }
     if let Some(existing) = existing {
         if existing.provider != input.provider {
             return Err(
-                "A connection's harness cannot change. Add a new connection instead.".into(),
+                "A connection's agent cannot change. Add a new connection instead.".into(),
             );
         }
     }

@@ -95,7 +95,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
 
   function matrixHtml(): string {
     const rows = matrix.harnesses;
-    if (!rows.length || !items.length) return '<p class="skills-empty">No installed harness found yet, or nothing in the library.</p>';
+    if (!rows.length || !items.length) return '<p class="skills-empty">No installed agent found yet, or nothing in the library.</p>';
     const columns = rows.flatMap(row => scopes().map(scope => ({ row, scope })));
     const head = columns.map(({ row, scope }) => `<th scope="col">${escape(harnessName(row.harness))}<small>${scope === 'user' ? 'User' : 'Project'}${row.prompt ? ' · prompt' : ''}</small></th>`).join('');
     const body = items.map(item => `<tr><th scope="row">${escape(item.name)}</th>${columns.map(({ row, scope }) => {
@@ -104,8 +104,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
       return `<td class="skills-status" data-status="${status}" title="${escape(cell?.surface ?? '')}">${STATUS_LABELS[status]}</td>`;
     }).join('')}</tr>`).join('');
     const unmanaged = rows.flatMap(row => row.unmanaged.map(u => `<li><strong>${escape(harnessName(row.harness))}</strong> <code>${escape(u.path)}</code> <span>${escape(u.detail)}</span></li>`)).join('');
-    const prompt = rows.some(row => row.prompt) ? '<p class="skills-note">Harnesses marked “prompt” have no skill files; Pantheon adds these items to their messages.</p>' : '';
-    return `<div class="skills-matrix-wrap"><table class="skills-matrix" aria-label="Skills by harness"><thead><tr><th scope="col">Item</th>${head}</tr></thead><tbody>${body}</tbody></table></div>${prompt}
+    return `<div class="skills-matrix-wrap"><table class="skills-matrix" aria-label="Skills by agent"><thead><tr><th scope="col">Item</th>${head}</tr></thead><tbody>${body}</tbody></table></div>
       ${unmanaged ? `<h4 class="skills-subheading">Found on disk, not managed by Pantheon</h4><ul class="skills-unmanaged">${unmanaged}</ul>` : ''}`;
   }
 
@@ -138,7 +137,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     return `<div class="settings-group">
       <form class="skills-import skills-catalog-add" aria-label="Add a skill catalog" novalidate>
         <div class="skills-import-row"><input name="catalogRepo" aria-label="Catalog repository" placeholder="owner/name" spellcheck="false" autocomplete="off"><input name="catalogRef" aria-label="Catalog branch, tag or commit" placeholder="Default branch" spellcheck="false" autocomplete="off"><button type="submit" class="secondary-button" ${busy ? 'disabled' : ''}>Scan</button></div>
-        <div class="skills-import-row skills-import-actions"><p class="skills-message">Catalogs list skills; nothing is turned on until you choose a harness.</p><button type="button" class="secondary-button" data-action="discover" ${busy ? 'disabled' : ''}>Find my skill repositories</button></div>
+        <div class="skills-import-row skills-import-actions"><p class="skills-message">Catalogs list skills; nothing is turned on until you choose where to use it.</p><button type="button" class="secondary-button" data-action="discover" ${busy ? 'disabled' : ''}>Find my skill repositories</button></div>
       </form>
     </div>${summary}
     ${shown.length ? `<ul class="settings-group skills-list" aria-label="Catalog sources">${shown.map(sourceHtml).join('')}</ul>` : '<p class="skills-empty">No catalogs yet. Scan a repository, or find the skill repositories in your GitHub account.</p>'}
@@ -165,7 +164,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     <h3 class="settings-heading">Catalogs</h3>${catalogsHtml()}
     <h3 class="settings-heading">Library</h3>
     ${items.length ? `<ul class="settings-group skills-list" aria-label="Library">${items.map(itemHtml).join('')}</ul>` : '<p class="skills-empty">The library is empty. Import a skill folder (with a SKILL.md) or a rule (one Markdown file).</p>'}
-    <h3 class="settings-heading">By harness</h3>${matrixHtml()}`;
+    <h3 class="settings-heading">By agent</h3>${matrixHtml()}`;
     for (const [name, value] of Object.entries(values)) {
       const field = host.querySelector<HTMLInputElement | HTMLSelectElement>(`form [name="${name}"]`);
       if (field && name !== 'source' && name !== 'project') field.value = value;

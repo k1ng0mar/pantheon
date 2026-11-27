@@ -301,7 +301,7 @@ fn pull(app: &tauri::AppHandle, sid: &str) -> Result<()> {
             &remote_dir,
             &state_store(app, sid)?,
         ) {
-            eprintln!("Cloud agents: could not save the harness state: {error}");
+            eprintln!("Cloud agents: could not save the agent state: {error}");
         }
         let _ = sandbox.keep_alive(&native, IDLE_MINUTES);
         Ok::<_, String>(pulled)

@@ -104,7 +104,7 @@ test.describe('bots', () => {
     await expect(page.locator('#transcript').getByRole('heading', { name: 'Chat with Scout' })).toBeVisible();
     // The task composer, model picker included; bots own their workspace, so no project bar.
     await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Message Scout…');
-    await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toBeVisible();
     await expect(page.locator('#composer-area .composer-context')).toBeHidden();
     await expect(sidebar(page).locator('.bot-row.selected')).toContainText('Scout');
     await expect(page.locator('#navigation')).not.toContainText('Scout');
@@ -200,9 +200,9 @@ test.describe('bots', () => {
 
   test('the model can be changed in a bot conversation', async ({ page }) => {
     await newBot(page);
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-    const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-    await picker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('bot-thread-model');
+    await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+    await picker.getByRole('searchbox', { name: 'Search models', exact: true }).fill('bot-thread-model');
     await picker.getByRole('button', { name: 'Use "bot-thread-model" with Pantheon', exact: true }).click();
     await expect(page.locator('#composer')).toContainText('bot-thread-model');
     // Saved on the conversation itself: it is still chosen after leaving and coming back.

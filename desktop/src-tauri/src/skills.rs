@@ -472,7 +472,7 @@ impl Library {
         acknowledge: bool,
     ) -> Result<Change, String> {
         if !adapter::known(harness) {
-            return Err("Unknown harness.".into());
+            return Err("Unknown agent.".into());
         }
         let base = self.base(scope, root)?;
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;

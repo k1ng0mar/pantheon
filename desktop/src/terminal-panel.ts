@@ -71,7 +71,7 @@ export class TerminalPanel {
     const key = this.key;
     let group = this.group();
     if (!group) { group = { tabs: [], open: true, sequence: 0 }; this.groups.set(key, group); }
-    // The native harness owns one session. Bring its existing console back instead
+    // The native agent owns one session. Bring its existing console back instead
     // of spawning a competing CLI attached to the same conversation.
     const existing = runScript ? group.tabs.find(tab => tab.context.runScript) : harness && group.tabs.find(tab => tab.context.harness?.provider === harness.provider);
     if (existing) {
@@ -93,7 +93,7 @@ export class TerminalPanel {
     const id = `terminal-tab-${crypto.randomUUID()}`;
     host.id = id; host.setAttribute('role', 'tabpanel'); host.setAttribute('aria-labelledby', `${id}-label`);
     host.textContent = 'Starting terminal…'; this.host.append(host);
-    const tab: Tab = { id, title: runScript ? 'Run' : harness ? `${harness.provider} console` : `Terminal ${++group.sequence}`, label: this.label,
+    const tab: Tab = { id, title: runScript ? 'Run' : harness ? 'Pantheon console' : `Terminal ${++group.sequence}`, label: this.label,
       context: { ...this.context, ...(harness ? { harness } : {}), ...(runScript ? { runScript: true, runRequestId: requestId } : {}) }, host, removed: false, ready: Promise.resolve() };
     group.tabs.push(tab); group.active = id; group.open = true; this.paint();
     const owner = group;

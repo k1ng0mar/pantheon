@@ -197,9 +197,9 @@ test('a direct connection is refused without a code', async ({ page }) => {
 });
 
 
-const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
+const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
 async function openPicker(page: Page) {
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
   return harnesses(page);
 }
 

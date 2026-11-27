@@ -60,7 +60,7 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; descr
   { id: 'providers', label: 'Providers', icon: 'server', description: 'The Pantheon agent, and named launch connections that reuse your own arguments and environment.' },
   { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
   { id: 'tools', label: 'Tools & add-ons', icon: 'widget', description: 'App tools, MCP servers, skills and Jev.' },
-  { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
+  { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on where you need them, and check for drift.' },
   { id: 'cloud', label: 'Cloud sandboxes', icon: 'globe', description: 'Daytona, Cloudflare and AWS machines for your agents.' },
   { id: 'remote', label: 'Remote access', icon: 'server', description: 'Reach your other computers with Pantheon Connect, end-to-end encrypted.' },
   { id: 'github', label: 'GitHub', icon: 'github', description: 'Issues, pull requests and repositories through the GitHub CLI.' },

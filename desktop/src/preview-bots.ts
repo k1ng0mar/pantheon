@@ -21,7 +21,7 @@ function validate(input: BotInput): BotInput {
   const name = String(input.name ?? '').trim().slice(0, 60);
   if (!name) throw new Error('Give the bot a name.');
   if (!MODES.includes(input.mode)) throw new Error('Choose a permission mode for the bot.');
-  if (!input.provider) throw new Error('Choose a harness and model for the bot.');
+  if (!input.provider) throw new Error('Choose an agent and model for the bot.');
   return { ...input, name, role: String(input.role ?? '').trim(), soul: String(input.soul ?? '').trim(), avatar: /^(temple:\d|data:image\/)/.test(String(input.avatar ?? '')) ? String(input.avatar) : [...String(input.avatar ?? '')].slice(0, 4).join(''), heartbeatMinutes: Number(input.heartbeatMinutes) || 0 };
 }
 function nextRun(input: Pick<Schedule, 'kind' | 'intervalMinutes' | 'timeOfDay'>, runAt: number | null): number | null {

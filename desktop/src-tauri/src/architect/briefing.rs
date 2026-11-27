@@ -63,7 +63,7 @@ mod tests {
         let first = next(None, rules, 0, true);
         assert!(
             needs_full(Some(&first), rules, false),
-            "a new harness conversation"
+            "a new conversation"
         );
         assert!(
             needs_full(Some(&first), fingerprint("changed"), true),

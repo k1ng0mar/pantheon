@@ -1857,7 +1857,7 @@ fn auto_team_rejects_ambiguous_or_unknown_models() {
     };
     assert!(bad(json!({"profileId":"second","model":"m"})).contains("not both"));
     assert!(bad(json!({"model":"m"})).contains("together"));
-    assert!(bad(json!({"provider":"other","model":"m"})).contains("Unknown harness"));
+    assert!(bad(json!({"provider":"other","model":"m"})).contains("Unknown agent"));
     assert!(bad(json!({"profileId":"missing"})).contains("Unknown worker profile"));
 }
 #[test]

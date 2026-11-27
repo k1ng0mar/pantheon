@@ -13,7 +13,7 @@ type Options = {
 type Token = { start: number; end: number; query: string };
 let pickerId = 0;
 
-/** Plain references survive draft edits and work across harnesses without loading file contents. */
+/** Plain references survive draft edits and work without loading file contents. */
 export function fileMention(path: string): string {
   return '@' + (/^[\p{L}\p{N}_./-]+$/u.test(path) ? path : JSON.stringify(path));
 }

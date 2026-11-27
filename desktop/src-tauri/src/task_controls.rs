@@ -446,7 +446,7 @@ fn verify_console_task(store: &Store, expected: &Session) -> Result<Session> {
 #[cfg(test)]
 fn ensure_console_goal_inactive(goal: Option<&GoalState>) -> Result<()> {
     if goal.is_some_and(|goal| goal.status == "active") {
-        return Err("Pause the goal before opening its harness console.".into());
+        return Err("Pause the goal before opening its console.".into());
     }
     Ok(())
 }

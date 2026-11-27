@@ -11,7 +11,7 @@ use std::{
 
 use crate::workspace::run_process;
 
-const MISSING: &str = "codedb is not installed (or not on the app's PATH), so pantheon_code_search is unavailable. Install codedb and put it on PATH, or use the harness's own file search tools instead.";
+const MISSING: &str = "codedb is not installed (or not on the app's PATH), so pantheon_code_search is unavailable. Install codedb and put it on PATH, or use Pantheon's own file search tools instead.";
 const QUERY_MAX: usize = 4096;
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);

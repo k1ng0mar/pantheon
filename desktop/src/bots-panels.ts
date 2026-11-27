@@ -155,13 +155,13 @@ function skillsPanel(detail: BotDetail, context: PanelContext): string {
   const names = [...new Set([...capabilities.mcp.map(entry => entry.name), ...bot.mcp])];
   const mcpRow = (name: string) => {
     const own = capabilities!.mcp.find(entry => entry.name === name && entry.harness === bot.provider);
-    const status = own ? `From ${own.source}` : `Unsupported for this bot's harness`;
+    const status = own ? `From ${own.source}` : `Unsupported for this bot's agent`;
     return `<li class="${own ? '' : 'off'}"><span class="bots-item-main"><b>${escape(name)}</b><small data-mcp-status>${escape(status)}</small></span><input type="checkbox" class="bots-switch" data-bot-mcp="${escape(name)}" ${bot.mcp.includes(name) ? 'checked' : ''} aria-label="Use MCP server ${escape(name)}"></li>`;
   };
-  return `<h4>Skills ${infoMark('Chosen skills are turned on only in this bot\'s workspace, or for a project task started with this bot, where they ride in its brief. Harness-wide and project settings in Skills & rules are unchanged.', 'About bot skills')}</h4>
+  return `<h4>Skills ${infoMark('Chosen skills are turned on only in this bot\'s workspace, or for a project task started with this bot, where they ride in its brief. Agent-wide and project settings in Skills & rules are unchanged.', 'About bot skills')}</h4>
     ${skills.length ? `<ul class="bots-items bots-skills">${skills.map(skillRow).join('')}</ul>` : '<p class="bots-empty-note">The skills library is empty. Import skills in Settings → Skills & rules.</p>'}
-    <h4>MCP servers ${infoMark('Servers come from each harness\'s own configuration and keep their credentials there. Pantheon passes no server definitions per run, so a server is usable only when the bot\'s harness already has it; others show as unsupported.', 'About MCP servers')}</h4>
-    ${names.length ? `<ul class="bots-items bots-mcp">${names.map(mcpRow).join('')}</ul>` : '<p class="bots-empty-note">No MCP servers are configured in your harnesses.</p>'}`;
+    <h4>MCP servers ${infoMark('Servers come from Pantheon\'s own configuration and keep their credentials there. Pantheon passes no server definitions per run, so a server is usable only when the bot\'s agent already has it; others show as unsupported.', 'About MCP servers')}</h4>
+    ${names.length ? `<ul class="bots-items bots-mcp">${names.map(mcpRow).join('')}</ul>` : '<p class="bots-empty-note">No MCP servers are configured for your agent.</p>'}`;
 }
 
 /** Saves the checked skills and MCP servers. */

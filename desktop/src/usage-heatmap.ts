@@ -31,7 +31,7 @@ function amountLabel(value: number, unit: HeatmapUnit): string {
   return `${count.format(value)} ${unit === 'prompts' && value === 1 ? 'prompt' : unit}`;
 }
 
-/** Totals per local calendar day; malformed or negative buckets from the harness are dropped. */
+/** Totals per local calendar day; malformed or negative buckets from the agent are dropped. */
 function totalsByDay(daily: readonly DailyTokens[]): Map<string, number> {
   return daily.reduce((totals, { date, tokens }) => {
     const day = localDay(String(date));

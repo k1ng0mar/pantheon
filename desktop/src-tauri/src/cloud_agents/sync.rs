@@ -261,11 +261,11 @@ pub(crate) fn save_harness_state(
     let archive = format!("{home}/.pantheon/state-{}.tgz", uuid::Uuid::new_v4());
     let parent = Path::new(&state)
         .parent()
-        .ok_or("Could not find the harness session folder.")?;
+        .ok_or("Could not find the agent session folder.")?;
     let name = Path::new(&state)
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or("Could not identify the harness session folder.")?;
+        .ok_or("Could not identify the agent session folder.")?;
     let command = format!(
         r#"set -eu
 umask 077
@@ -289,10 +289,10 @@ printf 'PANTHEON_STATE %s\n' "$size"
         return Ok(());
     }
     if output.contains("PANTHEON_TOO_LARGE") {
-        return Err("Harness state was skipped because its compressed archive exceeds the 64 MiB transfer limit.".into());
+        return Err("Agent state was skipped because its compressed archive exceeds the 64 MiB transfer limit.".into());
     }
     if !output.contains("PANTHEON_STATE") {
-        return Err("The cloud machine did not prepare the harness session archive.".into());
+        return Err("The cloud machine did not prepare the agent session archive.".into());
     }
     let local_archive = TempPath::new("state.tgz");
     download_file(sandbox, native, &archive, &local_archive.0)?;
@@ -303,11 +303,11 @@ printf 'PANTHEON_STATE %s\n' "$size"
         Duration::from_secs(30),
     );
     let bytes = fs::read(&local_archive.0)
-        .map_err(|_| "Could not read the downloaded harness state archive.")?;
+        .map_err(|_| "Could not read the downloaded agent state archive.")?;
     if bytes.len() as u64 > STATE_LIMIT {
-        return Err("Harness state was skipped because its compressed archive exceeds the 64 MiB transfer limit.".into());
+        return Err("Agent state was skipped because its compressed archive exceeds the 64 MiB transfer limit.".into());
     }
-    fs::create_dir_all(store).map_err(|_| "Could not create the local harness state folder.")?;
+    fs::create_dir_all(store).map_err(|_| "Could not create the local agent state folder.")?;
     write_atomic(&store.join(format!("{harness}.tgz")), &bytes)
 }
 /// Puts saved session files back on a recreated machine.
@@ -322,16 +322,16 @@ pub(crate) fn restore_harness_state(
     let bytes = match fs::read(&local_archive) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) => return Err("Could not read the saved harness state archive.".into()),
+        Err(_) => return Err("Could not read the saved agent state archive.".into()),
     };
     if bytes.len() as u64 > STATE_LIMIT {
-        return Err("Harness state restore was skipped because its archive exceeds the 64 MiB transfer limit.".into());
+        return Err("Agent state restore was skipped because its archive exceeds the 64 MiB transfer limit.".into());
     }
     let home = remote_home(sandbox, native)?;
     let state = state_dir(harness, remote_dir, &home)?;
     let parent = Path::new(&state)
         .parent()
-        .ok_or("Could not find the harness session folder.")?;
+        .ok_or("Could not find the agent session folder.")?;
     let remote_archive = format!("{home}/.pantheon/restore-{}.tgz", uuid::Uuid::new_v4());
     upload_file(sandbox, native, &remote_archive, &bytes, true)?;
     let command = format!(
@@ -524,7 +524,7 @@ fn is_sha(value: &str) -> bool {
 /// memory stay on the machine that produced them.
 fn state_dir(harness: &str, _remote_dir: &str, home: &str) -> Result<String> {
     if harness != "pantheon" {
-        return Err(format!("Unsupported cloud agent harness '{harness}'."));
+        return Err(format!("Unsupported cloud agent '{harness}'."));
     }
     Ok(format!("{home}/.pantheon/logs"))
 }
@@ -532,8 +532,8 @@ fn state_dir(harness: &str, _remote_dir: &str, home: &str) -> Result<String> {
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or("Could not find the local harness state folder.")?;
-    fs::create_dir_all(parent).map_err(|_| "Could not create the local harness state folder.")?;
+        .ok_or("Could not find the local agent state folder.")?;
+    fs::create_dir_all(parent).map_err(|_| "Could not create the local agent state folder.")?;
     let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -544,18 +544,18 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let mut file = options
         .open(&temp)
-        .map_err(|_| "Could not save the local harness state archive.")?;
+        .map_err(|_| "Could not save the local agent state archive.")?;
     use std::io::Write;
     file.write_all(bytes)
-        .map_err(|_| "Could not save the local harness state archive.")?;
+        .map_err(|_| "Could not save the local agent state archive.")?;
     drop(file);
     #[cfg(windows)]
     if path.exists() {
-        fs::remove_file(path).map_err(|_| "Could not replace the saved harness state archive.")?;
+        fs::remove_file(path).map_err(|_| "Could not replace the saved agent state archive.")?;
     }
     fs::rename(&temp, path).map_err(|_| {
         let _ = fs::remove_file(&temp);
-        "Could not save the local harness state archive.".to_owned()
+        "Could not save the local agent state archive.".to_owned()
     })
 }
 
@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_harness_state_round_trips() {
+    fn agent_state_round_trips() {
         let temp = TempDir::new("state");
         let (sandbox, _local, remote) = checkout(&temp.0);
         let project_name = remote

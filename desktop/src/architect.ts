@@ -168,7 +168,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   }
   const savedProfiles = mountTeamProfiles(libraryHost, { library, pendingSetup: team?.pendingSetup, read: readSetup, busy: setBusy,
     apply: setup => {
-      if (!team && task.resumeId && setup.architect.provider !== task.provider) throw new Error('Use a new task to switch the architect harness.');
+      if (!team && task.resumeId && setup.architect.provider !== task.provider) throw new Error('Use a new task to switch the architect provider.');
       picker?.(); Object.assign(config, structuredClone(setup.config)); Object.assign(architect, structuredClone(setup.architect));
       renderProfiles(); refreshModelLabels();
       for (const name of ['maxRounds', 'maxAssignments', 'summaryLimit'] as const) (form.elements.namedItem(name) as HTMLInputElement).value = String(config[name]);

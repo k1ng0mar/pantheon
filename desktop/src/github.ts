@@ -19,7 +19,7 @@ export type GithubHost = {
   notify(text: string): void;
   sessions(): Session[];
   project(id: string): Project | undefined;
-  /** Harness and model for tasks created by an import. */
+  /** Agent and model for tasks created by an import. */
   defaultHarness(): { provider: string; model: string };
   upsert(session: Session): void;
   changed(): void;
@@ -108,7 +108,7 @@ export function createGithub(host: GithubHost) {
     }));
   }
 
-  /** Resolve `#123` mentions right before sending, so every harness receives their content. */
+  /** Resolve `#123` mentions right before sending, so every agent receives their content. */
   async function contextFor(projectId: string, sessionId: string, text: string): Promise<string> {
     const numbers = referenceNumbers(text);
     if (!numbers.length || !connected(projectId)) return '';

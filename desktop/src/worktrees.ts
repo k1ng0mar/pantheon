@@ -106,7 +106,7 @@ export function createWorktrees(host: WorktreeHost) {
         if (others.length) items.push({ id: 'switch-other', label: 'Other branch…', description: busy ? 'Wait for the agent to finish.' : `${others.length} local ${others.length === 1 ? 'branch' : 'branches'}`, icon: 'branch', disabled: busy });
       }
       if (host.attachable()) items.push({ id: 'worktree-attach', label: 'Work in a new worktree…', description: 'Keeps this draft and task; isolates its changes.', icon: 'worktree' });
-      else items.push({ id: 'worktree-new', label: 'New task in a worktree…', description: 'Same harness and model, in an isolated checkout.', icon: 'worktree' });
+      else items.push({ id: 'worktree-new', label: 'New task in a worktree…', description: 'Same model and settings, in an isolated checkout.', icon: 'worktree' });
       items.push(...host.extraItems(session));
       items.push({ id: 'copy-path', label: 'Copy project path', icon: 'copy' });
     }
@@ -159,8 +159,8 @@ export function createWorktrees(host: WorktreeHost) {
     const project = host.project(), git = host.git();
     const suggested = initialBranch || suggestBranch(session, host.draft());
     const description = mode === 'attach'
-      ? `This task keeps its draft, harness, and model, and its changes stay in an isolated checkout beside ${escape(project?.name)}.`
-      : `Start a new task in an isolated checkout of ${escape(project?.name)}. It inherits this task's harness and model.`;
+      ? `This task keeps its draft, model, and settings, and its changes stay in an isolated checkout beside ${escape(project?.name)}.`
+      : `Start a new task in an isolated checkout of ${escape(project?.name)}. It inherits this task's model and settings.`;
     const dialog = host.modal(mode === 'attach' ? 'Work in a new worktree' : 'New task in a worktree', `<form id="worktree-form" data-mode="${mode}" data-session-id="${escape(session.id)}"><p class="dialog-description">${description}</p><label class="field-label" for="branch-name">Branch name</label><input id="branch-name" name="branch" value="${escape(suggested)}" placeholder="my-feature" required pattern="[A-Za-z0-9_\\/\\-]+" maxlength="120" autocomplete="off" spellcheck="false"><p class="field-help worktree-preview" id="branch-preview" data-live></p><label class="field-label" for="branch-base">Start from</label><select id="branch-base" name="base" aria-describedby="branch-base-help"><option value="">${escape(git?.branch ? `Current branch (${git.branch})` : 'Current HEAD')}</option></select><p class="field-help" id="branch-base-help">Local branches load from the ${session.worktreePath ? 'worktree' : 'project'} checkout.</p><label class="worktree-existing" hidden><input type="checkbox" name="existing"><span>Use the existing branch instead of creating one</span></label><p class="worktree-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${mode === 'attach' ? 'Use a worktree' : 'Create worktree task'}</button></div></form>`, 'compact-dialog worktree-dialog');
     const input = dialog.querySelector<HTMLInputElement>('#branch-name')!, preview = dialog.querySelector<HTMLElement>('#branch-preview')!;
     const update = () => {

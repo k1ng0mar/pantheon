@@ -14,7 +14,7 @@ function refreshTheme(): void {
 refreshTheme();
 window.addEventListener('storage', event => { if (event.key === 'pantheon.theme') refreshTheme(); });
 const host = document.querySelector<HTMLDivElement>('#app')!;
-host.innerHTML = `<main class="launcher" aria-label="Pantheon quick launcher"><header class="launcher-heading"><span>${icon('temple')}Pantheon</span><button type="button" class="launcher-close" aria-label="Close launcher"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">New task</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="What should we work on?" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="Task project"></select></label><button type="button" class="launcher-agent" aria-label="Choose harness and model" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="Start task">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>Active agents <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="Search tasks" placeholder="Find a task" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="Active agents"><p class="launcher-empty">Loading tasks…</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> start task</span><span><kbd>⇧ ↵</kbd> new line</span><span class="launcher-live">Live status</span></footer></div><section class="launcher-thread" hidden></section></main>`;
+host.innerHTML = `<main class="launcher" aria-label="Pantheon quick launcher"><header class="launcher-heading"><span>${icon('temple')}Pantheon</span><button type="button" class="launcher-close" aria-label="Close launcher"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">New task</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="What should we work on?" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="Task project"></select></label><button type="button" class="launcher-agent" aria-label="Choose model and reasoning effort" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="Start task">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>Active agents <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="Search tasks" placeholder="Find a task" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="Active agents"><p class="launcher-empty">Loading tasks…</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> start task</span><span><kbd>⇧ ↵</kbd> new line</span><span class="launcher-live">Live status</span></footer></div><section class="launcher-thread" hidden></section></main>`;
 const prompt = host.querySelector<HTMLTextAreaElement>('textarea')!;
 const project = host.querySelector<HTMLSelectElement>('select')!;
 const list = host.querySelector<HTMLDivElement>('.launcher-tasks')!;
@@ -38,13 +38,13 @@ function rememberModelNames(provider: ProviderId, models: ProviderModel[]): void
 }
 function closeModelPicker(): void {
   pickerRequest++; const close = pickerCleanup; pickerCleanup = undefined; pickerLoading = false; close?.();
-  if (feedback.textContent === 'Loading harnesses…') showFeedback('');
+  if (feedback.textContent === 'Loading models…') showFeedback('');
   render();
 }
 async function chooseModel(): Promise<void> {
   if (!snapshot || busy || modelSaving || pickerLoading) return;
   if (pickerCleanup) { closeModelPicker(); return; }
-  const request = ++pickerRequest; pickerLoading = true; showFeedback('Loading harnesses…'); render();
+  const request = ++pickerRequest; pickerLoading = true; showFeedback('Loading models…'); render();
   try {
     const {openOverlayModelPicker} = await import('./overlay-model-picker');
     if (request !== pickerRequest || !visible) return;
@@ -66,7 +66,7 @@ async function chooseModel(): Promise<void> {
       },
     });
   } catch (error) { if (request === pickerRequest) showFeedback(String(error),true); }
-  finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === 'Loading harnesses…') showFeedback(''); render(); } }
+  finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === 'Loading models…') showFeedback(''); render(); } }
 }
 
 let threadView: OverlayThreadView | undefined, threadLoading: Promise<OverlayThreadView> | undefined;

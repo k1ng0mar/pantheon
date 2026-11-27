@@ -54,8 +54,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const panel = document.createElement('section');
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" aria-label="Search providers and models" placeholder="Search providers and models…" autocomplete="off" spellcheck="false" maxlength="200"></div>${canSwitchProvider ? '' : '<p class="model-menu-note">Start a new task to switch providers.</p>'}<div class="model-menu-list"></div><div class="model-menu-settings" hidden></div><p class="model-menu-catalog-error" role="status" hidden></p><p class="model-menu-error" role="alert" hidden></p><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.setAttribute('aria-label', 'Model and reasoning effort');
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" aria-label="Search models" placeholder="Search models…" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-list"></div><div class="model-menu-settings" hidden></div><p class="model-menu-catalog-error" role="status" hidden></p><p class="model-menu-error" role="alert" hidden></p><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
   const settings = panel.querySelector<HTMLElement>('.model-menu-settings')!;
@@ -158,7 +158,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const canSetEffort = Boolean(onEffortSelect && (efforts.length || current.reasoningEffort));
     settings.hidden = !canSetEffort;
     const defaultEffort = efforts.find(effort => effort.id === model.defaultReasoningEffort);
-    const defaultDescription = `Use the harness's saved settings.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}`;
+    const defaultDescription = `Use the saved settings.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}`;
     const markup = `${canSetEffort ? `<div class="effort-control">${efforts.length ? `<div class="effort-track"><span class="effort-track-background" aria-hidden="true"><span class="effort-fill"><span class="effort-particles">${particles}</span></span></span><input type="range" class="effort-range" aria-label="Reasoning effort" min="0" max="${efforts.length - 1}" step="1"></div>` : ''}<span class="effort-label"></span></div>` : ''}`;
     const key = JSON.stringify([markup, efforts]);
     if (key !== settingsKey) {
@@ -451,7 +451,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     void options.loadProviders().then(found => {
       if (closed) return;
       providers = found.map(provider => ({ ...provider, models: [...provider.models] }));
-      providersStatus = providers.length ? '' : 'No harnesses on this computer';
+      providersStatus = providers.length ? '' : 'Pantheon is not available on this computer';
       loadCatalogs();
     }).catch(failure => {
       if (closed) return;

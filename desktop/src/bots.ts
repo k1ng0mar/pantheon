@@ -239,7 +239,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       </div>
       ${heading('Agent')}
       <div class="bs-group">
-        ${row('Harness', '', `<select name="provider" aria-label="Harness">${providers.map(item => `<option value="${item.id}" ${item.id === provider?.id ? 'selected' : ''} ${!item.installed && hasInstalledProvider ? 'disabled' : ''}>${escape(item.name)}${!item.installed ? ' · Not installed' : ''}</option>`).join('')}</select>`)}
+        ${row('Runtime', '', `<select name="provider" aria-label="Runtime">${providers.map(item => `<option value="${item.id}" ${item.id === provider?.id ? 'selected' : ''} ${!item.installed && hasInstalledProvider ? 'disabled' : ''}>${escape(item.name)}${!item.installed ? ' · Not installed' : ''}</option>`).join('')}</select>`)}
         ${row('Model', '', `<select name="model" aria-label="Model" data-preferred-model="${escape(model)}">${provider ? modelOptions(provider.id, models, provider.id === 'pantheon' && model !== 'default' && !models.some(item => item.id === model) ? 'default' : model) : `<option value="default">Default</option>`}</select>`)}
         ${row('Permissions', '', `<select name="mode" aria-label="Permissions">${visibleModes.map(item => `<option value="${item.id}" ${item.id === mode ? 'selected' : ''}>${item.label}</option>`).join('')}</select>`)}
       </div>

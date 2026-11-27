@@ -163,7 +163,7 @@ Removed from the surface: `/memory` (`/remember` covers it), `/policy`,
 
 - Slash commands: first-class palette with fuzzy search, autocomplete on args
   (`/model cla` → model list). `/models` = full browser, `/model` = quick switcher.
-- Session tabs: opencode-style bar across the top, `[ 1 title ● │ 2 other ]`.
+- Session tabs: a bar across the top, `[ 1 title ● │ 2 other ]`.
   Ctrl+Tab cycles, Alt+1-9 jumps (checked before the Char handler; Alt+1
   arrives as Char('1')+ALT). The active tab is bold cyan, inactive tabs dim,
   and a yellow ● marks sessions with a running turn, the "background

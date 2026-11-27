@@ -119,8 +119,8 @@ test('wallpapers change at noon without replacing the composer, draft, or open d
   await expect(scene(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
   const prompt = page.getByRole('textbox', { name: 'Message your coding agent' });
   await prompt.fill('Keep my draft through the wallpaper transition');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   await expect(menu).toBeVisible();
   await page.evaluate(() => { (window as any).__wallpaperControls = [document.querySelector('#prompt'), document.querySelector('.model-menu')]; });
   await page.clock.runFor(1100);

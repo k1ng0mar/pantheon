@@ -32,7 +32,7 @@ interface TerminalPreferences {
 }
 
 export async function mountTerminal(container: HTMLElement, context: TerminalContext, reportError: (error: unknown) => void): Promise<TerminalController> {
-  if (context.harness && !context.sessionId) throw new Error('Select a task before opening its harness console.');
+  if (context.harness && !context.sessionId) throw new Error('Select a task before opening its console.');
   let command = context.harness?.command;
   let commandRevision = 0;
   const validateCommand = (value?: string) => {
@@ -52,14 +52,14 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     const hint = document.createElement('span');
     hint.textContent = context.harness.provider === 'pantheon'
       ? 'Uses Pantheon’s saved permissions. Review them in the console before pressing Enter.'
-      : command ? 'When the console is ready, insert the command and press Enter.' : 'Native harness console. Type a command to continue.';
+      : command ? 'When the console is ready, insert the command and press Enter.' : 'Pantheon console. Type a command to continue.';
     hint.style.cssText = 'color:var(--muted);font-size:.78rem;flex:1';
     controls.append(hint);
     insertButton = document.createElement('button');
     insertButton.type = 'button'; insertButton.className = 'secondary-button';
     insertButton.hidden = !command;
     insertButton.textContent = command ? `Insert ${command.split(/\s/, 1)[0]}` : '';
-    insertButton.setAttribute('aria-label', `Insert ${command ?? ''} in the harness console`);
+    insertButton.setAttribute('aria-label', `Insert ${command ?? ''} in the console`);
     insertButton.disabled = true;
     controls.append(insertButton);
     frame.prepend(controls);
@@ -128,7 +128,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     if (!insertButton || !value) return;
     ++commandRevision; command = value; inserted = false; insertButton.hidden = false;
     insertButton.textContent = `Insert ${value.split(/\s/, 1)[0]}`;
-    insertButton.setAttribute('aria-label', `Insert ${value} in the harness console`);
+    insertButton.setAttribute('aria-label', `Insert ${value} in the console`);
     insertButton.disabled = exited || disposed || !hasOutput;
   }, activity: () => exited || disposed ? Promise.resolve({ running: false, processNames: [], uncertain: false }) : call<TerminalActivity>('get_terminal_activity', { terminalId }), dispose: async () => {
     if (disposed) return; disposed = true;

@@ -408,10 +408,10 @@ test.describe('browser workspace', () => {
     });
     await openBrowser(page);
     await navigate(page, 'localhost:3000');
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true })).toBeVisible();
     const guest = await browserPanel(page).locator('.browser-viewport').boundingBox();
-    await page.getByRole('dialog', { name: 'Harness and model', exact: true }).evaluate((menu, guest) => {
+    await page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true }).evaluate((menu, guest) => {
       menu.style.left = `${guest!.x + 12}px`; menu.style.top = `${guest!.y + 12}px`;
     }, guest);
     await expect.poll(async () => (await commandCalls(page, 'browser_bounds')).at(-1)?.args.visible).toBe(false);

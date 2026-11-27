@@ -1399,7 +1399,7 @@ impl Store {
             crate::context_recovery::queue_on(&tx, sid)?;
             let notice = serde_json::json!({
                 "fromProvider": current.provider, "toProvider": provider,
-                "summary": "Switched harness. The next message includes up to 200 recent conversation entries (64 KiB). Files and project stay in place. Older text may be shortened; private reasoning, native tool state, and image contents are not transferred. Reattach images if needed."
+                "summary": "Switched models. The next message includes up to 200 recent conversation entries (64 KiB). Files and project stay in place. Older text may be shortened; private reasoning, native tool state, and image contents are not transferred. Reattach images if needed."
             });
             tx.execute(
                 "INSERT INTO messages(session_id,role,content,created_at) VALUES (?1,'handoff',?2,?3)",

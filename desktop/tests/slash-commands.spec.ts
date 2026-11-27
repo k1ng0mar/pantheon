@@ -310,9 +310,9 @@ test.describe('slash commands app integration', () => {
     await expect(menu(page).getByRole('option')).toContainText('/skill:project-guide');
     await page.locator('.new-task-button').click();
     await expect(prompt).toBeEnabled();
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+    await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
     await page.locator('.model-menu').getByRole('button', { name: 'Codex · GPT-6-Astra', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toContainText('GPT-6-Astra');
+    await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toContainText('GPT-6-Astra');
     await prompt.fill('/review');
     await expect(menu(page).getByRole('option')).toContainText('codex');
     const catalogs = (await appCalls(page, 'list_slash_commands')).filter(entry => !entry.args.cachedOnly);

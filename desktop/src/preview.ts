@@ -121,7 +121,7 @@ function previewSaveConnection(input: { id?: string | null; provider: ProviderId
   previewConnections = { ...previewConnections, connections };
   return previewConnections;
 }
-// Representative catalog fixtures only; the native app queries installed harnesses.
+// Representative catalog fixtures only; the native app queries installed agents.
 /** Another computer's smaller catalog (Pantheon Connect). */
 const remoteProviders = (): Provider[] => providers.map(p => ({ ...p, models: remoteCatalog(p.id) }));
 function remoteCatalog(id: ProviderId): ProviderModel[] {
@@ -485,12 +485,12 @@ function slashCatalog(provider: ProviderId) {
   void provider;
   const local = [
     ['new', 'Start a new task in this project', 'new'],
-    ['model', 'Choose a harness, model, and reasoning effort', 'model'],
+    ['model', 'Choose a model and reasoning effort', 'model'],
     ['permissions', 'Choose this task’s approval behavior', 'permissions'],
     ['settings', 'Open Pantheon settings', 'settings'],
     ['theme', 'Switch appearance', 'theme'],
     ['help', 'Browse available slash commands', 'help'],
-    ['skills', 'Browse harness skills', 'skills'],
+    ['skills', 'Browse agent skills', 'skills'],
     ['diff', 'Show changes in this checkout', 'diff'],
     ['status', 'Show task and context status', 'status'],
     ['context', 'Show context usage', 'status'],
@@ -499,7 +499,7 @@ function slashCatalog(provider: ProviderId) {
     ['rename', 'Rename this task', 'rename'],
     ['copy', 'Copy the latest agent response', 'copy'],
     ['pwd', 'Show the working directory', 'pwd'],
-    ['console', 'Open the harness console', 'console'],
+    ['console', 'Open the console', 'console'],
   ];
   const extras = [
     ['goal', 'Manage the task goal and token budget', 'goal'], ['usage', 'Inspect token and spend history', 'usage'],
@@ -520,13 +520,13 @@ function slashCatalog(provider: ProviderId) {
   const commands = [...local, ...extras].map(([name, description, action]) => ({ id: `pantheon:${name}`, name: `/${name}`, description, kind: 'action', source: 'Pantheon', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
   const native = ['review', 'compact', 'project-guide'];
   const terminal = ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'];
-  return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
+  return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {
   const match = /^\/([\p{L}\p{N}_:.-]+|\?)(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (!match) return { action: null, arguments: '' };
   const command = slashCatalog(provider).commands.find(command => command.name === `/${match[1]}`);
-  if (!command) throw new Error(`Unknown command /${match[1]}. Type / to browse this harness’s commands, or refresh the list.`);
+  if (!command) throw new Error(`Unknown command /${match[1]}. Type / to browse this agent’s commands, or refresh the list.`);
   if (command.action && match[2] && !command.argumentHint) throw new Error(`${command.name} opens a Pantheon control and does not accept arguments.`);
   return { action: command.action ?? null, arguments: match[2] ?? '' };
 }
@@ -732,7 +732,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         }
         return { id: ++id, sessionId: created.id, role: message.role, content, createdAt: message.createdAt, coordinationKind: message.coordinationKind };
       });
-      if (boundaryProvider !== source.provider) copied.push({ id: ++id, sessionId: created.id, role: 'handoff', content: JSON.stringify({ fromProvider: boundaryProvider, toProvider: source.provider, summary: 'Forked conversation. Earlier responses keep their original harness. The next message carries the saved conversation into the currently selected harness.' }), createdAt: Date.now() });
+      if (boundaryProvider !== source.provider) copied.push({ id: ++id, sessionId: created.id, role: 'handoff', content: JSON.stringify({ fromProvider: boundaryProvider, toProvider: source.provider, summary: 'Forked conversation. Earlier responses keep their original model. The next message carries the saved conversation into the currently selected model.' }), createdAt: Date.now() });
       created.taskDescription = copied.find(message => message.role === 'user')?.content ?? '';
       sessions.unshift(created); messages[created.id] = copied; result = created; break;
     }
@@ -897,7 +897,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'create_board_task': {
       const details = taskDetails(args.title, args.description);
       if (!projects.some(p => p.id === args.projectId)) throw new Error('Project not found.');
-      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid agent or model.');
       if (!['ask', 'auto', 'plan', 'full'].includes(args.mode)) throw new Error('Unknown permission mode.');
       const s = await invoke<Session>('create_session', { projectId: args.projectId, provider: args.provider, model: args.model, mode: args.mode });
       Object.assign(session(s.id), details);
@@ -937,17 +937,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'configure_session': {
       const s = session(args.sessionId);
-      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid agent or model.');
       const projectId = args.projectId ?? s.projectId;
       if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
       if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');
-      if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing its project, harness, or model.');
+      if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing its project or model.');
       const team = architect.get(s.id);
       if (team && (team.round > 0 || team.workers.length) && (args.provider !== s.provider || args.model !== s.model)) throw new Error('This run keeps its architect model. Start a new task to change it.');
-      if (projectId !== s.projectId && (s.resumeId !== null || messages[s.id]?.length)) throw new Error('Start a new task to change its project or harness after a conversation has started.');
+      if (projectId !== s.projectId && (s.resumeId !== null || messages[s.id]?.length)) throw new Error('Start a new task to change its project or model after a conversation has started.');
       if (args.provider !== s.provider || (args.model || 'default') !== (s.model || 'default')) { s.reasoningEffort = null; s.contextUsage = null; }
       if (args.provider !== s.provider) {
-        if (s.resumeId || messages[s.id]?.some(message => ['user', 'assistant', 'coordination'].includes(message.role))) (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'handoff', content: JSON.stringify({ fromProvider: s.provider, toProvider: args.provider, summary: 'Switched harness. The next message includes up to 200 recent conversation entries (64 KiB). Files and project stay in place. Older text may be shortened; private reasoning, native tool state, and image contents are not transferred. Reattach images if needed.' }), createdAt: Date.now() });
+        if (s.resumeId || messages[s.id]?.some(message => ['user', 'assistant', 'coordination'].includes(message.role))) (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'handoff', content: JSON.stringify({ fromProvider: s.provider, toProvider: args.provider, summary: 'Switched models. The next message includes up to 200 recent conversation entries (64 KiB). Files and project stay in place. Older text may be shortened; private reasoning, native tool state, and image contents are not transferred. Reattach images if needed.' }), createdAt: Date.now() });
         s.resumeId = null; s.goalState = null;
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;

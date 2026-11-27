@@ -37,7 +37,7 @@ export function createPreviewArchitect(host: PreviewHost) {
     return Number(value);
   }
   function validateSelection(selection: ModelSelection): ModelSelection {
-    if (!selection || !['pantheon'].includes(selection.provider) || typeof selection.model !== 'string' || selection.model.length > 200) throw new Error('Choose a valid architect harness and model.');
+    if (!selection || !['pantheon'].includes(selection.provider) || typeof selection.model !== 'string' || selection.model.length > 200) throw new Error('Choose a valid architect provider and model.');
     const models = host.models(selection.provider);
     const model = selection.model ? models.find(model => model.id === selection.model) : models[0];
     if (selection.reasoningEffort != null && (typeof selection.reasoningEffort !== 'string' || selection.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === selection.reasoningEffort))) throw new Error('This architect model does not support that reasoning effort.');
@@ -63,7 +63,7 @@ export function createPreviewArchitect(host: PreviewHost) {
       if (!profile || typeof profile.id !== 'string' || !profile.id.trim() || profile.id.length > 100 || ids.has(profile.id)) throw new Error('Worker profile IDs must be unique.');
       ids.add(profile.id);
       if (typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 80) throw new Error('Worker names must be 1–80 characters.');
-      if (!['pantheon'].includes(profile.provider) || typeof profile.model !== 'string' || profile.model.length > 200) throw new Error('Choose a valid worker harness and model.');
+      if (!['pantheon'].includes(profile.provider) || typeof profile.model !== 'string' || profile.model.length > 200) throw new Error('Choose a valid worker provider and model.');
       const models = host.models(profile.provider);
       const model = profile.model ? models.find(model => model.id === profile.model) : models[0];
       if (profile.reasoningEffort != null && (typeof profile.reasoningEffort !== 'string' || profile.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === profile.reasoningEffort))) throw new Error('This worker model does not support that reasoning effort.');
@@ -184,7 +184,7 @@ export function createPreviewArchitect(host: PreviewHost) {
       if (!profile) throw new Error('Team profile not found.');
       if (JSON.stringify(profile.setup) !== JSON.stringify(checked)) throw new Error('This setup does not match the saved team profile.');
     }
-    if (!existing && parent.resumeId && parent.provider !== checked.architect.provider) throw new Error('A started task keeps its harness. Create a new task to change it.');
+    if (!existing && parent.resumeId && parent.provider !== checked.architect.provider) throw new Error('A started task keeps its provider. Create a new task to change it.');
     if (existing && checked.config.maxAssignments < existing.snapshot.workers.length) throw new Error('Assignment limit cannot be below the existing assignment count.');
     if (existing && checked.config.maxRounds < existing.snapshot.round) throw new Error('Architect round limit cannot be below the current round.');
     // Validation completes before either task or remembered default changes.

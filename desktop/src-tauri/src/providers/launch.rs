@@ -124,7 +124,7 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     ]
     .contains(&host.as_str())
     {
-        return Err("The npm harness executable must not be a shell.".into());
+        return Err("The npm package executable must not be a shell.".into());
     }
     if script
         .extension()
@@ -138,7 +138,7 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     let adjacent_node = directory.join("node.exe");
     let node = adjacent_node.is_file().then_some(adjacent_node)
         .or_else(|| find_native_node(search_directories(true, &|key| std::env::var_os(key))))
-        .ok_or("Node.js is required by this npm-installed harness. Install Node.js or use the native harness installer.")?;
+        .ok_or("Node.js is required by this npm-installed agent. Install Node.js or use the native installer.")?;
     Ok(Launch {
         program: external_path_for(&node, windows),
         args: vec![external_path_for(&script, windows).into_os_string()],
@@ -197,20 +197,20 @@ fn declares_bin(package: &Path, name: &str) -> bool {
 /// The executable a package declares in `package.json` `bin`, kept inside the package.
 fn declared_entry(package: &Path, name: &str) -> Result<PathBuf, String> {
     let file = std::fs::File::open(package.join("package.json"))
-        .map_err(|_| "Could not read the npm harness package metadata.")?;
+        .map_err(|_| "Could not read the npm package metadata.")?;
     let mut bytes = Vec::new();
     file.take(64 * 1024 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read the npm harness package metadata.")?;
+        .map_err(|_| "Could not read the npm package metadata.")?;
     if bytes.len() > 64 * 1024 {
-        return Err("The npm harness metadata is too large.".into());
+        return Err("The npm package metadata is too large.".into());
     }
     let metadata: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| "The npm harness package metadata is invalid.")?;
+        .map_err(|_| "The npm package metadata is invalid.")?;
     let bin = metadata["bin"]
         .as_str()
         .or_else(|| metadata["bin"][name].as_str())
-        .ok_or("The npm harness package has no matching executable entry.")?
+        .ok_or("The npm package has no matching executable entry.")?
         .replace('\\', "/");
     if bin.is_empty()
         || bin.chars().any(char::is_control)
@@ -218,14 +218,14 @@ fn declared_entry(package: &Path, name: &str) -> Result<PathBuf, String> {
             .components()
             .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
     {
-        return Err("The npm harness executable must stay inside its package.".into());
+        return Err("The npm package executable must stay inside its package.".into());
     }
     let script = package
         .join(bin)
         .canonicalize()
-        .map_err(|_| "The npm harness executable could not be found.")?;
+        .map_err(|_| "The npm package executable could not be found.")?;
     if !script.starts_with(package) || !script.is_file() {
-        return Err("The npm harness executable must stay inside its package.".into());
+        return Err("The npm package executable must stay inside its package.".into());
     }
     Ok(script)
 }

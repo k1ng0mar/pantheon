@@ -183,8 +183,8 @@ test.describe('concurrency isolation', () => {
       }
       await selectTask(page, 5, view);
       await prompt(page).fill('An unrelated task draft survives four completions.');
-      await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-      const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+      await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+      const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
       await menu.getByRole('searchbox').fill('sol');
       await page.evaluate(() => {
         (window as any).__reloadCountBeforeDone = (window as any).__concurrent.calls.filter((call: any) => call.command === 'list_sessions').length;

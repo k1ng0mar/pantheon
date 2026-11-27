@@ -120,8 +120,8 @@ async function saveDefaultTeam(page: Page): Promise<void> {
 
 async function chooseModel(page: Page, button: string, provider: string, model: string): Promise<void> {
   await setup(page).getByRole('button', { name: button, exact: true }).click();
-  await page.getByRole('dialog', { name: 'Harness and model', exact: true }).getByRole('button', { name: `${provider} · ${model}`, exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).toBeHidden();
+  await page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true }).getByRole('button', { name: `${provider} · ${model}`, exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true })).toBeHidden();
   await expect(setup(page)).toBeVisible();
   await expect(setup(page).getByRole('button', { name: button, exact: true })).toContainText(model);
 }
@@ -354,7 +354,7 @@ test.describe('architect teams', () => {
 
   test('turns on an automatic team led by the selected model and explains it in a tooltip', async ({ page }) => {
     await installArchitect(page);
-    const picker = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+    const picker = page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
     const lead = (await picker.textContent())!;
     await trigger(page).hover();
     const tip = page.getByRole('tooltip');
@@ -374,7 +374,7 @@ test.describe('architect teams', () => {
     await expect(page.locator('#toast')).toBeHidden();
     // The model picker keeps choosing the lead's own model, not a team setup.
     await picker.click();
-    await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true })).toBeVisible();
     await expect(setup(page)).toHaveCount(0);
   });
 

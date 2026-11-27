@@ -99,7 +99,7 @@ fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Res
             // final author while letting the fork continue with the chosen harness.
             let notice = serde_json::json!({
                 "fromProvider": boundary_provider, "toProvider": source.provider,
-                "summary": "Forked conversation. Earlier responses keep their original harness. The next message carries the saved conversation into the currently selected harness."
+                "summary": "Forked conversation. Earlier responses keep their original model. The next message carries the saved conversation into the currently selected model."
             });
             transaction
                 .execute(

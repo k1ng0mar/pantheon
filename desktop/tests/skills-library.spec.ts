@@ -19,23 +19,23 @@ async function open(page: Page): Promise<void> {
   await expect(page.getByRole('list', { name: 'Library' })).toBeVisible();
 }
 const item = (page: Page, name: string) => page.getByRole('list', { name: 'Library' }).locator('.skills-item', { hasText: name });
-const status = (page: Page, row: string, column: number) => page.getByRole('table', { name: 'Skills by harness' }).getByRole('row', { name: new RegExp(row) }).locator('td').nth(column);
+const status = (page: Page, row: string, column: number) => page.getByRole('table', { name: 'Skills by agent' }).getByRole('row', { name: new RegExp(row) }).locator('td').nth(column);
 
-test('activating a skill for Claude Code and Codex shows in the matrix, and drift is reported', async ({ page }) => {
+test('activating a skill for Pantheon shows in the matrix, and drift is reported', async ({ page }) => {
   await open(page);
-  await page.getByRole('checkbox', { name: 'Release notes: Claude Code · User' }).check();
-  await expect(page.getByRole('status')).toHaveText('Active for Claude Code.');
-  await page.getByRole('checkbox', { name: 'Release notes: Codex · User' }).check();
+  await page.getByRole('checkbox', { name: 'Release notes: Pantheon · User' }).check();
+  await expect(page.getByRole('status')).toHaveText('Active for Pantheon.');
   await expect(status(page, 'Release notes', 0)).toHaveText('Active');
-  await expect(status(page, 'Release notes', 1)).toHaveText('Active');
-  await expect(page.locator('.skills-unmanaged')).toContainText('~/.claude/skills/pdf-tools');
+  await expect(page.locator('.skills-unmanaged')).toContainText('~/.pantheon/skills/pdf-tools');
 
-  await page.evaluate(() => (window as any).__skills.edit('release-notes', 'claude', 'user'));
+  await page.evaluate(() => (window as any).__skills.edit('release-notes', 'pantheon', 'user'));
   await page.getByRole('combobox', { name: 'Project for project scope' }).selectOption('orbit');
   await expect(status(page, 'Release notes', 0)).toHaveText('Edited on disk');
-  await page.getByRole('checkbox', { name: 'Release notes: Claude Code · User' }).uncheck();
+  await page.getByRole('checkbox', { name: 'Release notes: Pantheon · User' }).uncheck();
   await expect(page.getByRole('status')).toContainText('Left 1 edited file in place');
   await expect(page.getByRole('button', { name: 'Remove Release notes' })).toBeEnabled();
+  await page.getByRole('checkbox', { name: 'Release notes: Pantheon · Project' }).check();
+  await expect(status(page, 'Release notes', 1)).toHaveText('Active');
   await page.getByRole('button', { name: 'Remove Release notes' }).click();
   await expect(page.getByRole('alert').filter({ hasText: 'Turn Release notes off everywhere' })).toBeVisible();
 });
@@ -43,18 +43,18 @@ test('activating a skill for Claude Code and Codex shows in the matrix, and drif
 test('project-scope rules and safety findings need acknowledgement before activation', async ({ page }) => {
   await open(page);
   await page.getByRole('combobox', { name: 'Project for project scope' }).selectOption('orbit');
-  await page.getByRole('checkbox', { name: 'No force push: Codex · Project' }).check();
-  await expect(page.getByRole('status')).toHaveText('Active for Codex.');
+  await page.getByRole('checkbox', { name: 'No force push: Pantheon · Project' }).check();
+  await expect(page.getByRole('status')).toHaveText('Active for Pantheon.');
 
   await page.getByRole('textbox', { name: 'Folder or file path' }).fill('/Users/you/skills/setup');
   await page.getByRole('button', { name: 'Import' }).click();
   await expect(page.getByRole('status')).toHaveText('Imported setup. 1 safety finding to review.');
   await expect(page.getByRole('list', { name: 'Safety findings for setup' })).toContainText('Download piped into a shell');
-  const toggle = page.getByRole('checkbox', { name: 'setup: Claude Code · User' });
+  const toggle = page.getByRole('checkbox', { name: 'setup: Pantheon · User' });
   await toggle.click();
   await expect(toggle).not.toBeChecked();
   await item(page, 'setup').getByRole('button', { name: 'Activate anyway' }).click();
-  await expect(page.getByRole('checkbox', { name: 'setup: Claude Code · User' })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'setup: Pantheon · User' })).toBeChecked();
 });
 
 test('GitHub import validates the repository and records the commit', async ({ page }) => {
@@ -89,7 +89,7 @@ test('discovery registers only skill repositories, shows name conflicts, and imp
   await page.getByRole('button', { name: 'Import selected from you/agent-skills' }).click();
   await expect(page.getByRole('status')).toHaveText('Imported 1 skill. Nothing is active until you turn it on.');
   await expect(item(page, 'Changelog')).toContainText('GitHub · you/agent-skills/skills/changelog @ 5e6f7a8');
-  await expect(page.getByRole('checkbox', { name: 'Changelog: Claude Code · User' })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Changelog: Pantheon · User' })).not.toBeChecked();
   await expect(source.locator('.skills-catalog-skill', { hasText: 'Changelog' })).toContainText('In the library');
 
   await page.getByRole('button', { name: 'Import all from you/agent-skills' }).click();

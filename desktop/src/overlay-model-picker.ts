@@ -38,7 +38,7 @@ export async function openOverlayModelPicker(options: {
   const available = await providers();
   if (!options.valid()) return;
   available.forEach(provider => options.catalog(provider.id,provider.models));
-  if (!available.length) throw new Error('No harnesses found. Check your agent connections in Pantheon.');
+  if (!available.length) throw new Error('Pantheon is not available. Check your connection in Settings.');
   return openModelPicker({
     recent: () => null,
     anchor:options.anchor, providers:available, current:{...options.current,provider:options.current.provider as ProviderId},

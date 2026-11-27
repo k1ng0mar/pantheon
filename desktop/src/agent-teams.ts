@@ -63,7 +63,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     } catch (cause) { if (!disposed) showError(cause); }
   }
 
-  /** Installed harnesses' models, plus any saved entry no catalog reports any more. */
+  /** Installed agents' models, plus any saved entry no catalog reports any more. */
   async function loadCatalog(): Promise<TeamModel[]> {
     const installed = options.providers.filter(provider => provider.installed);
     const loaded = await Promise.allSettled(installed.map(provider => options.loadModels(provider.id)));

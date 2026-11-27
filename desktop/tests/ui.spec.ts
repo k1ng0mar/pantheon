@@ -91,8 +91,8 @@ const draftTaskId = async (page: Page): Promise<string> => {
 };
 /** The open task's project: the composer names a draft's project; listed tasks show it on their row. */
 const openTaskProject = (page: Page) => page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true }).or(page.locator('.task-item.selected .task-project'));
-const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Choose harness and model', exact: true });
-const modelPicker = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
+const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
+const modelPicker = (page: Page) => page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
 const reasoningSlider = (page: Page) => modelPicker(page).getByRole('slider', { name: 'Reasoning effort', exact: true });
 const reasoningLabel = (page: Page) => modelPicker(page).locator('.effort-label');
 const savedEffort = (page: Page, sessionId?: string) => page.evaluate(async sessionId => {
@@ -195,7 +195,7 @@ test('identifies sample data and renders the desktop workspace without runtime e
   await expect(page.getByText('Browser preview · sample data', { exact: true })).toBeVisible();
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await expect(page.locator('#task-heading')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Projects and tasks' })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
@@ -402,9 +402,9 @@ test('defaults to dark mode and remembers explicit light and dark preferences af
   expect((await appearanceSurfaces(page)).mainContrast).toBeGreaterThanOrEqual(4.5);
   await expect(page.locator('.provider-logo[data-provider="pantheon"]').first()).toBeVisible();
   await expect(page.locator('img.provider-logo[data-provider="pantheon"]').first()).toHaveAttribute('src', /pantheon/);
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await expect(menu.getByRole('searchbox', { name: 'Search providers and models', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  await expect(menu.getByRole('searchbox', { name: 'Search models', exact: true })).toBeFocused();
   await page.screenshot({ path: '/tmp/pantheon-dark-models.png', animations: 'disabled' });
   await page.keyboard.press('Escape');
   await toggle.focus();
@@ -445,10 +445,10 @@ test('uses dark mode for missing or invalid preferences without writing a prefer
 test('loads full model names, searches names or IDs, and saves the harness invocation ID', async ({ page }) => {
   await prompt(page).fill('Keep the draft while loading model names');
   await page.evaluate(() => { (window as any).__catalogPrompt = document.querySelector('#prompt'); });
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
   await trigger.click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  const search = picker.getByRole('searchbox', { name: 'Search providers and models', exact: true });
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  const search = picker.getByRole('searchbox', { name: 'Search models', exact: true });
   await expect(picker.getByRole('button', { name: 'Pantheon · GPT-6.1 Sol', exact: true })).toHaveAttribute('data-model', 'openai/gpt-6.1-sol');
   await expect(trigger).toHaveText('GPT-6.1 Sol');
   expect(await page.evaluate(() => (window as any).__catalogPrompt === document.querySelector('#prompt'))).toBe(true);
@@ -827,9 +827,9 @@ test('retries unavailable model metadata and keeps custom model IDs usable', asy
     await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match} if (!window.__catalogAvailable) throw new Error('Model service unavailable');`)) });
   });
   await page.reload();
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
   await trigger.click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   await expect(picker.locator('.model-menu-catalog-error')).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Pantheon · openai/gpt-6.1-sol', exact: true })).toBeVisible();
@@ -854,7 +854,7 @@ test('keeps keyboard focus in the model picker when refreshed metadata removes t
       loadModels: () => new Promise(resolve => { (window as any).__resolveFocusCatalog = resolve; }),
     });
   });
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   const legacy = picker.getByRole('button', { name: 'Pantheon · Legacy model', exact: true });
   await legacy.focus();
   await expect(legacy).toBeFocused();
@@ -941,8 +941,8 @@ for (const outcome of ['resolve', 'reject'] as const) {
       await route.fulfill({ response, body: previewBody(source) });
     });
     await page.reload();
-    const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
-    const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+    const trigger = page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
+    const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
     const requestCount = () => page.evaluate(() => (window as any).__catalogRace.requests.length);
     await trigger.click();
     await expect.poll(requestCount).toBe(1);
@@ -1142,9 +1142,9 @@ test('finds and selects projects beyond the first hundred filter options', async
 });
 
 test('menus open and close instantly and stay usable', async ({ page }) => {
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  const search = menu.getByRole('searchbox', { name: 'Search providers and models', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  const search = menu.getByRole('searchbox', { name: 'Search models', exact: true });
   await expect(menu).toHaveAttribute('data-popover-state', 'open');
   expect(await menu.evaluate(element => element.getAnimations().length)).toBe(0);
   await expect(search).toBeFocused();
@@ -1158,12 +1158,12 @@ test('menus open and close instantly and stay usable', async ({ page }) => {
 });
 
 test('rapidly reopens menus without leaving interactive or retained closing panels', async ({ page }) => {
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
-  const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
+  const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   for (let i = 0; i < 5; i++) {
     await trigger.click();
     await expect(menu).toHaveCount(1);
-    await expect(menu.getByRole('searchbox', { name: 'Search providers and models', exact: true })).toBeFocused();
+    await expect(menu.getByRole('searchbox', { name: 'Search models', exact: true })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
     await expect(trigger).toBeFocused();
@@ -1186,6 +1186,7 @@ test('rapidly reopens menus without leaving interactive or retained closing pane
 });
 
 test('changes permissions and opens task actions with anchored keyboard menus', async ({ page }) => {
+  await expect(page.locator('.agent-message h3', { hasText: 'What changed' })).toHaveCount(1);
   const history = await page.locator('.user-message,.agent-message').allTextContents();
   await prompt(page).fill('Preserve this draft through menu actions');
   await page.getByRole('button', { name: 'Standard', exact: true }).click();
@@ -1286,7 +1287,7 @@ test('starts new tasks with Full access and preserves deliberate permissions acr
     await trigger.click();
     await menu.getByRole('menuitemradio', { name: selection.label, exact: true }).click();
     await modelTrigger(page).click();
-    await modelPicker(page).getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('approval-preserved-model');
+    await modelPicker(page).getByRole('searchbox', { name: 'Search models', exact: true }).fill('approval-preserved-model');
     // The first pass offers the typed id as a custom entry; afterwards it is the
     // current model and the picker lists it under the agent's name.
     await modelPicker(page).getByRole('button', { name: /^(?:Use "approval-preserved-model" with Pantheon|Pantheon · approval-preserved-model)$/ }).click();
@@ -1453,9 +1454,9 @@ test('keeps preview, unsupported platforms, and unavailable native materials opa
 
 test('coalesces appearance preferences without restoring stale glass or losing the draft and open menu', async ({ page }) => {
   await prompt(page).fill('Keep my draft as the system appearance changes');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  const search = menu.getByRole('searchbox', { name: 'Search providers and models', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  const search = menu.getByRole('searchbox', { name: 'Search models', exact: true });
   await search.fill('opus');
   await page.evaluate(async () => {
     const { initializeNativeAppearance } = await import('/src/appearance.ts');
@@ -2360,12 +2361,12 @@ test('renaming and changing a model do not make an old response active', async (
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog).not.toBeVisible();
   await expect(taskRow(page, 'session-4', 'inactive').locator('.task-title')).toHaveText('Renamed older conversation');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await picker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('review-old-response');
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  await picker.getByRole('searchbox', { name: 'Search models', exact: true }).fill('review-old-response');
   await picker.getByRole('button', { name: 'Use "review-old-response" with Pantheon', exact: true }).click();
   await expect(picker).not.toBeVisible();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-old-response');
+  await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toHaveText('review-old-response');
   await expect(taskRow(page, 'session-4', 'inactive')).toBeVisible();
   await expect(activeRows(page).locator('.task-title')).toHaveText(['Make search feel instant']);
 });
@@ -2456,8 +2457,8 @@ test('renders provider logos in task rows, composer, picker, and settings', asyn
   for (const provider of ['pantheon', 'pantheon', 'pantheon']) {
     await expect(page.locator(`#navigation .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
   }
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   for (const provider of ['pantheon', 'pantheon', 'pantheon', 'pantheon']) {
     await expect(picker.locator(`.provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
     await expect(picker.locator(`.model-menu-option .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
@@ -2531,8 +2532,8 @@ test('opens a new conversation in the active project without listing it', async 
   expect(mainBounds.y + mainBounds.height - composerBounds.y - composerBounds.height).toBeLessThan(90);
   await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(2);
   await page.screenshot({ path: '/tmp/pantheon-new-task.png' });
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
   await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeVisible();
@@ -2553,9 +2554,9 @@ test('changes the empty task project while keeping its draft, harness, model, an
   await expect(newTaskHeading(page)).toBeVisible();
   const sessionId = await draftTaskId(page);
   await prompt(page).fill('Keep this plan while I choose the right repository');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const modelPicker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await modelPicker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('project-switch-model');
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const modelPicker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  await modelPicker.getByRole('searchbox', { name: 'Search models', exact: true }).fill('project-switch-model');
   await modelPicker.getByRole('button', { name: 'Use "project-switch-model" with Pantheon', exact: true }).click();
   await expect.poll(() => savedSelection(page)).toEqual({ provider: 'pantheon', model: 'project-switch-model' });
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
@@ -2748,7 +2749,7 @@ for (const delayedCommand of ['add_project', 'list_projects']) {
 }
 
 for (const config of [
-  { module: 'model-picker', trigger: 'Choose harness and model', dialog: 'Harness and model' },
+  { module: 'model-picker', trigger: 'Choose model and reasoning effort', dialog: 'Model and reasoning effort' },
   { module: 'project-picker', trigger: 'Change task project', dialog: 'Choose project' },
   { module: 'choice-menu', trigger: 'Filter projects', dialog: 'Filter projects' },
 ]) {
@@ -2815,10 +2816,10 @@ test('chooses a harness and custom model inline without losing the draft, stream
   await page.locator('.new-task-button').click();
   await expect(newTaskHeading(page)).toBeVisible();
   await prompt(page).fill('Check the streaming cancellation path');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   await expect(picker).toBeVisible();
-  await picker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('custom-test-model');
+  await picker.getByRole('searchbox', { name: 'Search models', exact: true }).fill('custom-test-model');
   await picker.getByRole('button', { name: 'Use "custom-test-model" with Pantheon', exact: true }).click();
   await expect(picker).not.toBeVisible();
   await expect(page.locator('#composer .provider-logo[data-provider="pantheon"]')).toBeVisible();
@@ -2863,15 +2864,16 @@ test('opens a project by path and preserves the selected task when canceled', as
 });
 
 test('retains a completed conversation and model when switching fixture tasks', async ({ page }) => {
+  await expect(page.locator('.agent-message h3', { hasText: 'What changed' })).toHaveCount(1);
   const history = await page.locator('.user-message,.agent-message').allTextContents();
   await prompt(page).fill('Remember this completed preview message');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await picker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).fill('review-model');
-  await picker.getByRole('searchbox', { name: 'Search providers and models', exact: true }).press('Enter');
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+  await picker.getByRole('searchbox', { name: 'Search models', exact: true }).fill('review-model');
+  await picker.getByRole('searchbox', { name: 'Search models', exact: true }).press('Enter');
   await expect(picker).not.toBeVisible();
   await expect(prompt(page)).toBeFocused();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-model');
+  await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toHaveText('review-model');
   await expect(prompt(page)).toHaveValue('Remember this completed preview message');
   await expect(page.locator('.user-message,.agent-message')).toHaveText(history);
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -2883,7 +2885,7 @@ test('retains a completed conversation and model when switching fixture tasks', 
   await expect(newTaskHeading(page)).toBeVisible();
   await expect(page.locator('.user-message')).toHaveCount(0);
   await page.locator('.task-item').filter({ hasText: 'Make search feel instant' }).click();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-model');
+  await expect(page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true })).toHaveText('review-model');
   await expect(page.locator('.user-message').last()).toContainText('Remember this completed preview message');
   await expect(page.locator('.agent-message').last()).toContainText('no model turn or shell is running here');
 });
@@ -2902,8 +2904,8 @@ test('switches model after the first message while preserving conversation and d
   await expect(openTaskProject(page)).toHaveText('orbit');
   await expect(page.locator('#navigation .task-item.selected[data-activity="active"]')).toBeVisible();
   await prompt(page).fill('A follow-up draft');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   await expect(picker.getByText('Start a new task to switch providers.', { exact: true })).toHaveCount(0);
   await expect(picker.getByRole('button', { name: 'Pantheon · Default', exact: true })).toBeEnabled();
   await picker.getByRole('button', { name: 'Pantheon · Default', exact: true }).click();

@@ -60,7 +60,7 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
   if (command === 'list_providers') return structuredClone(previewProviders) as T;
   if (command === 'list_provider_models') return structuredClone(previewCatalogs[String(args.provider)] || []) as T;
   if (command === 'overlay_select_model') {
-    if (!previewProviders.some(provider => provider.id === args.provider) || typeof args.model !== 'string' || !args.model.trim() || args.model.length > 256) throw new Error('Invalid harness or model.');
+    if (!previewProviders.some(provider => provider.id === args.provider) || typeof args.model !== 'string' || !args.model.trim() || args.model.length > 256) throw new Error('Invalid agent or model.');
     previewPreferences.modelSelection = {provider:String(args.provider),model:args.model,reasoningEffort:args.reasoningEffort as string | null ?? null};
     save(); return effectiveContext() as T;
   }

@@ -19,7 +19,7 @@ pub(crate) fn ensure_runtime(
 ) -> Result<String> {
     if !HARNESSES.contains(&harness) {
         return Err(format!(
-            "Unsupported cloud agent harness '{harness}'. Supported harnesses: {}.",
+            "Unsupported cloud agent '{harness}'. Supported agents: {}.",
             HARNESSES.join(", ")
         ));
     }

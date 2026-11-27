@@ -24,10 +24,10 @@ export function contextSummary(usage?: ContextUsage | null, capacity?: number | 
   if (usage) {
     const used = tokenCount(usage.usedTokens);
     return window
-      ? { label: `${used} / ${tokenCount(window)} context`, detail: `${usage.usedTokens.toLocaleString()} of ${window.toLocaleString()} context tokens (${Math.round(usage.usedTokens / window * 100)}%). Last reported by the harness.` }
-      : { label: `${used} tokens in context`, detail: `${usage.usedTokens.toLocaleString()} context tokens. Last reported by the harness; total capacity is unavailable.` };
+      ? { label: `${used} / ${tokenCount(window)} context`, detail: `${usage.usedTokens.toLocaleString()} of ${window.toLocaleString()} context tokens (${Math.round(usage.usedTokens / window * 100)}%). Last reported by Pantheon.` }
+      : { label: `${used} tokens in context`, detail: `${usage.usedTokens.toLocaleString()} context tokens. Last reported by Pantheon; total capacity is unavailable.` };
   }
-  return window ? { label: `${tokenCount(window)} context`, detail: `${window.toLocaleString()} token context window reported by the harness.` } : null;
+  return window ? { label: `${tokenCount(window)} context`, detail: `${window.toLocaleString()} token context window reported by Pantheon.` } : null;
 }
 
 export function parseContextUsage(value: unknown): ContextUsage | null {

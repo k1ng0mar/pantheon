@@ -5,8 +5,8 @@ import { expect, test, type Page } from '@playwright/test';
 const errors = new WeakMap<Page, string[]>();
 const calls = (page: Page, command: string): Promise<any[]> => page.evaluate(command => (window as any).__agentTeams.calls.filter((entry: any) => entry.command === command), command);
 const settings = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
-const picker = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
-const modelButton = (page: Page) => page.getByRole('button', { name: 'Choose harness and model', exact: true });
+const picker = (page: Page) => page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
+const modelButton = (page: Page) => page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
 
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); });
 

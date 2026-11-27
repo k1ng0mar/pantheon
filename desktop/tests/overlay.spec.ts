@@ -63,17 +63,17 @@ test('overlay copies live Markdown and forks a saved message without opening the
 
 test('launcher offers harness and model selection without opening the workspace', async ({page}) => {
   await page.goto('/?view=launcher');
-  await page.getByRole('button', {name:'Choose harness and model'}).click();
-  await expect(page.getByRole('dialog', {name:'Harness and model'})).toBeVisible();
-  await expect(page.getByRole('searchbox', {name:'Search providers and models'})).toBeFocused();
+  await page.getByRole('button', {name:'Choose model and reasoning effort'}).click();
+  await expect(page.getByRole('dialog', {name:'Model and reasoning effort'})).toBeVisible();
+  await expect(page.getByRole('searchbox', {name:'Search models'})).toBeFocused();
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden', 'true');
   expect(page.url()).toContain('view=launcher');
 });
 
 test('launcher model trigger toggles the picker without reopening it', async ({page}) => {
   await page.goto('/?view=launcher');
-  const trigger = page.getByRole('button',{name:'Choose harness and model'});
-  const picker = page.getByRole('dialog',{name:'Harness and model'});
+  const trigger = page.getByRole('button',{name:'Choose model and reasoning effort'});
+  const picker = page.getByRole('dialog',{name:'Model and reasoning effort'});
   await trigger.click();
   await expect(picker).toBeVisible();
   await trigger.click();
@@ -84,7 +84,7 @@ test('launcher model trigger toggles the picker without reopening it', async ({p
   await trigger.click();
   await expect(picker).toBeVisible();
   await expect(picker).toHaveCount(1);
-  await page.getByRole('searchbox',{name:'Search providers and models'}).press('Shift+Tab');
+  await page.getByRole('searchbox',{name:'Search models'}).press('Shift+Tab');
   await expect(picker).toHaveCount(0);
   await expect(page.locator('html')).not.toHaveAttribute('data-overlay-hidden','true');
 });
@@ -99,7 +99,7 @@ test('launcher shows saved team models beside its architect and preserves the co
       activeCount:4, teamWorkerCount:count};
   }`);
   await page.goto('/?view=launcher');
-  const trigger = page.getByRole('button',{name:'Choose harness and model'});
+  const trigger = page.getByRole('button',{name:'Choose model and reasoning effort'});
   const suffix = trigger.locator('.launcher-team-models');
   await expect(trigger.locator('.launcher-model-name')).toContainText('deep');
   await expect(suffix).toHaveText('+2 models');
@@ -239,13 +239,13 @@ test('launcher discovers full model names on demand and launches the chosen mode
   await page.goto('/?view=launcher');
   await expect(page.locator('.launcher-task')).toHaveCount(4);
   expect(await page.evaluate(() => (window as any).__overlayCalls.filter((call:any) => call.command === 'list_provider_models'))).toHaveLength(0);
-  await page.getByRole('button',{name:'Choose harness and model'}).click();
+  await page.getByRole('button',{name:'Choose model and reasoning effort'}).click();
   const standard = page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true});
   await expect(standard).toBeVisible();
   await expect(standard.locator('.provider-logo')).toHaveCount(1);
-  await page.getByRole('searchbox',{name:'Search providers and models'}).fill('Pantheon Standard');
+  await page.getByRole('searchbox',{name:'Search models'}).fill('Pantheon Standard');
   await standard.click();
-  await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
+  await expect(page.getByRole('dialog',{name:'Model and reasoning effort'})).toHaveCount(0);
   await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
   await expect(page.locator('.launcher-agent .provider-logo')).toHaveCount(1);
   await page.getByRole('textbox',{name:'New task'}).fill('Use the selected Pantheon model');
@@ -259,7 +259,7 @@ test('launcher discovers full model names on demand and launches the chosen mode
 test('launcher keeps its chosen model and model through main-window context sync and reload', async ({page}) => {
   await instrumentLauncher(page);
   await page.goto('/?view=launcher');
-  await page.getByRole('button',{name:'Choose harness and model'}).click();
+  await page.getByRole('button',{name:'Choose model and reasoning effort'}).click();
   await page.getByRole('button',{name:'Pantheon · Pantheon Deep',exact:true}).click();
   await expect(page.locator('.launcher-agent')).toContainText('Pantheon Deep');
   await page.evaluate(async () => {
@@ -267,7 +267,7 @@ test('launcher keeps its chosen model and model through main-window context sync
     await overlayCall('overlay_sync_context',{context:{projectId:'preview-project',provider:'pantheon',model:'fast',mode:'ask',reasoningEffort:'high'}});
   });
   await page.reload();
-  await page.getByRole('button',{name:'Choose harness and model'}).click();
+  await page.getByRole('button',{name:'Choose model and reasoning effort'}).click();
   await expect(page.getByRole('button',{name:'Pantheon · Pantheon Deep',exact:true})).toHaveAttribute('aria-current','true');
   await page.keyboard.press('Escape');
   await page.getByRole('textbox',{name:'New task'}).fill('Continue with the saved model');
@@ -279,11 +279,11 @@ test('launcher blocks starting a task while a model change is saving', async ({p
   await instrumentLauncher(page, `if (command === 'overlay_select_model') await new Promise(resolve => {window.__releaseModelSave=resolve;});`);
   await page.goto('/?view=launcher');
   await page.getByRole('textbox',{name:'New task'}).fill('Launch with the new harness');
-  await page.getByRole('button',{name:'Choose harness and model'}).click();
+  await page.getByRole('button',{name:'Choose model and reasoning effort'}).click();
   await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseModelSave)).toBe('function');
   await expect(page.getByRole('button',{name:'Start task',exact:true})).toBeDisabled();
-  await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveAttribute('aria-busy','true');
+  await expect(page.getByRole('dialog',{name:'Model and reasoning effort'})).toHaveAttribute('aria-busy','true');
   await page.locator('.launcher-compose').dispatchEvent('submit');
   expect(await page.evaluate(() => (window as any).__overlayCalls.some((call:any) => call.command === 'overlay_launch'))).toBe(false);
   await page.evaluate(() => (window as any).__releaseModelSave());
@@ -296,7 +296,7 @@ test('launcher blocks starting a task while a model change is saving', async ({p
 test('launcher retains its old model after a failed selection and allows retry', async ({page}) => {
   await instrumentLauncher(page, `if (command === 'overlay_select_model' && !window.__allowModelSave) throw new Error('Could not save the selected model.');`);
   await page.goto('/?view=launcher');
-  const trigger = page.getByRole('button',{name:'Choose harness and model'});
+  const trigger = page.getByRole('button',{name:'Choose model and reasoning effort'});
   const original = await trigger.textContent();
   await trigger.click();
   await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
@@ -306,18 +306,18 @@ test('launcher retains its old model after a failed selection and allows retry',
   await page.evaluate(() => { (window as any).__allowModelSave = true; });
   await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
   await expect(trigger).toContainText('Pantheon Standard');
-  await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
+  await expect(page.getByRole('dialog',{name:'Model and reasoning effort'})).toHaveCount(0);
 });
 
 test('launcher ignores late model discovery after a newer selection', async ({page}) => {
   await instrumentLauncher(page, `if (command === 'list_provider_models' && args.provider === 'pantheon') await new Promise(resolve => {window.__releaseCatalog=resolve;});`);
   await page.goto('/?view=launcher');
-  await page.getByRole('button',{name:'Choose harness and model'}).click();
+  await page.getByRole('button',{name:'Choose model and reasoning effort'}).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseCatalog)).toBe('function');
   await page.getByRole('button',{name:'Pantheon · Pantheon Fast',exact:true}).click();
   await expect(page.locator('.launcher-agent')).toContainText('Pantheon Fast');
   await page.evaluate(() => (window as any).__releaseCatalog());
-  await expect(page.getByRole('dialog',{name:'Harness and model'})).toHaveCount(0);
+  await expect(page.getByRole('dialog',{name:'Model and reasoning effort'})).toHaveCount(0);
   await expect(page.locator('.launcher-agent')).toContainText('Pantheon Fast');
   await page.getByRole('textbox',{name:'New task'}).fill('Use the latest selection');
   await page.getByRole('button',{name:'Start task',exact:true}).click();
@@ -341,7 +341,7 @@ test('launcher keeps a saved model when an older status snapshot arrives late', 
   });
   await page.clock.runFor(1600);
   await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseSnapshot)).toBe('function');
-  await page.getByRole('button',{name:'Choose harness and model'}).click();
+  await page.getByRole('button',{name:'Choose model and reasoning effort'}).click();
   await page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true}).click();
   await expect(page.locator('.launcher-agent')).toContainText('Pantheon Standard');
   await page.evaluate(() => (window as any).__releaseSnapshot());
@@ -355,9 +355,9 @@ test('launcher keeps a saved model when an older status snapshot arrives late', 
 test('launcher model picker fits the minimum window and Escape only closes the picker', async ({page}) => {
   await page.setViewportSize({width:490,height:410});
   await page.goto('/?view=launcher');
-  const trigger = page.getByRole('button',{name:'Choose harness and model'});
+  const trigger = page.getByRole('button',{name:'Choose model and reasoning effort'});
   await trigger.click();
-  const picker = page.getByRole('dialog',{name:'Harness and model'});
+  const picker = page.getByRole('dialog',{name:'Model and reasoning effort'});
   await expect(page.getByRole('button',{name:'Pantheon · Pantheon Standard',exact:true})).toBeAttached();
   const rect = await picker.boundingBox();
   expect(rect).not.toBeNull();
@@ -365,7 +365,7 @@ test('launcher model picker fits the minimum window and Escape only closes the p
   expect(rect!.y).toBeGreaterThanOrEqual(0);
   expect(rect!.x + rect!.width).toBeLessThanOrEqual(490);
   expect(rect!.y + rect!.height).toBeLessThanOrEqual(410);
-  await page.getByRole('searchbox',{name:'Search providers and models'}).fill('Pantheon Deep');
+  await page.getByRole('searchbox',{name:'Search models'}).fill('Pantheon Deep');
   const deep = page.locator('.model-menu-option[data-provider="pantheon"][data-model="deep"]');
   await expect(deep).toBeInViewport();
   await expect(deep.locator('.provider-logo')).toHaveCount(1);

@@ -251,7 +251,7 @@ export class Subagents {
     if (this.fileContext) bindFileLinkContext(output, this.fileContext(this.sessionId));
     streamMarkdown(output, selected.response, panel.querySelector<HTMLElement>('.subagents-body')!);
     detail.querySelector<HTMLElement>('.subagent-response-actions')!.hidden = !selected.response;
-    setText('.subagent-empty', selected.response ? '' : active(selected) ? 'Waiting for the first update…' : 'This harness did not provide a response for this agent.');
+    setText('.subagent-empty', selected.response ? '' : active(selected) ? 'Waiting for the first update…' : 'This agent did not provide a response.');
     const serializedTools = JSON.stringify(selected.tools);
     if (this.renderedTools !== serializedTools) {
       const target = detail.querySelector('.subagent-tools')!;

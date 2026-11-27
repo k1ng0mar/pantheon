@@ -219,8 +219,8 @@ test('layout preferences offer text size controls in Settings without replacing 
 test('layout preferences leave an open model menu and its search focus stable when text grows', async ({ page }) => {
   await open(page);
   await prompt(page).fill('Do not lose this draft.');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   const search = menu.locator('.model-menu-search input');
   await search.fill('Claude');
   const menuNode = await menu.elementHandle();

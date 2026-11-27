@@ -165,7 +165,7 @@ export function createPreviewSkills() {
     activate(id: unknown, harness: unknown, scope: unknown, projectId: unknown, acknowledge: unknown) {
       const entry = find(id);
       const h = String(harness), s = scope as SkillScope;
-      if (!FILES.includes(h) && !PROMPT.has(h)) throw new Error('Unknown harness.');
+      if (!FILES.includes(h) && !PROMPT.has(h)) throw new Error('Unknown agent.');
       if (s === 'project' && !projectId) throw new Error('Choose a project for project scope.');
       if (entry.item.findings.length && entry.item.acknowledged !== entry.item.sha256) {
         if (!acknowledge) throw new Error(`Review the ${entry.item.findings.length} safety finding(s) before activating ${entry.item.name}.`);

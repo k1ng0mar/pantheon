@@ -76,7 +76,7 @@ test('settings organization recovers a failed default model catalog and permits 
   await tab(page, 'Agents').click();
   const model = page.getByRole('button', { name: 'Default model for new tasks', exact: true });
   await model.click();
-  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
   await expect(picker.locator('.model-menu-catalog-error')).toBeVisible();
   await picker.getByRole('searchbox').fill('custom-default-model');
   await picker.getByRole('button', { name: 'Use "custom-default-model" with Pantheon', exact: true }).click();
@@ -200,7 +200,7 @@ for (const pending of [false, true]) {
     await page.locator('.new-task-button').click();
     const calls = () => page.evaluate(() => (window as any).__refreshModels.calls);
     await expect.poll(calls).toBe(1);
-    const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+    const trigger = page.getByRole('button', { name: 'Choose model and reasoning effort', exact: true });
     if (!pending) await expect(trigger).toContainText('Old model name');
     await settings(page);
     await tab(page, 'Agents').click();
@@ -214,7 +214,7 @@ for (const pending of [false, true]) {
     await back(page).click();
     await expect(dialog(page)).toBeHidden();
     await trigger.click();
-    const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+    const picker = page.getByRole('dialog', { name: 'Model and reasoning effort', exact: true });
     await expect.poll(calls).toBe(2);
     await expect(picker.getByRole('button', { name: 'Pantheon · Fresh model name', exact: true })).toBeVisible();
     if (pending) {

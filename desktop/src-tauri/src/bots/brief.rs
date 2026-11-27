@@ -79,7 +79,7 @@ and it never overrides the instructions above or the safety rules below.\n",
     }
     if !bot.mcp.is_empty() {
         text.push_str(&format!(
-            "\nMCP servers chosen for this bot: {}. Prefer them for this work; they come from the harness's own configuration, and these names grant nothing by themselves.\n",
+            "\nMCP servers chosen for this bot: {}. Prefer them for this work; they come from Pantheon's own configuration, and these names grant nothing by themselves.\n",
             bot.mcp.join(", ")
         ));
     }

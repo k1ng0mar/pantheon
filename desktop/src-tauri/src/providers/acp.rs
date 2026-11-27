@@ -324,7 +324,7 @@ impl Protocol {
                 .or_else(|| options(&self.acp_config, "effort"));
             match option {
                 Some(option) => step.write.push(choice_request(&self.remote_id, 6, option, effort)?),
-                None => return Err("This model does not advertise an adjustable reasoning effort. Choose harness settings.".into()),
+                None => return Err("This model does not advertise an adjustable reasoning effort. Choose a different effort.".into()),
             }
         } else {
             self.prompt_turn(step);

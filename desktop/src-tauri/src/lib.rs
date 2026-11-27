@@ -607,7 +607,7 @@ const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_inp
 /// Replies may carry generative UI blocks that Pantheon draws in the thread.
 const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pantheon_preview_file.";
 
-/// Harnesses without a system prompt hear the app instructions again every few turns.
+/// Agents without a system prompt hear the app instructions again every few turns.
 const INSTRUCTION_REMINDER_EVERY: i64 = 8;
 fn reminder_turn(turns: i64) -> bool {
     turns > 0 && turns % INSTRUCTION_REMINDER_EVERY == 1
@@ -618,7 +618,7 @@ mod instruction_tests {
     use super::*;
 
     #[test]
-    fn harnesses_without_a_system_prompt_are_reminded_every_eighth_turn() {
+    fn agents_without_a_system_prompt_are_reminded_every_eighth_turn() {
         let reminded: Vec<i64> = (1..=20).filter(|turn| reminder_turn(*turn)).collect();
         assert_eq!(reminded, [1, 9, 17]);
         assert!(!reminder_turn(0));
@@ -1503,7 +1503,7 @@ fn prepare_task_run_in_project(
         return Err("Pantheon is shutting down.".into());
     }
     if agents.contains_key(&session_id) {
-        return Err("This task is already running in an agent or harness console.".into());
+        return Err("This task is already running in an agent console.".into());
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
     architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
@@ -2093,7 +2093,7 @@ async fn launch_operation_admitted(
         }
         let turn_duration_ms = turn_started.elapsed().as_millis().min(i64::MAX as u128) as i64;
         // The terminal change marker must follow the final assistant response,
-        // including harnesses that emit no native completion boundary.
+        // including agents that emit no native completion boundary.
         if let Err(error) = store
             .lock()
             .map_err(|e| e.to_string())

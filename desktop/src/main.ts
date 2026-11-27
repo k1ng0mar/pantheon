@@ -1488,7 +1488,7 @@ function renderComposer(): void {
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
   const team = teams.get(s.id), modelLocked = running && !team;
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : `Queue a follow-up · ${isMac ? '⌘↩' : 'Ctrl+↩'} steers now`) : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : `Queue a follow-up · ${isMac ? '⌘↩' : 'Ctrl+↩'} steers now`) : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose model and reasoning effort" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose model and reasoning effort'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
@@ -2067,9 +2067,9 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     }
     case 'diff': state.inspector = true; state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
-    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
+    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'Pantheon has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
-      if (task.provider !== 'pantheon') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
+      if (task.provider !== 'pantheon') { modal('Integrations', '<p class="dialog-description">Use Pantheon’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
       if (state.sessionId === task.id) await showAgentIntegrations(workspaceContext(task));
       break;
     }
@@ -3157,7 +3157,7 @@ async function showModel(anchor: HTMLElement): Promise<void> {
               setMessagePage(page);
             } catch {
               if (selected.id !== state.sessionId || generation !== state.generation) return;
-              notify('Harness changed. Reopen this task to refresh its conversation.');
+              notify('Agent changed. Reopen this task to refresh its conversation.');
             }
           }
           renderComposer(); renderHeader(); renderNavigation(); renderTranscript();
@@ -3208,7 +3208,7 @@ async function createTask(projectId = state.projectId): Promise<void> {
   if (generation !== state.generation) { renderNavigation(); return; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
-/** A projectless chat: its own folder, the usual harness and model. */
+/** A projectless chat: its own folder, the usual model. */
 async function createChat(): Promise<void> {
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
@@ -3276,7 +3276,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
     { id: 'archive-task', label: s.archived ? 'Restore task' : 'Archive task', icon: 'archive' },
     ...s.provider === 'pantheon' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Running work', icon: 'terminal' }, { id: 'usage', label: 'Usage', icon: 'activity' }, { id: 'plugins', label: 'Installed plugins', icon: 'settings' }, { id: 'hooks', label: 'Lifecycle hooks', icon: 'check' }] : [],
-    { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
+    { id: 'harness-console', label: 'Open console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
     { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
@@ -3412,7 +3412,7 @@ function showRename(): void { const s = session(); if (!s) return; modal('Rename
 let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
-  // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
+  // Refresh also retries unchanged agents and invalidates their older in-flight metadata.
   modelCatalogs.clear();
   const providers = await call<Provider[]>('list_providers', { force: true });
   if (generation !== settingsDiscoveryGeneration) return state.providers;
@@ -3659,7 +3659,7 @@ async function reloadBotProjects(withProjects = true): Promise<void> {
   renderNavigation(); renderHeader();
 }
 /* A project task can start with a bot (#114): its first message carries the bot's brief and
- * skills, and it uses the bot's harness and model. The task keeps its own project and checkout. */
+ * skills, and it uses the bot's model. The task keeps its own project and checkout. */
 let taskBots = new Map<string, string>();
 const NO_BOT = 'none';
 function botTaskControl(task: Session, fresh: boolean): string {
@@ -3682,7 +3682,7 @@ async function assignTaskBot(task: Session, botId: string | null): Promise<void>
     const bot = await call<import('./bots').Bot | null>('bot_assign_task', { sessionId: task.id, botId });
     if (bot) {
       taskBots.set(task.id, bot.id);
-      // The bot's harness and model become the task's defaults; the picker can still change them.
+      // The bot's model becomes the task's default; the picker can still change them.
       if (bot.provider !== task.provider || bot.model !== task.model) upsertSession(await call<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model }));
     } else taskBots.delete(task.id);
   } finally { configuringSessions.delete(task.id); }
