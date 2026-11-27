@@ -1,4 +1,4 @@
-//! Platform-aware harness launch without putting model settings through a batch shell.
+//! Platform-aware tool launch without putting model settings through a batch shell.
 use std::{
     ffi::OsString,
     io::Read,

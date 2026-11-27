@@ -1,7 +1,7 @@
 //! Architecture regression tests for Pantheon Desktop tool ownership.
 //!
 //! These tests fail when the desktop starts growing a parallel agent tool
-//! ecosystem or an alternative harness.
+//! ecosystem or an out-of-contract tool name.
 
 #[cfg(test)]
 mod tests {
