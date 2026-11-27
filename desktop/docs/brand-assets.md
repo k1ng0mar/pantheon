@@ -10,9 +10,7 @@ no remote brand-asset requests. Decorative images have empty alt text and
 `aria-hidden="true"`; adjacent text supplies the accessible name. Keep the
 mark proportional and preserve its colors when changing the interface.
 
-Historical note: earlier releases shipped provider logos copied from
-provider-owned sources (Claude, OpenAI, Kimi, GitHub Copilot, OpenCode, Z.AI,
-GLM, Antigravity, MiMo, Cline, Command Code, Muse and Grok). Those integrations
-and their local assets have since been removed. The marks remain the property
+Historical note: earlier releases shipped logos copied from their owners.
+Those integrations and their local assets have since been removed. The marks remain the property
 of their respective owners; this project's source license never granted
 trademark rights to them.

@@ -17,8 +17,8 @@ and come back if that send fails.
 
 PNG, JPEG and WebP are accepted. The native side decodes each image, scales it to
 at most 2048 pixels on the long edge, re-encodes it as PNG and stores it beside
-browser screenshots, so every harness receives the same image block it already
-understands (Codex, Claude Code, Kimi, OpenCode, GLM). A message carries up to
+browser screenshots, so Pantheon receives the same image block it already
+understands. A message carries up to
 **four images**, browser screenshots included; each stays under 5 MB. HEIC, GIF
 and SVG are refused with a note rather than sent as unreadable bytes.
 
@@ -43,7 +43,7 @@ message. Scanned PDFs with no text layer are refused with a note.
 
 A folder attachment sends its absolute path and a shallow, sorted tree (three
 levels, up to 240 lines, hidden and build folders skipped) so the model can
-orient itself and, when its harness has tools, explore further:
+orient itself and, when it has tools, explore further:
 
 ```
 Folder context: /Users/you/Projects/orbit-design (14 files, 4 folders)

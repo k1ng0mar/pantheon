@@ -65,7 +65,7 @@ chmod +x ./Pantheon-Linux-x86_64.AppImage   # or Pantheon-Linux-aarch64.AppImage
 APPIMAGE_EXTRACT_AND_RUN=1 ./Pantheon-Linux-x86_64.AppImage
 ```
 
-Linux GLM key storage requires an unlocked desktop Secret Service. If it is
+Linux key storage requires an unlocked desktop Secret Service. If it is
 unavailable, configure `ZAI_API_KEY` in the app's environment.
 
 ## Coding tools and shortcuts
@@ -128,7 +128,7 @@ a Windows Server runner, or Linux desktop behavior from Xvfb.
 | Concurrent work | Run separate tasks and a team, inspect worker output, cancel them, and confirm their child processes exit. |
 | Embedded browser | Open a local port, navigate back/forward/reload, select an element, and attach a readable screenshot. |
 | Launcher and input | Open manually and with the configured shortcut, change the shortcut, inspect an active task, dismiss/refocus, and use platform keyboard shortcuts. Record Wayland limits instead of claiming universal global access. |
-| Credentials | Check GLM store-unavailable messaging and environment fallback if GLM is included in the test. |
+| Credentials | Check key store unavailable messaging and environment fallback. |
 
 Record unrun native checks and known limitations alongside each preview's
 results, even if CI packaging succeeds. Complete these checks before claiming

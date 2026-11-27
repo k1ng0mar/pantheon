@@ -6,7 +6,7 @@ Enter or Tab inserts it without sending the prompt. Escape closes the menu.
 File paths containing spaces or punctuation are quoted and escaped, for example
 `@"docs/design notes.md"`. Email addresses do not open the picker.
 
-References remain editable prompt text. The selected harness reads the file
+References remain editable prompt text. The selected agent reads the file
 through its normal tools in the task's working directory. Typing or selecting
 a reference does not read or attach its contents, so large files do not inflate
 the prompt automatically. Existing explicit file and image attachments retain

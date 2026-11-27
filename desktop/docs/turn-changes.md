@@ -22,7 +22,7 @@ of task ownership. Unchanged pre-existing edits and unrelated paths are excluded
 The stable `pantheon_track_files` tool gives agents a pre-write handshake: `begin`
 with exact relative paths captures baseline bytes; `complete` with that capture ID
 and the subset actually edited freezes the result. The instructions request this
-for each write batch, including shell scripts. Codex, Claude, and ACP edit events
+for each write batch, including shell scripts. Edit events
 also carry structured write paths as a fallback. Native asynchronous notifications
 can arrive too late to capture a fast edit, so the explicit handshake is preferred.
 Read-only tools never establish ownership. Incomplete, unreported, or ambiguous

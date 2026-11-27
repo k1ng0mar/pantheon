@@ -102,7 +102,7 @@ Register them in the main window's `tauri::generate_handler![…]` right after `
 +  git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], filePath: '', gitError: '', filesError: '', inspectorLoading: false,
    selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff' | 'file', selectedStaged: false, filePreviewLoading: false,
    browserUrl: '',
-   attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pantheon.defaultProvider') ?? localStorage.getItem('pantheon.provider') ?? 'claude') as ProviderId,
+   attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pantheon.defaultProvider') ?? localStorage.getItem('pantheon.provider') ?? 'pantheon') as ProviderId,
 @@ -2434,15 +2435,16 @@
  async function refreshInspector(): Promise<void> {
    void projectRunner.refresh();

@@ -8,8 +8,8 @@ to fix and send. The source task is unchanged.
 - Native: `fork_session_at_message` with `exclusive: true` calls
   `conversation_fork::before_message`, the ordinary fork with the boundary
   message left out. Like every fork, the new task has no resume ID: the next
-  message starts a fresh harness session that receives the copied transcript
-  through context recovery, so the dropped prompt never reaches the harness.
+  message starts a fresh session that receives the copied transcript
+  through context recovery, so the dropped prompt never reaches Pantheon.
 - Attached context (files, documents, images) is not re-attached; only the
   text before the first context block returns to the composer.
 - Files are not rewound. Edit is disabled while an agent runs on the thread.

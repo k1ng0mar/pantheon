@@ -10,7 +10,7 @@ panel. It reuses the conversation renderer instead of loading every transcript.
 
 Tasks have four durable stages: Pending, In progress, Review and Completed.
 Adding a title and description queues a task without starting an agent. Start
-sends the saved description with the task's selected harness, model and approval
+sends the saved description with the task's selected model and approval
 policy. An accepted run enters In progress; success enters Review. Errors and
 stops remain In progress, with a retry action. Follow-up messages from Review
 start another run. The user marks reviewed work Completed or reopens it.

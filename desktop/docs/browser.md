@@ -26,8 +26,8 @@ renderer memory budget. Attachments are removable before sending and stay with
 their originating task when switching conversations. Capture does not send a model
 request; the user sends the completed message.
 
-Claude receives base64 image content, Codex receives localImage input, and Kimi
-receives ACP image blocks after its capability check. Unsupported models surface
+Pantheon accepts image content through its own input format after a capability
+check. Unsupported models surface
 their provider's error. Image bytes are not included in the saved text transcript.
 
 macOS provides the complete native browser and snapshot workflow. Other desktop
@@ -39,5 +39,4 @@ labeled fixtures, not external page access.
 References: [Tauri child webviews](https://docs.rs/tauri/latest/tauri/webview/struct.WebviewBuilder.html),
 [Tauri capabilities](https://v2.tauri.app/security/capabilities/),
 [WKWebView snapshots](https://developer.apple.com/documentation/webkit/wkwebview/takesnapshot(with:completionhandler:)),
-[Claude image input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode),
 [ACP image content](https://agentclientprotocol.com/protocol/v1/content).

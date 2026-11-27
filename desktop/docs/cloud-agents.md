@@ -56,7 +56,7 @@ and each change emits `cloud-agent://progress` plus `sessions-changed`.
 ## IPC
 
 - `cloud_agent_targets() → [{provider, label, ready}]` lists connected machines.
-- `cloud_agent_start({sessionId?, projectId, provider, prompt, harness, model,
+- `cloud_agent_start({sessionId?, projectId, provider, prompt, model,
   mode, effort})` turns a New task draft into a cloud task, sends the first
   message at once and prepares the machine in the background. Images are refused.
 - `cloud_agent_action({sessionId, action})` takes `sync`, `retry`, `stop`,

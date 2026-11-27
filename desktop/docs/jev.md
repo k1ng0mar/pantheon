@@ -33,7 +33,7 @@ models, dispatch work, or claim a cost saving. Context matching preserves the
 original excerpts and all conversation history. Project-rule reviews cover saved
 patches only; binary, omitted, stale, and truncated evidence can limit the result.
 
-The following tools are added to supported harnesses and teams only while decision
+The following tools are added to teams only while decision
 assistance is enabled. Start another agent turn after changing integration settings.
 
 | Tool | Purpose |
@@ -44,7 +44,7 @@ assistance is enabled. Start another agent turn after changing integration setti
 | `pantheon_jev_choose_worker` | Suggest one configured worker for an assignment |
 | `pantheon_jev_assessments` | Read local report summaries without a model call |
 
-Paid evaluation follows the harness's existing tool-approval rules. Plan mode
+Paid evaluation follows Pantheon's existing tool-approval rules. Plan mode
 cannot spend through these tools. Other task IDs are limited to the current
 project; worker selection stays on the calling task. Recommendations never
 authorize actions or bypass file scopes, task permissions, or concurrency limits.
@@ -124,11 +124,9 @@ task's draft; it does not automatically send a message.
 
 ## Agent and team tools
 
-When enabled, the following tools are available to Claude Code, Codex, Kimi Code,
-OpenCode, GLM through Claude Code, and compatible Antigravity ACP connections.
-ACP harnesses must support HTTP MCP. Start the next agent turn after enabling.
-Codex receives Jev via a temporary MCP override on both new and resumed threads,
-preserving its original history and other configured MCP servers.
+When enabled, the following tools are available to Pantheon on new and resumed
+threads, preserving the original history and other configured MCP servers. Start
+the next agent turn after enabling.
 
 | Tool | Purpose |
 | --- | --- |
@@ -194,7 +192,6 @@ The external runtime is pinned to Jev commit
 `browser-harness==0.1.13`. The runner checks installed package metadata before
 using the upstream API. Sources: [Jev repository](https://github.com/browser-use/jev-ultrafast/tree/1231850a0bf1a0c0341fe408ef1668dbbfdfac46),
 [agent implementation](https://github.com/browser-use/jev-ultrafast/blob/1231850a0bf1a0c0341fe408ef1668dbbfdfac46/jev_ultrafast/agent.py),
-[Codex MCP configuration](https://developers.openai.com/codex/mcp/).
 
 Offline runner tests: `python3 -m unittest discover -s tests -p jev_runner_test.py`.
 The optional `tests/jev_browser_smoke.py` uses an installed Jev environment to

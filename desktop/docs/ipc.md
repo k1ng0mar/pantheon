@@ -3,14 +3,14 @@
 All command args use camelCase. Types are in src/types.ts. All return Promises via invoke; errors reject with a string. All native data is real; browser preview explicitly uses fixture mode.
 
 `Session.mode` accepts `ask`, `auto`, `plan`, and `full`. The native provider maps
-these to its own approval settings; the UI uses harness-specific labels and
+these to its own approval settings; the UI uses its own labels and
 descriptions (see [approval modes](approvals.md)). The mode is saved per task.
-New tasks and harness changes start in `ask`. Model/permission updates are rejected
+New tasks start in `ask`. Model/permission updates are rejected
 while an agent is active, and a new turn explicitly reapplies the selected policy
-when resuming an existing harness conversation.
+when resuming an existing conversation.
 
 Schema version 14 adds the internal `context_recovery` table, keyed by task with a
-message-ID boundary. Required Codex tool-catalog resets queue recovery in the same
+message-ID boundary. Required tool-catalog resets queue recovery in the same
 transaction as clearing the native session ID. A one-time migration queues tasks
 with the exact legacy architect reset notice. Preparation advances the boundary
 before recording the new user prompt; the queue survives retries/restarts and is
@@ -25,7 +25,7 @@ rejects instead of falling back to a different checkout. Agent turns use the sam
 resolver. Worktree tasks cannot change their project, even before the first message.
 
 `create_worktree` creates a branch from the source task's checkout and saves a new,
-empty task in the same project. It inherits the harness/model, starts with `ask`
+empty task in the same project. It inherits the model, starts with `ask`
 approval behavior, and has no provider resume ID. It does not add a project.
 Schema version 4 adds the nullable checkout column. Version 5 folds recognized legacy
 app-created worktree projects, including nested worktrees, into their registered main project in one transaction,
@@ -33,14 +33,13 @@ preserving task IDs, history, settings and files. An empty legacy worktree recei
 an empty task. Custom or ambiguous folder layouts are left intact.
 
 `fork_session_at_message` creates a separate task with the saved conversation
-through the selected user or assistant message, inclusive, for every harness.
+through the selected user or assistant message, inclusive.
 The message must belong to the source task. Synthetic streaming messages and
 internal coordination/change rows cannot be selected. Copying uses the complete
 stored prefix across all history pages, independent of display truncation, and
 is atomic; it can snapshot a running source without stopping or changing it.
 Successful forks emit `sessions-changed` with no data to refresh every window.
-The fork retains the source project, harness, model, effort, approval mode and
-Codex preferences. It shares the source's existing checkout, including any
+The fork retains the source project, model, effort and approval mode. It shares the source's existing checkout, including any
 uncommitted changes; it does not rewind files or create a Git branch. A missing
 checkout rejects instead of silently switching to the main project folder.
 
@@ -89,7 +88,7 @@ fabricated during migration or recovery. This adds no transcript rows or polling
 `Session.reasoningEffort` is a nullable, provider-defined effort ID. Schema version 7
 stores it with the latest `Session.contextUsage` snapshot (`usedTokens`, nullable
 `contextWindow`). `set_reasoning_effort` returns the updated task and rejects active
-tasks. Null delegates to the harness's saved settings. Changing a model or harness
+tasks. Null delegates to Pantheon's saved settings. Changing a model
 resets effort and usage; changing only the project preserves effort. Worktree tasks
 inherit effort and begin with no usage snapshot.
 
@@ -252,8 +251,9 @@ children as `stopped`, preserving their last saved work. Abrupt process loss can
 lose updates since the latest checkpoint. Availability and detail depend on what
 the installed provider protocol reports; the app does not infer unseen work.
 
-`configure_session` rejects active turns. Providers must be `claude`, `codex`, or
-`kimi`; model IDs may contain at most 200 UTF-8 bytes. An existing conversation can
+`configure_session` rejects active turns. Storage accepts any well-formed
+provider id so rows written by older builds still open, but only `pantheon` can
+launch; model IDs may contain at most 200 UTF-8 bytes. An existing conversation can
 change its model while retaining the same provider. A different provider is allowed
 only when the task has no persisted messages and no provider resume ID; this check
 includes history outside the visible message page. Switching provider resets the
@@ -266,9 +266,7 @@ under the same agent/store locks as turn startup, with an atomic database condit
 
 `list_provider_models` loads metadata on demand; `list_providers` does not perform
 this lookup. Keep invocation `id` separate from display `name` and `description`.
-Claude projects SDK initialization metadata and resolves release names from the
-supplied model ID; Codex retains `model/list` display names; Kimi projects only model
-fields from its configured CLI catalog. No prompt or inference is needed. See
+Pantheon supplies model names and limits from its own catalog. No prompt or inference is needed. See
 [provider integration details](providers.md) for sources, bounds and cleanup.
 
 The UI caches catalogs for five minutes and refreshes on the next request, without
@@ -303,7 +301,7 @@ finalization. Normal task completion still moves development work to Review.
 
 `task_goal(sessionId, request)` accepts a tagged `set` (objective, nullable
 `tokenBudget`), `get`, `pause`, `resume`, or `clear` request. It derives the native
-Codex ID from the saved task. Returned `GoalState` is the validated native goal:
+goal ID from the saved task. Returned `GoalState` is the validated native goal:
 `threadId`, `objective`, `status`, `tokenBudget`, `tokensUsed`, `timeUsedSeconds`,
 `createdAt`, `updatedAt`. A missing/cleared goal is null. Get is observational and
 never resumes a thread. Set/resume share the task execution limit and startup
@@ -314,7 +312,7 @@ and `task_settings`. Goal events carry authoritative state or null; `goal_ready`
 acknowledges a startup operation only after persistence. `goal_input` records a
 live goal edit as user input. Turn boundaries flush response segments and
 namespace repeated tool IDs. `task_settings` persists normalized, acknowledged
-Codex collaboration/service settings. None of these metadata events invents
+collaboration settings. None of these metadata events invents
 assistant responses.
 
 `codex_command(sessionId, request)` exposes only the typed usage, hooks,
@@ -324,7 +322,7 @@ verified process belonging to this running task. `set_task_preference` accepts
 only Plan/Fast toggles; the selected model is resolved and Fast availability is
 checked against its current native catalog.
 
-`fork_codex_task(sessionId, remoteId?)` forks the saved Codex conversation or
+`fork_codex_task(sessionId, remoteId?)` forks the saved conversation or
 adopts a verified conversation in this checkout. Adoption imports bounded history
 and indicates truncation. `archive_codex_task` updates both native and local task
 state. `export_task` returns at most 8 MiB of Markdown; `save_task_export` writes
@@ -332,8 +330,8 @@ the export to a selected absolute .md/.txt path.
 
 `start_harness_terminal(sessionId, cols, rows)` derives the executable, checkout,
 model, mode, and saved conversation natively. The UI never supplies an executable
-or shell program. It starts the actual harness directly in a managed PTY. A task
-cannot run in both an agent and a harness console. Terminal command text is
+or shell program. It starts Pantheon directly in a managed PTY. A task
+cannot run in both an agent and a terminal console. Terminal command text is
 validated and inserted only after the user presses the visible button; Enter is
 not sent automatically. Console-only interaction remains in the native console;
 it is not presented as a synthetic assistant response.

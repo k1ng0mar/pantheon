@@ -2,9 +2,9 @@
 
 Pantheon is the only agent this desktop launches. It runs the installed `pantheon`
 CLI with `pantheon serve acp`, a stdio JSON-RPC session using ACP version 1.
-The task's mode goes over the protocol (`session/set_mode`), and model and effort
-travel the same way (`session/set_model`, `session/set_config_option`), never in
-command arguments. A resumed task therefore keeps the policy it was saved with.
+The task's mode and the selected model or effort go over ACP (`session/set_mode`,
+`session/set_model`, `session/set_config_option`), never in command arguments. A
+resumed task keeps the policy it was saved with.
 
 Install Pantheon and sign in through the CLI. The CLI owns the provider registry
 and credentials; the desktop stores no provider API keys. Pantheon finds the
@@ -22,7 +22,7 @@ choice and any typed model ID usable.
 
 Effort choices come from the model's advertised config options. `Default` sends
 no override, so the CLI keeps control, including a saved effort in a resumed
-session. Context usage comes from ACP usage updates when the CLI reports them;
+session. Context usage comes from ACP usage updates when Pantheon reports them;
 unknown usage stays hidden. Counts are the last reported snapshot and can drop
 after compaction.
 

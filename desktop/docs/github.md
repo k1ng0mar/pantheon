@@ -38,7 +38,7 @@ own notation, as ordinary editable text. When the message is sent, every `#123`
 in it (picked or typed, up to five) is resolved once and appended as a
 `GitHub context:` block with the title, state, author, labels, URL, and a body
 excerpt of up to 4 KiB. The block is labeled repository content, not
-instructions, and travels with the message so every harness reads the same
+instructions, and travels with the message so every task reads the same
 thing. References that do not resolve are left as typed.
 
 ## Importing issues
@@ -46,7 +46,7 @@ thing. References that do not resolve are left as typed.
 In Board view, **Import from GitHub** lists up to fifty open issues with their
 labels. Filter by *Assigned to me*, a label, or a search. Selected issues become
 **Pending** tasks in the board's project: the issue title, its body followed by
-the issue URL, the default harness, and full access. Nothing runs until you start
+the issue URL, the default agent, and full access. Nothing runs until you start
 a task. Issues already linked to a task in that project are marked *On board*
 and cannot be imported twice; if the linked task has not started and the issue
 changed, **Update task** refreshes its title and description in place. Import is

@@ -17,16 +17,16 @@ that team. It is added after
 the built-in rules and never replaces them, including the guard that treats worker
 output as data rather than instructions.
 
-The architect and each worker can independently use Claude Code, Codex, Kimi
-Code, OpenCode, GLM through Claude Code, or Antigravity. Model and effort choices come from the existing harness catalog; configured
-custom model IDs remain available. A model must be supported by the selected
-harness and the user's account. Pantheon does not supply inference or API credits.
+The architect and each worker run Pantheon with the model you assign. Model
+choices come from the catalog; configured custom model IDs remain available. A
+model must be supported by Pantheon and the user's account. Pantheon does not
+supply inference or API credits.
 
 ## Saved setups and profiles
 
 **Save setup** remembers the complete team for this task and future tasks, across
-projects and app restarts. That includes the architect and worker harnesses,
-models, reasoning efforts, and run limits. New conversation, board, and worktree
+projects and app restarts. That includes the architect and worker models,
+reasoning efforts, and run limits. New conversation, board, and worktree
 tasks inherit a fresh copy; they do not start until you send a message or choose
 Start. Existing tasks keep their own configurations and histories.
 
@@ -58,8 +58,8 @@ Switching never starts an extra turn, cancels work, or resets the review budget.
 Limits cannot fall below rounds or assignments already used. Pending selections
 survive a restart and apply when you explicitly resume the interrupted team.
 
-Changing the architect model within the same harness preserves its native
-conversation. Changing harnesses uses Pantheon's saved-history handoff (up to the
+Changing the architect model within Pantheon preserves its native
+conversation. Switching models uses the saved-history handoff (up to the
 latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 
 ## Execution
@@ -69,7 +69,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 - Pantheon imposes no global limit on simultaneous agents. New team setups use
   **Unlimited** parallel workers; existing finite team preferences remain saved.
   A team with a finite limit queues excess assignments until a slot is available.
-  Each worker has its own persistent harness session and conversation.
+  Each worker has its own persistent session and conversation.
 - Workers use the parent task's project and checkout. If the task is already in
   a worktree, the team works there. Workers do not create projects or clutter the
   sidebar and board. Their transcripts remain accessible through the team panel.
@@ -83,7 +83,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   The architect batches independent work and can reuse the same model profile for
   several assignments. Queued workers explain dependency, slot, or edit-scope waits
   in the team panel and worker tools. These are advisory task
-  boundaries, not an operating-system filesystem sandbox. Normal harness approval
+  boundaries, not an operating-system filesystem sandbox. Normal approval
   and sandbox behavior applies. Other apps and terminals can still edit files.
 - Dependencies refer to already-created assignments. The scheduler launches work
   only when its dependencies have completed. Assignment keys prevent a retried
@@ -95,8 +95,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 - An architect may end its turn while workers run. Native completion events wake
   it for a compact review after work settles. There is no background model polling
   loop and no repeated prompt when worker state is unchanged. Each turn ends the
-  harness process, so background commands, monitors and scheduled wakeups never
-  report back; Claude runs disable ScheduleWakeup, Monitor and CronCreate, and
+  agent process, so background commands, monitors and scheduled wakeups never
+  report back; Pantheon disables ScheduleWakeup, Monitor and CronCreate, and
   the instructions say so.
 - If a review or update turn ends without dispatching work or finishing, the
   architect gets one **Continuing the plan** turn; a second stall pauses the team
@@ -107,7 +107,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 - A worker that fails while others still run goes to the architect right away in
   a **Handling a failed worker** turn, so it can retry or replace that worker
   without waiting for the slowest one. It uses a round, and never the last one.
-- A team turn with no harness output for 20 minutes is stopped. Claude's longest
+- A team turn with no output for 20 minutes is stopped. The longest
   tool timeout is 10 minutes, and a turn waiting on your approval or answer never
   counts as silent. A silent worker settles as failed and the architect handles it.
   A silent architect turn shows a notice; its workers keep running, and if
@@ -118,7 +118,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 ## Communication and checkpoints
 
 Architects and workers can send direct messages to teammates, even when they use
-different harnesses. This is local team coordination, not a public A2A network
+different models. This is local team coordination, not a public A2A network
 endpoint. Open **Workers → Team messages** to inspect questions and handoffs.
 Select a worker to see its latest progress checkpoint alongside its transcript.
 
@@ -135,10 +135,10 @@ Select a worker to see its latest progress checkpoint alongside its transcript.
   compact architect reviews. They report progress; they do not mark work complete.
 
 Each team conversation gets the full team rules and coordination guide once. While
-the harness resumes the same conversation, later turns get a one-line reminder (which
+Pantheon resumes the same conversation, later turns get a one-line reminder (which
 names the user's team guidance when one is set) and only the messages they have not
 seen. The full rules go out again when they change
-(for example new limits), when the harness starts a new conversation, and on every
+(for example new limits), when Pantheon starts a new conversation, and on every
 eighth turn so a compacted conversation never loses them for long.
 
 A new message to an idle architect, or a new blocker, can wake it while workers
@@ -152,7 +152,7 @@ Messages and checkpoints are stored in SQLite. Each team accepts at most 1,000
 messages of 2 KiB each; each worker can save up to 200 checkpoints. Only the latest
 checkpoint is included in team snapshots. Message history loads on demand and
 refreshes from team events, with no polling timer. These reports never override
-the user's instructions, file scopes, or harness approval policy.
+the user's instructions, file scopes, or approval policy.
 
 ## Limits and recovery
 
@@ -168,8 +168,8 @@ needs an approval or answer is announced even with the panel closed. An app rest
 silently starting more inference. Team profiles and limits can be changed during
 work or while paused using the same setup picker.
 
-Switching between a team and a single agent preserves Claude and Kimi's native
-conversation; they reload the MCP tools when resuming. Codex binds dynamic tools
+Switching between a team and a single agent preserves the native
+conversation; the agent reloads the MCP tools when resuming. Dynamic tools
 at thread creation, so changing its catalog starts a new native context with a
 one-time transfer of the saved conversation. Saving an unchanged setup never
 resets context. The transfer is bounded to the latest 200 user/assistant messages
@@ -193,21 +193,20 @@ each managed assignment to a real task. Generation checks prevent stale starts
 and callbacks after cancellation. The existing provider runner still owns
 streaming, approvals, process cleanup, and transcript persistence.
 
-Codex receives the team's dynamic tool catalog on thread creation. Other supported
-harnesses receive their role's catalog through a temporary, native loopback MCP
-endpoint, using Claude's MCP configuration or ACP HTTP MCP negotiation. The endpoint is authenticated per run, bound to literal loopback,
-rejects browser origins, bounds requests and results, and closes with its provider
-run. It adds no Node/Python server, permanent configuration file, or resident
-service. ACP harnesses must advertise HTTP MCP support. Existing user integrations remain
-configured; this bridge does not grant access to Pantheon's broader app tools.
+Pantheon receives the team's dynamic tool catalog on thread creation through a
+temporary, native loopback MCP endpoint. The endpoint is authenticated per run,
+bound to literal loopback, rejects browser origins, bounds requests and results,
+and closes with its run. It adds no Node/Python server, permanent configuration
+file, or resident service. Existing user integrations remain configured; this
+bridge does not grant access to Pantheon's broader app tools.
 Team tools (dispatch, list, read, follow up, cancel, finish, directory,
-messages and checkpoints) run without a Claude permission prompt: they only
+messages and checkpoints) run without a permission prompt: they only
 change this team's state and every call is checked against the caller's team,
-generation and role. Other tools keep the harness's normal approval modes.
+generation and role. Other tools keep Pantheon's normal approval modes.
 Team workers do not keep a pre-started process, so the architect's stays
 available for its review turn.
 
-Team snapshots also track the architect tool-catalog version. An older Codex
+Team snapshots also track the architect tool-catalog version. An older
 architect gets a fresh native context on its next turn when its saved catalog
 cannot describe the new assignment fields. The visible transcript stays intact;
 the existing bounded conversation handoff restores its recent context. This is
@@ -234,8 +233,8 @@ Worker streaming continues through `agent-event`, keyed by the worker's real
 session ID. The UI uses `architect_worker_messages` with both parent and worker
 IDs to page history without exposing managed workers as ordinary tasks.
 
-Schema version 16 adds `architect_messages`. Existing Codex team contexts receive
-a one-time saved-history transfer on their next explicit run, because Codex binds
+Schema version 16 adds `architect_messages`. Existing team contexts receive
+a one-time saved-history transfer on their next explicit run, because Pantheon binds
 dynamic tools at native thread creation. An upgrade does not start inference.
 `architect_team_messages` pages the current task's coordination history for the
 user interface, separately from the agent's recipient-scoped mailbox.

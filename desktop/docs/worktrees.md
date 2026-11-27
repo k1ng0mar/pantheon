@@ -11,13 +11,13 @@ the checkout folder and copies its path.
 
 Open the branch chip. A task that has not started yet offers **Work in a new
 worktree…**: the same task moves into an isolated checkout, keeping its draft,
-title, harness, model, and permission mode. A task with history offers **New
+title, model, and permission mode. A task with history offers **New
 task in a worktree…**, which starts a sibling task in the same project with the
-current harness and model and the default permission mode.
+current model and the default permission mode.
 
 The dialog suggests a branch name from the task title, the draft, or a linked
 issue (`128-search-index-rebuilds`), shows the final name (`pantheon/<name>`;
-`pantheon/` and `codex/` prefixes are kept as typed) and its
+the `pantheon/` prefix is kept as typed) and its
 folder, and lets you start from any local branch instead of the current one. If
 the branch already exists, the dialog says so and offers to check it out into
 the new worktree instead of creating it. Names use letters, numbers, hyphens,

@@ -32,10 +32,10 @@ and fit within 64 KiB. No dependency installation is guessed automatically.
 
 Agent instructions ask it to maintain the script when applicable and open a
 preview after relevant edits. `pantheon_run_project` and `pantheon_preview_file`
-remain registered across resumed turns, with the harness's normal approval policy.
+remain registered across resumed turns, with Pantheon's normal approval policy.
 They require the task to be visible and cannot steal another task's browser.
 Architect teams leave final launch/preview to the architect. Opening a page is
-not reported as successful testing. Harnesses without app-tool transport can
+not reported as successful testing. Agents without app-tool transport can
 still create the script for the user's Run button.
 
 IPC: `get_run_script({projectId, sessionId?})` returns
