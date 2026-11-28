@@ -39,9 +39,9 @@ pub fn register(reg: &mut ToolRegistry, data_dir: PathBuf) {
         pantheon_api::message::ToolSchema {
             name: NAME.into(),
             description: "Generate an image from a text prompt and save it to disk. Returns the \
-                          absolute path, mime type and byte size; the file can then be read, \
-                          attached or copied like any other image. Use `size` for an aspect ratio \
-                          the provider understands (e.g. 1024x1024, 1536x1024)."
+                          absolute path, mime type, byte size and which backend drew it; the file \
+                          can then be read, attached or copied like any other image. Use `size` \
+                          for a resolution the backend understands (e.g. 1024x1024)."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -153,6 +153,7 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
         "bytes": out.bytes.len(),
         "model": out.model,
         "provider": out.provider,
+        "backend": out.backend,
         "size": size,
         "revised_prompt": out.revised_prompt,
     })
@@ -232,6 +233,45 @@ mod tests {
         assert_eq!(v["mime"], "image/png");
         assert_eq!(v["bytes"], png.len());
         assert_eq!(v["model"], "stub-image", "the declared image model is picked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real generation against a live keyless endpoint. Ignored by default:
+    /// run with `cargo test -p pantheon-tools --lib -- --ignored live_generation`
+    /// (needs network). Proves the template backend end to end: settings ->
+    /// HTTP -> bytes -> sniffed mime -> file on disk.
+    #[test]
+    #[ignore = "network: runs a real generation against image.pollinations.ai"]
+    fn live_generation_through_a_template_backend() {
+        let dir = std::env::temp_dir().join(format!("pantheon-image-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[model]\nprovider = \"llm-router\"\nmodel = \"chat\"\n\n[image]\nbackend = \"url_template\"\nendpoint = \"https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&nologo=true&seed={seed}\"\ntimeout_secs = 90\n",
+        )
+        .unwrap();
+        let out = run(
+            r#"{"prompt":"a single red cube on a white background, studio product photo","size":"512x512"}"#,
+            &dir,
+        )
+        .expect("live generation");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let path = v["path"].as_str().unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        assert!(bytes.len() > 2000, "a real image, not an error page");
+        assert_eq!(v["backend"], "url_template");
+        assert!(
+            v["mime"].as_str().unwrap_or("").starts_with("image/"),
+            "sniffed mime: {}",
+            v["mime"]
+        );
+        eprintln!(
+            "live image: {} ({} bytes, {})",
+            path,
+            bytes.len(),
+            v["mime"].as_str().unwrap_or("?")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

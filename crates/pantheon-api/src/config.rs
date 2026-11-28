@@ -430,6 +430,44 @@ pub type VisionSection = AuxSection;
 /// never chat.
 pub type VideoSection = AuxSection;
 
+/// `[image]`: how the `image` tool produces a picture.
+///
+/// Deliberately backend-shaped rather than vendor-shaped: the same tool drives
+/// an OpenAI-compatible `/images/generations`, a chat model that emits images
+/// (`modalities: ["image","text"]`), a local Stable-Diffusion server
+/// (`/sdapi/v1/txt2img`), or any HTTP endpoint whose URL takes the prompt as a
+/// template. Nothing here names a vendor, so a local server and a hosted API
+/// are the same kind of thing.
+///
+/// absent table = `auto`: an OpenAI-wire provider gets `/images/generations`,
+/// anything else is refused with a message naming the backends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ImageSection {
+    /// `auto` | `openai_images` | `chat_image` | `a1111` | `url_template`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// provider row that supplies base URL + key. absent = `[model].provider`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// image model id (openai_images / chat_image). absent = the provider's
+    /// first model whose id looks like an image model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// full endpoint URL. Required for `a1111` (server root) and
+    /// `url_template` (must contain `{prompt}`). Overrides the provider base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// env var holding the key for `endpoint` when it is not a provider row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+    /// wall clock for one generation. absent = 120s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// passed to template/SD backends that take a seed. absent = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+}
+
 /// `[scheduled]`: model scheduled (background) runs execute with.
 /// absent = `auto` -> scheduled jobs run on the default model. pin a
 /// small/cheap one so background tasks stop fighting interactive chat.
@@ -2275,6 +2313,9 @@ pub struct Config {
     pub search_synthesis: Option<SearchSynthesisSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<VisionSection>,
+    /// `[image]`: image-generation backend (see [`ImageSection`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageSection>,
     /// `[video]` pin. absent = `auto` -> run's default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video: Option<VideoSection>,
@@ -2493,6 +2534,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "embeddings",
     "search_synthesis",
     "vision",
+    "image",
     "video",
     "scheduled",
     "mcp_synthesis",
@@ -4400,6 +4442,7 @@ mod fix_pass4_leaf1_tests {
             embeddings: Some(AuxSection::default()),
             search_synthesis: Some(AuxSection::default()),
             vision: Some(AuxSection::default()),
+            image: Some(ImageSection::default()),
             video: Some(AuxSection::default()),
             scheduled: Some(AuxSection::default()),
             mcp_synthesis: Some(AuxSection::default()),
