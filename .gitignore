@@ -55,3 +55,10 @@ desktop/src-tauri/gen/
 # progress and delete them when the work lands. Nothing here belongs on the repo.
 /docs/working/
 /desktop/docs/working/
+
+# Local non project work that happens to live under this checkout.
+/.court/
+/.marketing/
+/brag-output/
+/desktop/brag-output/
+/desktop/work/
