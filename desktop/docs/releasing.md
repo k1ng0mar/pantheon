@@ -3,15 +3,16 @@
 Pantheon releases are GitHub Releases on
 [k1ng0mar/pantheon](https://github.com/k1ng0mar/pantheon/releases). There
 are no private servers: pushing a `desktop-vX.Y.Z` tag runs
-[`.github/workflows/desktop-release.yml`](../../.github/workflows/desktop-release.yml),
-which builds the desktop installers on GitHub-hosted runners and attaches them to a
-release whose notes come from `releases/X.Y.Z.md`.
+[`.github/workflows/release.yml`](../../.github/workflows/release.yml),
+whose `route` job picks the desktop lane and builds the installers on
+GitHub-hosted runners, attaching them to a release whose notes come from
+`releases/X.Y.Z.md`.
 
 The CLI ships from the same repository, so the two need separate tag namespaces:
-`release.yml` owns `v*` and this workflow owns `desktop-v*`. App releases are also
-published `--latest=false`, because `install.sh` resolves its version from the
-`/releases/latest` redirect and an app release taking that slot would break CLI
-installs.
+one workflow handles both. `v*` is the CLI lane and `desktop-v*` is the app lane.
+App releases are also published `--latest=false`, because `install.sh` resolves
+its version from the `/releases/latest` redirect and an app release taking that
+slot would break CLI installs.
 
 Instructions for agents: a request to write or review release instructions does
 not authorize a release. Ship only what the user asked for, and preserve their
@@ -62,7 +63,7 @@ readable, so automatic updates start working once the repository is public.
 
 ## SBOMs and scan coverage
 
-The `sbom` job in `desktop-release.yml` runs after the builds and attaches these to the
+The `desktop-sbom` job in `release.yml` runs after the builds and attaches these to the
 release (it never blocks publishing; a failed job just means they are missing):
 
 - `<asset>.cdx.json`: a CycloneDX SBOM that syft generates from each installer
@@ -93,7 +94,7 @@ commit SHA; keep it that way. Run the helper's tests with `npm run test:release`
 `packages/npx` is the `pantheon` npm package: it downloads the latest release asset
 (the updater file and its `.sig`), verifies the signature against the public key in
 `tauri.conf.json` and installs it; on macOS it then runs the app with `--local-sign`.
-The `npm` job in `desktop-release.yml` publishes it on tag runs with the release version, using
+The `desktop-npm` job in `release.yml` publishes it on tag runs with the release version, using
 the repository secret `NPM_TOKEN` (an npm automation token); without it the job warns
 and skips. If the update key is ever rotated, update `PUBKEY` in
 `packages/npx/installer.mjs` (a test compares it with `tauri.conf.json`).
@@ -144,14 +145,14 @@ The workflow refuses a tag that does not match the version in
 published tag; fix problems in a higher version.
 
 To try the build without publishing, run the workflow manually (Actions →
-desktop release → Run workflow) and leave **publish** unchecked: the installers are kept
+release → Run workflow) and leave **publish** unchecked: the installers are kept
 as workflow artifacts for 14 days. Checking **publish** on a manual run creates
 the release and the `desktop-vX.Y.Z` tag at the selected commit.
 
 ## 4. Watch and verify
 
 ```sh
-gh run list --workflow desktop-release.yml --limit 5
+gh run list --workflow release.yml --limit 5
 gh run watch RUN_ID
 gh release view "desktop-v$release_version"
 ```

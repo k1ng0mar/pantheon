@@ -1,22 +1,95 @@
 name: release
 
-# Publishes prebuilt Pantheon binaries. The installer downloads these
-# assets, so the names below are a contract: `install.sh`, `install.ps1`,
-# and `pantheon update` all construct
-#   pantheon-<tag>-<os>-<arch>.tar.gz  (linux, darwin)
-#   pantheon-<tag>-<os>-<arch>.zip     (windows)
-# Rename an asset here and the installer breaks on every machine.
+# One workflow, two release lanes. Do not collapse them into one tag:
+#
+# - `vX.Y.Z` builds the CLI. Those assets keep their exact names because
+#   install.sh, install.ps1 and `pantheon update` construct them from the tag.
+#   The CLI owns GitHub's `/releases/latest`.
+# - `desktop-vX.Y.Z` builds the Tauri app. Its GitHub Release is published
+#   with `--latest=false`, and the in-app updater reads `latest.json` from the
+#   fixed `desktop-latest` Release, so a later CLI tag cannot shadow it.
+#
+# Manual runs build desktop installers only. Tick `publish` to create the
+# desktop Release; unticked runs keep the installers as workflow artifacts.
+# Job `if:` guards below keep each lane off the other lane's tag.
 
 on:
   push:
     tags:
       - "v*"
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the desktop Release (manual runs build desktop installers)'
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  build:
+  route:
+    name: resolve release lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      track: ${{ steps.lane.outputs.track }}
+      version: ${{ steps.lane.outputs.version }}
+      publish: ${{ steps.lane.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve the lane and version
+        id: lane
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            case "$GITHUB_REF_NAME" in
+              v*)
+                track=cli
+                ;;
+              desktop-v*)
+                track=desktop
+                ;;
+              *)
+                echo "::error::Unknown tag $GITHUB_REF_NAME. Use vX.Y.Z or desktop-vX.Y.Z."
+                exit 1
+                ;;
+            esac
+            echo "track=$track" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            # Manual runs build desktop installers only, as before.
+            track=desktop
+            echo "track=$track" >> "$GITHUB_OUTPUT"
+            echo "publish=${PUBLISH:-false}" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$track" = desktop ]; then
+            version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+            if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "desktop-v$version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match app version $version. Run npm run release:version first and tag desktop-v$version."
+              exit 1
+            fi
+            if [ ! -s "desktop/releases/$version.md" ]; then
+              echo "::error::desktop/releases/$version.md is missing or empty."
+              exit 1
+            fi
+          else
+            version=${GITHUB_REF_NAME#v}
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "track=$track version=$version"
+
+  cli-build:
+    needs: route
+    if: needs.route.outputs.track == 'cli'
     name: build (${{ matrix.target }} on ${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -166,9 +239,13 @@ jobs:
             ${{ runner.temp }}/pantheon-*.sha256
             ${{ runner.temp }}/pantheon-*.minisig
 
-  publish:
+
+  cli-publish:
     name: publish release
-    needs: build
+    needs: [route, cli-build]
+    if: needs.route.outputs.track == 'cli'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -197,7 +274,7 @@ jobs:
       # The CLI assets used to ship without an SBOM while the desktop build
       # published one, so a consumer had no dependency inventory for the
       # binary the installer actually fetches (audit F8). Same pinned syft and
-      # checksum as desktop-release.yml; the SBOM files land in `dist/` and are
+      # checksum as the desktop lane below; the SBOM files land in `dist/` and are
       # attached by the glob below. Non-blocking: a tool-download failure must
       # not hold a signed release hostage, and the step says so in the log.
       - name: generate SBOMs for the release assets
@@ -225,3 +302,233 @@ jobs:
           files: dist/*
           generate_release_notes: true
           body: "${{ steps.signing.outputs.status }}"
+
+  desktop-build:
+    needs: route
+    if: needs.route.outputs.track == 'desktop'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin }
+          # Native Intel runner: build.mjs only builds on the target's own host architecture.
+          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin }
+          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc }
+          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      RELEASE_TARGET: ${{ matrix.target }}
+      # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
+      # an ad-hoc signature instead (see docs/releasing.md).
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.99.1
+          targets: ${{ matrix.triple }}
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
+      - run: npm ci
+      - run: npm run test:release
+      - name: Configure Apple signing keychain
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: node scripts/release/ci-apple.mjs
+        env:
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      - name: Build installer
+        run: node scripts/release/build.mjs
+        env:
+          # Signs the in-app update file. Without these secrets the installers still
+          # build, but the release offers no automatic update.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Remote access (docs/remote-access.md). Public values, kept as repository variables;
+          # without them the build shows remote access as not configured.
+          PANTHEON_RELAY_URL: ${{ vars.PANTHEON_RELAY_URL }}
+          PANTHEON_GITHUB_CLIENT_ID: ${{ vars.PANTHEON_GITHUB_CLIENT_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      - name: Check packaged app startup (not GUI behavior)
+        if: runner.os != 'macOS'
+        timeout-minutes: 4
+        run: node scripts/release/ci-startup-smoke.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pantheon-${{ needs.route.outputs.version }}-${{ matrix.target }}
+          path: desktop/release/${{ needs.route.outputs.version }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove Apple signing keychain
+        if: always() && runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: node scripts/release/ci-apple.mjs cleanup
+
+  # Release assurance (docs/releasing.md): SBOMs and scan coverage. Findings and tool
+  # failures are reported in SBOM-COVERAGE.md and never block the release.
+
+  desktop-sbom:
+    needs: [route, desktop-build]
+    if: needs.route.outputs.track == 'desktop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      VERSION: ${{ needs.route.outputs.version }}
+      SYFT_VERSION: '1.55.0'
+      SYFT_SHA256: bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d
+      GRYPE_VERSION: '0.121.0'
+      GRYPE_SHA256: 64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: desktop/assets
+          pattern: pantheon-${{ needs.route.outputs.version }}-*
+          merge-multiple: true
+      - name: Install syft and grype (pinned, checksum verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/tools" "$HOME/.local/bin"
+          cd "$RUNNER_TEMP/tools"
+          for tool in syft grype; do
+            ver_var=${tool^^}_VERSION; sum_var=${tool^^}_SHA256
+            file="${tool}_${!ver_var}_linux_amd64.tar.gz"
+            curl -fsSL -o "$file" "https://github.com/anchore/$tool/releases/download/v${!ver_var}/$file"
+            echo "${!sum_var}  $file" | sha256sum -c -
+            tar -xzf "$file" -C "$HOME/.local/bin" "$tool"
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Generate SBOMs and scan coverage
+        run: node scripts/release/sbom.mjs assets sbom "$VERSION" "$GITHUB_SHA"
+      - name: Show coverage
+        if: always()
+        run: cat sbom/SBOM-COVERAGE.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: pantheon-sbom-${{ needs.route.outputs.version }}
+          path: desktop/sbom/
+          if-no-files-found: warn
+          retention-days: 14
+
+
+  desktop-publish:
+    needs: [route, desktop-build, desktop-sbom]
+    if: needs.route.outputs.track == 'desktop' && (github.ref_type == 'tag' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      VERSION: ${{ needs.route.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: desktop/assets
+          pattern: pantheon-${{ needs.route.outputs.version }}-*
+          merge-multiple: true
+      - name: Download SBOMs and scan coverage
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: desktop/assets
+          name: pantheon-sbom-${{ needs.route.outputs.version }}
+      - name: Write release notes
+        env:
+          # A Developer ID signed build is notarized; an ad-hoc one is not, and
+          # macOS then needs a step the notes have to name.
+          SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        run: |
+          {
+            cat "releases/$VERSION.md"
+            printf '\n\n'
+            if [ "$SIGNED" = "true" ]; then node scripts/release/install-notes.mjs --signed; else node scripts/release/install-notes.mjs; fi
+          } > "$RUNNER_TEMP/notes.md"
+      - name: Write the updater manifest
+        run: |
+          if ls assets/*.sig >/dev/null 2>&1; then
+            node scripts/release/updater-manifest.mjs assets "$VERSION" "releases/$VERSION.md"
+          else
+            echo "::warning::No signed update files; this release will not update installed apps."
+          fi
+      - name: Create GitHub Release
+        # --latest=false: `install.sh` reads the CLI tag from /releases/latest, so an
+        # app release must never take that slot.
+        run: |
+          ls -l assets
+          gh release create "desktop-v$VERSION" assets/* \
+            --title "Pantheon $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --target "$GITHUB_SHA" \
+            --latest=false
+      - name: Refresh the updater manifest release
+        # The app's updater endpoint is pinned to
+        # .../releases/download/desktop-latest/latest.json rather than /releases/latest,
+        # so a CLI release published later cannot shadow the manifest. The Release is
+        # created once and only its latest.json is replaced afterwards.
+        run: |
+          if [ ! -f assets/latest.json ]; then
+            echo "::warning::No latest.json was built (unsigned release); the manifest is unchanged."
+            exit 0
+          fi
+          gh release view desktop-latest >/dev/null 2>&1 ||
+            gh release create desktop-latest \
+              --title "Pantheon desktop updater manifest" \
+              --notes "Fixed location for latest.json, the desktop app's update manifest. No installers here." \
+              --latest=false
+          gh release upload desktop-latest assets/latest.json --clobber
+
+
+  desktop-npm:
+    needs: [route, desktop-publish]
+    if: needs.route.outputs.track == 'desktop' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.route.outputs.version }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish npx pantheon
+        run: |
+          if [ ! -f packages/npx/package.json ]; then
+            echo "::warning::packages/npx is not present; skipping the npm publish of pantheon."
+            exit 0
+          fi
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set; skipping the npm publish of pantheon."
+            exit 0
+          fi
+          cd packages/npx
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm publish --provenance --access public

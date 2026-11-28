@@ -1,12 +1,11 @@
 # CI
 
-Five workflows live in `.github/workflows/`:
+Four workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Jobs |
 | --- | --- | --- |
 | `ci.yml` | push to `main`/`master`, every PR | `check`, `audit`, `sandbox-root`, `build`, `cross-platform`, `cross-platform-expiry`, `eval`, `desktop`, `desktop-rust`, `desktop-ui`, `install-smoke` |
-| `release.yml` | `v*` tag push | 5-target build matrix, packaging, optional minisign, smoke unpack |
-| `desktop-release.yml` | `desktop-v*` tag push | `prepare`, `build`, `sbom`, `publish`, `npm` |
+| `release.yml` | `v*`, `desktop-v*` tag push, manual desktop build | `route`, `cli-build`, `cli-publish`, `desktop-build`, `desktop-sbom`, `desktop-publish`, `desktop-npm` |
 | `pages.yml` | docs changes | documentation site |
 | `weekly.yml` | weekly cron | fmt, clippy, test, audit |
 

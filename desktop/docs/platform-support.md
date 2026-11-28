@@ -1,7 +1,7 @@
 # Desktop platform support
 
 Pantheon ships installers for six targets across three platforms. Each [GitHub Release](https://github.com/k1ng0mar/pantheon/releases)
-carries one installer per target, built by `.github/workflows/desktop-release.yml`
+carries one installer per target, built by `.github/workflows/release.yml`
 (see [releasing](releasing.md)). Windows and Linux builds are still previews:
 CI builds them and checks that the packaged app starts, but interactive desktop
 validation is incomplete.
