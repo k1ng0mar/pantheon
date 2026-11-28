@@ -31,12 +31,30 @@ pub const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageRequest {
     pub prompt: String,
-    /// `1024x1024`, `1536x1024`, ... — passed through; providers differ.
+    /// `1024x1024`, or a semantic `landscape|square|portrait` (`16:9`, `1:1`,
+    /// `9:16` also accepted). Backends differ in what they accept, so the
+    /// semantic form is translated per backend instead of forwarded blindly.
     pub size: Option<String>,
     /// Model id; the provider's first declared model when omitted.
     pub model: Option<String>,
     /// Provider id override; the `[model] provider` otherwise.
     pub provider: Option<String>,
+    /// Source images for an edit or a reference-grounded generation: absolute
+    /// paths, http(s) URLs, or `data:` URIs. Empty = text-to-image.
+    pub source_images: Vec<String>,
+}
+
+impl ImageRequest {
+    /// Convenience constructor for a plain text-to-image call.
+    pub fn text(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            size: None,
+            model: None,
+            provider: None,
+            source_images: Vec::new(),
+        }
+    }
 }
 
 /// What came back.
@@ -50,8 +68,10 @@ pub struct ImageOutput {
     /// asset actually depicts.
     pub revised_prompt: Option<String>,
     /// Which backend produced it (`openai_images`, `chat_image`, `a1111`,
-    /// `url_template`), so a surprising result can be traced to a wire.
+    /// `url_template`, `fal`), so a surprising result can be traced to a wire.
     pub backend: String,
+    /// True when a source image was supplied and the result is an edit.
+    pub edited: bool,
 }
 
 impl ImageOutput {
@@ -205,8 +225,8 @@ pub fn request_body(model: &str, req: &ImageRequest) -> serde_json::Value {
         // arbitrary content into a second request we would have to trust.
         "response_format": "b64_json",
     });
-    if let Some(size) = req.size.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        body["size"] = serde_json::Value::String(size.to_string());
+    if let Some(size) = openai_size(req.size.as_deref()) {
+        body["size"] = serde_json::Value::String(size);
     }
     body
 }
@@ -316,6 +336,10 @@ pub struct ImageSpec {
     pub key_header: Option<String>,
     pub steps: Option<u32>,
     pub timeout_secs: u64,
+    /// Route for image-to-image; None = this service cannot edit.
+    pub edit_endpoint: Option<String>,
+    /// How many reference images the service takes (0 = no edit support).
+    pub max_reference_images: usize,
 }
 
 /// Which provider id a call should use: the request's, else `[image].provider`,
@@ -392,11 +416,12 @@ pub fn resolve_spec(cfg: &Config, req: &ImageRequest) -> Result<ImageSpec, Panth
             .model
             .clone()
             .or_else(|| row.models.first().map(|m| m.id.clone()));
+        let tabs = base.contains("{image}");
         return Ok(ImageSpec {
             provider: want,
             label: row.label.clone().unwrap_or_else(|| "image service".into()),
             backend,
-            base,
+            base: base.clone(),
             model,
             key_env: row.key_env.clone(),
             key_header: row.key_header.clone(),
@@ -406,6 +431,21 @@ pub fn resolve_spec(cfg: &Config, req: &ImageRequest) -> Result<ImageSpec, Panth
                 .or(section.timeout_secs)
                 .filter(|s| *s > 0)
                 .unwrap_or(IMAGE_TIMEOUT_SECS),
+            edit_endpoint: row.edit_endpoint.clone(),
+            max_reference_images: row.max_reference_images.unwrap_or_else(|| {
+                // A row that does not say: the wire decides. A chat model takes
+                // images inline (a handful), an SD server takes one init image,
+                // fal needs an explicit edit route, the rest cannot edit.
+                match backend {
+                    Backend::ChatImage => 4,
+                    Backend::A1111 => 1,
+                    Backend::Fal => usize::from(row.edit_endpoint.is_some()),
+                    // A template that names `{image}` takes a source image;
+                    // one that does not cannot.
+                    Backend::UrlTemplate => usize::from(tabs),
+                    _ => 0,
+                }
+            }),
         });
     }
 
@@ -486,17 +526,16 @@ pub fn resolve_spec(cfg: &Config, req: &ImageRequest) -> Result<ImageSpec, Panth
             .timeout_secs
             .filter(|s| *s > 0)
             .unwrap_or(IMAGE_TIMEOUT_SECS),
+        // A service reachable only through [image].endpoint/its chat provider
+        // has no declared edit route: editing is opt-in per catalogue row.
+        edit_endpoint: None,
+        max_reference_images: 0,
     })
 }
 
 /// Backwards-compatible helper: the backend a prompt would use.
 pub fn resolve_backend(cfg: &Config) -> Result<Backend, PantheonError> {
-    let req = ImageRequest {
-        prompt: "x".into(),
-        size: None,
-        model: None,
-        provider: None,
-    };
+    let req = ImageRequest::text("x");
     resolve_spec(cfg, &req).map(|s| s.backend)
 }
 
@@ -600,7 +639,76 @@ pub fn catalog(cfg: &Config) -> Vec<ImageProviderInfo> {
     out
 }
 
-/// Split `1024x1024` into width/height./// Split `1024x1024` into width/height. Absent or unparsable = the backend's
+/// What the caller asked for, before it is translated per backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeHint {
+    /// `landscape` | `square` | `portrait` - the model's vocabulary, mapped to
+    /// whatever the backend accepts.
+    Semantic(&'static str),
+    Pixels(u32, u32),
+    /// Nothing usable was given: the backend's own default.
+    Unset,
+}
+
+/// Parse `size`: a literal `WxH`, or a semantic aspect (`landscape`, `square`,
+/// `portrait`, plus the `16:9`/`1:1`/`9:16` spellings). An unparsable value is
+/// `Unset` rather than an error, so a model passing `"wide"` still gets a
+/// picture instead of a rejection it will repeat.
+pub fn size_hint(size: Option<&str>) -> SizeHint {
+    let Some(raw) = size.map(str::trim).filter(|s| !s.is_empty()) else {
+        return SizeHint::Unset;
+    };
+    let lowered = raw.to_ascii_lowercase().replace(' ', "");
+    let semantic = match lowered.as_str() {
+        "landscape" | "wide" | "16:9" | "3:2" | "4:3" | "horizontal" => Some("landscape"),
+        "square" | "1:1" => Some("square"),
+        "portrait" | "tall" | "9:16" | "2:3" | "3:4" | "vertical" => Some("portrait"),
+        _ => None,
+    };
+    if let Some(s) = semantic {
+        return SizeHint::Semantic(s);
+    }
+    match size_parts(Some(raw)) {
+        Some((w, h)) => SizeHint::Pixels(w, h),
+        None => SizeHint::Unset,
+    }
+}
+
+/// OpenAI-wire `size` string. A literal spelling returns as given; a semantic
+/// aspect maps to the established trio.
+pub fn openai_size(size: Option<&str>) -> Option<String> {
+    match size_hint(size) {
+        SizeHint::Pixels(w, h) => Some(format!("{w}x{h}")),
+        SizeHint::Semantic("square") => Some("1024x1024".into()),
+        SizeHint::Semantic("portrait") => Some("1024x1536".into()),
+        SizeHint::Semantic(_) => Some("1536x1024".into()),
+        SizeHint::Unset => None,
+    }
+}
+
+/// fal `image_size`: a preset enum for a semantic aspect, an object for pixels.
+pub fn fal_image_size(size: Option<&str>) -> Option<serde_json::Value> {
+    match size_hint(size) {
+        SizeHint::Pixels(w, h) => Some(serde_json::json!({"width": w, "height": h})),
+        SizeHint::Semantic("square") => Some(serde_json::json!("square_hd")),
+        SizeHint::Semantic("portrait") => Some(serde_json::json!("portrait_16_9")),
+        SizeHint::Semantic(_) => Some(serde_json::json!("landscape_16_9")),
+        SizeHint::Unset => None,
+    }
+}
+
+/// Width/height for servers that take pixels (A1111, templates).
+pub fn pixel_dims(size: Option<&str>) -> Option<(u32, u32)> {
+    match size_hint(size) {
+        SizeHint::Pixels(w, h) => Some((w, h)),
+        SizeHint::Semantic("square") => Some((1024, 1024)),
+        SizeHint::Semantic("portrait") => Some((832, 1216)),
+        SizeHint::Semantic(_) => Some((1216, 832)),
+        SizeHint::Unset => None,
+    }
+}
+
+/// Split `1024x1024` into width/height. Absent or unparsable = the backend's
 /// own default (each server has a different natural size).
 pub fn size_parts(size: Option<&str>) -> Option<(u32, u32)> {
     let s = size?.trim().to_ascii_lowercase().replace('*', "x");
@@ -631,12 +739,26 @@ pub fn url_encode(s: &str) -> String {
 
 /// Fill a `url_template` endpoint. Unknown placeholders are left alone so a
 /// template can carry the server's own literal braces.
-pub fn fill_template(endpoint: &str, prompt: &str, size: Option<&str>, seed: u64, steps: Option<u32>) -> String {
-    let (w, h) = size_parts(size).unwrap_or((0, 0));
+pub fn fill_template(
+    endpoint: &str,
+    prompt: &str,
+    size: Option<&str>,
+    seed: u64,
+    steps: Option<u32>,
+) -> String {
+    // Semantic aspects become pixels here: a template takes numbers, and a
+    // portrait request must not silently render square.
+    let (w, h) = pixel_dims(size).unwrap_or((0, 0));
+    let aspect = match size_hint(size) {
+        SizeHint::Semantic(s) => s.to_string(),
+        SizeHint::Pixels(w, h) => format!("{w}:{h}"),
+        SizeHint::Unset => String::new(),
+    };
     endpoint
         .replace("{prompt}", &url_encode(prompt))
         .replace("{width}", &w.to_string())
         .replace("{height}", &h.to_string())
+        .replace("{aspect}", &aspect)
         .replace("{seed}", &seed.to_string())
         .replace("{steps}", &steps.unwrap_or(0).to_string())
 }
@@ -732,7 +854,22 @@ fn finish(
         provider,
         revised_prompt: revised,
         backend: backend.as_str().to_string(),
+        edited: false,
     })
+}
+
+/// The refusal an edit gets when the selected service cannot take an image in.
+/// Its remediation is different from a plain generation failure, so it says what
+/// to configure instead of "check the prompt".
+fn iedit_err(cause: String) -> PantheonError {
+    PantheonError::new(
+        "IMAGE_NO_EDIT",
+        Layer::Provider,
+        false,
+        cause,
+        "select an edit-capable service: a fal row with edit_endpoint, a chat_image or a1111 \n         backend, or a url_template whose URL contains {image}; `pantheon image list` shows them",
+        String::new(),
+    )
 }
 
 /// Ask the configured backend for one image.
@@ -742,6 +879,22 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
     }
     let spec = resolve_spec(cfg, req)?;
     let timeout = std::time::Duration::from_secs(spec.timeout_secs);
+    let editing = !req.source_images.is_empty();
+    if editing && spec.max_reference_images == 0 {
+        return Err(iedit_err(format!(
+            "service '{}' ({}) cannot take a source image",
+            spec.provider,
+            spec.backend.as_str()
+        )));
+    }
+    // More references than the service takes would be rejected by the far end;
+    // clamp like every other provider adapter does.
+    let sources: Vec<String> = req
+        .source_images
+        .iter()
+        .take(spec.max_reference_images.max(1))
+        .cloned()
+        .collect();
     let section = cfg.image.clone().unwrap_or_default();
     let key = spec
         .key_env
@@ -775,7 +928,28 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64 % 1_000_000)
                 .unwrap_or(0);
-            let url = fill_template(&spec.base, &req.prompt, req.size.as_deref(), seed, spec.steps);
+            let mut url =
+                fill_template(&spec.base, &req.prompt, req.size.as_deref(), seed, spec.steps);
+            if editing {
+                // A inline data URI would be a multi-megabyte query string and
+                // most template services fetch the URL themselves, so only a
+                // fetchable reference can be used here.
+                let first = sources.first().cloned().unwrap_or_default();
+                let lower = first.to_ascii_lowercase();
+                if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+                    return Err(iedit_err(
+                        "a url_template edit needs the source as an http(s) URL the service can fetch"
+                            .to_string(),
+                    ));
+                }
+                if !spec.base.contains("{image}") {
+                    return Err(iedit_err(format!(
+                        "service '{}' template has no {{image}} placeholder",
+                        spec.provider
+                    )));
+                }
+                url = url.replace("{image}", &url_encode(&first));
+            }
             let mut headers = vec![("accept".to_string(), "image/*".to_string())];
             if let Some(k) = key.clone() {
                 let (n, v) = key_pair(&spec, &k);
@@ -792,7 +966,11 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             )
         }
         Backend::A1111 => {
-            let (url, body) = a1111_request(&spec.base, req, spec.steps);
+            let (url, body) = if editing {
+                a1111_img2img_request(&spec.base, req, &sources, spec.steps)
+            } else {
+                a1111_request(&spec.base, req, spec.steps)
+            };
             let json = http_call(
                 "POST",
                 &url,
@@ -803,14 +981,16 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             let v: serde_json::Value = serde_json::from_slice(&json)
                 .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
             let bytes = parse_a1111(&v)?;
-            finish(
+            let mut out = finish(
                 bytes,
                 Some("image/png"),
                 spec.model.clone().unwrap_or_else(|| "sd".into()),
                 spec.provider,
                 spec.backend,
                 None,
-            )
+            )?;
+            out.edited = editing;
+            Ok(out)
         }
         Backend::Fal => {
             let model = spec.model.clone().ok_or_else(|| {
@@ -822,7 +1002,21 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                     ),
                 )
             })?;
-            let (url, body) = fal_request(&spec.base, &model, req);
+            let (url, body) = if editing {
+                let endpoint = spec.edit_endpoint.clone().ok_or_else(|| {
+                    iedit_err(format!(
+                        "fal service '{}' has no edit_endpoint; add one (e.g. \
+                         fal-ai/flux-2-pro/edit)",
+                        spec.provider
+                    ))
+                })?;
+                (
+                    format!("{}/{}", spec.base.trim_end_matches('/'), endpoint.trim_matches('/')),
+                    fal_edit_body(req, &sources).to_string(),
+                )
+            } else {
+                fal_request(&spec.base, &model, req)
+            };
             let mut headers = vec![
                 ("content-type".to_string(), "application/json".to_string()),
                 ("accept".to_string(), "application/json".to_string()),
@@ -838,16 +1032,24 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                 None => bytes,
                 Some(link) => http_call("GET", &link, &[], None, timeout)?,
             };
-            finish(
+            let mut out = finish(
                 bytes,
                 Some(&claimed),
                 model,
                 spec.provider,
                 spec.backend,
                 None,
-            )
+            )?;
+            out.edited = editing;
+            Ok(out)
         }
         Backend::ChatImage | Backend::OpenAiImages => {
+            if editing && spec.backend == Backend::OpenAiImages {
+                return Err(iedit_err(format!(
+                    "backend openai_images has no edit route here (service '{}')",
+                    spec.provider
+                )));
+            }
             let model = spec.model.clone().ok_or_else(|| {
                 ierr(
                     "IMAGE_NO_MODEL",
@@ -873,7 +1075,7 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                 ),
                 _ => (
                     format!("{}/chat/completions", spec.base),
-                    chat_image_body(&model, &req.prompt).to_string(),
+                    chat_image_body(&model, &req.prompt, &sources).to_string(),
                 ),
             };
             let json = http_call("POST", &url, &headers, Some(&body), timeout)?;
@@ -889,7 +1091,9 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                 Some(link) => http_call("GET", &link, &[], None, timeout)?,
             };
             let _ = &section;
-            finish(bytes, Some(&claimed), model, spec.provider, spec.backend, revised)
+            let mut out = finish(bytes, Some(&claimed), model, spec.provider, spec.backend, revised)?;
+            out.edited = editing;
+            Ok(out)
         }
     }
 }
@@ -917,8 +1121,8 @@ pub fn fal_request(base: &str, model: &str, req: &ImageRequest) -> (String, Stri
         "prompt": req.prompt,
         "num_images": 1,
     });
-    if let Some((w, h)) = size_parts(req.size.as_deref()) {
-        body["image_size"] = serde_json::json!({"width": w, "height": h});
+    if let Some(size) = fal_image_size(req.size.as_deref()) {
+        body["image_size"] = size;
     }
     (
         format!("{}/{}", base.trim_end_matches('/'), model.trim_matches('/')),
@@ -956,12 +1160,78 @@ pub fn parse_fal(
 }
 
 /// Body for a chat model that emits images (`modalities: ["image","text"]`).
-pub fn chat_image_body(model: &str, prompt: &str) -> serde_json::Value {
+/// With source images the content becomes a parts array, which is how a chat
+/// model takes an image in to edit or to ground a new one.
+pub fn chat_image_body(model: &str, prompt: &str, sources: &[String]) -> serde_json::Value {
+    let content = if sources.is_empty() {
+        serde_json::Value::String(prompt.to_string())
+    } else {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": prompt})];
+        for src in sources {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": src},
+            }));
+        }
+        serde_json::Value::Array(parts)
+    };
     serde_json::json!({
         "model": model,
         "modalities": ["image", "text"],
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
     })
+}
+
+/// fal edit request: the edit endpoint takes `image_urls` (data URIs and http
+/// URLs both work) plus the prompt.
+pub fn fal_edit_body(req: &ImageRequest, sources: &[String]) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "prompt": req.prompt,
+        "image_urls": sources,
+        "num_images": 1,
+    });
+    if let Some(size) = fal_image_size(req.size.as_deref()) {
+        body["image_size"] = size;
+    }
+    body
+}
+
+/// A1111 image-to-image: `init_images` are bare base64 (no `data:` prefix).
+pub fn a1111_img2img_request(
+    base: &str,
+    req: &ImageRequest,
+    sources: &[String],
+    steps: Option<u32>,
+) -> (String, String) {
+    let (w, h) = pixel_dims(req.size.as_deref()).unwrap_or((512, 512));
+    let init: Vec<String> = sources
+        .iter()
+        .map(|s| match s.strip_prefix("data:") {
+            Some(rest) => rest
+                .split_once(',')
+                .map(|(_, payload)| payload.to_string())
+                .unwrap_or_else(|| s.clone()),
+            None => s.clone(),
+        })
+        .collect();
+    let mut body = serde_json::json!({
+        "prompt": req.prompt,
+        "init_images": init,
+        "width": w,
+        "height": h,
+        "batch_size": 1,
+        "n_iter": 1,
+    });
+    if let Some(steps) = steps.filter(|s| *s > 0) {
+        body["steps"] = serde_json::Value::from(steps);
+    }
+    if let Some(model) = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        body["override_settings"] = serde_json::json!({"sd_model_checkpoint": model});
+    }
+    (
+        format!("{}/sdapi/v1/img2img", base.trim_end_matches('/')),
+        body.to_string(),
+    )
 }
 
 /// A chat-image answer carries the picture in `message.images[].image_url.url`
@@ -1035,7 +1305,7 @@ pub fn parse_chat_image(v: &serde_json::Value) -> Result<ParsedImage, PantheonEr
 /// Stable-Diffusion WebUI (A1111) request: same fields the `/sdapi/v1/txt2img`
 /// endpoint documents, minus the ones a text prompt cannot supply.
 pub fn a1111_request(base: &str, req: &ImageRequest, steps: Option<u32>) -> (String, String) {
-    let (w, h) = size_parts(req.size.as_deref()).unwrap_or((512, 512));
+    let (w, h) = pixel_dims(req.size.as_deref()).unwrap_or((512, 512));
     let mut body = serde_json::json!({
         "prompt": req.prompt,
         "width": w,
@@ -1121,6 +1391,7 @@ mod tests {
             size: None,
             model: None,
             provider: None,
+            source_images: Vec::new(),
         };
         let body = request_body("dall-e-3", &req);
         assert_eq!(body["model"], "dall-e-3");
@@ -1167,6 +1438,7 @@ mod tests {
                 size: None,
                 model: Some("m".into()),
                 provider: None,
+                source_images: Vec::new(),
             },
         )
         .unwrap_err();
@@ -1182,6 +1454,7 @@ mod tests {
                 size: None,
                 model: Some("m".into()),
                 provider: None,
+                source_images: Vec::new(),
             },
         )
         .unwrap_err();
@@ -1204,6 +1477,7 @@ mod tests {
                 size: None,
                 model: None,
                 provider: None,
+                source_images: Vec::new(),
             },
         )
         .unwrap_err();
@@ -1218,10 +1492,171 @@ mod tests {
                 size: None,
                 model: None,
                 provider: None,
+                source_images: Vec::new(),
             },
         )
         .unwrap_err();
         assert_eq!(e.code, "IMAGE_NO_MODEL", "no image model declared anywhere");
+    }
+
+    #[test]
+    fn size_accepts_a_semantic_aspect_or_pixels_and_translates_per_backend() {
+        assert_eq!(size_hint(Some("landscape")), SizeHint::Semantic("landscape"));
+        assert_eq!(size_hint(Some("16:9")), SizeHint::Semantic("landscape"));
+        assert_eq!(size_hint(Some("Portrait")), SizeHint::Semantic("portrait"));
+        assert_eq!(size_hint(Some("1:1")), SizeHint::Semantic("square"));
+        assert_eq!(size_hint(Some("768x512")), SizeHint::Pixels(768, 512));
+        assert_eq!(size_hint(Some("wide")), SizeHint::Semantic("landscape"));
+        assert_eq!(size_hint(Some("nonsense")), SizeHint::Unset);
+        assert_eq!(size_hint(None), SizeHint::Unset);
+
+        // openai literal, fal preset, sd pixels: same request, three wires.
+        assert_eq!(openai_size(Some("square")).as_deref(), Some("1024x1024"));
+        assert_eq!(openai_size(Some("landscape")).as_deref(), Some("1536x1024"));
+        assert_eq!(openai_size(Some("640x480")).as_deref(), Some("640x480"));
+        assert_eq!(fal_image_size(Some("square")), Some(serde_json::json!("square_hd")));
+        assert_eq!(
+            fal_image_size(Some("800x600")),
+            Some(serde_json::json!({"width": 800, "height": 600}))
+        );
+        assert_eq!(pixel_dims(Some("portrait")), Some((832, 1216)));
+        assert_eq!(pixel_dims(Some("512x512")), Some((512, 512)));
+    }
+
+    fn editable_cfg(backend: &str, edit: Option<&str>, refs: Option<usize>) -> Config {
+        let mut c = cfg();
+        c.image_providers.insert(
+            "svc".into(),
+            pantheon_api::config::ImageProviderSection {
+                label: Some("Svc".into()),
+                backend: backend.into(),
+                base_url: "https://svc.test/v1".into(),
+                models: vec![pantheon_api::config::CustomModel {
+                    id: "m".into(),
+                    ..Default::default()
+                }],
+                edit_endpoint: edit.map(str::to_string),
+                max_reference_images: refs,
+                ..Default::default()
+            },
+        );
+        c.image = Some(pantheon_api::config::ImageSection {
+            provider: Some("svc".into()),
+            ..Default::default()
+        });
+        c
+    }
+
+    #[test]
+    fn a_service_that_cannot_edit_refuses_a_source_image_by_name() {
+        // url_template has no edit route.
+        let c = editable_cfg("url_template", None, None);
+        let mut req = ImageRequest::text("edit this");
+        req.source_images.push("data:image/png;base64,AAAA".into());
+        let e = generate_image(&c, &req).unwrap_err();
+        assert_eq!(e.code, "IMAGE_NO_EDIT");
+        assert!(e.cause.contains("svc"), "{}", e.cause);
+    }
+
+    #[test]
+    fn the_wire_decides_how_many_reference_images_a_row_takes() {
+        // No declaration: chat_image takes a few, a1111 one, fal only with a route.
+        let chat = resolve_spec(&editable_cfg("chat_image", None, None), &ImageRequest::text("x")).unwrap();
+        assert_eq!(chat.max_reference_images, 4);
+        let sd = resolve_spec(&editable_cfg("a1111", None, None), &ImageRequest::text("x")).unwrap();
+        assert_eq!(sd.max_reference_images, 1);
+        let fal_plain =
+            resolve_spec(&editable_cfg("fal", None, None), &ImageRequest::text("x")).unwrap();
+        assert_eq!(fal_plain.max_reference_images, 0);
+        let fal_edit = resolve_spec(
+            &editable_cfg("fal", Some("fal-ai/flux-2-pro/edit"), None),
+            &ImageRequest::text("x"),
+        )
+        .unwrap();
+        assert_eq!(fal_edit.max_reference_images, 1);
+        assert_eq!(fal_edit.edit_endpoint.as_deref(), Some("fal-ai/flux-2-pro/edit"));
+    }
+
+    #[test]
+    fn a_fal_edit_body_carries_the_source_images_and_the_size() {
+        let body = fal_edit_body(
+            &ImageRequest {
+                prompt: "make it blue".into(),
+                size: Some("square".into()),
+                model: None,
+                provider: None,
+                source_images: vec![],
+            },
+            &["data:image/png;base64,AAA".to_string()],
+        );
+        assert_eq!(body["image_urls"][0], "data:image/png;base64,AAA");
+        assert_eq!(body["image_size"], "square_hd");
+        assert_eq!(body["num_images"], 1);
+    }
+
+    #[test]
+    fn an_sd_edit_request_strips_the_data_uri_prefix() {
+        let (url, body) = a1111_img2img_request(
+            "http://127.0.0.1:7860/",
+            &ImageRequest {
+                prompt: "add snow".into(),
+                size: Some("portrait".into()),
+                model: None,
+                provider: None,
+                source_images: vec![],
+            },
+            &[
+                "data:image/png;base64,QUJD".to_string(),
+                "http://x.test/b.png".to_string(),
+            ],
+            Some(20),
+        );
+        assert_eq!(url, "http://127.0.0.1:7860/sdapi/v1/img2img");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["init_images"][0], "QUJD");
+        assert_eq!(v["init_images"][1], "http://x.test/b.png");
+        assert_eq!(v["width"], 832);
+        assert_eq!(v["steps"], 20);
+    }
+
+    #[test]
+    fn a_chat_image_body_switches_to_parts_when_sources_are_given() {
+        let plain = chat_image_body("m", "a heron", &[]);
+        assert!(plain["messages"][0]["content"].is_string());
+        let edit = chat_image_body("m", "add snow", &["data:image/png;base64,AAA".into()]);
+        let parts = edit["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+    }
+
+    #[test]
+    fn a_template_with_image_can_edit_and_one_without_cannot() {
+        let mut c = cfg();
+        c.image_providers.insert(
+            "kontext".into(),
+            pantheon_api::config::ImageProviderSection {
+                backend: "url_template".into(),
+                base_url: "https://img.test/p/{prompt}?image={image}".into(),
+                ..Default::default()
+            },
+        );
+        c.image = Some(pantheon_api::config::ImageSection {
+            provider: Some("kontext".into()),
+            ..Default::default()
+        });
+        let spec = resolve_spec(&c, &ImageRequest::text("x")).unwrap();
+        assert_eq!(
+            spec.max_reference_images, 1,
+            "an {{image}} placeholder in the template means the service is editable"
+        );
+
+        // A data URI cannot ride a query string: refused with the edit error.
+        let mut req = ImageRequest::text("make it blue");
+        req.source_images.push("data:image/png;base64,AAAA".into());
+        let e = generate_image(&c, &req).unwrap_err();
+        assert_eq!(e.code, "IMAGE_NO_EDIT");
+        assert!(e.remediation.contains("edit-capable"), "{}", e.remediation);
     }
 
     #[test]
@@ -1239,6 +1674,11 @@ mod tests {
         assert!(url.contains("steps=20"), "{url}");
         let fallback = fill_template("https://x/{prompt}?w={width}", "p", Some("huge"), 1, None);
         assert!(fallback.ends_with("w=0"), "{fallback}");
+        // A semantic aspect fills pixels, not zeros: portrait must not render square.
+        let portrait = fill_template("https://x/{prompt}?w={width}&h={height}", "p", Some("portrait"), 1, None);
+        assert!(portrait.ends_with("w=832&h=1216"), "{portrait}");
+        let aspect = fill_template("https://x/{prompt}?a={aspect}", "p", Some("landscape"), 1, None);
+        assert!(aspect.ends_with("a=landscape"), "{aspect}");
     }
 
     #[test]
@@ -1302,6 +1742,7 @@ mod tests {
             size: Some("768x512".into()),
             model: Some("sdxl".into()),
             provider: None,
+            source_images: Vec::new(),
         };
         let (url, body) = a1111_request("http://127.0.0.1:7860/", &req, Some(25));
         assert_eq!(url, "http://127.0.0.1:7860/sdapi/v1/txt2img");
@@ -1324,6 +1765,8 @@ mod tests {
                 models: vec![],
                 steps: Some(4),
                 timeout_secs: Some(30),
+                edit_endpoint: None,
+                max_reference_images: None,
             },
         );
         cfg.image = Some(pantheon_api::config::ImageSection {
@@ -1343,6 +1786,7 @@ mod tests {
                 size: None,
                 model: None,
                 provider: None,
+                source_images: Vec::new(),
             },
         )
         .unwrap();
@@ -1367,6 +1811,7 @@ mod tests {
                 size: None,
                 model: Some("m".into()),
                 provider: Some("llm-router".into()),
+                source_images: Vec::new(),
             },
         )
         .unwrap();
@@ -1381,6 +1826,7 @@ mod tests {
                 size: None,
                 model: None,
                 provider: Some("nowhere".into()),
+                source_images: Vec::new(),
             },
         )
         .unwrap_err();
@@ -1395,7 +1841,7 @@ mod tests {
             .get_mut("pollinations")
             .unwrap()
             .backend = "dalle".into();
-        let e = resolve_spec(&c, &ImageRequest { prompt: "x".into(), size: None, model: None, provider: None })
+        let e = resolve_spec(&c, &ImageRequest::text("x"))
             .unwrap_err();
         assert_eq!(e.code, "IMAGE_BAD_BACKEND");
         assert!(e.cause.contains("image_providers.pollinations"), "{}", e.cause);
@@ -1403,7 +1849,7 @@ mod tests {
         let mut c = cfg();
         with_pollinations_row(&mut c);
         c.image_providers.get_mut("pollinations").unwrap().base_url = String::new();
-        let e = resolve_spec(&c, &ImageRequest { prompt: "x".into(), size: None, model: None, provider: None })
+        let e = resolve_spec(&c, &ImageRequest::text("x"))
             .unwrap_err();
         assert_eq!(e.code, "IMAGE_NO_ENDPOINT");
     }
@@ -1445,6 +1891,7 @@ mod tests {
                 size: Some("768x1024".into()),
                 model: None,
                 provider: None,
+                source_images: Vec::new(),
             },
         );
         assert_eq!(url, "https://fal.run/fal-ai/flux/schnell");

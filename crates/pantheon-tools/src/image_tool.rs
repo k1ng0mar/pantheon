@@ -38,17 +38,21 @@ pub fn register(reg: &mut ToolRegistry, data_dir: PathBuf) {
     reg.register_with(
         pantheon_api::message::ToolSchema {
             name: NAME.into(),
-            description: "Generate an image from a text prompt and save it to disk. Returns the \
-                          absolute path, mime type, byte size and which backend drew it; the file \
-                          can then be read, attached or copied like any other image. Use `size` \
-                          for a resolution the backend understands (e.g. 1024x1024)."
+            description: "Generate an image from a text prompt, or edit an existing image, and save \
+                          the result to disk. Returns the absolute path, mime type, byte size and \
+                          which backend drew it; the file can then be read, attached or copied like \
+                          any other image. With `source` (and optional `references`) it becomes an \
+                          edit when the configured service supports image input, and an error \
+                          naming the alternatives when it does not."
                 .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string", "description": "what to draw, in words"},
-                    "size": {"type": "string", "description": "e.g. 1024x1024 or 1536x1024"},
+                    "prompt": {"type": "string", "description": "what to draw, or what change to make when editing"},
+                    "size": {"type": "string", "description": "aspect (`landscape`, `square`, `portrait`) or pixels (`1024x1024`)"},
                     "model": {"type": "string", "description": "image model id; defaults to the provider's declared image model"},
+                    "source": {"type": "string", "description": "image to edit: an absolute path, an http(s) URL, or a data URI"},
+                    "references": {"type": "array", "items": {"type": "string"}, "description": "extra style/composition images (clamped to what the service takes)"},
                     "name": {"type": "string", "description": "file stem for the saved image (optional)"}
                 },
                 "required": ["prompt"]
@@ -125,6 +129,19 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    // Source images: a local path becomes a data URI (a remote service cannot
+    // read our disk), an http(s)/data value passes through after a scheme
+    // check, and anything else is refused so a prompt cannot smuggle a
+    // `file://` read into a request body.
+    let mut source_images = Vec::new();
+    if let Some(src) = v.get("source").and_then(Value::as_str) {
+        source_images.push(inline_source(src)?);
+    }
+    if let Some(refs) = v.get("references").and_then(Value::as_array) {
+        for r in refs.iter().filter_map(Value::as_str) {
+            source_images.push(inline_source(r)?);
+        }
+    }
     let cfg = Config::load(data_dir).map_err(|e| perr("IMAGE_CONFIG", e.to_string()))?;
     let out = generate_image(
         &cfg,
@@ -133,6 +150,7 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
             size: size.clone(),
             model,
             provider: None,
+            source_images,
         },
     )?;
 
@@ -147,7 +165,9 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
     if let Err(e) = std::fs::write(&path, &out.bytes) {
         return Err(perr("IMAGE_WRITE", e.to_string()));
     }
+    sweep_old_images(data_dir, cfg.image.as_ref().and_then(|i| i.keep_days));
     Ok(serde_json::json!({
+        "edited": out.edited,
         "path": path.display().to_string(),
         "mime": out.mime,
         "bytes": out.bytes.len(),
@@ -158,6 +178,81 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
         "revised_prompt": out.revised_prompt,
     })
     .to_string())
+}
+
+/// Turn one source reference into something a remote service can consume: a
+/// local path is read, sniffed and inlined as a `data:` URI; http(s) and
+/// existing data URIs pass through; anything else is refused.
+fn inline_source(value: &str) -> Result<String, pantheon_api::error::PantheonError> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err(perr("IMAGE_BAD_SOURCE", "empty source image".into()));
+    }
+    let lower = v.to_ascii_lowercase();
+    if lower.starts_with("data:image/") {
+        // Cap inline payloads: a huge base64 blob is rejected by every service
+        // and inflates the request body. ~6 MB of encoded data.
+        if v.len() > 6 * 1024 * 1024 {
+            return Err(perr(
+                "IMAGE_SOURCE_TOO_LARGE",
+                format!("inline source is {} bytes of base64", v.len()),
+            ));
+        }
+        return Ok(v.to_string());
+    }
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return Ok(v.to_string());
+    }
+    if lower.starts_with("file:") || v.contains("://") {
+        return Err(perr(
+            "IMAGE_BAD_SOURCE",
+            format!("unsupported source reference: {v}"),
+        ));
+    }
+    let path = Path::new(v);
+    let bytes = std::fs::read(path).map_err(|e| perr("IMAGE_BAD_SOURCE", format!("{v}: {e}")))?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(perr(
+            "IMAGE_SOURCE_TOO_LARGE",
+            format!("{v} is {} bytes (4 MiB cap for an inline source)", bytes.len()),
+        ));
+    }
+    let mime = pantheon_providers::image::sniff_mime(&bytes).ok_or_else(|| {
+        perr(
+            "IMAGE_BAD_SOURCE",
+            format!("{v} is not a png/jpeg/webp/gif image"),
+        )
+    })?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        pantheon_api::message::b64encode(&bytes)
+    ))
+}
+
+/// Drop generated images older than `keep_days` (0/absent = keep forever).
+/// Best-effort: a sweep failure must never fail a generation that worked.
+fn sweep_old_images(data_dir: &Path, keep_days: Option<u64>) {
+    let Some(days) = keep_days.filter(|d| *d > 0) else {
+        return;
+    };
+    let dir = data_dir.join("images");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if modified < cutoff {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +367,52 @@ mod tests {
             bytes.len(),
             v["mime"].as_str().unwrap_or("?")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_local_source_becomes_a_data_uri_and_paths_cannot_escape() {
+        let dir = std::env::temp_dir().join(format!("pantheon-src-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("in.png");
+        std::fs::write(&png, [0x89u8, b'P', b'N', b'G', 0x0d]).unwrap();
+        let out = inline_source(png.to_str().unwrap()).unwrap();
+        assert!(out.starts_with("data:image/png;base64,"), "{out}");
+        // Scheme handling: pass-through, and refusals.
+        assert!(inline_source("https://x.test/a.png").is_ok());
+        assert!(inline_source("data:image/png;base64,AAA").is_ok());
+        let e = inline_source("file:///etc/passwd").unwrap_err();
+        assert_eq!(e.code, "IMAGE_BAD_SOURCE");
+        let notimg = dir.join("notes.txt");
+        std::fs::write(&notimg, b"hello").unwrap();
+        let e = inline_source(notimg.to_str().unwrap()).unwrap_err();
+        assert_eq!(e.code, "IMAGE_BAD_SOURCE");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_retention_sweep_removes_only_images_past_the_cutoff() {
+        let dir = std::env::temp_dir().join(format!("pantheon-sweep-{}", std::process::id()));
+        let images = dir.join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let fresh = images.join("fresh.png");
+        let stale = images.join("stale.png");
+        std::fs::write(&fresh, b"x").unwrap();
+        std::fs::write(&stale, b"x").unwrap();
+        // Age the stale file beyond the cutoff without touching the fresh one.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 60 * 60);
+        let f = std::fs::File::options().write(true).open(&stale).unwrap();
+        f.set_modified(old).unwrap();
+        sweep_old_images(&dir, Some(30));
+        assert!(fresh.exists(), "recent images survive");
+        assert!(!stale.exists(), "images older than keep_days are swept");
+        // 0 / absent means keep forever.
+        std::fs::write(&stale, b"x").unwrap();
+        let f = std::fs::File::options().write(true).open(&stale).unwrap();
+        f.set_modified(old).unwrap();
+        sweep_old_images(&dir, Some(0));
+        sweep_old_images(&dir, None);
+        assert!(stale.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -466,6 +466,11 @@ pub struct ImageSection {
     /// passed to template/SD backends that take a seed. absent = none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
+    /// days to keep generated images under `<data_dir>/images`; 0 or absent =
+    /// keep forever. The sweep runs after a successful generation, so a busy
+    /// install cannot grow the directory without bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_days: Option<u64>,
 }
 
 /// `[image_providers.<id>]`: one image service, in its own catalogue.
@@ -507,6 +512,16 @@ pub struct ImageProviderSection {
     /// wall clock for one generation; absent = `[image].timeout_secs` or 120s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// route for image-to-image (editing a source image). Absent = this service
+    /// cannot edit, and a call carrying a source image is refused by name
+    /// rather than silently generating something unrelated.
+    /// fal: `fal-ai/flux-2-pro/edit`; a1111: unused (img2img is implied);
+    /// chat_image: unused (the chat wire takes images inline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_endpoint: Option<String>,
+    /// how many reference images this service takes; 0/absent = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_reference_images: Option<usize>,
 }
 
 /// `[scheduled]`: model scheduled (background) runs execute with.

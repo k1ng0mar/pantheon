@@ -15,12 +15,15 @@ pantheon image <command>
 
     list                     configured services, presets, and which one is active
     test --prompt <text>     run one real generation and report the file
-         [--size 1024x1024] [--provider <id>] [--model <id>] [--out <path>]
+         [--size landscape|square|portrait|1024x1024]
+         [--source <path|url> ...] [--provider <id>] [--model <id>] [--out <path>]
     add <id> --backend <b> --base-url <url>
          [--model <id>] [--key-env <VAR>] [--key-header <Header>]
-         [--label <name>] [--steps <n>] [--select]
+         [--label <name>] [--steps <n>] [--edit-endpoint <route>]
+         [--max-refs <n>] [--select]
     remove <id>              drop a service from the config
     select <id>              point [image].provider at a service
+    keep <days>              delete generated images older than N days (0 = keep)
 
 Backends and the services they fit:
     openai_images   POST {base}/images/generations      OpenAI-wire APIs, routers
@@ -41,6 +44,7 @@ pub fn start(args: &[String]) {
         Some("add") => add(&args[1..]),
         Some("remove") => remove(&args[1..]),
         Some("select") => select(&args[1..]),
+        Some("keep") => keep(&args[1..]),
         Some("--help") | Some("-h") | Some("help") => println!("{USAGE}"),
         Some(other) => {
             println!("unknown image subcommand {other:?}\n");
@@ -102,6 +106,21 @@ fn list() {
     }
 }
 
+/// Every `--source` value, in order.
+fn source_args(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if a == "--source" {
+            if let Some(v) = args.get(i + 1) {
+                out.push(v.clone());
+            }
+        } else if let Some(rest) = a.strip_prefix("--source=") {
+            out.push(rest.to_string());
+        }
+    }
+    out
+}
+
 fn flag(args: &[String], name: &str) -> Option<String> {
     for (i, a) in args.iter().enumerate() {
         if a == name {
@@ -132,6 +151,8 @@ fn test(args: &[String]) {
         size: flag(args, "--size"),
         model: flag(args, "--model"),
         provider: flag(args, "--provider"),
+        // Editing from the CLI: `--source <path|url>` (repeatable).
+        source_images: source_args(args),
     };
     // Show the target before spending anything on it.
     match resolve_spec(&cfg, &req) {
@@ -218,6 +239,8 @@ fn add(args: &[String]) {
             .unwrap_or_default(),
         steps: flag(args, "--steps").and_then(|s| s.trim().parse().ok()),
         timeout_secs: None,
+        edit_endpoint: flag(args, "--edit-endpoint"),
+        max_reference_images: flag(args, "--max-refs").and_then(|s| s.trim().parse().ok()),
     };
     cfg.image_providers.insert(id.clone(), row);
     if args.iter().any(|a| a == "--select") {
@@ -284,6 +307,32 @@ fn select(args: &[String]) {
     cfg.image = Some(section);
     match cfg.save(&dir) {
         Ok(()) => println!("[image].provider = \"{id}\""),
+        Err(e) => println!("could not save config: {e}"),
+    }
+}
+
+/// `pantheon image keep <days>` - retention for `<data_dir>/images`; the sweep
+/// runs after a successful generation in the `image` tool.
+fn keep(args: &[String]) {
+    let Some(days) = args
+        .first()
+        .and_then(|d| d.trim().parse::<u64>().ok())
+    else {
+        println!("keep needs a number of days (0 = keep forever)");
+        return;
+    };
+    let Some((dir, mut cfg)) = load() else { return };
+    let mut section = cfg.image.clone().unwrap_or_default();
+    section.keep_days = Some(days);
+    cfg.image = Some(section);
+    match cfg.save(&dir) {
+        Ok(()) => {
+            if days == 0 {
+                println!("generated images are kept forever");
+            } else {
+                println!("generated images older than {days} day(s) are removed after each generation");
+            }
+        }
         Err(e) => println!("could not save config: {e}"),
     }
 }
