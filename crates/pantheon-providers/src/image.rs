@@ -48,6 +48,10 @@ pub struct ImageRequest {
     /// Deterministic seed where the backend accepts one - the knob for "same
     /// composition, another try".
     pub seed: Option<u64>,
+    /// Requested container: `png` | `jpeg` | `webp`. Advisory: a backend that
+    /// cannot choose returns its own format, and the mime is sniffed from the
+    /// bytes either way.
+    pub output_format: Option<String>,
 }
 
 impl ImageRequest {
@@ -61,6 +65,7 @@ impl ImageRequest {
             source_images: Vec::new(),
             n: 1,
             seed: None,
+            output_format: None,
         }
     }
 
@@ -273,6 +278,10 @@ pub fn request_body(model: &str, req: &ImageRequest) -> serde_json::Value {
         "response_format": "b64_json",
     });
     body["n"] = serde_json::Value::from(req.batch());
+    if let Some(f) = output_format(req) {
+        // OpenAI's images endpoint calls JPEG "jpeg" as well.
+        body["output_format"] = serde_json::Value::String(f.to_string());
+    }
     if let Some(size) = openai_size(req.size.as_deref()) {
         body["size"] = serde_json::Value::String(size);
     }
@@ -606,6 +615,9 @@ pub struct ImageProviderInfo {
     pub base: String,
     pub models: Vec<String>,
     pub key_env: Option<String>,
+    /// Free-text picker hints from the row ("" when unset).
+    pub speed: Option<String>,
+    pub strengths: Option<String>,
     pub configured: bool,
     /// Selected by `[image].provider` (or the chat provider when that is
     /// absent), i.e. what a prompt would use right now.
@@ -620,6 +632,8 @@ pub fn presets() -> Vec<ImageProviderInfo> {
         ImageProviderInfo {
             id: "pollinations".into(),
             label: "Pollinations (keyless)".into(),
+            speed: Some("~2-5s".into()),
+            strengths: Some("free, no key; simple illustrations".into()),
             backend: "url_template".into(),
             base: "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&nologo=true&seed={seed}".into(),
             models: vec![],
@@ -630,6 +644,8 @@ pub fn presets() -> Vec<ImageProviderInfo> {
         ImageProviderInfo {
             id: "fal".into(),
             label: "fal.ai".into(),
+            speed: Some("~1-8s".into()),
+            strengths: Some("many models, edit + upscale routes".into()),
             backend: "fal".into(),
             base: "https://fal.run".into(),
             models: vec!["fal-ai/flux/schnell".into()],
@@ -640,6 +656,8 @@ pub fn presets() -> Vec<ImageProviderInfo> {
         ImageProviderInfo {
             id: "openai-images".into(),
             label: "OpenAI-compatible images".into(),
+            speed: Some("~10-120s".into()),
+            strengths: Some("strong prompt following, crisp text".into()),
             backend: "openai_images".into(),
             base: "https://api.openai.com/v1".into(),
             models: vec!["gpt-image-1".into()],
@@ -650,6 +668,8 @@ pub fn presets() -> Vec<ImageProviderInfo> {
         ImageProviderInfo {
             id: "local-sd".into(),
             label: "Local Stable-Diffusion (A1111/Forge)".into(),
+            speed: Some("depends on GPU".into()),
+            strengths: Some("private, no metered cost, img2img".into()),
             backend: "a1111".into(),
             base: "http://127.0.0.1:7860".into(),
             models: vec![],
@@ -681,6 +701,8 @@ pub fn catalog(cfg: &Config) -> Vec<ImageProviderInfo> {
             base: row.base_url.clone(),
             models: row.models.iter().map(|m| m.id.clone()).collect(),
             key_env: row.key_env.clone(),
+            speed: row.speed.clone(),
+            strengths: row.strengths.clone(),
             configured: true,
             selected: active.as_deref() == Some(id.as_str()),
         })
@@ -1218,6 +1240,7 @@ pub fn upscale_image(cfg: &Config, req: &UpscaleRequest) -> Result<ImageOutput, 
             source_images: vec![req.source.clone()],
             n: 1,
             seed: None,
+            output_format: None,
         },
     )?;
     let scale = req.scale.clamp(1.5, 4.0);
@@ -1380,6 +1403,9 @@ pub fn fal_request(base: &str, model: &str, req: &ImageRequest) -> (String, Stri
     if let Some(seed) = req.seed {
         body["seed"] = serde_json::Value::from(seed);
     }
+    if let Some(f) = output_format(req) {
+        body["output_format"] = serde_json::Value::String(f.to_string());
+    }
     (
         format!("{}/{}", base.trim_end_matches('/'), model.trim_matches('/')),
         body.to_string(),
@@ -1488,6 +1514,18 @@ pub fn parse_a1111_all(v: &serde_json::Value) -> Result<Vec<Vec<u8>>, PantheonEr
         ));
     }
     Ok(out)
+}
+
+/// Normalise a requested container to the three names backends speak, or
+/// `None` when the value is not one of them (advisory: an unknown spelling
+/// must not fail a generation that would otherwise work).
+pub fn output_format(req: &ImageRequest) -> Option<&'static str> {
+    match req.output_format.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("png") => Some("png"),
+        Some("jpeg") | Some("jpg") => Some("jpeg"),
+        Some("webp") => Some("webp"),
+        _ => None,
+    }
 }
 
 /// Body for a chat model that emits images (`modalities: ["image","text"]`).
@@ -1734,6 +1772,7 @@ mod tests {
             source_images: Vec::new(),
             n: 1,
             seed: None,
+            output_format: None,
         };
         let body = request_body("dall-e-3", &req);
         assert_eq!(body["model"], "dall-e-3");
@@ -1783,6 +1822,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap_err();
@@ -1801,6 +1841,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap_err();
@@ -1826,6 +1867,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap_err();
@@ -1843,6 +1885,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap_err();
@@ -1938,6 +1981,7 @@ mod tests {
                 source_images: vec![],
                 n: 1,
                 seed: None,
+                output_format: None,
             },
             &["data:image/png;base64,AAA".to_string()],
         );
@@ -1958,6 +2002,7 @@ mod tests {
                 source_images: vec![],
                 n: 1,
                 seed: None,
+                output_format: None,
             },
             &[
                 "data:image/png;base64,QUJD".to_string(),
@@ -2033,6 +2078,29 @@ mod tests {
     }
 
     #[test]
+    fn an_output_format_is_normalised_and_only_sent_where_it_is_honoured() {
+        let with = |f: &str| ImageRequest {
+            output_format: Some(f.into()),
+            ..ImageRequest::text("x")
+        };
+        assert_eq!(output_format(&with("PNG")), Some("png"));
+        assert_eq!(output_format(&with("jpg")), Some("jpeg"));
+        assert_eq!(output_format(&with("webp")), Some("webp"));
+        assert_eq!(output_format(&with("tiff")), None, "unknown container is ignored");
+        assert_eq!(output_format(&ImageRequest::text("x")), None);
+
+        let v = request_body("gpt-image-1", &with("jpg"));
+        assert_eq!(v["output_format"], "jpeg");
+        let (_, fal) = fal_request("https://fal.run", "fal-ai/flux/schnell", &with("png"));
+        let fal: serde_json::Value = serde_json::from_str(&fal).unwrap();
+        assert_eq!(fal["output_format"], "png");
+        // SD servers choose their own container; nothing is invented.
+        let (_, sd) = a1111_request("http://127.0.0.1:7860", &with("webp"), None);
+        let sd: serde_json::Value = serde_json::from_str(&sd).unwrap();
+        assert!(sd.get("output_format").is_none());
+    }
+
+    #[test]
     fn a_batch_request_carries_the_count_and_the_seed() {
         let req = ImageRequest {
             prompt: "a heron".into(),
@@ -2042,6 +2110,7 @@ mod tests {
             source_images: vec![],
             n: 3,
             seed: Some(77),
+            output_format: None,
         };
         let v = request_body("m", &req);
         assert_eq!(v["n"], 3);
@@ -2054,7 +2123,14 @@ mod tests {
         assert_eq!(sd["batch_size"], 3);
         assert_eq!(sd["seed"], 77);
         // A typo cannot order fifty paid images.
-        assert_eq!(ImageRequest { n: 40, ..req.clone() }.batch(), MAX_IMAGES_PER_CALL);
+        assert_eq!(
+            ImageRequest {
+                n: 40,
+                ..req.clone()
+            }
+            .batch(),
+            MAX_IMAGES_PER_CALL
+        );
     }
 
     #[test]
@@ -2192,6 +2268,7 @@ mod tests {
             source_images: Vec::new(),
             n: 1,
             seed: None,
+            output_format: None,
         };
         let (url, body) = a1111_request("http://127.0.0.1:7860/", &req, Some(25));
         assert_eq!(url, "http://127.0.0.1:7860/sdapi/v1/txt2img");
@@ -2218,6 +2295,8 @@ mod tests {
                 max_reference_images: None,
                 upscale_endpoint: None,
                 price_per_image: None,
+                speed: None,
+                strengths: None,
             },
         );
         cfg.image = Some(pantheon_api::config::ImageSection {
@@ -2240,6 +2319,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap();
@@ -2267,6 +2347,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap();
@@ -2284,6 +2365,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .unwrap_err();
@@ -2351,6 +2433,7 @@ mod tests {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         );
         assert_eq!(url, "https://fal.run/fal-ai/flux/schnell");

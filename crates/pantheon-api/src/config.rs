@@ -531,6 +531,14 @@ pub struct ImageProviderSection {
     /// unknown; the ledger row then says so instead of inventing a number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_per_image: Option<f64>,
+    /// Rough wall-clock for one image, for the picker ("~2s", "~40s"). Free
+    /// text: it drifts, so it is shown, never parsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    /// What this service is good at ("crisp text", "photorealism"). Shown in
+    /// the picker so a choice is not made on price alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strengths: Option<String>,
 }
 
 /// `[scheduled]`: model scheduled (background) runs execute with.

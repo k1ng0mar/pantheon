@@ -23,7 +23,8 @@ pantheon image <command>
          [--model <id>] [--key-env <VAR>] [--key-header <Header>]
          [--label <name>] [--steps <n>] [--edit-endpoint <route>]
          [--max-refs <n>] [--upscale-endpoint <route>]
-         [--price <usd-per-image>] [--select]
+         [--price <usd-per-image>] [--speed <text>]
+         [--strengths <text>] [--select]
     remove <id>              drop a service from the config
     select <id>              point [image].provider at a service
     keep <days>              delete generated images older than N days (0 = keep)
@@ -83,6 +84,16 @@ fn list() {
         println!("  {mark} {} [{state}] {} -> {}", r.id, r.backend, r.base);
         if !r.models.is_empty() {
             println!("      models: {}", r.models.join(", "));
+        }
+        if r.speed.is_some() || r.strengths.is_some() {
+            let mut parts = Vec::new();
+            if let Some(speed) = &r.speed {
+                parts.push(format!("speed {speed}"));
+            }
+            if let Some(strengths) = &r.strengths {
+                parts.push(strengths.clone());
+            }
+            println!("      {}", parts.join(" · "));
         }
         if let Some(price) = cfg
             .image_providers
@@ -168,6 +179,7 @@ fn test(args: &[String]) {
             .and_then(|n| n.trim().parse().ok())
             .unwrap_or(1),
         seed: flag(args, "--seed").and_then(|s| s.trim().parse().ok()),
+        output_format: flag(args, "--format"),
     };
     // Show the target before spending anything on it.
     match resolve_spec(&cfg, &req) {
@@ -286,6 +298,8 @@ fn add(args: &[String]) {
         max_reference_images: flag(args, "--max-refs").and_then(|s| s.trim().parse().ok()),
         upscale_endpoint: flag(args, "--upscale-endpoint"),
         price_per_image: flag(args, "--price").and_then(|s| s.trim().parse().ok()),
+        speed: flag(args, "--speed"),
+        strengths: flag(args, "--strengths"),
     };
     cfg.image_providers.insert(id.clone(), row);
     if args.iter().any(|a| a == "--select") {

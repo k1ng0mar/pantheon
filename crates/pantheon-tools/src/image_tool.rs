@@ -63,6 +63,7 @@ fn schema_for(data_dir: &Path) -> pantheon_api::message::ToolSchema {
                 source_images: Vec::new(),
                 n: 1,
                 seed: None,
+                output_format: None,
             },
         )
         .ok()
@@ -123,6 +124,17 @@ fn schema_for(data_dir: &Path) -> pantheon_api::message::ToolSchema {
                 "minimum": 1,
                 "maximum": 8,
                 "description": "how many images to generate; each one is billed"
+            });
+        }
+        if matches!(
+            spec.backend,
+            pantheon_providers::image::Backend::Fal
+                | pantheon_providers::image::Backend::OpenAiImages
+        ) {
+            props["format"] = serde_json::json!({
+                "type": "string",
+                "enum": ["png", "jpeg", "webp"],
+                "description": "container for the returned bytes; the mime is sniffed either way"
             });
         }
         if !matches!(
@@ -237,6 +249,12 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
         .map(|n| n as usize)
         .unwrap_or(1);
     let seed = v.get("seed").and_then(Value::as_u64);
+    let format = v
+        .get("format")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string);
     let cfg = Config::load(data_dir).map_err(|e| perr("IMAGE_CONFIG", e.to_string()))?;
     // Source images: a local path becomes a data URI (a remote service cannot
     // read our disk), an http(s)/data value passes through after a scheme
@@ -253,6 +271,7 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
             source_images: Vec::new(),
             n: 1,
             seed: None,
+            output_format: None,
         },
     )
     .map(|s| match s.backend {
@@ -280,6 +299,7 @@ fn run(args: &str, data_dir: &Path) -> Result<String, pantheon_api::error::Panth
             source_images,
             n,
             seed,
+            output_format: format.clone(),
         },
     );
     let (out, cost) = match out {
@@ -381,6 +401,7 @@ pub fn record_generation(
             source_images: Vec::new(),
             n: 1,
             seed: None,
+            output_format: None,
         },
     );
     let (provider, backend) = match &spec {
@@ -786,6 +807,10 @@ mod tests {
         assert!(props.get("references").is_none());
         assert!(props.get("n").is_none(), "single-image wire -> no batch knob");
         assert!(props.get("seed").is_some(), "templates take a seed");
+        assert!(
+            props.get("format").is_none(),
+            "a template returns whatever the service encodes"
+        );
         assert!(schema.description.contains("cannot take a source image"));
 
         // A fal row with an edit route and an upscaler: the knobs appear.
@@ -800,6 +825,7 @@ mod tests {
         assert_eq!(props["references"]["maxItems"], 1);
         assert!(props.get("n").is_some());
         assert!(props.get("seed").is_some());
+        assert!(props.get("format").is_some(), "fal can pick a container");
         assert!(schema.description.contains("upscale"));
         let _ = std::fs::remove_dir_all(&dir);
     }
