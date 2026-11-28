@@ -905,14 +905,172 @@ pub mod agui_serve {
             extra_headers: Vec::new(),
         }
     }
-    fn handle_rpc(cfg: &AguiServeConfig, body: &str) -> Response {
+    fn handle_rpc(cfg: &AguiServeConfig, body: &str, key: Option<&str>) -> Response {
+        let key = key.map(str::trim).filter(|k| !k.is_empty());
+        let fingerprint = key.map(|_| fingerprint_of(body));
+        if let (Some(k), Some(fp)) = (key, fingerprint) {
+            match idempotency::lookup(k, fp) {
+                idempotency::Lookup::Replay(body) => {
+                    return Response::Buffered {
+                        status: 200,
+                        content_type: "application/json",
+                        body,
+                        extra_headers: vec![("Idempotency-Replayed", "true".to_string())],
+                    };
+                }
+                idempotency::Lookup::Mismatch => {
+                    return json(
+                        409,
+                        br#"{"error":{"code":-32600,"message":"Idempotency-Key was already used with different parameters"}}"#,
+                    );
+                }
+                idempotency::Lookup::Miss => {}
+            }
+        }
         let d = cfg.dispatcher();
         let mut out = Vec::new();
+        let mut failed = false;
         for resp in d.handle_line(body.trim()) {
+            if resp.error.is_some() {
+                failed = true;
+            }
             out.push(serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into()));
         }
-        json(200, out.join("\n").as_bytes())
+        let joined = out.join("\n");
+        // Only a clean answer is worth replaying: caching a provider timeout
+        // would make the retry fail forever with the first attempt's error.
+        if let (Some(k), Some(fp)) = (key, fingerprint) {
+            if !failed {
+                idempotency::store(k, fp, joined.as_bytes());
+            }
+        }
+        json(200, joined.as_bytes())
     }
+
+    /// Stable fingerprint of one RPC body: the method plus its params, without
+    /// trusting the client's JSON-RPC `id` (a retry reuses the key but may
+    /// renumber). Falls back to the raw body when it is not valid JSON.
+    fn fingerprint_of(body: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(v) => {
+                v.get("method").map(|m| m.to_string()).hash(&mut h);
+                v.get("params").map(|p| p.to_string()).hash(&mut h);
+            }
+            Err(_) => body.hash(&mut h),
+        }
+        h.finish()
+    }
+
+    /// Request idempotency for `/agui/rpc`.
+    ///
+    /// A client that times out and retries `agui.send` used to start a second
+    /// turn: the RPC is side-effecting and had no dedupe. A caller may now send
+    /// `Idempotency-Key: <opaque>`; a repeat of the same method+params within
+    /// the TTL replays the recorded answer instead of running the call again,
+    /// and reusing a key for different parameters is refused rather than
+    /// silently answering the wrong request.
+    mod idempotency {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        use std::time::{Duration, Instant};
+
+        pub(super) const TTL: Duration = Duration::from_secs(600);
+        const MAX_ENTRIES: usize = 512;
+
+        struct Entry {
+            fingerprint: u64,
+            body: Vec<u8>,
+            at: Instant,
+        }
+
+        fn cache() -> &'static Mutex<HashMap<String, Entry>> {
+            static CACHE: OnceLock<Mutex<HashMap<String, Entry>>> = OnceLock::new();
+            CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+        }
+
+        pub(super) enum Lookup {
+            Miss,
+            Replay(Vec<u8>),
+            Mismatch,
+        }
+
+        pub(super) fn lookup(key: &str, fingerprint: u64) -> Lookup {
+            let mut map = cache().lock().unwrap_or_else(|e| e.into_inner());
+            match map.get(key) {
+                Some(e) if e.at.elapsed() > TTL => {
+                    map.remove(key);
+                    Lookup::Miss
+                }
+                Some(e) if e.fingerprint != fingerprint => Lookup::Mismatch,
+                Some(e) => Lookup::Replay(e.body.clone()),
+                None => Lookup::Miss,
+            }
+        }
+
+        pub(super) fn store(key: &str, fingerprint: u64, body: &[u8]) {
+            let mut map = cache().lock().unwrap_or_else(|e| e.into_inner());
+            if map.len() >= MAX_ENTRIES {
+                // Expired entries first, then the oldest live one: bounded
+                // memory matters more than a perfect eviction policy here.
+                map.retain(|_, e| e.at.elapsed() <= TTL);
+                if map.len() >= MAX_ENTRIES {
+                    if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.at).map(|(k, _)| k.clone())
+                    {
+                        map.remove(&oldest);
+                    }
+                }
+            }
+            map.insert(
+                key.to_string(),
+                Entry {
+                    fingerprint,
+                    body: body.to_vec(),
+                    at: Instant::now(),
+                },
+            );
+        }
+    }
+    #[cfg(test)]
+    mod idempotency_tests {
+        use super::idempotency::{lookup, store, Lookup, TTL};
+        use super::fingerprint_of;
+
+        #[test]
+        fn fingerprint_ignores_the_jsonrpc_id_but_not_the_params() {
+            let a = fingerprint_of(r#"{"jsonrpc":"2.0","id":1,"method":"agui.send","params":{"text":"hi"}}"#);
+            let b = fingerprint_of(r#"{"jsonrpc":"2.0","id":9,"method":"agui.send","params":{"text":"hi"}}"#);
+            let c = fingerprint_of(r#"{"jsonrpc":"2.0","id":9,"method":"agui.send","params":{"text":"bye"}}"#);
+            assert_eq!(a, b, "a retry renumbers the id and must still match");
+            assert_ne!(a, c, "different params are a different request");
+        }
+
+        #[test]
+        fn same_key_and_params_replays_the_first_answer() {
+            let key = "idem-test-replay";
+            assert!(matches!(lookup(key, 42), Lookup::Miss));
+            store(key, 42, b"{\"result\":\"ok\"}");
+            match lookup(key, 42) {
+                Lookup::Replay(body) => assert_eq!(body, b"{\"result\":\"ok\"}"),
+                _ => panic!("a stored answer must replay"),
+            }
+        }
+
+        #[test]
+        fn reused_key_with_different_params_is_a_mismatch() {
+            let key = "idem-test-mismatch";
+            store(key, 1, b"{}");
+            assert!(matches!(lookup(key, 2), Lookup::Mismatch));
+        }
+
+        #[test]
+        fn unknown_key_is_a_miss_and_ttl_is_ten_minutes() {
+            assert!(matches!(lookup("idem-test-absent", 1), Lookup::Miss));
+            assert_eq!(TTL.as_secs(), 600);
+        }
+    }
+
     /// `Response::Buffered` needs a `&'static str` content type; artifact mimes
     /// are caller-supplied at `put_artifact` time, so map the generative-UI
     /// set to static literals and fall back to octet-stream.
@@ -1239,7 +1397,11 @@ pub mod agui_serve {
                     }),
                 }
             } else if req.method == "POST" && route_is(&req.path, "/agui/rpc") {
-                handle_rpc(cfg, req.body_str())
+                handle_rpc(
+                    cfg,
+                    req.body_str(),
+                    req.headers.get("idempotency-key").map(String::as_str),
+                )
             } else if req.method == "POST" && route_is(&req.path, TRANSCRIBE_PATH) {
                 let r = cfg.voice.handle_transcribe(&req.body);
                 Response::Buffered {
