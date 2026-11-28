@@ -42,6 +42,12 @@ pub struct ImageRequest {
     /// Source images for an edit or a reference-grounded generation: absolute
     /// paths, http(s) URLs, or `data:` URIs. Empty = text-to-image.
     pub source_images: Vec<String>,
+    /// How many images to ask for. Backends that cannot batch are refused
+    /// rather than silently returning one; every image is billed.
+    pub n: usize,
+    /// Deterministic seed where the backend accepts one - the knob for "same
+    /// composition, another try".
+    pub seed: Option<u64>,
 }
 
 impl ImageRequest {
@@ -53,15 +59,41 @@ impl ImageRequest {
             model: None,
             provider: None,
             source_images: Vec::new(),
+            n: 1,
+            seed: None,
         }
+    }
+
+    /// Effective batch size: at least one, capped so a typo cannot order fifty
+    /// paid images.
+    pub fn batch(&self) -> usize {
+        self.n.clamp(1, MAX_IMAGES_PER_CALL)
     }
 }
 
-/// What came back.
-#[derive(Debug, Clone)]
-pub struct ImageOutput {
+/// Hard ceiling on one call's image count. The upper bound exists because the
+/// caller is a model: `n: 40` is a mistake, not a request.
+pub const MAX_IMAGES_PER_CALL: usize = 8;
+
+/// One produced image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageBlob {
     pub bytes: Vec<u8>,
     pub mime: String,
+}
+
+impl ImageBlob {
+    /// File extension for the mime we detected.
+    pub fn extension(&self) -> &'static str {
+        mime_extension(&self.mime)
+    }
+}
+
+/// What came back. A batch keeps every image; `primary()` is the first one,
+/// which is what a caller that only wants "the picture" uses.
+#[derive(Debug, Clone)]
+pub struct ImageOutput {
+    pub images: Vec<ImageBlob>,
     pub model: String,
     pub provider: String,
     /// Some models rewrite the prompt; surfaced so the caller can see what the
@@ -72,12 +104,27 @@ pub struct ImageOutput {
     pub backend: String,
     /// True when a source image was supplied and the result is an edit.
     pub edited: bool,
+    /// The seed used, when one was given or drawn - lets a caller reproduce
+    /// or re-roll a composition deliberately.
+    pub seed: Option<u64>,
+    /// Declared USD per image for the service that produced this, if the
+    /// operator configured one. `None` = price unknown, recorded as unknown.
+    pub price: Option<f64>,
 }
 
 impl ImageOutput {
-    /// File extension for the mime we detected.
+    pub fn primary(&self) -> Option<&ImageBlob> {
+        self.images.first()
+    }
+    pub fn bytes(&self) -> usize {
+        self.images.iter().map(|i| i.bytes.len()).sum()
+    }
+}
+
+impl ImageOutput {
+    /// File extension of the first image, for a caller that saves only one.
     pub fn extension(&self) -> &'static str {
-        mime_extension(&self.mime)
+        self.primary().map(ImageBlob::extension).unwrap_or("bin")
     }
 }
 
@@ -225,6 +272,7 @@ pub fn request_body(model: &str, req: &ImageRequest) -> serde_json::Value {
         // arbitrary content into a second request we would have to trust.
         "response_format": "b64_json",
     });
+    body["n"] = serde_json::Value::from(req.batch());
     if let Some(size) = openai_size(req.size.as_deref()) {
         body["size"] = serde_json::Value::String(size);
     }
@@ -323,7 +371,7 @@ impl Backend {
 /// Everything one generation call needs, resolved from settings. Kept as a
 /// value so a caller can show the user *which* service a prompt would reach
 /// before anything is billed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImageSpec {
     /// id used in logs and tool results (a catalog row name, a provider id, or
     /// `inline` for an endpoint configured directly in `[image]`).
@@ -340,6 +388,10 @@ pub struct ImageSpec {
     pub edit_endpoint: Option<String>,
     /// How many reference images the service takes (0 = no edit support).
     pub max_reference_images: usize,
+    /// Route for a high-resolution pass; None = this service cannot upscale.
+    pub upscale_endpoint: Option<String>,
+    /// Declared USD per generated image, when the operator told us.
+    pub price_per_image: Option<f64>,
 }
 
 /// Which provider id a call should use: the request's, else `[image].provider`,
@@ -432,6 +484,8 @@ pub fn resolve_spec(cfg: &Config, req: &ImageRequest) -> Result<ImageSpec, Panth
                 .filter(|s| *s > 0)
                 .unwrap_or(IMAGE_TIMEOUT_SECS),
             edit_endpoint: row.edit_endpoint.clone(),
+            upscale_endpoint: row.upscale_endpoint.clone(),
+            price_per_image: row.price_per_image,
             max_reference_images: row.max_reference_images.unwrap_or_else(|| {
                 // A row that does not say: the wire decides. A chat model takes
                 // images inline (a handful), an SD server takes one init image,
@@ -527,8 +581,11 @@ pub fn resolve_spec(cfg: &Config, req: &ImageRequest) -> Result<ImageSpec, Panth
             .filter(|s| *s > 0)
             .unwrap_or(IMAGE_TIMEOUT_SECS),
         // A service reachable only through [image].endpoint/its chat provider
-        // has no declared edit route: editing is opt-in per catalogue row.
+        // has no declared edit route: editing and upscaling are opt-in per
+        // catalogue row.
         edit_endpoint: None,
+        upscale_endpoint: None,
+        price_per_image: None,
         max_reference_images: 0,
     })
 }
@@ -826,35 +883,47 @@ fn http_call(
 }
 
 /// Final checks every backend's bytes pass before they become a file.
+///
+/// A batch fails as a whole if any image is unusable: handing back "2 of 3
+/// images" hides a truncated or error payload, and the caller cannot tell
+/// which frame is missing.
 fn finish(
-    bytes: Vec<u8>,
-    claimed_mime: Option<&str>,
+    images: Vec<(Vec<u8>, Option<String>)>,
     model: String,
     provider: String,
     backend: Backend,
     revised: Option<String>,
+    price: Option<f64>,
 ) -> Result<ImageOutput, PantheonError> {
-    if bytes.is_empty() {
-        return Err(ierr("IMAGE_EMPTY", "the backend returned no bytes".into()));
+    if images.is_empty() {
+        return Err(ierr("IMAGE_EMPTY", "the backend returned no images".into()));
     }
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(ierr(
-            "IMAGE_TOO_LARGE",
-            format!("{} bytes exceeds the {MAX_IMAGE_BYTES} cap", bytes.len()),
-        ));
+    let mut out = Vec::with_capacity(images.len());
+    for (bytes, claimed) in images {
+        if bytes.is_empty() {
+            return Err(ierr("IMAGE_EMPTY", "the backend returned an empty image".into()));
+        }
+        if bytes.len() > MAX_IMAGE_BYTES {
+            return Err(ierr(
+                "IMAGE_TOO_LARGE",
+                format!("{} bytes exceeds the {MAX_IMAGE_BYTES} cap", bytes.len()),
+            ));
+        }
+        let mime = sniff_mime(&bytes)
+            .or(claimed.as_deref().filter(|m| !m.is_empty()))
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        out.push(ImageBlob { bytes, mime });
     }
-    let mime = sniff_mime(&bytes)
-        .or(claimed_mime.filter(|m| !m.is_empty()))
-        .unwrap_or("application/octet-stream")
-        .to_string();
     Ok(ImageOutput {
-        bytes,
-        mime,
+        images: out,
         model,
         provider,
         revised_prompt: revised,
         backend: backend.as_str().to_string(),
         edited: false,
+        seed: None,
+        price,
     })
 }
 
@@ -906,6 +975,20 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             (!k.is_empty()).then_some(k)
         });
 
+    // Batch size is a wire capability, not a wish: a single-image endpoint that
+    // is asked for three would silently return one and still be billed as one.
+    let batch = req.batch();
+    if batch > 1 && matches!(spec.backend, Backend::UrlTemplate | Backend::ChatImage) {
+        return Err(ierr(
+            "IMAGE_NO_BATCH",
+            format!(
+                "backend {} returns one image per call; use a fal/a1111/openai_images service \
+                 for n > 1, or make {batch} calls",
+                spec.backend.as_str()
+            ),
+        ));
+    }
+
     match spec.backend {
         Backend::UrlTemplate => {
             let lower = spec.base.to_ascii_lowercase();
@@ -924,14 +1007,13 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                     ),
                 ));
             }
-            let seed = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64 % 1_000_000)
-                .unwrap_or(0);
+            // An explicit seed makes the render reproducible; otherwise a fresh
+            // one, reported back so the caller can ask for the same thing again.
+            let seed = req.seed.unwrap_or_else(random_seed);
             let mut url =
                 fill_template(&spec.base, &req.prompt, req.size.as_deref(), seed, spec.steps);
             if editing {
-                // A inline data URI would be a multi-megabyte query string and
+                // An inline data URI would be a multi-megabyte query string and
                 // most template services fetch the URL themselves, so only a
                 // fetchable reference can be used here.
                 let first = sources.first().cloned().unwrap_or_default();
@@ -956,14 +1038,17 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                 headers.push((n, v));
             }
             let bytes = http_call("GET", &url, &headers, None, timeout)?;
-            finish(
-                bytes,
-                None,
+            let mut out = finish(
+                vec![(bytes, None)],
                 spec.model.clone().unwrap_or_default(),
                 spec.provider,
                 spec.backend,
                 None,
-            )
+                spec.price_per_image,
+            )?;
+            out.edited = editing;
+            out.seed = Some(seed);
+            Ok(out)
         }
         Backend::A1111 => {
             let (url, body) = if editing {
@@ -980,16 +1065,20 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             )?;
             let v: serde_json::Value = serde_json::from_slice(&json)
                 .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
-            let bytes = parse_a1111(&v)?;
+            let mut images = Vec::new();
+            for bytes in parse_a1111_all(&v)? {
+                images.push((bytes, Some("image/png".to_string())));
+            }
             let mut out = finish(
-                bytes,
-                Some("image/png"),
+                images,
                 spec.model.clone().unwrap_or_else(|| "sd".into()),
                 spec.provider,
                 spec.backend,
                 None,
+                spec.price_per_image,
             )?;
             out.edited = editing;
+            out.seed = req.seed;
             Ok(out)
         }
         Backend::Fal => {
@@ -1027,20 +1116,17 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             let json = http_call("POST", &url, &headers, Some(&body), timeout)?;
             let v: serde_json::Value = serde_json::from_slice(&json)
                 .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
-            let (bytes, claimed, remote) = parse_fal(&v)?;
-            let bytes = match remote {
-                None => bytes,
-                Some(link) => http_call("GET", &link, &[], None, timeout)?,
-            };
-            let mut out = finish(
-                bytes,
-                Some(&claimed),
-                model,
-                spec.provider,
-                spec.backend,
-                None,
-            )?;
+            let mut images = Vec::new();
+            for (bytes, claimed, remote) in parse_fal_all(&v)? {
+                let bytes = match remote {
+                    None => bytes,
+                    Some(link) => http_call("GET", &link, &[], None, timeout)?,
+                };
+                images.push((bytes, Some(claimed)));
+            }
+            let mut out = finish(images, model, spec.provider, spec.backend, None, spec.price_per_image)?;
             out.edited = editing;
+            out.seed = req.seed;
             Ok(out)
         }
         Backend::ChatImage | Backend::OpenAiImages => {
@@ -1081,21 +1167,188 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             let json = http_call("POST", &url, &headers, Some(&body), timeout)?;
             let v: serde_json::Value = serde_json::from_slice(&json)
                 .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
-            let parsed = match spec.backend {
-                Backend::OpenAiImages => parse_response(&v)?,
-                _ => parse_chat_image(&v)?,
+            let (items, revised) = match spec.backend {
+                Backend::OpenAiImages => parse_response_all(&v)?,
+                _ => {
+                    let one = parse_chat_image(&v)?;
+                    (vec![one], None)
+                }
             };
-            let (bytes, claimed, revised, remote) = parsed;
-            let bytes = match remote {
-                None => bytes,
-                Some(link) => http_call("GET", &link, &[], None, timeout)?,
-            };
+            let mut images = Vec::new();
+            for (bytes, claimed, _rev, remote) in items {
+                let bytes = match remote {
+                    None => bytes,
+                    Some(link) => http_call("GET", &link, &[], None, timeout)?,
+                };
+                images.push((bytes, Some(claimed)));
+            }
             let _ = &section;
-            let mut out = finish(bytes, Some(&claimed), model, spec.provider, spec.backend, revised)?;
+            let mut out = finish(images, model, spec.provider, spec.backend, revised, spec.price_per_image)?;
             out.edited = editing;
+            out.seed = req.seed;
             Ok(out)
         }
     }
+}
+
+/// Ask for a high-resolution pass over an existing image.
+///
+/// A separate call rather than a flag on generation: "make it bigger" and "make
+/// it" are different intents, and an upscaler is a creative redraw that can
+/// change fine detail (rendered text, faces). The caller opts in explicitly.
+pub struct UpscaleRequest {
+    /// Source image: absolute path, http(s) URL or `data:` URI.
+    pub source: String,
+    /// Requested factor (1.5-4.0). Backends clamp.
+    pub scale: f64,
+    /// Optional guidance for the redraw.
+    pub prompt: Option<String>,
+    /// Service override; `[image].provider` otherwise.
+    pub provider: Option<String>,
+}
+
+pub fn upscale_image(cfg: &Config, req: &UpscaleRequest) -> Result<ImageOutput, PantheonError> {
+    let spec = resolve_spec(
+        cfg,
+        &ImageRequest {
+            prompt: req.prompt.clone().unwrap_or_default(),
+            size: None,
+            model: None,
+            provider: req.provider.clone(),
+            source_images: vec![req.source.clone()],
+            n: 1,
+            seed: None,
+        },
+    )?;
+    let scale = req.scale.clamp(1.5, 4.0);
+    let timeout = std::time::Duration::from_secs(spec.timeout_secs);
+    let key = spec
+        .key_env
+        .as_deref()
+        .filter(|e| !e.trim().is_empty())
+        .and_then(|e| std::env::var(e).ok())
+        .or_else(|| {
+            let k = key_for(cfg, &spec.provider, spec.key_env.as_deref());
+            (!k.is_empty()).then_some(k)
+        });
+
+    // A1111 exposes upscaling on its own route and takes the image as base64.
+    if spec.backend == Backend::A1111 {
+        let bare = match req.source.strip_prefix("data:") {
+            Some(rest) => rest
+                .split_once(',')
+                .map(|(_, p)| p.to_string())
+                .unwrap_or_else(|| req.source.clone()),
+            None => {
+                let path = std::path::Path::new(&req.source);
+                let bytes = std::fs::read(path).map_err(|e| {
+                    ierr(
+                        "IMAGE_BAD_SOURCE",
+                        format!("{}: {e} (an SD server needs a local file or data URI)", req.source),
+                    )
+                })?;
+                pantheon_api::message::b64encode(&bytes)
+            }
+        };
+        let body = serde_json::json!({
+            "image": bare,
+            "upscaling_resize": scale,
+            "upscaler_1": "R-ESRGAN 4x+",
+        })
+        .to_string();
+        let url = format!("{}/sdapi/v1/extra-single-image", spec.base.trim_end_matches('/'));
+        let json = http_call(
+            "POST",
+            &url,
+            &[("content-type".to_string(), "application/json".to_string())],
+            Some(&body),
+            timeout,
+        )?;
+        let v: serde_json::Value = serde_json::from_slice(&json)
+            .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
+        let b64 = v
+            .get("image")
+            .and_then(|i| i.as_str())
+            .ok_or_else(|| ierr("IMAGE_NO_DATA", format!("no image in the upscale answer: {v}")))?;
+        let bytes = b64decode(b64)
+            .ok_or_else(|| ierr("IMAGE_BAD_BASE64", "unreadable base64 from the SD server".into()))?;
+        return finish(
+            vec![(bytes, Some("image/png".to_string()))],
+            "sd-upscale".to_string(),
+            spec.provider,
+            spec.backend,
+            None,
+            spec.price_per_image,
+        );
+    }
+
+    let endpoint = spec.upscale_endpoint.clone().ok_or_else(|| {
+        PantheonError::new(
+            "IMAGE_NO_UPSCALE",
+            Layer::Provider,
+            false,
+            format!(
+                "service '{}' ({}) has no upscale route",
+                spec.provider,
+                spec.backend.as_str()
+            ),
+            "add `upscale_endpoint = \"fal-ai/clarity-upscaler\"` to a fal [image_providers] row \
+             (or select an a1111 service), then `pantheon image upscale`",
+            String::new(),
+        )
+    })?;
+    // fal's upscaler fetches the image itself; a data URI would be a huge body.
+    let lower = req.source.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(PantheonError::new(
+            "IMAGE_BAD_SOURCE",
+            Layer::Provider,
+            false,
+            "the upscaler fetches the source itself, so it needs an http(s) URL".to_string(),
+            "pass a URL, or use an a1111 service which accepts a local file",
+            String::new(),
+        ));
+    }
+    let mut body = serde_json::json!({
+        "image_url": req.source,
+        "upscale_factor": scale,
+    });
+    if let Some(p) = req.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        body["prompt"] = serde_json::Value::String(p.to_string());
+    }
+    let url = format!(
+        "{}/{}",
+        spec.base.trim_end_matches('/'),
+        endpoint.trim_matches('/')
+    );
+    let mut headers = vec![
+        ("content-type".to_string(), "application/json".to_string()),
+        ("accept".to_string(), "application/json".to_string()),
+    ];
+    if let Some(k) = key {
+        headers.push(("authorization".to_string(), format!("Key {k}")));
+    }
+    let json = http_call("POST", &url, &headers, Some(body.to_string().as_str()), timeout)?;
+    let v: serde_json::Value = serde_json::from_slice(&json)
+        .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
+    let mut images = Vec::new();
+    for (bytes, claimed, remote) in parse_fal_all(&v)? {
+        let bytes = match remote {
+            None => bytes,
+            Some(link) => http_call("GET", &link, &[], None, timeout)?,
+        };
+        images.push((bytes, Some(claimed)));
+    }
+    finish(images, endpoint, spec.provider, spec.backend, None, spec.price_per_image)
+}
+
+/// A seed when the caller gave none. Small, local, and good enough for "another
+/// take" - not a cryptographic draw.
+fn random_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64 % 1_000_000_000)
+        .unwrap_or(0)
 }
 
 /// Auth header for a service: the row's header when it names one, otherwise
@@ -1119,10 +1372,13 @@ fn key_pair(spec: &ImageSpec, key: &str) -> (String, String) {
 pub fn fal_request(base: &str, model: &str, req: &ImageRequest) -> (String, String) {
     let mut body = serde_json::json!({
         "prompt": req.prompt,
-        "num_images": 1,
+        "num_images": req.batch(),
     });
     if let Some(size) = fal_image_size(req.size.as_deref()) {
         body["image_size"] = size;
+    }
+    if let Some(seed) = req.seed {
+        body["seed"] = serde_json::Value::from(seed);
     }
     (
         format!("{}/{}", base.trim_end_matches('/'), model.trim_matches('/')),
@@ -1159,6 +1415,81 @@ pub fn parse_fal(
     ))
 }
 
+/// Every image in an OpenAI-wire answer (a batch arrives as `data[]`).
+pub fn parse_response_all(
+    v: &serde_json::Value,
+) -> Result<(Vec<ParsedImage>, Option<String>), PantheonError> {
+    let arr = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| ierr("IMAGE_NO_DATA", format!("provider returned no data array: {v}")))?;
+    if arr.is_empty() {
+        return Err(ierr("IMAGE_NO_DATA", "the data array was empty".into()));
+    }
+    let revised = arr
+        .first()
+        .and_then(|f| f.get("revised_prompt"))
+        .and_then(|p| p.as_str())
+        .map(str::to_string);
+    let mut items = Vec::with_capacity(arr.len());
+    let mut last_err = None;
+    for entry in arr {
+        // Reuse the single-item reader by wrapping one entry.
+        let single = serde_json::json!({"data": [entry]});
+        match parse_response(&single) {
+            Ok(item) => items.push(item),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if items.is_empty() {
+        return Err(last_err
+            .unwrap_or_else(|| ierr("IMAGE_NO_DATA", "no usable image in the answer".into())));
+    }
+    Ok((items, revised))
+}
+
+/// Every image in a fal answer.
+pub type FalFrame = (Vec<u8>, String, Option<String>);
+
+pub fn parse_fal_all(v: &serde_json::Value) -> Result<Vec<FalFrame>, PantheonError> {
+    let arr = v
+        .get("images")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| ierr("IMAGE_NO_DATA", format!("no images[] in the answer: {v}")))?;
+    if arr.is_empty() {
+        return Err(ierr("IMAGE_NO_DATA", "the images array was empty".into()));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for entry in arr {
+        let single = serde_json::json!({"images": [entry]});
+        out.push(parse_fal(&single)?);
+    }
+    Ok(out)
+}
+
+/// Every frame an SD server returned.
+pub fn parse_a1111_all(v: &serde_json::Value) -> Result<Vec<Vec<u8>>, PantheonError> {
+    let arr = v
+        .get("images")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| ierr("IMAGE_NO_DATA", format!("no images[] in the answer: {v}")))?;
+    let mut out = Vec::new();
+    for entry in arr {
+        if let Some(b64) = entry.as_str() {
+            if let Some(bytes) = b64decode(b64) {
+                out.push(bytes);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(ierr(
+            "IMAGE_NO_DATA",
+            "the SD server returned no usable frames".into(),
+        ));
+    }
+    Ok(out)
+}
+
 /// Body for a chat model that emits images (`modalities: ["image","text"]`).
 /// With source images the content becomes a parts array, which is how a chat
 /// model takes an image in to edit or to ground a new one.
@@ -1188,8 +1519,11 @@ pub fn fal_edit_body(req: &ImageRequest, sources: &[String]) -> serde_json::Valu
     let mut body = serde_json::json!({
         "prompt": req.prompt,
         "image_urls": sources,
-        "num_images": 1,
+        "num_images": req.batch(),
     });
+    if let Some(seed) = req.seed {
+        body["seed"] = serde_json::Value::from(seed);
+    }
     if let Some(size) = fal_image_size(req.size.as_deref()) {
         body["image_size"] = size;
     }
@@ -1219,11 +1553,14 @@ pub fn a1111_img2img_request(
         "init_images": init,
         "width": w,
         "height": h,
-        "batch_size": 1,
+        "batch_size": req.batch(),
         "n_iter": 1,
     });
     if let Some(steps) = steps.filter(|s| *s > 0) {
         body["steps"] = serde_json::Value::from(steps);
+    }
+    if let Some(seed) = req.seed {
+        body["seed"] = serde_json::Value::from(seed);
     }
     if let Some(model) = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         body["override_settings"] = serde_json::json!({"sd_model_checkpoint": model});
@@ -1310,11 +1647,14 @@ pub fn a1111_request(base: &str, req: &ImageRequest, steps: Option<u32>) -> (Str
         "prompt": req.prompt,
         "width": w,
         "height": h,
-        "batch_size": 1,
+        "batch_size": req.batch(),
         "n_iter": 1,
     });
     if let Some(steps) = steps.filter(|s| *s > 0) {
         body["steps"] = serde_json::Value::from(steps);
+    }
+    if let Some(seed) = req.seed {
+        body["seed"] = serde_json::Value::from(seed);
     }
     if let Some(model) = req.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         // In A1111 an "image model" is a checkpoint override.
@@ -1392,6 +1732,8 @@ mod tests {
             model: None,
             provider: None,
             source_images: Vec::new(),
+            n: 1,
+            seed: None,
         };
         let body = request_body("dall-e-3", &req);
         assert_eq!(body["model"], "dall-e-3");
@@ -1439,6 +1781,8 @@ mod tests {
                 model: Some("m".into()),
                 provider: None,
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap_err();
@@ -1455,6 +1799,8 @@ mod tests {
                 model: Some("m".into()),
                 provider: None,
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap_err();
@@ -1478,6 +1824,8 @@ mod tests {
                 model: None,
                 provider: None,
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap_err();
@@ -1493,6 +1841,8 @@ mod tests {
                 model: None,
                 provider: None,
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap_err();
@@ -1586,6 +1936,8 @@ mod tests {
                 model: None,
                 provider: None,
                 source_images: vec![],
+                n: 1,
+                seed: None,
             },
             &["data:image/png;base64,AAA".to_string()],
         );
@@ -1604,6 +1956,8 @@ mod tests {
                 model: None,
                 provider: None,
                 source_images: vec![],
+                n: 1,
+                seed: None,
             },
             &[
                 "data:image/png;base64,QUJD".to_string(),
@@ -1657,6 +2011,99 @@ mod tests {
         let e = generate_image(&c, &req).unwrap_err();
         assert_eq!(e.code, "IMAGE_NO_EDIT");
         assert!(e.remediation.contains("edit-capable"), "{}", e.remediation);
+    }
+
+    #[test]
+    fn an_openai_batch_answer_yields_every_frame() {
+        let a = [0x89u8, b'P', b'N', b'G', 1];
+        let b = [0x89u8, b'P', b'N', b'G', 2];
+        let v = serde_json::json!({"data": [
+            {"b64_json": pantheon_api::message::b64encode(&a), "revised_prompt": "one"},
+            {"b64_json": pantheon_api::message::b64encode(&b)}
+        ]});
+        let (items, revised) = parse_response_all(&v).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0, a);
+        assert_eq!(items[1].0, b);
+        assert_eq!(revised.as_deref(), Some("one"));
+
+        // A batch fails as a whole when any frame is unusable.
+        let bad = serde_json::json!({"data": [{"b64_json": "!!!!"}]});
+        assert_eq!(parse_response_all(&bad).unwrap_err().code, "IMAGE_BAD_BASE64");
+    }
+
+    #[test]
+    fn a_batch_request_carries_the_count_and_the_seed() {
+        let req = ImageRequest {
+            prompt: "a heron".into(),
+            size: Some("square".into()),
+            model: None,
+            provider: None,
+            source_images: vec![],
+            n: 3,
+            seed: Some(77),
+        };
+        let v = request_body("m", &req);
+        assert_eq!(v["n"], 3);
+        let (_, fal) = fal_request("https://fal.run", "fal-ai/flux/schnell", &req);
+        let fal: serde_json::Value = serde_json::from_str(&fal).unwrap();
+        assert_eq!(fal["num_images"], 3);
+        assert_eq!(fal["seed"], 77);
+        let (_, sd) = a1111_request("http://127.0.0.1:7860", &req, None);
+        let sd: serde_json::Value = serde_json::from_str(&sd).unwrap();
+        assert_eq!(sd["batch_size"], 3);
+        assert_eq!(sd["seed"], 77);
+        // A typo cannot order fifty paid images.
+        assert_eq!(ImageRequest { n: 40, ..req.clone() }.batch(), MAX_IMAGES_PER_CALL);
+    }
+
+    #[test]
+    fn a_single_image_wire_refuses_a_batch_instead_of_returning_one() {
+        let mut c = cfg();
+        c.image = Some(pantheon_api::config::ImageSection {
+            endpoint: Some("https://img.test/{prompt}".into()),
+            ..Default::default()
+        });
+        let mut req = ImageRequest::text("x");
+        req.n = 3;
+        let e = generate_image(&c, &req).unwrap_err();
+        assert_eq!(e.code, "IMAGE_NO_BATCH");
+        assert!(e.cause.contains("url_template"), "{}", e.cause);
+    }
+
+    #[test]
+    fn a_service_without_an_upscale_route_refuses_the_pass() {
+        let c = editable_cfg("openai_images", None, None);
+        let e = upscale_image(
+            &c,
+            &UpscaleRequest {
+                source: "https://x.test/a.png".into(),
+                scale: 2.0,
+                prompt: None,
+                provider: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "IMAGE_NO_UPSCALE");
+        assert!(e.remediation.contains("upscale_endpoint"), "{}", e.remediation);
+    }
+
+    #[test]
+    fn an_upscaler_that_fetches_the_source_refuses_a_data_uri() {
+        let mut c = editable_cfg("fal", None, None);
+        c.image_providers.get_mut("svc").unwrap().upscale_endpoint =
+            Some("fal-ai/clarity-upscaler".into());
+        let e = upscale_image(
+            &c,
+            &UpscaleRequest {
+                source: "data:image/png;base64,AAAA".into(),
+                scale: 2.0,
+                prompt: None,
+                provider: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "IMAGE_BAD_SOURCE");
     }
 
     #[test]
@@ -1743,6 +2190,8 @@ mod tests {
             model: Some("sdxl".into()),
             provider: None,
             source_images: Vec::new(),
+            n: 1,
+            seed: None,
         };
         let (url, body) = a1111_request("http://127.0.0.1:7860/", &req, Some(25));
         assert_eq!(url, "http://127.0.0.1:7860/sdapi/v1/txt2img");
@@ -1767,6 +2216,8 @@ mod tests {
                 timeout_secs: Some(30),
                 edit_endpoint: None,
                 max_reference_images: None,
+                upscale_endpoint: None,
+                price_per_image: None,
             },
         );
         cfg.image = Some(pantheon_api::config::ImageSection {
@@ -1787,6 +2238,8 @@ mod tests {
                 model: None,
                 provider: None,
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap();
@@ -1812,6 +2265,8 @@ mod tests {
                 model: Some("m".into()),
                 provider: Some("llm-router".into()),
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap();
@@ -1827,6 +2282,8 @@ mod tests {
                 model: None,
                 provider: Some("nowhere".into()),
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         )
         .unwrap_err();
@@ -1892,6 +2349,8 @@ mod tests {
                 model: None,
                 provider: None,
                 source_images: Vec::new(),
+                n: 1,
+                seed: None,
             },
         );
         assert_eq!(url, "https://fal.run/fal-ai/flux/schnell");

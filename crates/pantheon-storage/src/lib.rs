@@ -110,7 +110,7 @@ pub use collaboration::{
 pub use core_group::claims;
 pub use core_group::leases;
 pub use core_group::ledger;
-pub use core_group::ledger::ModelAttempt;
+pub use core_group::ledger::{ImageGeneration, ModelAttempt};
 pub use core_group::operations;
 pub use ideas::{
     FeedbackSignal, Idea, IdeaKind, IdeaStatus, IdeaStore, NewIdea, ScheduleSpec, TopicSignals,

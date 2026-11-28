@@ -59,6 +59,23 @@ pub mod ledger {
 
     /// One provider attempt, recorded for diagnostics: which chain entry ran,
     /// whether it succeeded, how long it took and why it failed.
+    /// One recorded image generation: which service drew it, how many frames,
+    /// what it cost (when the operator declared a price), and how it ended.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ImageGeneration {
+        pub run_id: String,
+        pub provider: String,
+        pub backend: String,
+        pub model: String,
+        pub images: usize,
+        pub ok: bool,
+        /// `None` when the service has no declared price - recorded as unknown
+        /// rather than guessed.
+        pub cost_usd: Option<f64>,
+        pub duration_ms: i64,
+        pub code: Option<String>,
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ModelAttempt {
         pub run_id: String,
@@ -276,6 +293,20 @@ pub mod ledger {
       ts_ms INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_model_attempts_run ON model_attempts(run_id, id);
+    CREATE TABLE IF NOT EXISTS image_generations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      backend TEXT NOT NULL,
+      model TEXT NOT NULL,
+      images INTEGER NOT NULL,
+      ok INTEGER NOT NULL,
+      cost_usd REAL,
+      duration_ms INTEGER NOT NULL,
+      code TEXT,
+      ts_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_image_generations_run ON image_generations(run_id, id);
     CREATE TABLE IF NOT EXISTS writer_claims (
       run_id TEXT PRIMARY KEY,
       token TEXT NOT NULL,
@@ -874,6 +905,79 @@ pub mod ledger {
         /// provider chain actually retries, so they are stored beside the
         /// run - not as transcript events - and read back for diagnostics
         /// ("attempt 2 of 3 timed out at 180s") without replaying the stream.
+        /// Book one image generation. Best-effort by contract: the picture was
+        /// already produced (and billed), so a bookkeeping failure must not
+        /// turn a successful generation into an error for the user.
+        pub fn record_image_generation(
+            &self,
+            g: &ImageGeneration,
+        ) -> Result<(), PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            conn.execute(
+                "INSERT INTO image_generations (run_id, provider, backend, model, images, ok, cost_usd, duration_ms, code, ts_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    g.run_id,
+                    g.provider,
+                    g.backend,
+                    g.model,
+                    g.images as i64,
+                    g.ok as i64,
+                    g.cost_usd,
+                    g.duration_ms,
+                    g.code,
+                    now_ms()
+                ],
+            )
+            .map_err(|e| err("LEDGER_IMAGE_GEN", e.to_string()))?;
+            Ok(())
+        }
+
+        /// Every generation recorded for a run, oldest first.
+        pub fn image_generations(&self, run_id: &str) -> Result<Vec<ImageGeneration>, PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, provider, backend, model, images, ok, cost_usd, duration_ms, code
+                     FROM image_generations WHERE run_id = ?1 ORDER BY id ASC",
+                )
+                .map_err(|e| err("LEDGER_IMAGE_GEN", e.to_string()))?;
+            let rows = stmt
+                .query_map(params![run_id], |r| {
+                    Ok(ImageGeneration {
+                        run_id: r.get(0)?,
+                        provider: r.get(1)?,
+                        backend: r.get(2)?,
+                        model: r.get(3)?,
+                        images: r.get::<_, i64>(4)? as usize,
+                        ok: r.get::<_, i64>(5)? != 0,
+                        cost_usd: r.get(6)?,
+                        duration_ms: r.get(7)?,
+                        code: r.get(8)?,
+                    })
+                })
+                .map_err(|e| err("LEDGER_IMAGE_GEN", e.to_string()))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| err("LEDGER_IMAGE_GEN", e.to_string()))?);
+            }
+            Ok(out)
+        }
+
+        /// Total images and spend recorded for a run, for `/status` and the CLI.
+        pub fn image_spend(&self, run_id: &str) -> Result<(usize, f64), PantheonError> {
+            let gens = self.image_generations(run_id)?;
+            let images = gens.iter().filter(|g| g.ok).map(|g| g.images).sum();
+            let cost = gens.iter().filter_map(|g| g.cost_usd).sum();
+            Ok((images, cost))
+        }
+
         pub fn record_model_attempt(&self, attempt: &ModelAttempt) -> Result<(), PantheonError> {
             let conn = self
                 .conn
@@ -4653,7 +4757,48 @@ mod writer_tests {
 
 #[cfg(test)]
 mod attempt_tests {
-    use super::ledger::{Ledger, ModelAttempt};
+    use super::ledger::{ImageGeneration, Ledger, ModelAttempt};
+
+    #[test]
+    fn image_generations_round_trip_with_cost_and_frames() {
+        let ledger = Ledger::open_in_memory().expect("ledger");
+        ledger
+            .record_image_generation(&ImageGeneration {
+                run_id: "run-img".into(),
+                provider: "fal".into(),
+                backend: "fal".into(),
+                model: "fal-ai/flux/schnell".into(),
+                images: 2,
+                ok: true,
+                cost_usd: Some(0.012),
+                duration_ms: 4200,
+                code: None,
+            })
+            .unwrap();
+        ledger
+            .record_image_generation(&ImageGeneration {
+                run_id: "run-img".into(),
+                provider: "fal".into(),
+                backend: "fal".into(),
+                model: "fal-ai/flux/schnell".into(),
+                images: 0,
+                ok: false,
+                cost_usd: None,
+                duration_ms: 900,
+                code: Some("IMAGE_HTTP_500".into()),
+            })
+            .unwrap();
+        let rows = ledger.image_generations("run-img").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].ok);
+        assert_eq!(rows[0].images, 2);
+        assert_eq!(rows[0].cost_usd, Some(0.012));
+        assert_eq!(rows[1].code.as_deref(), Some("IMAGE_HTTP_500"));
+        let (images, cost) = ledger.image_spend("run-img").unwrap();
+        assert_eq!(images, 2, "only successful frames count");
+        assert!((cost - 0.012).abs() < 1e-9);
+        assert!(ledger.image_generations("nope").unwrap().is_empty());
+    }
 
     #[test]
     fn attempts_round_trip_in_order_with_outcomes() {

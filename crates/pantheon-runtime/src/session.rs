@@ -5198,6 +5198,12 @@ Extracted:
             &mut reg,
             self.supervisor.data_dir().to_path_buf(),
         );
+        // High-resolution pass as its own action: enlarging is a different
+        // intent from making, and the redraw can alter fine detail.
+        pantheon_tools::image_tool::register_upscale(
+            &mut reg,
+            self.supervisor.data_dir().to_path_buf(),
+        );
         // Structured UI: the agent-facing `render_ui` capture tool. Always
         // registered - rendering is not a privileged operation (morally a
         // fancier assistant message). The turn loop intercepts calls

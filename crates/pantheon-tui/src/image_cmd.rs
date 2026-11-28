@@ -16,11 +16,14 @@ pantheon image <command>
     list                     configured services, presets, and which one is active
     test --prompt <text>     run one real generation and report the file
          [--size landscape|square|portrait|1024x1024]
-         [--source <path|url> ...] [--provider <id>] [--model <id>] [--out <path>]
+         [--source <path|url> ...] [--n K] [--seed N]
+         [--provider <id>] [--model <id>] [--out <path>]
+    upscale --source <path|url> [--scale 2] [--prompt <text>] [--out <path>]
     add <id> --backend <b> --base-url <url>
          [--model <id>] [--key-env <VAR>] [--key-header <Header>]
          [--label <name>] [--steps <n>] [--edit-endpoint <route>]
-         [--max-refs <n>] [--select]
+         [--max-refs <n>] [--upscale-endpoint <route>]
+         [--price <usd-per-image>] [--select]
     remove <id>              drop a service from the config
     select <id>              point [image].provider at a service
     keep <days>              delete generated images older than N days (0 = keep)
@@ -45,6 +48,7 @@ pub fn start(args: &[String]) {
         Some("remove") => remove(&args[1..]),
         Some("select") => select(&args[1..]),
         Some("keep") => keep(&args[1..]),
+        Some("upscale") => upscale(&args[1..]),
         Some("--help") | Some("-h") | Some("help") => println!("{USAGE}"),
         Some(other) => {
             println!("unknown image subcommand {other:?}\n");
@@ -79,6 +83,13 @@ fn list() {
         println!("  {mark} {} [{state}] {} -> {}", r.id, r.backend, r.base);
         if !r.models.is_empty() {
             println!("      models: {}", r.models.join(", "));
+        }
+        if let Some(price) = cfg
+            .image_providers
+            .get(&r.id)
+            .and_then(|row| row.price_per_image)
+        {
+            println!("      price: ${price:.4}/image");
         }
         if let Some(env) = &r.key_env {
             let present = std::env::var(env).map(|v| !v.trim().is_empty()).unwrap_or(false);
@@ -153,6 +164,10 @@ fn test(args: &[String]) {
         provider: flag(args, "--provider"),
         // Editing from the CLI: `--source <path|url>` (repeatable).
         source_images: source_args(args),
+        n: flag(args, "--n")
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(1),
+        seed: flag(args, "--seed").and_then(|s| s.trim().parse().ok()),
     };
     // Show the target before spending anything on it.
     match resolve_spec(&cfg, &req) {
@@ -172,34 +187,62 @@ fn test(args: &[String]) {
     let started = std::time::Instant::now();
     match generate_image(&cfg, &req) {
         Ok(out) => {
-            let path = match flag(args, "--out") {
-                Some(p) => std::path::PathBuf::from(p),
-                None => {
-                    let images = dir.join("images");
-                    let _ = std::fs::create_dir_all(&images);
-                    images.join(format!(
-                        "image-{}.{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0),
-                        out.extension()
-                    ))
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let explicit: Option<std::path::PathBuf> = flag(args, "--out").map(Into::into);
+            for (i, blob) in out.images.iter().enumerate() {
+                let path = match &explicit {
+                    Some(p) if out.images.len() == 1 => p.clone(),
+                    Some(p) => {
+                        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+                        let ext = blob.extension();
+                        p.with_file_name(format!("{stem}-{}.{ext}", i + 1))
+                    }
+                    None => {
+                        let images = dir.join("images");
+                        let _ = std::fs::create_dir_all(&images);
+                        images.join(format!(
+                            "image-{}{}.{}",
+                            stamp,
+                            if out.images.len() > 1 { format!("-{}", i + 1) } else { String::new() },
+                            blob.extension()
+                        ))
+                    }
+                };
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
-            };
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                match std::fs::write(&path, &blob.bytes) {
+                    Ok(()) => println!(
+                        "ok {} ({} bytes, {}) in {:.1}s{}\n{}",
+                        blob.mime,
+                        blob.bytes.len(),
+                        out.backend,
+                        started.elapsed().as_secs_f32(),
+                        out.seed.map(|s| format!(" · seed {s}")).unwrap_or_default(),
+                        path.display()
+                    ),
+                    Err(e) => println!("generated but could not write {}: {e}", path.display()),
+                }
             }
-            match std::fs::write(&path, &out.bytes) {
-                Ok(()) => println!(
-                    "ok {} ({} bytes, {}) in {:.1}s\n{}",
-                    out.mime,
-                    out.bytes.len(),
-                    out.backend,
-                    started.elapsed().as_secs_f32(),
-                    path.display()
-                ),
-                Err(e) => println!("generated but could not write {}: {e}", path.display()),
+            pantheon_tools::image_tool::record_generation(
+                &dir,
+                &cfg,
+                &flag(args, "--model"),
+                out.images.len(),
+                true,
+                out.price.map(|p| p * out.images.len() as f64),
+                started.elapsed().as_millis() as i64,
+                None,
+            );
+            if let Some(cost) = out.price {
+                println!(
+                    "cost: ${:.4} ({} image(s) at ${cost:.4} each)",
+                    cost * out.images.len() as f64,
+                    out.images.len()
+                );
             }
         }
         Err(e) => {
@@ -241,6 +284,8 @@ fn add(args: &[String]) {
         timeout_secs: None,
         edit_endpoint: flag(args, "--edit-endpoint"),
         max_reference_images: flag(args, "--max-refs").and_then(|s| s.trim().parse().ok()),
+        upscale_endpoint: flag(args, "--upscale-endpoint"),
+        price_per_image: flag(args, "--price").and_then(|s| s.trim().parse().ok()),
     };
     cfg.image_providers.insert(id.clone(), row);
     if args.iter().any(|a| a == "--select") {
@@ -334,5 +379,72 @@ fn keep(args: &[String]) {
             }
         }
         Err(e) => println!("could not save config: {e}"),
+    }
+}
+
+/// `pantheon image upscale` - the high-resolution pass, as its own command and
+/// its own tool (`upscale`), never a flag on generation.
+fn upscale(args: &[String]) {
+    let Some(source) = flag(args, "--source").or_else(|| {
+        args.iter()
+            .find(|a| !a.starts_with("--"))
+            .cloned()
+    }) else {
+        println!("upscale needs --source <path|url>\n\n{USAGE}");
+        return;
+    };
+    let Some((dir, cfg)) = load() else { return };
+    let req = pantheon_providers::image::UpscaleRequest {
+        source: source.clone(),
+        scale: flag(args, "--scale")
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(2.0),
+        prompt: flag(args, "--prompt"),
+        provider: flag(args, "--provider"),
+    };
+    let started = std::time::Instant::now();
+    match pantheon_providers::image::upscale_image(&cfg, &req) {
+        Ok(out) => {
+            let Some(blob) = out.primary() else {
+                println!("the upscaler returned no image");
+                return;
+            };
+            let path = match flag(args, "--out") {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    let images = dir.join("images");
+                    let _ = std::fs::create_dir_all(&images);
+                    images.join(format!(
+                        "upscaled-{}.{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0),
+                        blob.extension()
+                    ))
+                }
+            };
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(&path, &blob.bytes) {
+                Ok(()) => println!(
+                    "ok {} ({} bytes, x{:.1}, {}) in {:.1}s\n{}",
+                    blob.mime,
+                    blob.bytes.len(),
+                    req.scale,
+                    out.backend,
+                    started.elapsed().as_secs_f32(),
+                    path.display()
+                ),
+                Err(e) => println!("upscaled but could not write {}: {e}", path.display()),
+            }
+        }
+        Err(e) => {
+            println!("failed [{}] {}", e.code, e.cause);
+            if !e.remediation.is_empty() {
+                println!("fix: {}", e.remediation);
+            }
+        }
     }
 }

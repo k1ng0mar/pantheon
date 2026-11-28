@@ -522,6 +522,15 @@ pub struct ImageProviderSection {
     /// how many reference images this service takes; 0/absent = none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_reference_images: Option<usize>,
+    /// route for a high-resolution pass (`fal-ai/clarity-upscaler` on a fal
+    /// row; a1111 uses its own `/sdapi/v1/extra-single-image`). Absent = this
+    /// service cannot upscale, and the `upscale` tool refuses by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upscale_endpoint: Option<String>,
+    /// USD per generated image, recorded with each generation. Absent = price
+    /// unknown; the ledger row then says so instead of inventing a number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_per_image: Option<f64>,
 }
 
 /// `[scheduled]`: model scheduled (background) runs execute with.
