@@ -684,12 +684,10 @@ pub mod config {
                     "value": serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
                 });
                 if path == "policy" || path.ends_with(".policy") {
-                    f["enum"] = serde_json::json!(
-                        PolicyPreset::all()
-                            .iter()
-                            .map(|p| p.as_str())
-                            .collect::<Vec<_>>()
-                    );
+                    f["enum"] = serde_json::json!(PolicyPreset::all()
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>());
                 }
                 f
             })
@@ -2394,31 +2392,48 @@ pub mod secrets {
     }
 
     /// A `base_url` supplied in a request body decides where a stored
-    /// provider key is sent as a bearer token, so it gets the same egress
-    /// rules as a configured provider URL: https only (plain http only to
-    /// loopback, and only with the provider loopback opt-in), and a host
-    /// that resolves to public addresses (`validate_url`). Without this a
-    /// token holder could post `{"base_url":"https://attacker"}` to
-    /// `/api/secrets/<name>/verify` and receive the stored key (audit
-    /// SEC-04).
+    /// provider key is sent as a bearer token. Unlike the operator's configured
+    /// provider URL, this value is caller controlled, so it stays behind a
+    /// strict public HTTPS check (audit SEC-04). Without this a token holder
+    /// could post `{"base_url":"https://127.0.0.1:9000"}` and receive the
+    /// stored key. Configured provider URLs are trusted separately.
     fn provider_verify_url_allowed(base_url: &str) -> Result<(), String> {
+        use crate::web_group::link_preview::is_public_ip;
+
         let parsed =
             url::Url::parse(base_url).map_err(|_| format!("invalid base_url: {base_url}"))?;
-        let loopback = parsed
-            .host_str()
-            .map(|h| {
-                let h = h.trim_start_matches('[').trim_end_matches(']');
-                h.eq_ignore_ascii_case("localhost")
-                    || h.parse::<std::net::IpAddr>()
-                        .is_ok_and(|ip| ip.is_loopback())
-            })
-            .unwrap_or(false);
-        match parsed.scheme() {
-            "https" => {}
-            "http" if loopback => {}
-            other => return Err(format!("base_url must use https, not {other}")),
+        if parsed.scheme() != "https" {
+            return Err(format!("base_url must use https, not {}", parsed.scheme()));
         }
-        pantheon_providers::http::validate_url(base_url).map_err(|e| e.cause)
+        let host = parsed
+            .host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| format!("base_url has no host: {base_url}"))?;
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            return if is_public_ip(&ip) {
+                Ok(())
+            } else {
+                Err(format!("base_url host is not public: {host}"))
+            };
+        }
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        use std::net::ToSocketAddrs;
+        let addrs = (host, port)
+            .to_socket_addrs()
+            .map_err(|e| format!("cannot resolve {host}: {e}"))?;
+        let mut any = false;
+        for addr in addrs {
+            any = true;
+            if !is_public_ip(&addr.ip()) {
+                return Err(format!("base_url resolves to a private address: {host}"));
+            }
+        }
+        if any {
+            Ok(())
+        } else {
+            Err(format!("base_url resolves to no address: {host}"))
+        }
     }
 
     /// Stands in for a verifier whose target URL was refused: reports the
