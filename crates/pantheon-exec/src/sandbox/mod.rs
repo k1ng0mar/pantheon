@@ -198,9 +198,13 @@ impl SandboxLevel {
             | Capability::MemoryWrite
             | Capability::GitRead
             | Capability::MessageSend(_) => SandboxLevel::Medium,
-            Capability::ShellExecute | Capability::GitWrite | Capability::NetworkOutbound => {
-                SandboxLevel::High
-            }
+            Capability::ShellExecute
+            | Capability::GitWrite
+            | Capability::NetworkOutbound
+            // Generation leaves the machine and writes a file, but drives no
+            // local process: the same rung as any other network call that
+            // produces an artifact.
+            | Capability::MediaGenerate => SandboxLevel::High,
             Capability::GitPush
             | Capability::Browser
             | Capability::BrowserAct

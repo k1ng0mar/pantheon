@@ -156,6 +156,10 @@ mod tests {
         assert!(r.get("read_file").is_some());
         assert!(r.get("schedule").is_some());
         assert!(r.get("shell").is_none(), "no shell on the safe surface");
+        assert!(
+            r.get("image").is_none(),
+            "generation spends money and produces an asset: never on a read-only surface"
+        );
         assert!(r.get("schedule_write").is_none(), "no mutating schedule");
         // an unknown Other(..) capability is not assumed safe
         let mut r2 = reg();

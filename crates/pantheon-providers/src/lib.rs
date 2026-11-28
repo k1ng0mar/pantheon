@@ -8,6 +8,7 @@ pub mod chain;
 pub mod http;
 pub mod model_event;
 pub mod small;
+pub mod image;
 pub mod video;
 pub mod voice;
 pub mod voice_local;

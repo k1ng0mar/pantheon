@@ -909,6 +909,14 @@ pub mod capability {
         /// into the trusted tier. Default policies mark this Approval so
         /// the run loop parks for a human before the promotion runs.
         MemoryConfirm,
+        /// Producing media with a generative model (`image` tool: a prompt goes
+        /// out, an asset comes back). Its own capability rather than riding
+        /// [`Capability::NetworkOutbound`] because one call spends real money
+        /// and writes an artifact the user may publish: a policy that allows
+        /// fetching a URL must not silently authorize generation. Default
+        /// policies mark this Approval, so the run parks with the prompt and
+        /// aspect ratio visible before anything is billed.
+        MediaGenerate,
         SecretsUse,
         AgentSpawn,
         /// Leaving a message for another agent profile through the collaboration
@@ -1024,6 +1032,7 @@ pub mod capability {
                 Capability::MemoryRead,
                 Capability::MemoryWrite,
                 Capability::MemoryConfirm,
+                Capability::MediaGenerate,
                 Capability::SecretsUse,
                 Capability::AgentSpawn,
                 Capability::AgentMessage,
@@ -1063,6 +1072,7 @@ pub mod capability {
                 Capability::MemoryRead => "memory.read".to_string(),
                 Capability::MemoryWrite => "memory.write".to_string(),
                 Capability::MemoryConfirm => "memory.confirm".to_string(),
+                Capability::MediaGenerate => "media.generate".to_string(),
                 Capability::SecretsUse => "secrets.use".to_string(),
                 Capability::AgentSpawn => "agent.spawn".to_string(),
                 Capability::AgentMessage => "agent.message".to_string(),
@@ -1101,6 +1111,7 @@ pub mod capability {
                 "memory.read" => Capability::MemoryRead,
                 "memory.write" => Capability::MemoryWrite,
                 "memory.confirm" => Capability::MemoryConfirm,
+                "media.generate" | "media" => Capability::MediaGenerate,
                 "secrets.use" => Capability::SecretsUse,
                 "agent.spawn" => Capability::AgentSpawn,
                 "agent.message" => Capability::AgentMessage,
@@ -1221,6 +1232,9 @@ pub mod capability {
                 .approval(Capability::BinaryTrace)
                 .approval(Capability::PluginEnable)
                 .approval(Capability::McpEnable)
+                // Generation spends money and writes a publishable asset: the
+                // prompt and size are shown before it is billed.
+                .approval(Capability::MediaGenerate)
                 // The agent may inspect scheduled jobs; creating, pausing or
                 // removing one is a standing commitment and parks for a human.
                 .allow(Capability::Other("schedule".into()))
@@ -1282,6 +1296,40 @@ pub mod capability {
                 .filter(|(_, d)| **d == Decision::Approval)
                 .map(|(c, _)| c.clone())
                 .collect()
+        }
+    }
+
+    #[cfg(test)]
+    mod media_generate_policy_tests {
+        use super::*;
+
+        #[test]
+        fn generation_parks_for_approval_in_the_coder_preset() {
+            let p = Policy::coder();
+            assert_eq!(
+                p.decision_for(&Capability::MediaGenerate),
+                Some(Decision::Approval),
+                "one call spends money and writes a publishable asset"
+            );
+        }
+
+        #[test]
+        fn generation_is_not_granted_by_the_read_only_preset() {
+            let p = Policy::researcher_readonly();
+            assert!(
+                !p.granted().contains(&Capability::MediaGenerate),
+                "a read-only researcher must not be able to bill an image"
+            );
+        }
+
+        #[test]
+        fn the_token_round_trips() {
+            assert_eq!(Capability::MediaGenerate.token(), "media.generate");
+            assert_eq!(
+                Capability::from_token("media.generate"),
+                Capability::MediaGenerate
+            );
+            assert!(Capability::all_fixed().contains(&Capability::MediaGenerate));
         }
     }
 

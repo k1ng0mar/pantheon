@@ -11,6 +11,7 @@
 //! nothing about the registry - that's what keeps `capability → tools → exec` acyclic.
 
 pub mod profiles;
+pub mod image_tool;
 pub mod schedule_tool;
 pub mod tools;
 pub mod tools_group;

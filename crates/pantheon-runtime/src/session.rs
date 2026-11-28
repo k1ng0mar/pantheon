@@ -5191,6 +5191,13 @@ Extracted:
             &mut reg,
             self.supervisor.data_dir().to_path_buf(),
         );
+        // Media generation: one image per call, saved under `<data_dir>/images`.
+        // `media.generate` is approval in the coder preset, so the prompt is
+        // shown before the provider is billed.
+        pantheon_tools::image_tool::register(
+            &mut reg,
+            self.supervisor.data_dir().to_path_buf(),
+        );
         // Structured UI: the agent-facing `render_ui` capture tool. Always
         // registered - rendering is not a privileged operation (morally a
         // fancier assistant message). The turn loop intercepts calls
