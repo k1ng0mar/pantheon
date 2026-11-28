@@ -1,0 +1,14 @@
+# Build artifacts and local state never belong in the build context.
+target/
+.git/
+.github/
+releases/
+brag-output/
+desktop/work/
+web/node_modules/
+**/node_modules/
+*.db
+*.db-wal
+*.db-shm
+.court/
+.marketing/

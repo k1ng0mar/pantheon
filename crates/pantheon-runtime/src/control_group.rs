@@ -143,29 +143,110 @@ pub mod agui {
         }))
     }
 
-    fn thread_of(params: &Value, run_id: &str) -> String {
-        if let Some(t) = params.get("thread_id").and_then(|x| x.as_str()) {
-            return t.to_string();
+    /// Declared parameter shapes for the `/agui/rpc` methods.
+    ///
+    /// They were hand-read with `p.get("x")`, which made every method's wire
+    /// contract invisible: no single place said which fields exist, which are
+    /// required, or what types they are. The structs are the contract; the
+    /// caller still gets the same `field "x" is required` style message.
+    ///
+    /// Fields are optional unless the method cannot work without them, and
+    /// unknown fields are ignored on purpose: an older client that still sends
+    /// a field we dropped must keep working (forward compatibility beats a
+    /// strict schema we would have to version).
+    pub(crate) mod params {
+        use serde::Deserialize;
+
+        #[derive(Debug, Deserialize, Default)]
+        pub struct Send {
+            /// Empty is checked by the handler (same message as a missing
+            /// field), so parsing "no params" must not fail first.
+            #[serde(default)]
+            pub text: String,
+            #[serde(default)]
+            pub run_id: Option<String>,
+            #[serde(default)]
+            pub thread_id: Option<String>,
         }
-        format!("cli:{run_id}")
+
+        #[derive(Debug, Deserialize)]
+        pub struct Decision {
+            pub run_id: String,
+            pub scope: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Frames {
+            pub run_id: String,
+            #[serde(default)]
+            pub thread_id: Option<String>,
+            /// Resume cursor: only frames newer than this ledger row id.
+            #[serde(default)]
+            pub after: Option<i64>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct PutArtifact {
+            pub task_id: String,
+            #[serde(default)]
+            pub mime: Option<String>,
+            #[serde(default)]
+            pub text: Option<String>,
+            #[serde(default)]
+            pub bytes: Option<Vec<u8>>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Sign {
+            pub task_id: String,
+            #[serde(default)]
+            pub mime: Option<String>,
+            #[serde(default)]
+            pub ttl_ms: Option<i64>,
+        }
     }
+
+    /// Deserialize a method's params, turning serde's wording into the message
+    /// clients already parse (`field "run_id" is required`).
+    pub(crate) fn typed<T: serde::de::DeserializeOwned>(p: &Value) -> Result<T, RpcError> {
+        // A JSON-RPC call with omitted params arrives as `null`; treat it as an
+        // empty object so "no params" and "{}" mean the same thing.
+        let empty;
+        let p = if p.is_null() {
+            empty = Value::Object(serde_json::Map::new());
+            &empty
+        } else {
+            p
+        };
+        serde_json::from_value::<T>(p.clone()).map_err(|e| {
+            let msg = e.to_string();
+            if let Some(field) = msg
+                .strip_prefix("missing field `")
+                .and_then(|rest| rest.split('`').next())
+            {
+                return RpcError::invalid_params(format!("field \"{field}\" is required"));
+            }
+            RpcError::invalid_params(msg)
+        })
+    }
+
     struct SendMsg {
         data_dir: PathBuf,
     }
     impl MethodHandler for SendMsg {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
             let p = params.unwrap_or(Value::Null);
-            let text = p.get("text").and_then(|x| x.as_str()).unwrap_or("");
+            let p: params::Send = typed(&p)?;
+            let text = p.text.as_str();
             if text.is_empty() {
                 return Err(RpcError::invalid_params("field \"text\" is required"));
             }
             let dir = self.data_dir.clone();
-            let run_id = p
-                .get("run_id")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(crate::new_run_id);
-            let thread_id = thread_of(&p, &run_id);
+            let run_id = p.run_id.clone().unwrap_or_else(crate::new_run_id);
+            let thread_id = p
+                .thread_id
+                .clone()
+                .unwrap_or_else(|| format!("cli:{run_id}"));
             let sup = sup_for(&dir)?;
             if let Some(status) = sup
                 .ledger_status(&run_id)
@@ -263,14 +344,8 @@ pub mod agui {
     impl MethodHandler for Grant {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
             let p = params.unwrap_or(Value::Null);
-            let run_id = p
-                .get("run_id")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"run_id\" is required"))?;
-            let scope = p
-                .get("scope")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"scope\" is required"))?;
+            let de: params::Decision = typed(&p)?;
+            let (run_id, scope) = (de.run_id.as_str(), de.scope.as_str());
             let dir = self.data_dir.clone();
             let sup = sup_for(&dir)?;
             sup.grant(run_id, scope)
@@ -284,14 +359,8 @@ pub mod agui {
     impl MethodHandler for Deny {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
             let p = params.unwrap_or(Value::Null);
-            let run_id = p
-                .get("run_id")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"run_id\" is required"))?;
-            let scope = p
-                .get("scope")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"scope\" is required"))?;
+            let de: params::Decision = typed(&p)?;
+            let (run_id, scope) = (de.run_id.as_str(), de.scope.as_str());
             let dir = self.data_dir.clone();
             let sup = sup_for(&dir)?;
             sup.deny(run_id, scope)
@@ -351,30 +420,19 @@ pub mod agui {
     impl MethodHandler for PutArtifact {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
             let p = params.unwrap_or(Value::Null);
-            let task = p
-                .get("task_id")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"task_id\" is required"))?;
+            let pa: params::PutArtifact = typed(&p)?;
+            let task = pa.task_id.as_str();
             if !valid_task_id(task) {
                 return Err(RpcError::invalid_params("bad task_id"));
             }
-            let mime = p
-                .get("mime")
-                .and_then(|x| x.as_str())
+            let mime = pa
+                .mime
+                .as_deref()
                 .unwrap_or("application/octet-stream");
-            let bytes = if let Some(text) = p.get("text").and_then(|x| x.as_str()) {
+            let bytes = if let Some(text) = pa.text.as_deref() {
                 text.as_bytes().to_vec()
-            } else if let Some(array) = p.get("bytes").and_then(|x| x.as_array()) {
-                let mut out = Vec::with_capacity(array.len());
-                for n in array {
-                    out.push(
-                        n.as_u64()
-                            .filter(|v| *v <= 255)
-                            .ok_or_else(|| RpcError::invalid_params("bytes must be 0..255"))?
-                            as u8,
-                    );
-                }
-                out
+            } else if let Some(array) = pa.bytes.as_deref() {
+                array.to_vec()
             } else {
                 return Err(RpcError::invalid_params(
                     "field \"text\" or \"bytes\" is required",
@@ -403,13 +461,14 @@ pub mod agui {
     impl MethodHandler for Frames {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
             let p = params.unwrap_or(Value::Null);
-            let run_id = p
-                .get("run_id")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"run_id\" is required"))?;
+            let fr: params::Frames = typed(&p)?;
+            let run_id = fr.run_id.as_str();
             let dir = self.data_dir.clone();
-            let thread_id = thread_of(&p, run_id);
-            let after = p.get("after").and_then(|x| x.as_i64()).unwrap_or(0);
+            let thread_id = fr
+                .thread_id
+                .clone()
+                .unwrap_or_else(|| format!("cli:{run_id}"));
+            let after = fr.after.unwrap_or(0);
             let sup = sup_for(&dir)?;
             let entries = sup
                 .replay(run_id)
@@ -427,21 +486,13 @@ pub mod agui {
     impl MethodHandler for Sign {
         fn call(&self, params: Option<Value>) -> Result<Value, RpcError> {
             let p = params.unwrap_or(Value::Null);
-            let task = p
-                .get("task_id")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| RpcError::invalid_params("field \"task_id\" is required"))?;
+            let sg: params::Sign = typed(&p)?;
+            let task = sg.task_id.as_str();
             if !valid_task_id(task) {
                 return Err(RpcError::invalid_params("bad task_id"));
             }
-            let mime = p
-                .get("mime")
-                .and_then(|x| x.as_str())
-                .unwrap_or("application/octet-stream");
-            let ttl = p
-                .get("ttl_ms")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(3_600_000);
+            let mime = sg.mime.as_deref().unwrap_or("application/octet-stream");
+            let ttl = sg.ttl_ms.unwrap_or(3_600_000);
             if ttl <= 0 {
                 return Err(RpcError::invalid_params("ttl_ms must be positive"));
             }
@@ -1032,6 +1083,49 @@ pub mod agui_serve {
             );
         }
     }
+    #[cfg(test)]
+    mod typed_params_tests {
+        use crate::control_group::agui::params::{Decision, Frames, PutArtifact, Send, Sign};
+        use crate::control_group::agui::typed;
+        use serde_json::json;
+
+        #[test]
+        fn a_missing_required_field_keeps_the_message_clients_parse() {
+            let e = typed::<Decision>(&json!({"scope": "shell.execute"})).unwrap_err();
+            let msg = e.message.clone();
+            assert!(msg.contains("run_id"), "{msg}");
+            assert!(msg.contains("is required"), "{msg}");
+        }
+
+        #[test]
+        fn unknown_fields_are_ignored_so_older_clients_keep_working() {
+            let p: Decision = typed(&json!({
+                "run_id": "run_1", "scope": "shell", "extra_from_an_old_client": true
+            }))
+            .unwrap();
+            assert_eq!(p.run_id, "run_1");
+            let s: Send = typed(&json!({"text": "hi", "attachment": [1, 2]})).unwrap();
+            assert_eq!(s.text, "hi");
+            assert!(s.run_id.is_none());
+        }
+
+        #[test]
+        fn a_wrong_type_is_refused_without_panicking() {
+            assert!(typed::<Frames>(&json!({"run_id": 7})).is_err());
+            assert!(typed::<Sign>(&json!({"task_id": ["x"]})).is_err());
+            // A byte outside 0..255 cannot sneak into a Vec<u8>.
+            assert!(typed::<PutArtifact>(&json!({"task_id": "t", "bytes": [1, 300]})).is_err());
+        }
+
+        #[test]
+        fn absent_params_are_treated_as_an_empty_object() {
+            let s: Send = typed(&serde_json::Value::Null).unwrap();
+            assert!(s.text.is_empty());
+            let f: Frames = typed(&json!({"run_id": "r"})).unwrap();
+            assert_eq!(f.after, None);
+        }
+    }
+
     #[cfg(test)]
     mod idempotency_tests {
         use super::idempotency::{lookup, store, Lookup, TTL};

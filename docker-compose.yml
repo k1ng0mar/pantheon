@@ -1,0 +1,40 @@
+# Pantheon as a local service: one container, one token, one data volume.
+#
+#   PANTHEON_SERVE_TOKEN=... docker compose up -d
+#   curl -H "x-pantheon-token: $PANTHEON_SERVE_TOKEN" http://127.0.0.1:18789/api/session
+#
+# The port is published on loopback only. Put a reverse proxy with real
+# authentication in front before exposing this to a network.
+
+services:
+  pantheon:
+    build: .
+    image: pantheon:local
+    container_name: pantheon
+    restart: unless-stopped
+    ports:
+      # host:container, loopback only - never 0.0.0.0 by default.
+      - "127.0.0.1:18789:18789"
+    environment:
+      # Pinned, not generated: a per-start token would invalidate every client
+      # on restart. Required - compose refuses to start without it.
+      PANTHEON_SERVE_TOKEN: ${PANTHEON_SERVE_TOKEN:?set PANTHEON_SERVE_TOKEN before starting}
+      PANTHEON_DATA_DIR: /data
+      # The router runs on the host; containers reach it through this name.
+      PANTHEON_ALLOW_LOOPBACK_PROVIDERS: "1"
+    volumes:
+      - pantheon-data:/data
+    # The agent runs shell commands and browsers; give it room and a clean stop.
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18789/agui/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pantheon-data:
+    name: pantheon-data

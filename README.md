@@ -84,6 +84,22 @@ pantheon run --taskID t1 --say "summarize these logs" --deliver session
 
 `pantheon doctor` checks the config, the key, storage and memory, then tells you how to fix what is wrong. Build from source with `cargo build --release` if you prefer. Rust is the only dependency.
 
+In a container (the dashboard + AG-UI surface on one port, data in a volume):
+
+```sh
+docker compose up -d        # needs PANTHEON_SERVE_TOKEN in the environment
+```
+
+or directly:
+
+```sh
+docker build -t pantheon .
+docker run --rm -p 127.0.0.1:18789:18789 \
+  -e PANTHEON_SERVE_TOKEN=... -v pantheon-data:/data pantheon
+```
+
+The image runs as a non-root user, keeps everything under `/data`, and probes `/agui/health`. The port is published on loopback only — put a reverse proxy with real authentication in front before exposing it.
+
 ## How it behaves
 
 **Sessions survive restarts.** Every turn, tool call and approval is appended to a SQLite event ledger in your data dir. Close the app, reopen it, and the run picks up from the ledger rather than from a hoped-for transcript. Ledger writes are redacted as they land, so pasted secrets do not stay in the history.
