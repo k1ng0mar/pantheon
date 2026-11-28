@@ -20,8 +20,6 @@ services:
       # on restart. Required - compose refuses to start without it.
       PANTHEON_SERVE_TOKEN: ${PANTHEON_SERVE_TOKEN:?set PANTHEON_SERVE_TOKEN before starting}
       PANTHEON_DATA_DIR: /data
-      # The router runs on the host; containers reach it through this name.
-      PANTHEON_ALLOW_LOOPBACK_PROVIDERS: "1"
     volumes:
       - pantheon-data:/data
     # The agent runs shell commands and browsers; give it room and a clean stop.

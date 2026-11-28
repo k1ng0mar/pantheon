@@ -5,14 +5,9 @@
 //! Fallback policy does NOT live here - see `chain.rs`. Adapters are
 //! single-attempt; the chain decides what happens on failure.
 //!
-//! SSRF guard and proxies: `validate_url` runs before every outbound
-//! provider request. When the request will go through a proxy, the guard
-//! does NOT check the locally resolved IP: Pantheon never connects to
-//! that address, the proxy resolves the hostname, and TLS verifies the
-//! certificate for that hostname through the tunnel. Literal private
-//! hosts in the URL itself are still blocked under a proxy, and hosts
-//! that go direct (no proxy, or listed in NO_PROXY) keep the full
-//! resolved-IP check. See `goes_through_proxy` and `validate_url`.
+//! Provider endpoints are operator config: `validate_url` checks the URL
+//! shape and the configured egress policy, then gets out of the way. Local
+//! routers and fake providers on loopback work without a special opt in.
 
 use crate::catalog::{self, ApiMode};
 use crate::model_event::{ModelUsage, NoopModelSink};
@@ -276,58 +271,9 @@ fn egress_allows_host(host: &str) -> bool {
     }
 }
 
-/// Whether the transport will route `url` through a proxy, using exactly
-/// the proxy the transport itself uses: ureq's default agent config reads
-/// `Proxy::try_from_env()`, so asking ureq the same question here cannot
-/// drift from what the request will actually do. Two cases return false
-/// on purpose: a host listed in NO_PROXY goes direct, and a proxy that
-/// resolves the target locally (SOCKS4/SOCKS5) means the local DNS
-/// answer IS the address used, so the strict resolved-IP check still
-/// applies. Never log or include the proxy itself here: its URL may
-/// carry credentials, and this function only ever reports a boolean.
-fn goes_through_proxy(url: &str) -> bool {
-    let Some(proxy) = ureq::Proxy::try_from_env() else {
-        return false;
-    };
-    if proxy.resolve_target() {
-        return false;
-    }
-    let Ok(uri) = url.parse::<ureq::http::Uri>() else {
-        return false;
-    };
-    !proxy.is_no_proxy(&uri)
-}
-
-/// Whether the loopback-provider opt-in is set. Shared by the literal
-/// and resolved loopback checks so one env value cannot mean different
-/// things on the two paths.
-fn loopback_opt_in() -> bool {
-    std::env::var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS").as_deref() == Ok("1")
-}
-
-/// SSRF guard: reject anything that is not a public provider destination.
-/// Called on every outbound provider request before ureq runs. Also
-/// enforces the egress policy (allowlist/offline).
-///
-/// Two paths, by how the request will travel:
-///
-/// * Proxied: the URL's host is a hostname (not a literal IP) and
-///   `goes_through_proxy` is true. The locally resolved IP is NOT
-///   checked: in a proxied environment the local resolver may map every
-///   public host to a private-looking range (this sandbox maps public
-///   hosts to 198.18.0.0/15), and Pantheon never connects to that
-///   address anyway. The proxy resolves the hostname and TLS verifies
-///   the origin's certificate for that hostname through the tunnel, so
-///   a proxy cannot make a private host present a valid cert for a
-///   public name - the same reasoning as the plugin-importer's proxy
-///   posture. Literal private hosts are still blocked below, before
-///   this path is reached, so a proxy never turns a literal private
-///   URL into an allowed one.
-/// * Direct: no proxy, or the host is in NO_PROXY, or the proxy
-///   resolves locally. The host is resolved and every address must be
-///   public, exactly as before. The loopback gate still permits
-///   loopback-only destinations, and only those, when explicitly
-///   opted in.
+/// Provider URLs are trusted operator config. Check the shape and the
+/// explicit egress policy; do not second guess the address the operator
+/// chose. This is the same posture Hermes takes with custom endpoints.
 pub fn validate_url(url: &str) -> Result<(), PantheonError> {
     let err = |code: &str, cause: String| {
         PantheonError::new(
@@ -335,7 +281,7 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
             pantheon_api::error::Layer::Provider,
             false,
             cause,
-            "remove the private URL from config or use a public provider",
+            "check the provider URL and egress policy",
             url.to_string(),
         )
     };
@@ -343,30 +289,18 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
         Ok(u) => u,
         Err(_) => return Err(err("PROVIDER_URL", format!("invalid URL: {url}"))),
     };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(err(
+            "PROVIDER_URL",
+            format!(
+                "provider URL must use http or https, got {}",
+                parsed.scheme()
+            ),
+        ));
+    }
     let host = match parsed.host_str() {
-        Some(h) => h,
-        None => return Err(err("PROVIDER_URL", format!("no host in URL: {url}"))),
-    };
-    // A provider key is sent in an Authorization header, so a public HTTP URL
-    // would put it on the wire in cleartext. Applied after the host checks:
-    // a private/loopback host is the more specific finding (`SSRF_BLOCKED`),
-    // and a URL that is allowed by them still may not use plain HTTP.
-    let require_tls = || {
-        if parsed.scheme() == "https" {
-            return Ok(());
-        }
-        let local = host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
-            || host.eq_ignore_ascii_case("localhost")
-            || host.to_ascii_lowercase().ends_with(".localhost");
-        if parsed.scheme() == "http" && loopback_opt_in() && !goes_through_proxy(url) && local {
-            return Ok(());
-        }
-        Err(err(
-            "PROVIDER_TLS_REQUIRED",
-            format!("provider URL must use https, got {}", parsed.scheme()),
-        ))
+        Some(h) if !h.is_empty() => h,
+        _ => return Err(err("PROVIDER_URL", format!("no host in URL: {url}"))),
     };
     if !egress_allows_host(host) {
         return Err(err(
@@ -374,139 +308,7 @@ pub fn validate_url(url: &str) -> Result<(), PantheonError> {
             format!("{host} is not permitted by egress policy"),
         ));
     }
-    // Literal IP hosts need no DNS and behave the same on both paths:
-    // a loopback literal is allowed only with the explicit opt-in, and
-    // any other non-public literal (LAN, link-local, benchmarking
-    // 198.18.0.0/15, reserved) is blocked even under a proxy. A public
-    // literal is allowed on either path, as before.
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        // A loopback literal is allowed only with the explicit opt-in
-        // AND only when it will actually be Pantheon's loopback: through
-        // a proxy, 127.0.0.1 would be the proxy's loopback, not
-        // Pantheon's, so the opt-in must not be reinterpreted as
-        // permission for that.
-        if ip.is_loopback() {
-            if loopback_opt_in() && !goes_through_proxy(url) {
-                return require_tls();
-            }
-            return Err(err(
-                "SSRF_BLOCKED",
-                format!("{host} is not a public provider host"),
-            ));
-        }
-        if !is_public_ip(ip) {
-            return Err(err(
-                "SSRF_BLOCKED",
-                format!("{host} is not a public provider host"),
-            ));
-        }
-        return require_tls();
-    }
-    // `localhost` (and any `.localhost` name) is loopback by definition,
-    // with the same through-a-proxy caveat as a loopback literal.
-    let host_lower = host.to_lowercase();
-    if host_lower == "localhost" || host_lower.ends_with(".localhost") {
-        if loopback_opt_in() && !goes_through_proxy(url) {
-            return require_tls();
-        }
-        return Err(err(
-            "SSRF_BLOCKED",
-            format!("{host} is not a public provider host"),
-        ));
-    }
-    // Proxied hostname: no local DNS lookup at all, so a host the local
-    // resolver cannot resolve (or maps to a private-looking range) is
-    // not rejected here - the proxy resolves it, and TLS verifies the
-    // hostname's certificate through the tunnel.
-    if goes_through_proxy(url) {
-        return require_tls();
-    }
-    let port = parsed.port_or_known_default().unwrap_or(0);
-    use std::net::ToSocketAddrs;
-    let addrs: Vec<std::net::IpAddr> = match (host, port).to_socket_addrs() {
-        Ok(iter) => iter.map(|s| s.ip()).collect(),
-        Err(e) => return Err(err("PROVIDER_DNS", format!("cannot resolve {host}: {e}"))),
-    };
-    if addrs.is_empty() {
-        return Err(err(
-            "PROVIDER_DNS",
-            format!("no addresses for host: {host}"),
-        ));
-    }
-    // Dev/test-only escape hatch, off by default: a loopback provider
-    // (127.0.0.1, ::1, localhost) is the only way to smoke-test a real
-    // Session turn against a fake provider without a live key, and the
-    // SSRF guard below otherwise rejects every such URL. Opt-in via
-    // `PANTHEON_ALLOW_LOOPBACK_PROVIDERS=1`; it permits loopback
-    // addresses ONLY - LAN/private ranges stay blocked, so a stray env
-    // value cannot turn a provider URL into an internal-network probe.
-    // Never set this in production: a loopback provider is trusted with
-    // the turn's transcript by construction.
-    if loopback_opt_in() && !addrs.is_empty() && addrs.iter().all(|ip| ip.is_loopback()) {
-        return require_tls();
-    }
-    for ip in &addrs {
-        if !is_public_ip(*ip) {
-            return Err(err(
-                "SSRF_BLOCKED",
-                format!("{host} resolves to private address {ip}"),
-            ));
-        }
-    }
-    require_tls()
-}
-fn is_public_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => is_public_v4(v4),
-        std::net::IpAddr::V6(v6) => {
-            // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible
-            // (::a.b.c.d) addresses route to the IPv4 host: judge them
-            // by the IPv4 rules, or ::ffff:127.0.0.1 sails past the V6
-            // branch untouched (same hole as the link-preview guard).
-            if let Some(v4) = v6.to_ipv4() {
-                return is_public_v4(v4);
-            }
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || v6.is_unicast_link_local()
-                || is_unique_local_v6(v6))
-        }
-    }
-}
-
-fn is_public_v4(v4: std::net::Ipv4Addr) -> bool {
-    if v4.is_private()
-        || v4.is_loopback()
-        || v4.is_link_local()
-        || v4.is_broadcast()
-        || v4.is_documentation()
-        || v4.is_unspecified()
-    {
-        return false;
-    }
-    let o = v4.octets();
-    // Carrier-grade NAT: 100.64.0.0/10.
-    if o[0] == 100 && (64..128).contains(&o[1]) {
-        return false;
-    }
-    // IETF protocol assignments: 192.0.0.0/24.
-    if o[0] == 192 && o[1] == 0 && o[2] == 0 {
-        return false;
-    }
-    // Benchmarking: 198.18.0.0/15.
-    if o[0] == 198 && (o[1] == 18 || o[1] == 19) {
-        return false;
-    }
-    // Reserved: 240.0.0.0/4.
-    if o[0] >= 240 {
-        return false;
-    }
-    true
-}
-
-fn is_unique_local_v6(ip: std::net::Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xfe00) == 0xfc00
+    Ok(())
 }
 
 /// `(name, value)` for the key header: `Authorization` sends
@@ -1129,200 +931,37 @@ mod tests {
         );
     }
 
-    /// The SSRF guard reads proxy env (via ureq) and the loopback
-    /// opt-in, so every test that mutates either shares one lock:
-    /// parallel tests in this binary must never observe each other's
-    /// env values. `SavedEnv` restores the ambient values on drop, so
-    /// a failing test cannot poison the tests that follow it.
-    fn guard_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    const GUARD_ENV_VARS: &[&str] = &[
-        "ALL_PROXY",
-        "all_proxy",
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "NO_PROXY",
-        "no_proxy",
-        "PANTHEON_ALLOW_LOOPBACK_PROVIDERS",
-    ];
-
-    struct SavedEnv {
-        saved: Vec<(String, Option<String>)>,
-    }
-
-    impl SavedEnv {
-        fn capture() -> Self {
-            Self {
-                saved: GUARD_ENV_VARS
-                    .iter()
-                    .map(|name| (name.to_string(), std::env::var(name).ok()))
-                    .collect(),
-            }
-        }
-
-        /// Clear every proxy variable, then set one dummy proxy that is
-        /// never connected to: the guard never opens a connection, so
-        /// the proxy host only needs to parse.
-        fn set_proxy(&self, proxy: &str) {
-            for name in GUARD_ENV_VARS {
-                std::env::remove_var(name);
-            }
-            std::env::set_var("HTTPS_PROXY", proxy);
-            std::env::set_var("HTTP_PROXY", proxy);
-        }
-
-        fn clear_proxy(&self) {
-            for name in GUARD_ENV_VARS {
-                std::env::remove_var(name);
-            }
-        }
-    }
-
-    impl Drop for SavedEnv {
-        fn drop(&mut self) {
-            for (name, value) in &self.saved {
-                match value {
-                    Some(v) => std::env::set_var(name, v),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-    }
-
     #[test]
-    fn loopback_provider_blocked_by_default() {
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.clear_proxy();
-        let err = validate_url("http://127.0.0.1:9/v1/chat/completions").unwrap_err();
-        assert_eq!(err.code, "SSRF_BLOCKED");
-    }
-
-    #[test]
-    fn loopback_provider_allowed_only_with_explicit_opt_in() {
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.clear_proxy();
-        std::env::set_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS", "1");
-        assert!(validate_url("http://127.0.0.1:9/v1/chat/completions").is_ok());
-        assert!(validate_url("http://localhost:9/v1/chat/completions").is_ok());
-    }
-
-    #[test]
-    fn loopback_opt_in_does_not_open_lan_ranges() {
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.clear_proxy();
-        std::env::set_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS", "1");
-        let err = validate_url("http://192.168.1.10/v1/chat/completions").unwrap_err();
-        assert_eq!(err.code, "SSRF_BLOCKED");
-        let err = validate_url("http://10.0.0.5/v1/chat/completions").unwrap_err();
-        assert_eq!(err.code, "SSRF_BLOCKED");
-    }
-
-    #[test]
-    fn benchmarking_range_is_not_public() {
-        assert!(!is_public_ip("198.18.0.1".parse().unwrap()));
-        assert!(!is_public_ip("198.19.255.255".parse().unwrap()));
-        assert!(is_public_ip("8.8.8.8".parse().unwrap()));
-    }
-
-    #[test]
-    fn proxied_public_hostname_allowed_without_local_dns_check() {
-        // The guard never connects, so the proxy is a dummy. In this
-        // sandbox the hostname below resolves locally to 198.18/15,
-        // which the direct path rejects; the proxied path must allow
-        // it, because the proxy, not the local resolver, resolves it.
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.set_proxy("http://127.0.0.1:9");
-        assert!(validate_url(
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn literal_private_hosts_blocked_even_under_proxy() {
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.set_proxy("http://127.0.0.1:9");
+    fn provider_endpoints_are_trusted_config() {
         for url in [
-            "http://192.168.1.10/v1/chat/completions",
-            "http://10.0.0.5/v1/chat/completions",
-            "http://172.16.0.9/v1/chat/completions",
-            "http://169.254.1.2/v1/chat/completions",
-            "http://127.0.0.1:9/v1/chat/completions",
-            "http://localhost:9/v1/chat/completions",
-            "http://198.18.0.1/v1/chat/completions",
+            "http://127.0.0.1:8015/v1",
+            "http://localhost:11434/v1",
+            "http://192.168.1.10:8000/v1",
+            "https://api.openai.com/v1",
         ] {
-            let err = validate_url(url).unwrap_err();
-            assert_eq!(err.code, "SSRF_BLOCKED", "{url}");
+            validate_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
         }
     }
 
     #[test]
-    fn loopback_opt_in_does_not_allow_loopback_through_proxy() {
-        // Through a proxy, loopback would be the proxy's loopback, not
-        // Pantheon's, so the opt-in must not open it there. With the
-        // host in NO_PROXY the request goes direct and the opt-in
-        // applies again.
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.set_proxy("http://127.0.0.1:9");
-        std::env::set_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS", "1");
-        let err = validate_url("http://127.0.0.1:9/v1/chat/completions").unwrap_err();
-        assert_eq!(err.code, "SSRF_BLOCKED");
-        let err = validate_url("http://localhost:9/v1/chat/completions").unwrap_err();
-        assert_eq!(err.code, "SSRF_BLOCKED");
-        std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
-        std::env::set_var("no_proxy", "127.0.0.1,localhost");
-        assert!(validate_url("http://127.0.0.1:9/v1/chat/completions").is_ok());
-        assert!(validate_url("http://localhost:9/v1/chat/completions").is_ok());
+    fn invalid_provider_url_is_rejected() {
+        let err = validate_url("not a url").unwrap_err();
+        assert_eq!(err.code, "PROVIDER_URL");
     }
 
     #[test]
-    fn goes_through_proxy_honours_no_proxy_and_absence() {
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.clear_proxy();
-        assert!(!goes_through_proxy("https://example.com/v1"));
-        _env.set_proxy("http://127.0.0.1:9");
-        assert!(goes_through_proxy("https://example.com/v1"));
-        std::env::set_var("NO_PROXY", "example.com");
-        std::env::set_var("no_proxy", "example.com");
-        assert!(!goes_through_proxy("https://example.com/v1"));
-        assert!(goes_through_proxy("https://other.example.com/v1"));
-        std::env::set_var("NO_PROXY", "*");
-        std::env::set_var("no_proxy", "*");
-        assert!(!goes_through_proxy("https://other.example.com/v1"));
-    }
-
-    #[test]
-    fn locally_resolving_proxy_keeps_direct_check() {
-        // SOCKS5 resolves the target locally, so the local DNS answer
-        // IS the address used and the strict check must still apply.
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.clear_proxy();
-        std::env::set_var("ALL_PROXY", "socks5://127.0.0.1:1080");
-        assert!(!goes_through_proxy("https://example.com/v1"));
-    }
-
-    #[test]
-    fn public_provider_urls_require_tls() {
-        let _g = guard_env_lock();
-        let _env = SavedEnv::capture();
-        _env.clear_proxy();
-        std::env::remove_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS");
-        let err = validate_url("http://1.1.1.1/v1").expect_err("http must be rejected");
-        assert_eq!(err.code, "PROVIDER_TLS_REQUIRED");
-        assert!(validate_url("https://1.1.1.1/v1").is_ok());
+    fn egress_policy_still_applies() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = egress_policy();
+        set_egress_policy(EgressPolicy {
+            mode: EgressMode::Allowlist,
+            allowlist: vec!["api.openai.com".into()],
+        });
+        assert!(validate_url("https://api.openai.com/v1").is_ok());
+        let err = validate_url("https://example.com/v1").unwrap_err();
+        assert_eq!(err.code, "EGRESS_BLOCKED");
+        set_egress_policy(saved);
     }
 
     #[test]

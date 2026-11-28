@@ -5,11 +5,8 @@
 //! names contain `fake_provider` drive a REAL `Session::chat_turn` through
 //! the REAL provider chain and HTTP transport, but the "provider" at the
 //! other end is a local HTTP server in this file speaking the OpenAI SSE
-//! wire format. That is the faithful seam the codebase offers: the SSRF
-//! guard blocks loopback provider URLs by default, so these tests opt in
-//! with `PANTHEON_ALLOW_LOOPBACK_PROVIDERS=1` (see the loopback-gate
-//! unit tests in `pantheon-providers/src/http.rs`, which prove the gate
-//! stays closed by default and still blocks LAN ranges when open). A
+//! wire format. That is the faithful seam the codebase offers: provider
+//! endpoints are trusted config, so a local HTTP server is enough. A
 //! green fake-provider test proves the wiring, the ledger, the approval
 //! gates and the resume machinery - it is NEVER a live-provider proof.
 //! Live-provider proof is blocked-by-credential until a key is supplied;
@@ -217,10 +214,8 @@ fn tool_provider_command(command: &str, final_text: &str) -> Handler {
 // ---------------------------------------------------------------------------
 
 fn fake_session(data_dir: &Path, port: u16, policy: Policy) -> Session {
-    // Opt-ins only for these smoke tests; the gates stay closed by default
-    // (unit-proven in pantheon-providers, and sandbox enforcement is
-    // covered by the sandbox_runner/tools_builtins suites).
-    std::env::set_var("PANTHEON_ALLOW_LOOPBACK_PROVIDERS", "1");
+    // Opt-in only for this smoke test; the sandbox boundary is separately
+    // covered by the sandbox_runner/tools_builtins suites.
     // This VM has no bwrap, so the Container sandbox boundary is
     // unavailable; without the documented direct-fallback opt-in every
     // shell call would fail SANDBOX_UNAVAILABLE and the approval/config

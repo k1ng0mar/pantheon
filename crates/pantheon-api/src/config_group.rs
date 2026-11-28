@@ -840,14 +840,12 @@ pub mod dotenv {
     }
 
     /// keys whose value gates a security boundary rather than configuring the
-    /// process: the sandbox direct-fallback opt-in (S1) and the SSRF
-    /// loopback/LAN gate for provider URLs. loading them from
+    /// process: the sandbox direct-fallback opt-in (S1). loading them from
     /// `<data_dir>/.env` still works (logged-only decision), but the loader
     /// flags each - the file is data-dir state, writable by more than the
     /// operator, not the shell environment.
     const SECURITY_BOUNDARY_ENV_KEYS: &[&str] = &[
         "PANTHEON_SANDBOX_FALLBACK",
-        "PANTHEON_ALLOW_LOOPBACK_PROVIDERS",
         // a catalog file's `auth_command` runs under `sh -c` on the host.
         "PANTHEON_CATALOG",
         // loader injection into every child pantheon spawns.
@@ -1117,9 +1115,6 @@ pub mod dotenv {
         #[test]
         fn security_boundary_env_keys_are_classified_and_still_honored() {
             assert!(is_security_boundary_env_key("PANTHEON_SANDBOX_FALLBACK"));
-            assert!(is_security_boundary_env_key(
-                "PANTHEON_ALLOW_LOOPBACK_PROVIDERS"
-            ));
             assert!(!is_security_boundary_env_key("PANTHEON_API_KEY"));
             assert!(!is_security_boundary_env_key("PANTHEON_SANDBOX_FALLBACK_2"));
 
