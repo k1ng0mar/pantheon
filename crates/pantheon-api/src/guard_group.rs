@@ -960,7 +960,86 @@ pub mod capability {
         Approval,
     }
 
+    impl Decision {
+        /// canonical spelling, shared by `policy.toml` and the permissions
+        /// panel. round-trips with [`Decision::parse`].
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Allow => "allow",
+                Self::Deny => "deny",
+                Self::Approval => "approval",
+            }
+        }
+
+        pub fn parse(s: &str) -> Option<Self> {
+            match s.trim() {
+                "allow" => Some(Self::Allow),
+                "deny" => Some(Self::Deny),
+                "approval" => Some(Self::Approval),
+                _ => None,
+            }
+        }
+
+        /// next decision in the panel's cycle (space key): allow -> approval
+        /// -> deny -> allow. ordered so a stuck key never ends more
+        /// permissive than it started within two presses.
+        pub fn next(self) -> Self {
+            match self {
+                Self::Allow => Self::Approval,
+                Self::Approval => Self::Deny,
+                Self::Deny => Self::Allow,
+            }
+        }
+
+        /// what this decision means for a tool call, for the panel's
+        /// one-line explanation of the row under the cursor.
+        pub fn describe(self) -> &'static str {
+            match self {
+                Self::Allow => "runs without asking",
+                Self::Approval => "parks and asks before running",
+                Self::Deny => "blocked outright, in every permission mode",
+            }
+        }
+    }
+
     impl Capability {
+        /// Every fixed capability, in policy order. `Other(..)` and
+        /// `MessageSend(..)` are open-ended, so they are not enumerable:
+        /// the permissions panel lists concrete rules for those from
+        /// [`Policy::entries`] and offers the fixed set for adding.
+        pub fn all_fixed() -> Vec<Capability> {
+            vec![
+                Capability::FilesystemRead,
+                Capability::FilesystemWrite,
+                Capability::ShellExecute,
+                Capability::GitRead,
+                Capability::GitWrite,
+                Capability::GitPush,
+                Capability::NetworkOutbound,
+                Capability::Browser,
+                Capability::BrowserAct,
+                Capability::BrowserFillLogin,
+                Capability::ComputerUse,
+                Capability::BinaryTrace,
+                Capability::MemoryRead,
+                Capability::MemoryWrite,
+                Capability::MemoryConfirm,
+                Capability::SecretsUse,
+                Capability::AgentSpawn,
+                Capability::AgentMessage,
+                Capability::PluginEnable,
+                Capability::McpEnable,
+                Capability::McpUnclassified,
+            ]
+        }
+
+        /// Compact human label for the permissions panel row
+        /// (`shell.execute` stays the identity; the label is only for
+        /// reading).
+        pub fn label(&self) -> String {
+            self.token()
+        }
+
         /// Stable, log-safe token for a capability, e.g. `shell.execute`.
         /// Used for approval scopes and events, so it never carries payload
         /// values: a `MessageSend` token is the channel class, not the message.
@@ -1049,6 +1128,53 @@ pub mod capability {
     }
 
     impl Policy {
+        /// Every explicit rule, sorted by capability token. The permissions
+        /// panel lists these; unlisted capabilities fall to the default
+        /// (deny), so they are not rules and are not returned here.
+        pub fn entries(&self) -> Vec<(Capability, Decision)> {
+            let mut out: Vec<(Capability, Decision)> =
+                self.rules.iter().map(|(c, d)| (c.clone(), *d)).collect();
+            out.sort_by_key(|(c, _)| c.token());
+            out
+        }
+
+        /// Explicit rules only, whether or not any capability has one. Used
+        /// by the panel to show the whole surface, not just what is set.
+        pub fn decision_for(&self, cap: &Capability) -> Option<Decision> {
+            self.rules.get(cap).copied()
+        }
+
+        /// Set one capability's decision in place. Returns the previous
+        /// decision (None = it was unset and fell to the default deny).
+        /// The caller is responsible for making a live session see it:
+        /// see `Session::set_policy_decision`.
+        pub fn set_decision(&mut self, cap: Capability, decision: Decision) -> Option<Decision> {
+            if decision == Decision::Deny && !self.rules.contains_key(&cap) {
+                // Deny is the default. Writing it would bloat `entries()`
+                // with rules that change nothing.
+                return None;
+            }
+            self.rules.insert(cap, decision)
+        }
+
+        /// Drop one capability's rule, returning it to the default deny.
+        pub fn clear_decision(&mut self, cap: &Capability) -> Option<Decision> {
+            self.rules.remove(cap)
+        }
+
+        /// Panel aliases for [`Self::set_decision`] / [`Self::clear_decision`].
+        /// They write *exactly* the decision asked for, including an explicit
+        /// `Deny` on a capability that had no rule: the panel's "pin this to
+        /// deny" is a real statement, not the same non-statement as the
+        /// default, and the row has to keep showing as overridden.
+        pub fn rules_insert(&mut self, cap: Capability, decision: Decision) -> Option<Decision> {
+            self.rules.insert(cap, decision)
+        }
+
+        pub fn rules_remove(&mut self, cap: &Capability) -> Option<Decision> {
+            self.rules.remove(cap)
+        }
+
         pub fn allow(mut self, cap: Capability) -> Self {
             self.rules.insert(cap, Decision::Allow);
             self
@@ -1095,6 +1221,14 @@ pub mod capability {
                 .approval(Capability::BinaryTrace)
                 .approval(Capability::PluginEnable)
                 .approval(Capability::McpEnable)
+                // The agent may inspect scheduled jobs; creating, pausing or
+                // removing one is a standing commitment and parks for a human.
+                .allow(Capability::Other("schedule".into()))
+                .approval(Capability::Other("schedule.write".into()))
+                // Deferred-tool discovery. Loading a schema has no side
+                // effect: the tool it names is still gated by its own
+                // capability when called.
+                .allow(Capability::Other("load_tools".into()))
                 // Unclassified MCP tools park: a NetworkOutbound default lets an
                 // unknown third-party tool (delete/write/send) run on an allowed
                 // capability with only server approval as the gate.
@@ -1128,6 +1262,8 @@ pub mod capability {
             Self::default()
                 .allow(Capability::FilesystemRead)
                 .allow(Capability::MemoryRead)
+                // Discovery only; every tool it surfaces is still gated.
+                .allow(Capability::Other("load_tools".into()))
         }
 
         pub fn granted(&self) -> HashSet<Capability> {
@@ -1237,6 +1373,27 @@ pub mod capability {
             assert_eq!(
                 Capability::from_token("agent.message"),
                 Capability::AgentMessage
+            );
+        }
+
+        #[test]
+        fn coder_reads_schedules_and_approves_writes() {
+            // The agent may inspect scheduled jobs; creating or removing one
+            // is a standing commitment and parks for a human.
+            let p = Policy::coder();
+            assert_eq!(p.check(&Capability::Other("schedule".into())), Decision::Allow);
+            assert_eq!(
+                p.check(&Capability::Other("schedule.write".into())),
+                Decision::Approval
+            );
+            // deferred-tool discovery must not be denied as an unknown other
+            assert_eq!(
+                p.check(&Capability::Other("load_tools".into())),
+                Decision::Allow
+            );
+            assert_eq!(
+                Policy::researcher_readonly().check(&Capability::Other("load_tools".into())),
+                Decision::Allow
             );
         }
 

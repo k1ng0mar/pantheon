@@ -33,6 +33,12 @@ pub struct ModelSection {
     /// 0 disables thinking entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_budget: Option<u32>,
+    /// opt-in depth directives: when true, a prompt that asks for depth
+    /// ("think hard", "ultrathink", "thorough analysis") runs that one turn
+    /// at a higher reasoning effort. Absent/false = off: effort costs tokens,
+    /// so this is never on by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_directives: Option<bool>,
     /// provider http timeout in ms (`timeout_ms`).
     /// single-shot = overall deadline; streams = per-read/connection deadline,
     /// never a total cap, so a slow-but-alive provider isn't cut off
@@ -130,6 +136,12 @@ pub struct CustomModel {
 /// table name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CustomProviderSection {
+    /// display name shown in pickers and the composer. absent (or blank) =
+    /// the table name, which is also the provider id. Lets a provider be
+    /// called "LLM Router" while its id stays `llm-router` (the id is what
+    /// goes in `provider =` and `PANTHEON_KEY_<ID>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// full base url, no trailing slash (e.g. `http://127.0.0.1:8015/v1`)
     #[serde(default)]
     pub base_url: String,
@@ -1339,6 +1351,13 @@ impl ToolGroup {
 /// server tools).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ToolsSection {
+    /// Surface profile. `full` (default) registers everything the group
+    /// toggles allow. `safe` registers only non-mutating tools (file reads,
+    /// search, memory reads, `ask_user`, `load_tools`, `schedule` list) — the
+    /// profile an untrusted origin (a webhook payload, a shared channel) must
+    /// run under so the model is not even offered a shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1796,6 +1815,86 @@ fn default_swarm_max_concurrent() -> u32 {
     4
 }
 
+/// What happens to a message that arrives while a turn is running.
+///
+/// * `steer` - delivered into the running turn at its next boundary (the
+///   current mid-turn behaviour).
+/// * `followup` (default) - queued; the newest message replaces an earlier
+///   queued one, and it runs when the turn ends.
+/// * `collect` - queued and *merged* with anything already queued, so a burst
+///   of channel messages becomes one turn.
+/// * `interrupt` - the running turn is cancelled and this message runs next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueMode {
+    Steer,
+    #[default]
+    Followup,
+    Collect,
+    Interrupt,
+}
+
+impl QueueMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::Followup => "followup",
+            Self::Collect => "collect",
+            Self::Interrupt => "interrupt",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "steer" => Some(Self::Steer),
+            "followup" | "follow-up" | "queue" => Some(Self::Followup),
+            "collect" | "batch" | "merge" => Some(Self::Collect),
+            "interrupt" | "cancel" => Some(Self::Interrupt),
+            _ => None,
+        }
+    }
+
+    pub fn all() -> [Self; 4] {
+        [Self::Steer, Self::Followup, Self::Collect, Self::Interrupt]
+    }
+}
+
+/// `[runtime]`: process-wide execution limits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeSection {
+    /// Live top-level turns this process admits before queueing. Delegated
+    /// children inherit their parent's slot, so this bounds provider
+    /// concurrency, not the size of a swarm (that is `[swarm] max_concurrent`).
+    /// Default 4; `PANTHEON_MAX_CONCURRENT_TURNS` overrides at startup.
+    #[serde(default = "default_max_concurrent_turns")]
+    pub max_concurrent_turns: u32,
+    /// Seconds a queued turn waits for a free slot before failing with
+    /// `RT_CAPACITY_TIMEOUT`. Default 120.
+    #[serde(default = "default_turn_queue_wait_secs")]
+    pub turn_queue_wait_secs: u64,
+    /// What a message that arrives mid-turn does. Default `followup`.
+    #[serde(default)]
+    pub queue_mode: QueueMode,
+}
+
+fn default_max_concurrent_turns() -> u32 {
+    4
+}
+
+fn default_turn_queue_wait_secs() -> u64 {
+    120
+}
+
+impl Default for RuntimeSection {
+    fn default() -> Self {
+        Self {
+            max_concurrent_turns: default_max_concurrent_turns(),
+            turn_queue_wait_secs: default_turn_queue_wait_secs(),
+            queue_mode: QueueMode::default(),
+        }
+    }
+}
+
 /// `[swarm]`: caps for sub-agent delegation and swarm runs. every key
 /// optional; absent keys (or an absent section) take the documented defaults.
 /// config-side spelling of `pantheon_runtime::swarm::Caps` - see
@@ -2208,6 +2307,9 @@ pub struct Config {
     /// independently.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swarm: Option<SwarmSection>,
+    /// `[runtime]`: concurrency limits for live turns (see [`RuntimeSection`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeSection>,
     /// `[delegation]`: curated routes for `delegate` (see [`DelegationSection`]).
     /// absent = no routes: `delegate` works as before, a `route` argument refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3841,6 +3943,29 @@ mod gateway_multi_agent_tests {
 }
 
 #[cfg(test)]
+mod runtime_section_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_section_parses_limits_and_queue_mode() {
+        let cfg: Config = toml::from_str(
+            "[runtime]\nmax_concurrent_turns = 2\nturn_queue_wait_secs = 30\nqueue_mode = \"collect\"\n",
+        )
+        .expect("parse");
+        let rt = cfg.runtime.expect("runtime section");
+        assert_eq!(rt.max_concurrent_turns, 2);
+        assert_eq!(rt.turn_queue_wait_secs, 30);
+        assert_eq!(rt.queue_mode, QueueMode::Collect);
+        // defaults when the section is absent
+        let empty: Config = toml::from_str("").expect("parse empty");
+        assert!(empty.runtime.is_none());
+        let d = RuntimeSection::default();
+        assert_eq!(d.max_concurrent_turns, 4);
+        assert_eq!(d.queue_mode, QueueMode::Followup);
+    }
+}
+
+#[cfg(test)]
 mod fix_pass4_leaf1_tests {
     use super::*;
     use std::collections::HashMap;
@@ -4268,6 +4393,7 @@ mod fix_pass4_leaf1_tests {
     #[test]
     fn known_config_keys_match_struct_fields() {
         let full = Config {
+            runtime: None,
             agent: Some(String::new()),
             model: Some(ModelSection::default()),
             judge: Some(AuxSection::default()),

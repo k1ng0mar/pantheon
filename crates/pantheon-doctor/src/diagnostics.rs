@@ -124,6 +124,12 @@ pub mod checks {
                 title: "skill tree parses",
                 run: check_skills,
             },
+            CheckDef {
+                id: "tools.skill_anatomy",
+                subsystem: Subsystem::Tools,
+                title: "skill intent anatomy",
+                run: check_skill_anatomy,
+            },
             // -- security -------------------------------------------------
             CheckDef {
                 id: "security.secrets_allowlist",
@@ -1274,6 +1280,51 @@ pub mod checks {
         .with_details(detail)]
     }
 
+    /// The intent contract (Ideal State + Anti-criteria) is authoring
+    /// guidance, not a runtime gate: every legacy and bundled skill that
+    /// predates it would fail. Reported at Info so it is visible in
+    /// `pantheon doctor` without making an install read as degraded.
+    fn check_skill_anatomy(ctx: &DoctorCtx) -> Vec<Finding> {
+        let project_root = std::env::current_dir().unwrap_or_else(|_| ctx.data_dir.clone());
+        let scan = pantheon_exec::skills::scan_skills_ext_noseed(
+            &ctx.data_dir,
+            &project_root,
+            &extra_skill_roots(),
+        );
+        let mut flagged: Vec<String> = Vec::new();
+        for skill in &scan.loaded {
+            let issues = pantheon_exec::skills::anatomy_issues(skill);
+            if issues.is_empty() {
+                continue;
+            }
+            let problems = issues
+                .iter()
+                .map(|i| format!("{}: {}", i.section, i.problem))
+                .collect::<Vec<_>>()
+                .join("; ");
+            flagged.push(format!("{}: {problems}", skill.meta.name));
+        }
+        if flagged.is_empty() {
+            return vec![Finding::passed(
+                "tools.skill_anatomy",
+                Subsystem::Tools,
+                format!("{} skill(s) carry intent anatomy", scan.loaded.len()),
+            )];
+        }
+        vec![Finding::failed(
+            "tools.skill_anatomy",
+            Subsystem::Tools,
+            Severity::Info,
+            format!(
+                "{} skill(s) missing `## Ideal State` or `## Anti-criteria`",
+                flagged.len()
+            ),
+            "the model runs these skills without an explicit done/never contract",
+            "add `## Ideal State` (two testable outcomes) and `## Anti-criteria` to each SKILL.md",
+        )
+        .with_details(flagged.join("\n"))]
+    }
+
     // -- security --------------------------------------------------------
 
     fn check_secrets_allowlist(ctx: &DoctorCtx) -> Vec<Finding> {
@@ -2092,7 +2143,7 @@ pub mod checks {
                     def.id
                 );
             }
-            assert_eq!(seen.len(), 26);
+            assert_eq!(seen.len(), 27);
         }
 
         // -- check verdicts -------------------------------------------------
@@ -2245,6 +2296,22 @@ pub mod checks {
         /// verdict shape: exactly one finding under a stable id, and a broken
         /// skill is a Warning rather than an Error - a malformed third-party
         /// SKILL.md must not make the installation read as unhealthy.
+        #[test]
+        fn skill_anatomy_is_informational_and_stable() {
+            let dir = temp_dir("skill-anatomy");
+            write_config(&dir, "[model]\nprovider = \"x\"\nmodel = \"y\"\n");
+            let f = check_skill_anatomy(&ctx_in(&dir));
+            assert_eq!(f.len(), 1, "{f:?}");
+            assert_eq!(f[0].id, "tools.skill_anatomy");
+            if f[0].status == CheckStatus::Failed {
+                assert_eq!(
+                    f[0].severity,
+                    Severity::Info,
+                    "authoring guidance must not degrade install health"
+                );
+            }
+        }
+
         #[test]
         fn skills_check_reports_a_stable_id_and_never_escalates_to_error() {
             let dir = temp_dir("skills");

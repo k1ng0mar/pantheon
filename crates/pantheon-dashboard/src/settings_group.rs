@@ -556,7 +556,7 @@ pub mod config {
                 .as_str()
                 .ok_or_else(|| "policy must be a string".to_string())?;
             PolicyPreset::parse(s).ok_or_else(|| {
-                format!("unknown policy '{s}'; expected reader, coder, or coder_memory")
+                format!("unknown policy '{s}'; expected reader, coder, coder_memory, or custom")
             })?;
             return Ok(());
         }
@@ -684,11 +684,12 @@ pub mod config {
                     "value": serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
                 });
                 if path == "policy" || path.ends_with(".policy") {
-                    f["enum"] = serde_json::json!([
-                        PolicyPreset::Reader.as_str(),
-                        PolicyPreset::Coder.as_str(),
-                        PolicyPreset::CoderMemory.as_str(),
-                    ]);
+                    f["enum"] = serde_json::json!(
+                        PolicyPreset::all()
+                            .iter()
+                            .map(|p| p.as_str())
+                            .collect::<Vec<_>>()
+                    );
                 }
                 f
             })

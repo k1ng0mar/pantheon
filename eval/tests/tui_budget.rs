@@ -138,6 +138,7 @@ fn goal(text: &str, used: u32, max: u32) -> ActiveGoal {
         text: text.into(),
         iterations_used: used,
         max_iterations: max,
+        criteria: Vec::new(),
     }
 }
 

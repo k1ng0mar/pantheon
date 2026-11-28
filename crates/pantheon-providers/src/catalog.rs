@@ -293,7 +293,78 @@ pub fn models() -> Vec<&'static ModelMeta> {
 }
 
 /// Look up a provider by id (cataloged or user-registered custom).
+/// Canonical provider id for a user-written reference.
+///
+/// Accepts the typed namespace Hermes-style configs use: `custom:llm-router`
+/// resolves to the custom provider `llm-router`. A bare `custom` recovers the
+/// one registered custom provider (the common single-endpoint case); with zero
+/// or several it stays `custom`, so the caller's error names what to fix
+/// instead of guessing.
+pub fn canonical_provider_id(id: &str) -> String {
+    let t = id.trim();
+    if t.len() > "custom:".len() && t[.."custom:".len()].eq_ignore_ascii_case("custom:") {
+        return t["custom:".len()..].trim().to_string();
+    }
+    if t.eq_ignore_ascii_case("custom") {
+        if let Some(only) = single_custom_id() {
+            return only;
+        }
+    }
+    t.to_string()
+}
+
+fn single_custom_id() -> Option<String> {
+    let customs = CUSTOM.read().ok()?;
+    match customs.len() {
+        1 => Some(customs[0].id.clone()),
+        _ => None,
+    }
+}
+
+/// Endpoint identity for matching two configs to the same server: scheme and
+/// host fold case, default ports and a trailing slash drop, the path stays
+/// significant (`/v1` is not `/`). Unparseable input falls back to a trimmed,
+/// lowercased string rather than matching nothing.
+pub fn normalize_endpoint(url: &str) -> String {
+    let raw = url.trim();
+    let Ok(u) = url::Url::parse(raw) else {
+        return raw.trim_end_matches('/').to_ascii_lowercase();
+    };
+    let scheme = u.scheme().to_ascii_lowercase();
+    let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+    let default_port = matches!(
+        (scheme.as_str(), u.port()),
+        ("http", Some(80)) | ("https", Some(443))
+    );
+    let port = match u.port() {
+        Some(p) if !default_port => format!(":{p}"),
+        _ => String::new(),
+    };
+    let path = u.path().trim_end_matches('/');
+    format!("{scheme}://{host}{port}{path}")
+}
+
+/// The registered provider serving `url`, customs first. Used by
+/// `pantheon provider add` so one endpoint doesn't silently become two rows
+/// under different names.
+pub fn provider_for_endpoint(url: &str) -> Option<ProviderMeta> {
+    let want = normalize_endpoint(url);
+    if let Ok(customs) = CUSTOM.read() {
+        if let Some(p) = customs
+            .iter()
+            .find(|p| normalize_endpoint(&p.base_url) == want)
+        {
+            return Some(p.clone());
+        }
+    }
+    providers()
+        .iter()
+        .find(|p| normalize_endpoint(&p.base_url) == want)
+        .cloned()
+}
+
 pub fn provider(id: &str) -> Option<ProviderMeta> {
+    let id = canonical_provider_id(id);
     if let Ok(customs) = CUSTOM.read() {
         if let Some(p) = customs.iter().find(|p| p.id == id) {
             return Some(p.clone());
@@ -382,6 +453,7 @@ pub fn model_meta(provider_id: &str, model_id: &str) -> ModelMeta {
 /// `{var}` template placeholders; use [`resolve_base_url`] when building
 /// requests.
 pub fn base_url_for(provider_id: &str) -> String {
+    let provider_id = &canonical_provider_id(provider_id);
     if let Some(p) = provider(provider_id) {
         if !p.base_env.is_empty() {
             if let Ok(u) = std::env::var(&p.base_env) {
@@ -533,6 +605,7 @@ pub fn credential_for(
     fallback: &str,
     broker: Option<&pantheon_secrets::SecretsBroker>,
 ) -> String {
+    let provider_id = &canonical_provider_id(provider_id);
     if !fallback.is_empty() {
         return fallback.to_string();
     }
@@ -572,6 +645,7 @@ pub fn credential_for(
 /// chain: flags > config > env. The env var is a fallback for when the
 /// broker has no opinion.
 pub fn key_for(provider_id: &str, fallback: &str) -> String {
+    let provider_id = &canonical_provider_id(provider_id);
     if !fallback.is_empty() {
         return fallback.to_string();
     }
@@ -625,6 +699,73 @@ fn command_auth_cached(provider_id: &str, cmd: &str, refresh_ms: Option<u64>) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn custom_namespace_and_recovery() {
+        assert_eq!(super::canonical_provider_id("custom:llm-router"), "llm-router");
+        assert_eq!(super::canonical_provider_id("  CUSTOM:My-Router  "), "My-Router");
+        // bare `custom` recovery depends on the process-wide registry (exactly
+        // one custom provider), so it is not asserted here: parallel tests
+        // register their own rows.
+        // ordinary ids pass through untouched
+        assert_eq!(super::canonical_provider_id("openrouter"), "openrouter");
+    }
+
+    #[test]
+    fn endpoint_identity_folds_host_case_ports_and_trailing_slash() {
+        assert_eq!(
+            super::normalize_endpoint("HTTP://127.0.0.1:8015/v1/"),
+            "http://127.0.0.1:8015/v1"
+        );
+        assert_eq!(
+            super::normalize_endpoint("https://Example.COM:443/v1"),
+            "https://example.com/v1"
+        );
+        assert_eq!(
+            super::normalize_endpoint("http://host:80/"),
+            "http://host"
+        );
+        // the path is significant: /v1 is a different endpoint than /
+        assert_ne!(
+            super::normalize_endpoint("http://host/v1"),
+            super::normalize_endpoint("http://host")
+        );
+    }
+
+    #[test]
+    fn provider_for_endpoint_matches_a_registered_custom() {
+        super::register_custom_provider(pantheon_api_meta(
+            "endpoint-id-test",
+            "http://127.0.0.1:19901/v1/",
+        ));
+        let hit = super::provider_for_endpoint("HTTP://127.0.0.1:19901/v1").expect("match");
+        assert_eq!(hit.id, "endpoint-id-test");
+        assert!(super::provider_for_endpoint("http://127.0.0.1:19902/v1").is_none());
+    }
+
+    fn pantheon_api_meta(id: &str, base: &str) -> super::ProviderMeta {
+        super::ProviderMeta {
+            id: id.into(),
+            label: id.into(),
+            base_url: base.into(),
+            api_mode: super::ApiMode::OpenAi,
+            base_env: String::new(),
+            key_env: String::new(),
+            key_header: "Authorization".into(),
+            models: Vec::new(),
+            prominent: false,
+            recommended: false,
+            dev: false,
+            tag: "custom".into(),
+            auth_command: None,
+            auth_refresh_ms: None,
+            reserved: false,
+            allowed_params: vec![],
+            oauth_apps: vec![],
+            sigv4: false,
+            reasoning_map: Default::default(),
+        }
+    }
+
     use super::*;
 
     fn custom_meta(id: &str, base_url: &str) -> ProviderMeta {

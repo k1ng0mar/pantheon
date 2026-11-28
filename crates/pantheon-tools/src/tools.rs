@@ -109,6 +109,23 @@ impl ToolRegistry {
         self.tools.remove(name).is_some()
     }
 
+    /// Drop every tool whose capability the predicate rejects. Used by the
+    /// surface profile: a `safe` session never sees a mutating tool at all,
+    /// which is stronger than gating each call.
+    pub fn retain(
+        &mut self,
+        keep: impl Fn(&str, &Capability, bool) -> bool,
+    ) {
+        self.tools.retain(|name, tool| {
+            keep(
+                name,
+                &tool.capability,
+                tool.extra_capabilities.is_some(),
+            )
+        });
+        self.loaded.retain(|name| self.tools.contains_key(name));
+    }
+
     pub fn get(&self, name: &str) -> Option<&Tool> {
         self.tools.get(name)
     }
@@ -168,7 +185,17 @@ impl ToolRegistry {
                 "check tool name and arguments",
             )
         })?;
-        (tool.run)(args)
+        // Repair the common JSON malformations and coerce values to the
+        // schema before the tool sees them. A malformed call should cost one
+        // rewrite, not a failed turn.
+        let (args, note) = crate::arg_repair::repair_args(args, &tool.schema.parameters);
+        if note.fired() {
+            pantheon_api::logging::warn(
+                "tool",
+                format!("{name}: repaired arguments ({})", note.summary()),
+            );
+        }
+        (tool.run)(&args)
     }
 
     /// execute with a [`ToolCallContext`] installed on this thread for the call.

@@ -19,6 +19,7 @@ macro_rules! log_warn {
 /// with a model-visible change-approach reason (dsh steal, plan doc §10).
 pub mod session;
 
+pub mod capacity;
 mod control_group;
 mod orchestration_group;
 mod support_group;
@@ -200,6 +201,11 @@ struct SupervisorInner {
     /// ledger-based ask_user path.
     elicitations: std::sync::Mutex<HashMap<String, mpsc::Sender<String>>>,
     next_elicitation: AtomicU64,
+    /// Claims this supervisor holds, keyed by run. Empty for read-mostly
+    /// supervisors (an RPC handler that only cancels or reads), which is why
+    /// plain `emit` still exists. A map, not a slot: a `/btw` background turn
+    /// and the foreground turn can be in flight together.
+    writer: std::sync::Mutex<HashMap<String, pantheon_storage::WriterClaim>>,
 }
 
 /// Holds a run lease until the work scope exits.  Dropping the guard is the
@@ -341,6 +347,7 @@ impl Supervisor {
                 observers: std::sync::Mutex::new(Vec::new()),
                 elicitations: std::sync::Mutex::new(HashMap::new()),
                 next_elicitation: AtomicU64::new(1),
+                writer: std::sync::Mutex::new(HashMap::new()),
             }),
         };
         supervisor.startup_recovery();
@@ -598,8 +605,82 @@ impl Supervisor {
         }
         Ok(recovered)
     }
+    /// Claim this run's event stream for the current turn.
+    ///
+    /// Refused when a *live* claim exists for the run (`LEDGER_WRITER_BUSY`,
+    /// naming the pid), which is what stops two processes - or a resumed
+    /// session next to a running one - from interleaving a transcript. A claim
+    /// left by a crashed process is taken over.
+    pub fn claim_writer(
+        &self,
+        run_id: &str,
+    ) -> Result<pantheon_storage::WriterClaim, PantheonError> {
+        let token = format!("{}-{}", std::process::id(), new_scoped_id("w"));
+        let claim = self.ledger().claim_writer(
+            run_id,
+            &token,
+            i64::from(std::process::id()),
+            WRITER_CLAIM_STALE_MS,
+        )?;
+        if let Ok(mut held) = self.inner.writer.lock() {
+            held.insert(run_id.to_string(), claim.clone());
+        }
+        Ok(claim)
+    }
+
+    /// Give one run's claim back, if this supervisor still holds it.
+    pub fn release_writer(&self, run_id: &str) {
+        let held = self
+            .inner
+            .writer
+            .lock()
+            .ok()
+            .and_then(|mut held| held.remove(run_id));
+        if let Some(claim) = held {
+            let _ = self.ledger().release_writer(&claim.run_id, &claim.token);
+        }
+    }
+
+    /// The claim this supervisor currently holds for `run_id`.
+    pub fn writer_token(&self, run_id: &str) -> Option<String> {
+        self.inner
+            .writer
+            .lock()
+            .ok()
+            .and_then(|held| held.get(run_id).map(|c| c.token.clone()))
+    }
+
+    /// Record one model attempt. Best-effort: attempt bookkeeping must never
+    /// fail a turn that otherwise succeeded.
+    pub fn record_model_attempt(&self, attempt: pantheon_storage::ModelAttempt) {
+        if let Err(e) = self.ledger().record_model_attempt(&attempt) {
+            log_warn!("model attempt record: {e}");
+        }
+    }
+
+    /// Attempts recorded for one run, oldest first.
+    pub fn model_attempts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<pantheon_storage::ModelAttempt>, PantheonError> {
+        self.ledger().model_attempts(run_id)
+    }
+
     pub fn emit(&self, ev: Event) -> Result<(), PantheonError> {
-        let entry = self.ledger().append(&ev)?;
+        // A turn executor fences every append for the run it claimed; an
+        // append after the claim is gone fails instead of landing in a
+        // transcript that has moved on.
+        let ev_run = pantheon_storage::ledger::run_id_of(&ev);
+        let held = self
+            .inner
+            .writer
+            .lock()
+            .ok()
+            .and_then(|held| held.get(ev_run).cloned());
+        let entry = match &held {
+            Some(claim) => self.ledger().append_fenced(&ev, &claim.token)?,
+            None => self.ledger().append(&ev)?,
+        };
         // Index for session search (best-effort: a failed index write must
         // never break the run, same contract as observers). The chunk is
         // indexed under the seq append() returned for this event - never
@@ -1633,6 +1714,39 @@ impl Supervisor {
         task_id: &str,
     ) -> Result<Option<pantheon_storage::Artifact>, PantheonError> {
         self.ledger().artifact(task_id)
+    }
+}
+
+/// A writer claim older than this, or held by a dead pid, may be taken over.
+/// A turn that legitimately runs longer than this keeps its claim fresh by
+/// re-claiming at each turn boundary, so this is a crash detector, not a
+/// turn timeout.
+pub const WRITER_CLAIM_STALE_MS: i64 = 10 * 60 * 1000;
+
+
+/// RAII guard for a turn's writer claim: dropped on success, error and
+/// panic alike, so a failed turn cannot leave the run permanently busy.
+pub struct TurnWriter {
+    supervisor: Supervisor,
+    run_id: String,
+}
+
+impl TurnWriter {
+    pub fn claim(
+        supervisor: &Supervisor,
+        run_id: &str,
+    ) -> Result<Self, PantheonError> {
+        supervisor.claim_writer(run_id)?;
+        Ok(Self {
+            supervisor: supervisor.clone(),
+            run_id: run_id.to_string(),
+        })
+    }
+}
+
+impl Drop for TurnWriter {
+    fn drop(&mut self) {
+        self.supervisor.release_writer(&self.run_id);
     }
 }
 

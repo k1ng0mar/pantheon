@@ -1455,6 +1455,11 @@ pub mod commands {
                 category: "model",
             },
             CommandMeta {
+                name: "import",
+                desc: "continue a Claude Code session from this folder",
+                category: "session",
+            },
+            CommandMeta {
                 name: "sessions",
                 desc: "live sessions elsewhere",
                 category: "session",
@@ -1733,6 +1738,11 @@ pub mod commands {
             CommandMeta {
                 name: "stats",
                 desc: "today's usage from the ledger",
+                category: "runtime",
+            },
+            CommandMeta {
+                name: "recurrences",
+                desc: "failure classes seen across turns, with counts",
                 category: "runtime",
             },
             CommandMeta {

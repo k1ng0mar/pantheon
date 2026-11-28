@@ -57,6 +57,19 @@ pub mod ledger {
         }
     }
 
+    /// One provider attempt, recorded for diagnostics: which chain entry ran,
+    /// whether it succeeded, how long it took and why it failed.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ModelAttempt {
+        pub run_id: String,
+        pub chain_index: usize,
+        pub provider: String,
+        pub model: String,
+        pub ok: bool,
+        pub duration_ms: u64,
+        pub code: Option<String>,
+    }
+
     /// One persisted row.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct LedgerEntry {
@@ -250,6 +263,24 @@ pub mod ledger {
       cancel_intent INTEGER NOT NULL DEFAULT 0,
       pinned INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS model_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      chain_index INTEGER NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      ok INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      code TEXT,
+      ts_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_attempts_run ON model_attempts(run_id, id);
+    CREATE TABLE IF NOT EXISTS writer_claims (
+      run_id TEXT PRIMARY KEY,
+      token TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      claimed_ms INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -446,9 +477,17 @@ pub mod ledger {
             }
             let conn = Connection::open(path).map_err(|e| err("LEDGER_OPEN", e.to_string()))?;
             crate::configure_durability(&conn, "LEDGER")?;
+            // Schema + migrations under the state-dir init lock: two processes
+            // starting together must not race a forward-only migration.
+            let _init = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(crate::InitLock::acquire)
+                .transpose()?;
             conn.execute_batch(SCHEMA)
                 .map_err(|e| err("LEDGER_SCHEMA", e.to_string()))?;
             migrate(&conn)?;
+            drop(_init);
             Ok(Self {
                 conn: Mutex::new(conn),
                 redactor: std::sync::RwLock::new(None),
@@ -497,7 +536,129 @@ pub mod ledger {
             }
         }
 
+        /// Append without a writer claim.
+        ///
+        /// Turn executors use [`Ledger::append_fenced`] instead: this path is
+        /// for writers that do not own a turn (cancel intents, maintenance,
+        /// imports, tests). See [`Ledger::claim_writer`] for the guarantee.
         pub fn append(&self, event: &Event) -> Result<LedgerEntry, PantheonError> {
+            self.append_with_claim(event, None)
+        }
+
+        /// Append only if `token` still holds the run's writer claim.
+        ///
+        /// The check runs inside the same `BEGIN IMMEDIATE` transaction as the
+        /// insert, so a superseded turn (or a second process that stole the
+        /// claim) cannot commit a stale event even if it was mid-stream.
+        pub fn append_fenced(
+            &self,
+            event: &Event,
+            token: &str,
+        ) -> Result<LedgerEntry, PantheonError> {
+            self.append_with_claim(event, Some(token))
+        }
+
+        /// Claim the right to write `run_id`'s event stream.
+        ///
+        /// A claim that is both live (its pid exists) and fresh (younger than
+        /// `stale_ms`) belongs to someone else and is refused with
+        /// `LEDGER_WRITER_BUSY`, naming the holder. A dead pid or a stale
+        /// claim is taken over: that is what recovery after a crash needs.
+        pub fn claim_writer(
+            &self,
+            run_id: &str,
+            token: &str,
+            pid: i64,
+            stale_ms: i64,
+        ) -> Result<crate::WriterClaim, PantheonError> {
+            let now = now_ms();
+            let mut raw = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            let conn = raw
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+            let existing: Option<(String, i64, i64)> = conn
+                .query_row(
+                    "SELECT token, pid, claimed_ms FROM writer_claims WHERE run_id = ?1",
+                    params![run_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+            if let Some((held, held_pid, claimed_ms)) = existing {
+                let same = held == token;
+                let fresh = now.saturating_sub(claimed_ms) < stale_ms.max(0);
+                if !same && fresh && crate::pid_is_alive(held_pid) {
+                    return Err(PantheonError::new(
+                        "LEDGER_WRITER_BUSY",
+                        Layer::Storage,
+                        false,
+                        format!(
+                            "run {run_id} is being written by pid {held_pid}                              (claim {claimed_ms}); refusing a second writer"
+                        ),
+                        "close the other session, or wait for it to finish",
+                        "",
+                    ));
+                }
+            }
+            conn.execute(
+                "INSERT INTO writer_claims (run_id, token, pid, claimed_ms) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(run_id) DO UPDATE SET token = excluded.token, pid = excluded.pid, claimed_ms = excluded.claimed_ms",
+                params![run_id, token, pid, now],
+            )
+            .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+            conn.commit()
+                .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+            Ok(crate::WriterClaim {
+                run_id: run_id.to_string(),
+                token: token.to_string(),
+                pid,
+                claimed_ms: now,
+            })
+        }
+
+        /// Drop the claim, but only if `token` still owns it. A superseded
+        /// turn must not release the claim its replacement is using.
+        pub fn release_writer(&self, run_id: &str, token: &str) -> Result<(), PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            conn.execute(
+                "DELETE FROM writer_claims WHERE run_id = ?1 AND token = ?2",
+                params![run_id, token],
+            )
+            .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+            Ok(())
+        }
+
+        /// Current holder of `run_id`'s writer claim, if any.
+        pub fn writer_claim(&self, run_id: &str) -> Option<crate::WriterClaim> {
+            let conn = self.conn.lock().ok()?;
+            conn.query_row(
+                "SELECT token, pid, claimed_ms FROM writer_claims WHERE run_id = ?1",
+                params![run_id],
+                |r| {
+                    Ok(crate::WriterClaim {
+                        run_id: run_id.to_string(),
+                        token: r.get(0)?,
+                        pid: r.get(1)?,
+                        claimed_ms: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+        }
+
+        fn append_with_claim(
+            &self,
+            event: &Event,
+            claim: Option<&str>,
+        ) -> Result<LedgerEntry, PantheonError> {
             let run_id = run_id_of(event).to_string();
             let json = self.redacted_json(event)?;
             let ts = now_ms();
@@ -508,6 +669,31 @@ pub mod ledger {
             let conn = raw_conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|e| err("LEDGER_APPEND", e.to_string()))?;
+            // Fenced writer: the claim must still be ours. Read inside the
+            // transaction so the check and the insert cannot be reordered.
+            if let Some(token) = claim {
+                let held: Option<String> = conn
+                    .query_row(
+                        "SELECT token FROM writer_claims WHERE run_id = ?1",
+                        params![run_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| err("LEDGER_CLAIM", e.to_string()))?;
+                if held.as_deref() != Some(token) {
+                    return Err(PantheonError::new(
+                        "LEDGER_STALE_WRITER",
+                        Layer::Storage,
+                        false,
+                        format!(
+                            "run {run_id}: writer claim is {}, not the finished/superseded                              attempt's token; refusing a stale append",
+                            held.unwrap_or_else(|| "gone".to_string())
+                        ),
+                        "the turn was superseded; its events stay out of the transcript",
+                        "",
+                    ));
+                }
+            }
             if matches!(event, Event::RunStarted { .. }) {
                 conn.execute(
                     "INSERT OR IGNORE INTO runs (run_id, created_ms, status) VALUES (?1, ?2, 'running')",
@@ -684,6 +870,65 @@ pub mod ledger {
         /// applied: rewound turns are excluded as if they never happened. Raw
         /// history is preserved in the `events` table; this is the effective
         /// projection used by resume, transcript rebuilds, and the run log.
+        /// Record one model attempt's outcome. Attempts are the unit the
+        /// provider chain actually retries, so they are stored beside the
+        /// run - not as transcript events - and read back for diagnostics
+        /// ("attempt 2 of 3 timed out at 180s") without replaying the stream.
+        pub fn record_model_attempt(&self, attempt: &ModelAttempt) -> Result<(), PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            conn.execute(
+                "INSERT INTO model_attempts (run_id, chain_index, provider, model, ok, duration_ms, code, ts_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    attempt.run_id,
+                    attempt.chain_index as i64,
+                    attempt.provider,
+                    attempt.model,
+                    attempt.ok as i64,
+                    attempt.duration_ms as i64,
+                    attempt.code,
+                    now_ms()
+                ],
+            )
+            .map_err(|e| err("LEDGER_ATTEMPT", e.to_string()))?;
+            Ok(())
+        }
+
+        /// Attempts for one run, oldest first.
+        pub fn model_attempts(&self, run_id: &str) -> Result<Vec<ModelAttempt>, PantheonError> {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| err("LEDGER_LOCK", e.to_string()))?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, chain_index, provider, model, ok, duration_ms, code
+                     FROM model_attempts WHERE run_id = ?1 ORDER BY id ASC",
+                )
+                .map_err(|e| err("LEDGER_ATTEMPT", e.to_string()))?;
+            let rows = stmt
+                .query_map(params![run_id], |r| {
+                    Ok(ModelAttempt {
+                        run_id: r.get(0)?,
+                        chain_index: r.get::<_, i64>(1)? as usize,
+                        provider: r.get(2)?,
+                        model: r.get(3)?,
+                        ok: r.get::<_, i64>(4)? != 0,
+                        duration_ms: r.get::<_, i64>(5)? as u64,
+                        code: r.get(6)?,
+                    })
+                })
+                .map_err(|e| err("LEDGER_ATTEMPT", e.to_string()))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| err("LEDGER_ATTEMPT", e.to_string()))?);
+            }
+            Ok(out)
+        }
+
         pub fn replay(&self, run_id: &str) -> Result<Vec<LedgerEntry>, PantheonError> {
             let conn = self
                 .conn
@@ -4333,5 +4578,107 @@ pub mod leases {
             }
             Ok(out)
         }
+    }
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::ledger::{Ledger, run_id_of};
+    use pantheon_api::events::Event;
+
+    fn started(run: &str) -> Event {
+        Event::RunStarted {
+            run_id: run.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_claimed_run_rejects_a_foreign_token() {
+        let l = Ledger::open_in_memory().unwrap();
+        l.append(&started("r1")).unwrap();
+        l.claim_writer("r1", "mine", std::process::id() as i64, 60_000)
+            .unwrap();
+        // the holder can append
+        l.append_fenced(&started("r1"), "mine").unwrap();
+        // a superseded attempt cannot
+        let err = l.append_fenced(&started("r1"), "stale").unwrap_err();
+        assert_eq!(err.code, "LEDGER_STALE_WRITER");
+        // an unfenced writer (cancel/maintenance path) is still allowed
+        l.append(&started("r1")).unwrap();
+    }
+
+    #[test]
+    fn a_live_foreign_claim_is_refused_and_names_the_holder() {
+        let l = Ledger::open_in_memory().unwrap();
+        let pid = std::process::id() as i64;
+        l.claim_writer("r2", "first", pid, 60_000).unwrap();
+        let err = l.claim_writer("r2", "second", pid, 60_000).unwrap_err();
+        assert_eq!(err.code, "LEDGER_WRITER_BUSY");
+        assert!(err.cause.contains(&pid.to_string()), "{}", err.cause);
+    }
+
+    #[test]
+    fn a_stale_or_dead_claim_is_taken_over() {
+        let l = Ledger::open_in_memory().unwrap();
+        // dead pid: takeover immediately
+        l.claim_writer("r3", "dead", 999_999, 60_000).unwrap();
+        l.claim_writer("r3", "next", std::process::id() as i64, 60_000)
+            .unwrap();
+        assert_eq!(l.writer_claim("r3").unwrap().token, "next");
+        // a fresh claim older than the stale window: takeover too
+        l.claim_writer("r4", "old", std::process::id() as i64, 60_000)
+            .unwrap();
+        l.claim_writer("r4", "new", std::process::id() as i64, 0)
+            .unwrap();
+        assert_eq!(l.writer_claim("r4").unwrap().token, "new");
+    }
+
+    #[test]
+    fn release_is_owner_only() {
+        let l = Ledger::open_in_memory().unwrap();
+        let pid = std::process::id() as i64;
+        l.claim_writer("r5", "owner", pid, 60_000).unwrap();
+        l.release_writer("r5", "someone-else").unwrap();
+        assert_eq!(l.writer_claim("r5").unwrap().token, "owner");
+        l.release_writer("r5", "owner").unwrap();
+        assert!(l.writer_claim("r5").is_none());
+    }
+
+    #[test]
+    fn run_id_extraction_still_matches_the_claim_key() {
+        let ev = started("run_1");
+        assert_eq!(run_id_of(&ev), "run_1");
+    }
+}
+
+#[cfg(test)]
+mod attempt_tests {
+    use super::ledger::{Ledger, ModelAttempt};
+
+    #[test]
+    fn attempts_round_trip_in_order_with_outcomes() {
+        let l = Ledger::open_in_memory().unwrap();
+        for (ok, code, ms) in [
+            (false, Some("PROVIDER_TIMEOUT".to_string()), 180_000u64),
+            (true, None, 900),
+        ] {
+            l.record_model_attempt(&ModelAttempt {
+                run_id: "r1".into(),
+                chain_index: 0,
+                provider: "local".into(),
+                model: "chat".into(),
+                ok,
+                duration_ms: ms,
+                code,
+            })
+            .unwrap();
+        }
+        let rows = l.model_attempts("r1").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].ok);
+        assert_eq!(rows[0].code.as_deref(), Some("PROVIDER_TIMEOUT"));
+        assert_eq!(rows[0].duration_ms, 180_000);
+        assert!(rows[1].ok);
+        assert!(l.model_attempts("nope").unwrap().is_empty());
     }
 }

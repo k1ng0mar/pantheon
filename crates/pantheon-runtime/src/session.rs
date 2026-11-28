@@ -9,7 +9,7 @@ use crate::tool_config::{
 use crate::watchdog::TurnWatchdog;
 use crate::{ObserverGuard, RunLeaseGuard, Supervisor};
 use pantheon_agent::{AgentLoop, Budget, LoopOutcome};
-use pantheon_api::capability::Policy;
+use pantheon_api::capability::{Capability, Decision, Policy};
 use pantheon_api::error::{Layer, PantheonError};
 use pantheon_api::events::Event;
 use pantheon_api::message::{ImagePart, Message, ToolCallRef, ToolSchema};
@@ -323,6 +323,10 @@ struct LedgerModelSink<'a> {
     /// model identity on `UsageRecorded`, whose provider-plane event carries
     /// none of its own.
     model: RefCell<Option<(String, String)>>,
+    /// The attempt in flight: `(provider, model, chain_index, started)`.
+    /// Recorded on success/failure as one row, so per-attempt timing and
+    /// retry counts are queryable without replaying the stream.
+    attempt: RefCell<Option<(String, String, usize, std::time::Instant)>>,
 }
 /// Sink that forwards to the ledger AND fires an optional callback per event.
 struct TeeModelSink<'a> {
@@ -380,6 +384,53 @@ impl<'a> ModelEventSink for TeeModelSink<'a> {
 
 impl<'a> ModelEventSink for LedgerModelSink<'a> {
     fn emit(&self, event: ModelEvent) {
+        // Attempt accounting: one row per attempt, with duration and outcome.
+        match &event {
+            ModelEvent::Attempt {
+                provider,
+                model,
+                chain_index,
+                ..
+            } => {
+                *self.attempt.borrow_mut() = Some((
+                    provider.clone(),
+                    model.clone(),
+                    *chain_index,
+                    std::time::Instant::now(),
+                ));
+            }
+            ModelEvent::AttemptFailed { code, .. } => {
+                if let Some((provider, model, chain_index, started)) =
+                    self.attempt.borrow_mut().take()
+                {
+                    self.sup.record_model_attempt(pantheon_storage::ModelAttempt {
+                        run_id: self.run_id.to_string(),
+                        chain_index,
+                        provider,
+                        model,
+                        ok: false,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        code: Some(code.clone()),
+                    });
+                }
+            }
+            ModelEvent::Completed { .. } => {
+                if let Some((provider, model, chain_index, started)) =
+                    self.attempt.borrow_mut().take()
+                {
+                    self.sup.record_model_attempt(pantheon_storage::ModelAttempt {
+                        run_id: self.run_id.to_string(),
+                        chain_index,
+                        provider,
+                        model,
+                        ok: true,
+                        duration_ms: started.elapsed().as_millis() as u64,
+                        code: None,
+                    });
+                }
+            }
+            _ => {}
+        }
         // Track model identity from attempts so usage rows can name the
         // model they belong to (the Usage event carries none).
         if let ModelEvent::Attempt {
@@ -1051,7 +1102,7 @@ struct DelegatePolicy {
 struct DelegateContext<'a> {
     parent_depth: u32,
     profile: &'a str,
-    parent_goal: Option<String>,
+    parent_goal: Option<pantheon_api::goal::Goal>,
     parent_tools: &'a ToolEnablement,
     parent_mode: AgentMode,
     parent_permission_mode: PermissionMode,
@@ -1170,7 +1221,10 @@ fn build_delegate_session(
     child_session.system_prompt = assemble_child_system_prompt(&child_agent);
     // The parent's active goal travels with the delegation so the child
     // can pursue it through the normal goal-append path.
-    if let Some(goal) = ctx.parent_goal.filter(|g| !g.trim().is_empty()) {
+    if let Some(goal) = ctx
+        .parent_goal
+        .filter(|g| !g.objective.trim().is_empty())
+    {
         if let Ok(mut slot) = child_session.goal.lock() {
             *slot = Some(goal);
         }
@@ -1217,7 +1271,7 @@ struct DelegateDriver {
     agent: AgentRuntime,
     model_policy: ModelPolicy,
     data_dir: PathBuf,
-    goal: Option<String>,
+    goal: Option<pantheon_api::goal::Goal>,
     tools: ToolEnablement,
     /// Live mode, not a snapshot: a Tab flip between turn start and the
     /// delegate call still reaches the child (the same sharing the
@@ -1650,7 +1704,7 @@ struct SessionSpawner {
     agent: AgentRuntime,
     model_policy: ModelPolicy,
     data_dir: PathBuf,
-    goal: Option<String>,
+    goal: Option<pantheon_api::goal::Goal>,
     tools: ToolEnablement,
     // Live handles, not snapshots: the child reads the parent's mode and
     // permission mode at spawn, so a Tab/Ask flip between turn start and
@@ -2489,7 +2543,12 @@ pub const SESSION_GRANTABLE_CAPS: &[&str] = &["other.shell.network"];
 
 pub struct Session {
     pub supervisor: Supervisor,
-    pub policy: Policy,
+    /// Capability policy: which tools may run, park for approval, or are
+    /// refused. Behind a lock so the permissions panel can retune it on a
+    /// live session (`/permissions`); each turn snapshots it when the loop
+    /// is assembled, so an edit applies from the next turn and never
+    /// mid-turn.
+    pub policy: Mutex<Policy>,
     /// The model routing for this session: default target, failure-only
     /// fallbacks, auxiliaries.
     ///
@@ -2531,7 +2590,12 @@ pub struct Session {
     /// Active `/goal` text, mirrored here from the TUI. Appended to the
     /// system prompt at turn assembly so the model keeps pursuing it
     /// across turns until `/goal clear`. `None` = no active goal.
-    pub goal: Mutex<Option<String>>,
+    pub goal: Mutex<Option<pantheon_api::goal::Goal>>,
+    /// Opt-in depth directives (`[model] depth_directives`): when on, a turn
+    /// whose prompt asks for depth runs at a higher reasoning effort **for
+    /// that turn only**. Off by default; effort costs tokens. Never written
+    /// into the session's sticky reasoning level.
+    pub depth_directives: std::sync::atomic::AtomicBool,
     /// Build/Plan mode for this session, mirrored here from the TUI's Tab
     /// toggle. Interior-mutable so the flip takes effect live: the tool
     /// gate reads it at every batch, so a switch applies from the next
@@ -2890,7 +2954,7 @@ impl Session {
         };
         let session = Self {
             supervisor: sup,
-            policy,
+            policy: Mutex::new(policy),
             model_policy: Mutex::new(model_policy),
             secrets,
             credential_grants: Vec::new(),
@@ -2899,6 +2963,7 @@ impl Session {
             budget_max_tokens: Mutex::new(None),
             loaded_tools: Mutex::new(std::collections::HashSet::new()),
             goal: Mutex::new(None),
+            depth_directives: std::sync::atomic::AtomicBool::new(Self::env_depth_directives()),
             mode: Arc::new(Mutex::new(AgentMode::default())),
             permission_mode: Arc::new(Mutex::new(configured_permission_mode)),
             provider_timeout,
@@ -2948,7 +3013,9 @@ impl Session {
         // Sandbox enforcement for MCP server spawns: the session's
         // capability policy gates every stdio connect through
         // `McpClient::connect` from here on.
-        session.mcp_manager.set_policy(session.policy.clone());
+        session
+            .mcp_manager
+            .set_policy(session.policy_snapshot_caps());
         // Remote OAuth tokens use the session's durable secret store.
         session.mcp_manager.set_secrets(session.secrets.clone());
         // MCP elicitation: a server request while a tool is executing
@@ -3341,6 +3408,56 @@ impl Session {
         }
     }
 
+    /// Snapshot the capability policy. Every reader that needs the policy
+    /// for more than one statement (turn assembly, tool registration, the
+    /// gate) takes a snapshot first rather than holding the lock, so a
+    /// `/permissions` edit can never interleave with a gate decision.
+    pub fn policy_snapshot_caps(&self) -> Policy {
+        self.policy.lock().map(|p| p.clone()).unwrap_or_default()
+    }
+
+    /// Every explicit capability rule, sorted by token (permissions panel).
+    pub fn policy_entries(&self) -> Vec<(Capability, Decision)> {
+        self.policy_snapshot_caps().entries()
+    }
+
+    /// Set one capability's decision on the live session and refresh every
+    /// copy that read the old policy (`mcp_manager`). Takes effect on the
+    /// next turn; a turn already running keeps the policy it snapshotted.
+    pub fn set_policy_decision(&self, cap: Capability, decision: Decision) -> Option<Decision> {
+        let prev = {
+            let mut slot = self.policy.lock().ok()?;
+            slot.set_decision(cap, decision)
+        };
+        self.refresh_policy_dependents();
+        prev
+    }
+
+    /// Drop one capability rule, returning it to the default deny.
+    pub fn clear_policy_decision(&self, cap: &Capability) -> Option<Decision> {
+        let prev = {
+            let mut slot = self.policy.lock().ok()?;
+            slot.clear_decision(cap)
+        };
+        self.refresh_policy_dependents();
+        prev
+    }
+
+    /// Replace the whole policy (preset switch). Takes effect next turn.
+    pub fn set_policy(&self, policy: Policy) {
+        if let Ok(mut slot) = self.policy.lock() {
+            *slot = policy;
+        }
+        self.refresh_policy_dependents();
+    }
+
+    /// Re-publish the policy to holders that cached a copy at construction.
+    /// The MCP manager gates stdio connects with its own copy, so a policy
+    /// edit that did not reach it would be silently half-applied.
+    fn refresh_policy_dependents(&self) {
+        self.mcp_manager.set_policy(self.policy_snapshot_caps());
+    }
+
     /// Snapshot the current run budget (for `/set`, `/tokens` display).
     pub fn budget_snapshot(&self) -> Budget {
         self.budget.lock().map(|b| b.clone()).unwrap_or_default()
@@ -3349,15 +3466,161 @@ impl Session {
     /// Set the session's active goal (`/goal`). `None` clears it. The
     /// text is appended to the system prompt at turn assembly so the
     /// model keeps pursuing it across turns.
+    /// Env default for depth directives: `1`/`true`/`on` enables without a
+    /// config key (tests, CI, one-off runs). Absent/0 = off.
+    fn env_depth_directives() -> bool {
+        std::env::var("PANTHEON_DEPTH_DIRECTIVES")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+            .unwrap_or(false)
+    }
+
+    /// Set the objective. Setting a new objective drops the previous goal's
+    /// criteria: they described the old goal, and a stale criterion is worse
+    /// than none. Use the `*_goal_criterion*` methods to add or edit criteria.
     pub fn set_goal(&self, goal: Option<String>) {
         if let Ok(mut g) = self.goal.lock() {
-            *g = goal;
+            *g = goal
+                .map(pantheon_api::goal::Goal::new)
+                .filter(|g| !g.objective.trim().is_empty());
         }
+    }
+
+    /// The active goal with its criteria, when one is set.
+    pub fn goal(&self) -> Option<pantheon_api::goal::Goal> {
+        self.goal.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Add a criterion to the active goal. Returns its 1-based position for
+    /// the operator's reply; `Err` when no goal is active.
+    pub fn add_goal_criterion(
+        &self,
+        claim: &str,
+        probe: &str,
+    ) -> Result<usize, PantheonError> {
+        let mut g = self.goal.lock().map_err(|_| {
+            PantheonError::new(
+                "SESSION_GOAL_LOCK",
+                Layer::Runtime,
+                false,
+                "goal lock is poisoned".to_string(),
+                "restart pantheon",
+                "",
+            )
+        })?;
+        let Some(goal) = g.as_mut() else {
+            return Err(PantheonError::new(
+                "NO_ACTIVE_GOAL",
+                Layer::Runtime,
+                false,
+                "no active goal".to_string(),
+                "set one with /goal <text>, then add criteria",
+                "",
+            ));
+        };
+        goal.criteria
+            .push(pantheon_api::goal::GoalCriterion::new(claim, probe));
+        Ok(goal.criteria.len())
+    }
+
+    /// Mark criterion `index` (1-based) met, with the evidence that met it.
+    /// An index off the end is an error, never a silent clamp.
+    pub fn mark_goal_criterion(&self, index: usize, evidence: &str) -> Result<(), PantheonError> {
+        self.edit_goal_criterion(index, |c| {
+            c.evidence = Some(evidence.trim().to_string());
+        })
+    }
+
+    /// Reopen a criterion: evidence removed, so the next turn sees it unmet.
+    pub fn unmark_goal_criterion(&self, index: usize) -> Result<(), PantheonError> {
+        self.edit_goal_criterion(index, |c| c.evidence = None)
+    }
+
+    /// Turn depth-directive routing on or off for this session. Off unless
+    /// the user opts in; the turn-level override never changes
+    /// [`Session::reasoning`].
+    pub fn set_depth_directives(&self, on: bool) {
+        self.depth_directives
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn depth_directives(&self) -> bool {
+        self.depth_directives
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The reasoning level this turn should run at: the session's level, or
+    /// the depth-directive level when it is enabled and the prompt asks for
+    /// more. Never downgrades. `Off` stays off: an explicit "no reasoning"
+    /// session is not silently escalated.
+    pub fn reasoning_for_turn(&self, prompt: &str) -> pantheon_api::model::ReasoningLevel {
+        let base = self.reasoning();
+        if !self.depth_directives() || base == pantheon_api::model::ReasoningLevel::Off {
+            return base;
+        }
+        match pantheon_api::depth::directive(prompt) {
+            Some(want) if want.rank() > base.rank() => want,
+            _ => base,
+        }
+    }
+
+    /// Drop every criterion but keep the objective.
+    pub fn clear_goal_criteria(&self) {
+        if let Ok(mut g) = self.goal.lock() {
+            if let Some(goal) = g.as_mut() {
+                goal.criteria.clear();
+            }
+        }
+    }
+
+    fn edit_goal_criterion(
+        &self,
+        index: usize,
+        edit: impl FnOnce(&mut pantheon_api::goal::GoalCriterion),
+    ) -> Result<(), PantheonError> {
+        let mut g = self.goal.lock().map_err(|_| {
+            PantheonError::new(
+                "SESSION_GOAL_LOCK",
+                Layer::Runtime,
+                false,
+                "goal lock is poisoned".to_string(),
+                "restart pantheon",
+                "",
+            )
+        })?;
+        let Some(goal) = g.as_mut() else {
+            return Err(PantheonError::new(
+                "NO_ACTIVE_GOAL",
+                Layer::Runtime,
+                false,
+                "no active goal".to_string(),
+                "set one with /goal <text>",
+                "",
+            ));
+        };
+        let Some(c) = index.checked_sub(1).and_then(|i| goal.criteria.get_mut(i)) else {
+            return Err(PantheonError::new(
+                "GOAL_BAD_INDEX",
+                Layer::Runtime,
+                false,
+                format!(
+                    "no criterion {index} (1..={})",
+                    goal.criteria.len()
+                ),
+                "run /goal criteria to see the list",
+                "",
+            ));
+        };
+        edit(c);
+        Ok(())
     }
 
     /// The session's active goal, for `/goal` display and ACP clients.
     pub fn goal_text(&self) -> Option<String> {
-        self.goal.lock().ok().and_then(|g| g.clone())
+        self.goal
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|g| g.objective.clone()))
+            .filter(|t| !t.trim().is_empty())
     }
 
     /// The current budget override, for display (`None` = level mapping).
@@ -3816,8 +4079,7 @@ impl Session {
             return String::new();
         };
         if !matches!(
-            self.policy
-                .check(&pantheon_api::capability::Capability::MemoryRead),
+            self.policy_snapshot_caps().check(&pantheon_api::capability::Capability::MemoryRead),
             pantheon_api::capability::Decision::Allow
         ) {
             return String::new();
@@ -4061,7 +4323,7 @@ impl Session {
         // and take effect on the next turn.
         if name == "load_tools" {
             let v: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
-            let names: Vec<String> = v
+            let mut names: Vec<String> = v
                 .get("names")
                 .and_then(|n| n.as_array())
                 .map(|a| {
@@ -4070,6 +4332,40 @@ impl Session {
                         .collect()
                 })
                 .unwrap_or_default();
+            // `query` is the search form: match names AND descriptions, load
+            // the hits, and answer with their one-line descriptions so the
+            // model can choose without another round trip. This is what keeps
+            // the tool list out of the prompt as the registry grows.
+            let mut matches: Vec<serde_json::Value> = Vec::new();
+            if let Some(q) = v
+                .get("query")
+                .and_then(|q| q.as_str())
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+            {
+                let needle = q.to_ascii_lowercase();
+                for schema in registry.schemas() {
+                    let hay = format!(
+                        "{} {}",
+                        schema.name.to_ascii_lowercase(),
+                        schema.description.to_ascii_lowercase()
+                    );
+                    if hay.contains(&needle) {
+                        matches.push(serde_json::json!({
+                            "name": schema.name,
+                            "description": first_sentence(&schema.description),
+                        }));
+                    }
+                    if matches.len() == 8 {
+                        break;
+                    }
+                }
+                for m in &matches {
+                    if let Some(n) = m.get("name").and_then(|n| n.as_str()) {
+                        names.push(n.to_string());
+                    }
+                }
+            }
             let mut set = self
                 .loaded_tools
                 .lock()
@@ -4088,7 +4384,21 @@ impl Session {
             if let Ok(mut g) = self.loaded_tools.lock() {
                 *g = set;
             }
-            return Ok(serde_json::json!({"loaded": loaded, "unknown": unknown, "available": registry.names()}).to_string());
+            let mut out = serde_json::json!({
+                "loaded": loaded,
+                "unknown": unknown,
+                "available_count": registry.names().len(),
+            });
+            if !matches.is_empty() {
+                out["matched"] = serde_json::Value::Array(matches);
+            }
+            // Only dump every name when the search found nothing (a name typo
+            // needs the list) or a requested name was unknown. Otherwise the
+            // full list is prompt noise.
+            if out["matched"].is_null() && !unknown.is_empty() || (loaded.is_empty() && unknown.is_empty()) {
+                out["available"] = serde_json::json!(registry.names());
+            }
+            return Ok(out.to_string());
         }
         self.supervisor.assert_lease(run_id).map_err(|e| {
             PantheonError::new(
@@ -4100,9 +4410,10 @@ impl Session {
                 "",
             )
         })?;
+        let policy_snapshot = self.policy_snapshot_caps();
         let adapter = RegistryToolAdapter {
             registry,
-            policy: &self.policy,
+            policy: &policy_snapshot,
             name: name.to_string(),
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
@@ -4693,7 +5004,7 @@ Extracted:
         for cap in caps {
             let token = cap.token();
             if SESSION_GRANTABLE_CAPS.contains(&token.as_str())
-                && self.policy.check(cap) == pantheon_api::capability::Decision::Approval
+                && self.policy_snapshot_caps().check(cap) == pantheon_api::capability::Decision::Approval
             {
                 grants.insert(token);
             }
@@ -4873,6 +5184,13 @@ Extracted:
         // worktree create/remove, index cache) use GitWrite or
         // FilesystemWrite. Registered under the same group gate; off =
         // none of the tools appear.
+        // Durable scheduling: the agent can inspect and propose jobs. Reads
+        // need `schedule`; mutations need `schedule.write` (coder preset:
+        // approval), so a standing job is proposed, not quietly created.
+        pantheon_tools::schedule_tool::register(
+            &mut reg,
+            self.supervisor.data_dir().to_path_buf(),
+        );
         // Structured UI: the agent-facing `render_ui` capture tool. Always
         // registered - rendering is not a privileged operation (morally a
         // fancier assistant message). The turn loop intercepts calls
@@ -5422,6 +5740,7 @@ Extracted:
         // presence - either absent means no memory tools.
         if self.tools_on(pantheon_api::config::ToolGroup::Memory) {
             if let Some(mem) = self.memory.clone() {
+                let policy_snapshot = self.policy_snapshot_caps();
                 let mem_sink = LedgerMemorySink {
                     sup: Arc::new(self.supervisor.clone()),
                     run_id: run_id.to_string(),
@@ -5431,7 +5750,7 @@ Extracted:
                     reg,
                     MemoryToolOptions {
                         store: mem,
-                        policy: Arc::new(self.policy.clone()),
+                        policy: Arc::new(policy_snapshot.clone()),
                         // The namespace is the agent's, never a caller-supplied
                         // string. `register_memory_tools` already refuses any
                         // other namespace named in the tool arguments, so the
@@ -5484,8 +5803,7 @@ Extracted:
             let delegation_on = self.tools_on(pantheon_api::config::ToolGroup::Delegation);
             if delegation_on
                 && matches!(
-                    self.policy
-                        .check(&pantheon_api::capability::Capability::AgentSpawn),
+                    self.policy_snapshot_caps().check(&pantheon_api::capability::Capability::AgentSpawn),
                     pantheon_api::capability::Decision::Allow
                 )
             {
@@ -5512,8 +5830,7 @@ Extracted:
             // toggle, because messaging is a collaboration affordance.
             if delegation_on
                 && matches!(
-                    self.policy
-                        .check(&pantheon_api::capability::Capability::AgentMessage),
+                    self.policy_snapshot_caps().check(&pantheon_api::capability::Capability::AgentMessage),
                     pantheon_api::capability::Decision::Allow
                 )
             {
@@ -5675,6 +5992,23 @@ Extracted:
                 user_message.len()
             ),
         );
+        // Claim this run's event stream before anything is written. A live
+        // claim from another process refuses the turn here, naming the holder,
+        // instead of interleaving two transcripts. The guard releases on every
+        // exit path, including early errors.
+        let _writer = crate::TurnWriter::claim(&self.supervisor, run_id)?;
+        // Global admission: a top-level turn takes a process-wide slot and
+        // waits (bounded) when the gate is full. Delegated children inherit
+        // their parent's slot rather than competing for one - a child that
+        // blocks on admission while its parent waits on the child is a
+        // deadlock, and depth is exactly the signal that distinguishes them.
+        let _slot = if self.depth == 0 {
+            Some(crate::capacity::acquire(std::time::Duration::from_secs(
+                turn_queue_wait_secs(),
+            ))?)
+        } else {
+            None
+        };
         // Activity-based watchdog: only a failed probe after stall escalates,
         // never wall-clock duration. Pauses (human approval) do not eat the
         // clock because the watchdog only advances inside drive().
@@ -5791,9 +6125,9 @@ Extracted:
         if messages.is_empty() {
             // Memory recall: project + agent layers, narrowest first.
             if let Some(mem) = self.memory.as_deref() {
+                let policy_snapshot = self.policy_snapshot_caps();
                 if matches!(
-                    self.policy
-                        .check(&pantheon_api::capability::Capability::MemoryRead),
+                    self.policy_snapshot_caps().check(&pantheon_api::capability::Capability::MemoryRead),
                     pantheon_api::capability::Decision::Allow
                 ) {
                     let layers = [LayerKind::Project, LayerKind::Agent, LayerKind::Global];
@@ -5803,7 +6137,7 @@ Extracted:
                     let own_ns = self.effective_namespace();
                     let namespaces = [own_ns.as_str()];
                     if let Ok(hits) =
-                        mem_recall(mem, &self.policy, &namespaces, &layers, user_message, 8)
+                        mem_recall(mem, &policy_snapshot, &namespaces, &layers, user_message, 8)
                     {
                         for h in hits {
                             // Trust framing: recalled records are context,
@@ -5862,10 +6196,9 @@ Extracted:
         // keeps pursuing it across turns until `/goal clear`. Built here
         // (not stored) so set/clear takes effect on the very next turn.
         let system_prompt = match self.goal.lock().ok().and_then(|g| g.clone()) {
-            Some(goal) if !goal.trim().is_empty() => format!(
-                "{}\n\nActive session goal: {goal}\nKeep pursuing this goal across turns until it is done or the user changes it.",
-                self.system_prompt
-            ),
+            Some(goal) if !goal.objective.trim().is_empty() => {
+                format!("{}\n\n{}", self.system_prompt, goal.prompt_block())
+            }
             _ => self.system_prompt.clone(),
         };
         // Runtime identity: the model should know it runs inside Pantheon.
@@ -5885,7 +6218,8 @@ Extracted:
         // there is no plan block, so the turn is exactly as before.
         let active_goal = self.goal.lock().ok().and_then(|g| g.clone());
         let system_prompt = match active_goal
-            .as_deref()
+            .as_ref()
+            .map(|g| g.objective.as_str())
             .filter(|g| !g.trim().is_empty())
             .and_then(|goal| self.plan_goal(run_id, goal))
         {
@@ -6006,8 +6340,7 @@ Extracted:
         if let Some(spawner) = &spawner {
             if self.tools_on(pantheon_api::config::ToolGroup::Delegation)
                 && matches!(
-                    self.policy
-                        .check(&pantheon_api::capability::Capability::AgentSpawn),
+                    self.policy_snapshot_caps().check(&pantheon_api::capability::Capability::AgentSpawn),
                     pantheon_api::capability::Decision::Allow
                 )
             {
@@ -6018,6 +6351,22 @@ Extracted:
                 );
             }
         }
+        // Surface profile: `[tools] profile = "safe"` (or
+        // PANTHEON_TOOL_PROFILE) drops mutating tools from the registry
+        // entirely, so an untrusted origin is never offered a shell. Applied
+        // before `load_tools` snapshots the available names, so the model
+        // cannot discover what the profile withheld.
+        let profile = {
+            let from_env = std::env::var("PANTHEON_TOOL_PROFILE")
+                .ok()
+                .and_then(|v| pantheon_tools::profiles::Profile::parse(&v));
+            let from_cfg = pantheon_api::config::Config::load(self.supervisor.data_dir())
+                .ok()
+                .and_then(|c| c.tools.and_then(|t| t.profile))
+                .and_then(|p| pantheon_tools::profiles::Profile::parse(&p));
+            from_env.or(from_cfg).unwrap_or(pantheon_tools::profiles::Profile::Full)
+        };
+        pantheon_tools::profiles::apply(&mut reg, profile);
         // Auto tool loading: start each turn with the core set plus
         // whatever the model loaded in earlier turns. Empty loaded
         // set in the registry means always-available (all schemas).
@@ -6047,12 +6396,18 @@ Extracted:
         // to load more tools into the next turn. The description lists
         // every available tool name (cheap, just names) so the model
         // can discover unloaded tools without hallucinating them.
-        let available_names = reg.names();
+        let available_count = reg.names().len();
         reg.register(
             pantheon_api::message::ToolSchema {
                 name: "load_tools".into(),
-                description: format!("Load tools by name into the next turn. Pass names as a JSON array of tool names. Already loaded tools are ignored. Call this when a task needs a tool that is not in your current list. Available tools: {}", available_names.join(", ")),
-                parameters: serde_json::json!({"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}}, "required": ["names"]}),
+                description: format!(
+                    "Find and load tools into the next turn. Pass `query` with a few keywords to search the {} available tools by name and description (returns matches with one-line descriptions), or `names` with exact tool names. Loaded tools appear in your tool list from the next turn on.",
+                    available_count
+                ),
+                parameters: serde_json::json!({"type": "object", "properties": {
+                    "query": {"type": "string", "description": "keywords, e.g. 'browser screenshot' or 'calendar'"},
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "exact tool names"}
+                }}),
             },
             pantheon_api::capability::Capability::Other("load_tools".into()),
             |_args| Err(pantheon_api::error::PantheonError::new("TOOL_HOST_MEDIATED", pantheon_api::error::Layer::Execution, false, String::from("load_tools is handled by the host, never executed directly"), "check tool name and arguments", "")),
@@ -6088,8 +6443,17 @@ Extracted:
                     )
                 })?
                 .unwrap_or_default();
+            // Depth directives (opt-in): the chain is rebuilt per turn, so
+            // this is the one place a per-turn effort bump can live without
+            // touching the session's sticky level. Aux turns are unaffected
+            // (they always pass `Off` to their clients).
+            let turn_reasoning = self.reasoning_for_turn(user_message);
+            let mut turn_policy = self.policy_snapshot();
+            if turn_reasoning.rank() > turn_policy.reasoning.rank() {
+                turn_policy.reasoning = turn_reasoning;
+            }
             let mut chain = ProviderChain::new(
-                self.policy_snapshot(),
+                turn_policy,
                 transport,
                 reg.loaded_schemas(),
                 api_key,
@@ -6123,9 +6487,10 @@ Extracted:
         // their return values change control flow.
         let _ = &self.hook_observer;
         let loop_guard = crate::loop_guard::LoopGuard::new();
+        let policy_snapshot = self.policy_snapshot_caps();
         let runner = RegRunner {
             registry: &reg,
-            policy: &self.policy,
+            policy: &policy_snapshot,
             hooks: Some(&self.hooks),
             run_id: run_id.to_string(),
             redaction: self.secrets.redaction_registry(),
@@ -6147,7 +6512,7 @@ Extracted:
         // and Delegate turns are denied (as before).
         let loop_ = AgentLoop {
             run_id: run_id.into(),
-            policy: self.policy.clone(),
+            policy: policy_snapshot.clone(),
             budget: self.budget_snapshot(),
             sink: &sink,
             tools: &runner,
@@ -7110,6 +7475,7 @@ Extracted:
                 run_id,
                 poison: ledger_poison,
                 model: RefCell::new(None),
+                attempt: RefCell::new(None),
             };
             let sink = TeeModelSink {
                 inner: msink,
@@ -7122,6 +7488,7 @@ Extracted:
                 run_id,
                 poison: ledger_poison,
                 model: RefCell::new(None),
+                attempt: RefCell::new(None),
             };
             chain.turn_stream(messages, &msink)?
         };
@@ -8096,6 +8463,7 @@ impl Session {
                     params.insert(k.clone(), v.clone());
                 }
                 let args = serde_json::Value::Object(params).to_string();
+                let policy_snapshot = self.policy_snapshot_caps();
                 // The ledger is durable: secret form values must never
                 // land in ToolStarted args. The tool itself still gets
                 // the real values; only the recorded args are redacted.
@@ -8117,7 +8485,7 @@ impl Session {
                     provenance: provenance.clone(),
                 })?;
                 let (reg, _) = self.build_tool_registry();
-                let outcome = reg.execute_gated(&self.policy, tool, &args);
+                let outcome = reg.execute_gated(&policy_snapshot, tool, &args);
                 // Gate refusals (unknown tool, capability denial) are a
                 // UI-layer rejection, not a tool result. Anything else -
                 // including a tool that ran and failed - is the action's
@@ -8168,7 +8536,7 @@ impl Session {
                     let detail = if code == "TOOL_UNKNOWN" {
                         format!("tool '{tool}' is not in the registry")
                     } else if reg.required_capabilities(tool, &args).iter().any(|c| {
-                        self.policy.check(c) == pantheon_api::capability::Decision::Approval
+                        self.policy_snapshot_caps().check(c) == pantheon_api::capability::Decision::Approval
                     }) {
                         format!(
                             "tool '{tool}' needs operator approval, which UI actions cannot request; \
@@ -8261,6 +8629,27 @@ fn tool_result_text(out: Result<String, PantheonError>) -> String {
             "tool error {}: {}\nremediation: {}",
             e.code, e.cause, e.remediation
         ),
+    }
+}
+
+/// How long a queued top-level turn waits for capacity before giving up.
+/// `PANTHEON_TURN_QUEUE_WAIT_SECS` overrides; default 120s.
+fn turn_queue_wait_secs() -> u64 {
+    std::env::var("PANTHEON_TURN_QUEUE_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(120)
+}
+
+/// First sentence of a tool description, for `load_tools` search results.
+fn first_sentence(text: &str) -> String {
+    let end = text.find(". ").map(|i| i + 1).unwrap_or(text.len());
+    let s = text[..end].trim();
+    if s.len() > 160 {
+        format!("{}…", &s[..157])
+    } else {
+        s.to_string()
     }
 }
 
@@ -8796,6 +9185,11 @@ pub enum TranscriptItem {
         revision: u64,
         document: UiDocument,
     },
+    /// A message a subagent/peer delivered, preserved for display replay.
+    AgentNote {
+        sender: String,
+        text: String,
+    },
     /// A mid-turn steering directive preserved for display replay.
     Status(String),
 }
@@ -8914,6 +9308,12 @@ pub fn rebuild_transcript(entries: Vec<pantheon_storage::LedgerEntry>) -> Vec<Tr
                 }
             }
             Event::ImportedReasoning { text, .. } => out.push(TranscriptItem::Reasoning(text)),
+            Event::AgentMessageDelivered {
+                sender, content, ..
+            } if !content.trim().is_empty() => out.push(TranscriptItem::AgentNote {
+                sender,
+                text: content,
+            }),
             Event::SteeringProvided { text, .. } => {
                 out.push(TranscriptItem::Status(format!("steered: {text}")))
             }
@@ -9951,7 +10351,7 @@ mod delegate_tool_tests {
     /// hold.
     #[test]
     fn delegate_tool_gate() {
-        let (mut session, dir) = test_session();
+        let (session, dir) = test_session();
         attach_parent_agent(&session, &dir);
         let poison = Arc::new(LedgerPoison::default());
         let healthy = Arc::new(AtomicBool::new(true));
@@ -9963,7 +10363,7 @@ mod delegate_tool_tests {
             "coder agent gets the delegate tool"
         );
         // Reader policy: the gate denies the tool.
-        session.policy = Policy::researcher_readonly();
+        session.set_policy(Policy::researcher_readonly());
         let mut reg2 = ToolRegistry::new();
         let _cleanup2 = session.register_turn_tools(&mut reg2, "run-gate", &poison, &healthy);
         assert_eq!(
@@ -9972,7 +10372,7 @@ mod delegate_tool_tests {
             "reader agent has no delegate tool"
         );
         // Delegation group off: no tool either way.
-        session.policy = Policy::coder();
+        session.set_policy(Policy::coder());
         session
             .tools_enablement
             .lock()
@@ -10067,7 +10467,7 @@ mod delegate_tool_tests {
         let guard = crate::loop_guard::LoopGuard::new();
         let adapter = RegistryToolAdapter {
             registry: &reg,
-            policy: &session.policy,
+            policy: &session.policy_snapshot_caps(),
             name: "echo".to_string(),
             hooks: None,
             run_id: "run-guard".to_string(),
@@ -10142,7 +10542,7 @@ mod delegate_tool_tests {
         );
         let adapter = RegistryToolAdapter {
             registry: &reg,
-            policy: &session.policy,
+            policy: &session.policy_snapshot_caps(),
             name: "counting".to_string(),
             hooks: None,
             run_id: "run-keyed".to_string(),
@@ -10304,7 +10704,7 @@ mod delegate_tool_tests {
         register_delegate_tool(&mut reg, driver);
         let adapter = RegistryToolAdapter {
             registry: &reg,
-            policy: &session.policy,
+            policy: &session.policy_snapshot_caps(),
             name: "delegate".to_string(),
             hooks: None,
             run_id: "run-e2e".to_string(),
@@ -10349,6 +10749,51 @@ mod delegate_tool_tests {
             stamped(true),
             "AgentCompleted carries the executing call id"
         );
+    }
+
+    #[test]
+    fn a_second_executor_cannot_claim_a_run_in_flight() {
+        let (session, dir) = test_session();
+        let run = "run-writer-claim";
+        session
+            .supervisor
+            .claim_writer(run)
+            .expect("first claim");
+        assert!(session.supervisor.writer_token(run).is_some());
+        let other = crate::Supervisor::open(dir.path().to_path_buf()).expect("second supervisor");
+        let err = other.claim_writer(run).expect_err("second executor refused");
+        assert_eq!(err.code, "LEDGER_WRITER_BUSY", "{}", err.cause);
+        assert!(err.cause.contains("pid"), "{}", err.cause);
+        // releasing lets the next executor take over
+        session.supervisor.release_writer(run);
+        other.claim_writer(run).expect("claim after release");
+        other.release_writer(run);
+    }
+
+    /// A turn fences its appends: after the claim is released, a fenced
+    /// append from that turn is refused rather than landing in a transcript
+    /// that has moved on.
+    #[test]
+    fn a_fenced_append_fails_once_the_claim_is_gone() {
+        let (session, dir) = test_session();
+        let run = "run-fenced";
+        session.supervisor.emit(pantheon_api::events::Event::RunStarted { run_id: run.into() }).unwrap();
+        let claim = session.supervisor.claim_writer(run).unwrap();
+        session.supervisor.emit(pantheon_api::events::Event::RunProgress { run_id: run.into(), detail: "mid-turn".into() }).unwrap();
+        // another supervisor steals the claim only when it is dead/stale, so
+        // simulate the loss by releasing and re-claiming under a new token
+        session.supervisor.release_writer(run);
+        let other = crate::Supervisor::open(dir.path().to_path_buf()).unwrap();
+        other.claim_writer(run).unwrap();
+        let err = session
+            .supervisor
+            .ledger()
+            .append_fenced(
+                &pantheon_api::events::Event::RunProgress { run_id: run.into(), detail: "stale".into() },
+                &claim.token,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "LEDGER_STALE_WRITER");
     }
 
     /// #7: the drive loop's turn boundary must see cancel intent recorded
@@ -10555,12 +11000,13 @@ mod delegate_tool_tests {
         // An approval-gated tool bound to a UI action is refused
         // fail-closed, and the message tells the model the supported
         // alternatives (approval card / allowed tool).
-        let (mut session, _dir) = test_session();
+        let (session, _dir) = test_session();
         // Gate shell: the coder preset allows it, we need Approval.
-        session.policy = session
-            .policy
-            .clone()
-            .approval(pantheon_api::capability::Capability::ShellExecute);
+        session.set_policy(
+            session
+                .policy_snapshot_caps()
+                .approval(pantheon_api::capability::Capability::ShellExecute),
+        );
         let run_id = "run-ui-approval-gated";
         ui_run(&session, run_id);
         // shell requires approval under the test policy (mutating).
@@ -12819,5 +13265,243 @@ mod tool_registration_diagnostics_tests {
             ("cheap", "judge-mini"),
             "pinned auxiliary must not follow the switch"
         );
+    }
+}
+
+#[cfg(test)]
+mod goal_criteria_tests {
+    //! The goal's criteria are the session's gradient: adding, meting,
+    //! reopening and clearing must be exact, and a bad index must say so.
+
+    use super::*;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel};
+
+    fn test_session() -> (Session, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = Session::new(
+            dir.path().to_path_buf(),
+            Policy::coder(),
+            ModelPolicy {
+                reasoning_budget: None,
+                reasoning: ReasoningLevel::default(),
+                default: DefaultModel {
+                    provider: "local".into(),
+                    model: "default".into(),
+                    key_env: None,
+                },
+                fallbacks: FallbackChain { fallbacks: vec![] },
+                auxiliaries: vec![],
+            },
+            SecretsBroker::from_system_env(),
+        )
+        .expect("session");
+        (session, dir)
+    }
+
+    #[test]
+    fn criteria_add_mark_reopen_and_clear_round_trip() {
+        let (s, _dir) = test_session();
+        s.set_goal(Some("ship it".into()));
+        assert_eq!(s.goal_text().as_deref(), Some("ship it"));
+        assert_eq!(s.add_goal_criterion("tests pass", "cargo test").unwrap(), 1);
+        assert_eq!(s.add_goal_criterion("redaction works", "grep").unwrap(), 2);
+
+        let g = s.goal().expect("goal");
+        assert_eq!(g.criteria.len(), 2);
+        assert!(!g.all_met());
+
+        s.mark_goal_criterion(1, "cargo test: 376 passed").unwrap();
+        let g = s.goal().unwrap();
+        assert!(g.criteria[0].met());
+        assert_eq!(g.criteria[0].evidence.as_deref(), Some("cargo test: 376 passed"));
+        assert_eq!(g.met_count(), 1);
+
+        s.unmark_goal_criterion(1).unwrap();
+        assert!(!s.goal().unwrap().criteria[0].met());
+
+        s.clear_goal_criteria();
+        assert!(s.goal().unwrap().criteria.is_empty());
+        assert_eq!(s.goal_text().as_deref(), Some("ship it"), "objective survives");
+    }
+
+    #[test]
+    fn a_new_objective_drops_the_old_criteria() {
+        let (s, _dir) = test_session();
+        s.set_goal(Some("old".into()));
+        s.add_goal_criterion("c", "p").unwrap();
+        s.set_goal(Some("new".into()));
+        let g = s.goal().unwrap();
+        assert_eq!(g.objective, "new");
+        assert!(g.criteria.is_empty(), "a stale criterion is worse than none");
+    }
+
+    #[test]
+    fn bad_index_and_missing_goal_are_errors_not_clamps() {
+        let (s, _dir) = test_session();
+        assert!(s.add_goal_criterion("c", "p").is_err(), "no goal yet");
+        s.set_goal(Some("g".into()));
+        s.add_goal_criterion("c", "p").unwrap();
+        assert!(s.mark_goal_criterion(0, "e").is_err(), "0 is not 1-based");
+        assert!(s.mark_goal_criterion(2, "e").is_err(), "past the end");
+        assert!(s.unmark_goal_criterion(9).is_err());
+        assert!(!s.goal().unwrap().criteria[0].met(), "failed edits change nothing");
+    }
+
+    #[test]
+    fn empty_or_blank_goal_clears_the_slot() {
+        let (s, _dir) = test_session();
+        s.set_goal(Some("g".into()));
+        s.set_goal(Some("   ".into()));
+        assert!(s.goal().is_none());
+        assert!(s.goal_text().is_none());
+    }
+}
+
+#[cfg(test)]
+mod depth_directive_tests {
+    //! Depth directives are opt-in, per turn, never downgrading, and never
+    //! escalating a session the user set to `Off`.
+
+    use super::*;
+    use pantheon_api::model::{DefaultModel, FallbackChain, ModelPolicy, ReasoningLevel};
+
+    fn test_session() -> (Session, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session = Session::new(
+            dir.path().to_path_buf(),
+            Policy::coder(),
+            ModelPolicy {
+                reasoning_budget: None,
+                reasoning: ReasoningLevel::Medium,
+                default: DefaultModel {
+                    provider: "local".into(),
+                    model: "default".into(),
+                    key_env: None,
+                },
+                fallbacks: FallbackChain { fallbacks: vec![] },
+                auxiliaries: vec![],
+            },
+            SecretsBroker::from_system_env(),
+        )
+        .expect("session");
+        (session, dir)
+    }
+
+    #[test]
+    fn off_by_default_and_per_turn_only() {
+        let (s, _dir) = test_session();
+        assert!(!s.depth_directives(), "must not be on without an opt-in");
+        s.set_depth_directives(true);
+        s.set_reasoning(ReasoningLevel::Medium).unwrap();
+        assert_eq!(s.reasoning_for_turn("think hard about this"), ReasoningLevel::High);
+        assert_eq!(s.reasoning_for_turn("ultrathink"), ReasoningLevel::Max);
+        assert_eq!(s.reasoning_for_turn("fix the failing test"), ReasoningLevel::Medium);
+        assert_eq!(
+            s.reasoning(),
+            ReasoningLevel::Medium,
+            "the session's sticky level is never rewritten"
+        );
+    }
+
+    #[test]
+    fn switching_off_and_explicit_off_both_win() {
+        let (s, _dir) = test_session();
+        s.set_depth_directives(true);
+        s.set_reasoning(ReasoningLevel::Low).unwrap();
+        assert_eq!(s.reasoning_for_turn("think hard"), ReasoningLevel::High);
+        s.set_depth_directives(false);
+        assert_eq!(s.reasoning_for_turn("think hard"), ReasoningLevel::Low);
+
+        s.set_depth_directives(true);
+        s.set_reasoning(ReasoningLevel::Off).unwrap();
+        assert_eq!(
+            s.reasoning_for_turn("ultrathink"),
+            ReasoningLevel::Off,
+            "an explicit Off is not silently escalated"
+        );
+    }
+
+    #[test]
+    fn a_higher_session_level_is_never_downgraded() {
+        let (s, _dir) = test_session();
+        s.set_depth_directives(true);
+        s.set_reasoning(ReasoningLevel::Max).unwrap();
+        assert_eq!(s.reasoning_for_turn("think hard"), ReasoningLevel::Max);
+    }
+}
+
+#[cfg(test)]
+mod agent_note_replay_tests {
+    //! Delivered agent messages survive a resume: the ledger rebuild must
+    //! produce them as their own items, in order, and skip empty ones.
+
+    use super::{rebuild_transcript, TranscriptItem};
+    use pantheon_api::events::Event;
+
+    fn entry(id: i64, event: Event) -> pantheon_storage::LedgerEntry {
+        pantheon_storage::LedgerEntry {
+            id,
+            run_id: "r".to_string(),
+            seq: id,
+            run_seq: id,
+            version: 1,
+            ts_ms: id,
+            event,
+        }
+    }
+
+    #[test]
+    fn agent_notes_replay_in_order_and_empty_ones_are_dropped() {
+        let entries = vec![
+            entry(
+                1,
+                Event::AgentMessageDelivered {
+                    run_id: "r".into(),
+                    message_id: "m1".into(),
+                    sender: "researcher".into(),
+                    kind: "progress".into(),
+                    task_id: None,
+                    correlation_id: None,
+                    content: "reading src/lib.rs".into(),
+                },
+            ),
+            entry(
+                2,
+                Event::AgentMessageDelivered {
+                    run_id: "r".into(),
+                    message_id: "m2".into(),
+                    sender: "researcher".into(),
+                    kind: "progress".into(),
+                    task_id: None,
+                    correlation_id: None,
+                    content: "  ".into(),
+                },
+            ),
+            entry(
+                3,
+                Event::AgentMessageDelivered {
+                    run_id: "r".into(),
+                    message_id: "m3".into(),
+                    sender: "coder".into(),
+                    kind: "result".into(),
+                    task_id: None,
+                    correlation_id: None,
+                    content: "patch applied".into(),
+                },
+            ),
+        ];
+        let items = rebuild_transcript(entries);
+        assert_eq!(items.len(), 2, "{items:?}");
+        match &items[0] {
+            TranscriptItem::AgentNote { sender, text } => {
+                assert_eq!(sender, "researcher");
+                assert_eq!(text, "reading src/lib.rs");
+            }
+            other => panic!("expected AgentNote, got {other:?}"),
+        }
+        match &items[1] {
+            TranscriptItem::AgentNote { sender, .. } => assert_eq!(sender, "coder"),
+            other => panic!("expected AgentNote, got {other:?}"),
+        }
     }
 }

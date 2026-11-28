@@ -1930,6 +1930,21 @@ pub mod model {
                 Self::Max => "max",
             }
         }
+
+        /// `Off` = 0 … `Max` = 6. Lets callers take the stronger of two
+        /// levels ("the prompt asked for depth, the session already runs at
+        /// medium") without inventing a second ordering.
+        pub fn rank(&self) -> u8 {
+            match self {
+                Self::Off => 0,
+                Self::Minimal => 1,
+                Self::Low => 2,
+                Self::Medium => 3,
+                Self::High => 4,
+                Self::Xhigh => 5,
+                Self::Max => 6,
+            }
+        }
     }
 
     impl ModelPolicy {
@@ -2106,6 +2121,367 @@ pub mod model {
     /// can replace it (last title wins).
     pub fn fallback_title(prompt: &str) -> String {
         bound_title(prompt, TITLE_MAX_CHARS)
+    }
+}
+
+pub mod depth {
+    //! Depth directives: plain words in a prompt that ask for more thinking.
+    //!
+    //! Opt-in only. When the host enables it, a turn whose prompt contains
+    //! one of these phrases runs at a higher reasoning effort for that turn
+    //! (never written into the session's sticky effort, so the next ordinary
+    //! turn is back to normal). Off by default because effort costs tokens.
+    //!
+    //! The phrases are English only on purpose: a false positive here spends
+    //! the user's money on a turn that did not ask for depth.
+
+    use super::model::ReasoningLevel;
+
+    /// phrases that ask for the top setting
+    const MAX_PHRASES: &[&str] = &[
+        "ultrathink",
+        "maximum effort",
+        "max effort",
+        "maximum intelligence",
+        "max intelligence",
+    ];
+
+    /// phrases that ask for deep/high effort
+    const HIGH_PHRASES: &[&str] = &[
+        "think deeply",
+        "think hard",
+        "think harder",
+        "think deeper",
+        "go deep",
+        "go heavy",
+        "be thorough",
+        "dig deep",
+        "thorough analysis",
+        "thoroughly analyze",
+        "thoroughly analyse",
+        "thoroughly explore",
+        "deep analysis",
+        "deep dive",
+        "deeply analyze",
+        "deeply analyse",
+        "analyze deeply",
+        "analyse deeply",
+        "high effort",
+    ];
+
+    /// Fenced spans are examples, not instructions: a prompt explaining
+    /// "ultrathink" must not itself trigger it. An unclosed fence drops the
+    /// remainder, the conservative side.
+    fn strip_fences(prompt: &str) -> String {
+        let mut out = String::with_capacity(prompt.len());
+        let mut fence: Option<String> = None;
+        for line in prompt.lines() {
+            let trimmed = line.trim_start();
+            match &fence {
+                Some(marker) => {
+                    if trimmed.starts_with(marker.as_str()) {
+                        fence = None;
+                    }
+                }
+                None => {
+                    if let Some(rest) = trimmed.strip_prefix("```") {
+                        fence = Some(format!("```{rest}"));
+                    } else if let Some(rest) = trimmed.strip_prefix("~~~") {
+                        fence = Some(format!("~~~{rest}"));
+                    } else {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A "think … deeply" style separated form, bounded to one sentence.
+    fn separated_think(low: &str) -> bool {
+        para_windows(low).any(|w| {
+            let mut parts = w.split_whitespace();
+            let mut saw_think = false;
+            let mut steps = 0;
+            for word in parts.by_ref() {
+                let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+                if word == "think" || word == "thinking" {
+                    saw_think = true;
+                    steps = 0;
+                    continue;
+                }
+                if saw_think {
+                    steps += 1;
+                    if word == "deeply" || word == "deeper" {
+                        return true;
+                    }
+                    if steps > 8
+                        || word.ends_with('.')
+                        || word.ends_with('!')
+                        || word.ends_with('?')
+                    {
+                        saw_think = false;
+                    }
+                }
+            }
+            false
+        })
+    }
+
+    /// prompt split into sentence-ish windows, so "think" and "deeply" with
+    /// an unrelated sentence between them do not match
+    fn para_windows(text: &str) -> impl Iterator<Item = &str> {
+        text.split(['.', '!', '?', '\n'])
+    }
+
+    /// the effort a prompt asks for, if any
+    pub fn directive(prompt: &str) -> Option<ReasoningLevel> {
+        let text = strip_fences(prompt);
+        let low = text.to_lowercase();
+        if MAX_PHRASES.iter().any(|p| low.contains(p)) {
+            return Some(ReasoningLevel::Max);
+        }
+        if HIGH_PHRASES.iter().any(|p| low.contains(p)) || separated_think(&low) {
+            return Some(ReasoningLevel::High);
+        }
+        None
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn depth_phrases_map_to_high_and_max() {
+            assert_eq!(
+                directive("please think hard about this"),
+                Some(ReasoningLevel::High)
+            );
+            assert_eq!(
+                directive("go deep on the parser"),
+                Some(ReasoningLevel::High)
+            );
+            assert_eq!(
+                directive("Do a thorough analysis of the log"),
+                Some(ReasoningLevel::High)
+            );
+            assert_eq!(
+                directive("think through it deeply before editing"),
+                Some(ReasoningLevel::High)
+            );
+            assert_eq!(directive("ultrathink"), Some(ReasoningLevel::Max));
+            assert_eq!(
+                directive("Maximum effort, please"),
+                Some(ReasoningLevel::Max)
+            );
+        }
+
+        #[test]
+        fn ordinary_prompts_get_nothing() {
+            assert_eq!(directive("fix the failing test"), None);
+            assert_eq!(directive("what does this function do?"), None);
+            assert_eq!(directive("think about whether the cache is warm"), None);
+            // "deeply" without a thinking verb is not a depth request
+            assert_eq!(directive("the pool is deeply blue"), None);
+        }
+
+        #[test]
+        fn fenced_examples_do_not_trigger_and_unclosed_fences_drop_the_rest() {
+            let p = "explain why users type this:\n```\nultrathink\n```\nthanks";
+            assert_eq!(directive(p), None);
+            let p = "here is a fence\n```\nthink hard\n";
+            assert_eq!(directive(p), None, "unclosed fence drops the remainder");
+        }
+
+        #[test]
+        fn separated_think_is_bounded_to_one_sentence() {
+            assert_eq!(directive("think about the parser. deeply unrelated"), None);
+            assert_eq!(directive("think deeply"), Some(ReasoningLevel::High));
+        }
+
+        #[test]
+        fn rank_orders_levels_for_never_downgrade_merges() {
+            assert!(ReasoningLevel::High.rank() > ReasoningLevel::Medium.rank());
+            assert_eq!(
+                ReasoningLevel::Off.rank().max(ReasoningLevel::High.rank()),
+                ReasoningLevel::High.rank()
+            );
+        }
+    }
+}
+
+pub mod goal {
+    //! Goal criteria: the session goal plus the verifiable outcomes that say
+    //! when it is done.
+    //!
+    //! An objective alone ("fix the parser") gives the model nothing to climb
+    //! against; it can declare victory by feel. A criterion pairs a claim with
+    //! the probe that would falsify it, and is met only when evidence from that
+    //! probe exists. The TUI edits them (`/goal criteria`), the runtime renders
+    //! them into the system prompt every turn, and subagents inherit them.
+
+    /// One ideal-state criterion: what must be true, and how it gets checked.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct GoalCriterion {
+        /// the testable claim, e.g. "parser handles CRLF input"
+        pub claim: String,
+        /// the probe that would falsify it, e.g. "`cargo test -p parser crlf`"
+        pub probe: String,
+        /// what the probe actually returned; `None` = not met. Never a plan,
+        /// never an expectation, never the model's own say-so.
+        pub evidence: Option<String>,
+    }
+
+    impl GoalCriterion {
+        pub fn new(claim: impl Into<String>, probe: impl Into<String>) -> Self {
+            Self {
+                claim: claim.into(),
+                probe: probe.into(),
+                evidence: None,
+            }
+        }
+
+        pub fn met(&self) -> bool {
+            self.evidence.is_some()
+        }
+    }
+
+    /// The active session goal: objective plus its criteria (may be empty).
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct Goal {
+        pub objective: String,
+        pub criteria: Vec<GoalCriterion>,
+    }
+
+    impl Goal {
+        pub fn new(objective: impl Into<String>) -> Self {
+            Self {
+                objective: objective.into(),
+                criteria: Vec::new(),
+            }
+        }
+
+        pub fn met_count(&self) -> usize {
+            self.criteria.iter().filter(|c| c.met()).count()
+        }
+
+        /// Every criterion carries evidence. An empty criteria list is *not*
+        /// complete: nothing verifiable was stated, so nothing was verified.
+        pub fn all_met(&self) -> bool {
+            !self.criteria.is_empty() && self.criteria.iter().all(|c| c.met())
+        }
+
+        /// The system-prompt block. With no criteria this is the old one-line
+        /// goal text (callers that set only an objective keep working); with
+        /// criteria it states the evidence rule, because that rule is the
+        /// whole point of stating them.
+        pub fn prompt_block(&self) -> String {
+            let objective = self.objective.trim();
+            if self.criteria.is_empty() {
+                return format!(
+                    "Active session goal: {objective}\nKeep pursuing this goal across turns until it is done or the user changes it."
+                );
+            }
+            let mut out = format!(
+                "Active session goal: {objective}\n\nIdeal-state criteria - the goal is done only when every one is met by evidence from an actual probe this session:\n"
+            );
+            for (i, c) in self.criteria.iter().enumerate() {
+                let mark = if c.met() { "x" } else { " " };
+                out.push_str(&format!(
+                    "{}. [{mark}] {}  (probe: {})",
+                    i + 1,
+                    c.claim,
+                    c.probe
+                ));
+                if let Some(ev) = &c.evidence {
+                    out.push_str(&format!("  -> evidence: {ev}"));
+                }
+                out.push('\n');
+            }
+            out.push_str(
+                "Mark a criterion met only after its probe ran and passed. Never mark one met from expectation, memory, or a plan; if a probe is unavailable, say so and leave it open. Keep pursuing this goal across turns until every criterion is met or the user changes it.",
+            );
+            out
+        }
+    }
+
+    /// Parse `claim | probe` for `/goal criteria add`. The separator is a pipe
+    /// so a claim can contain commas, colons and slashes. No probe -> an error,
+    /// because a criterion without a falsifier is an opinion.
+    pub fn parse_criterion(arg: &str) -> Result<GoalCriterion, String> {
+        let (claim, probe) = arg
+            .split_once('|')
+            .map(|(a, b)| (a.trim(), b.trim()))
+            .unwrap_or((arg.trim(), ""));
+        if claim.is_empty() {
+            return Err("usage: /goal criteria add <claim> | <probe>".into());
+        }
+        if probe.is_empty() {
+            return Err(
+                "a criterion needs a probe: /goal criteria add <claim> | <probe> (what would show it failed?)"
+                    .into(),
+            );
+        }
+        Ok(GoalCriterion::new(claim, probe))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn no_criteria_keeps_the_plain_goal_line() {
+            let g = Goal::new("fix the parser");
+            let block = g.prompt_block();
+            assert!(block.contains("Active session goal: fix the parser"));
+            assert!(!block.contains("Ideal-state criteria"));
+            assert!(!g.all_met(), "no criteria is never 'done'");
+        }
+
+        #[test]
+        fn criteria_render_their_probe_evidence_and_the_evidence_rule() {
+            let mut g = Goal::new("ship the import feature");
+            g.criteria.push(GoalCriterion::new(
+                "session discovery is scoped to the folder",
+                "`cargo test discovery`",
+            ));
+            let mut met = GoalCriterion::new("redaction removes sk-ant keys", "grep the extract");
+            met.evidence = Some("no sk-ant matches".into());
+            g.criteria.push(met);
+            let block = g.prompt_block();
+            assert!(block.contains("1. [ ] session discovery"), "{block}");
+            assert!(block.contains("2. [x] redaction"), "{block}");
+            assert!(block.contains("probe: `cargo test discovery`"), "{block}");
+            assert!(block.contains("evidence: no sk-ant matches"), "{block}");
+            assert!(
+                block.contains("Never mark one met from expectation"),
+                "{block}"
+            );
+            assert_eq!(g.met_count(), 1);
+            assert!(!g.all_met());
+        }
+
+        #[test]
+        fn all_met_needs_every_criterion_and_at_least_one() {
+            let mut g = Goal::new("x");
+            g.criteria.push(GoalCriterion::new("a", "p"));
+            assert!(!g.all_met());
+            g.criteria[0].evidence = Some("ran p: ok".into());
+            assert!(g.all_met());
+            g.criteria.push(GoalCriterion::new("b", "q"));
+            assert!(!g.all_met(), "a new unmet criterion reopens the goal");
+        }
+
+        #[test]
+        fn parse_criterion_requires_claim_and_probe() {
+            let c = parse_criterion("parser handles CRLF | cargo test crlf").unwrap();
+            assert_eq!(c.claim, "parser handles CRLF");
+            assert_eq!(c.probe, "cargo test crlf");
+            assert!(!c.met());
+            assert!(parse_criterion("no pipe here").is_err());
+            assert!(parse_criterion(" | only a probe").is_err());
+        }
     }
 }
 
@@ -2795,6 +3171,13 @@ pub mod logging {
             return;
         }
         append(&sink.dir.join(file), level, component, msg);
+    }
+
+    /// True when a log sink is installed (the TUI and the runtime install
+    /// one). Callers use this to pick `logging::warn` over raw stderr, which
+    /// would paint over a full-screen TUI.
+    pub fn installed() -> bool {
+        SINK.get().is_some()
     }
 
     /// Record something in `agent.log` at INFO.

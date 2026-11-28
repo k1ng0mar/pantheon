@@ -68,7 +68,37 @@ pub(crate) fn add_column_once(conn: &Connection, sql: &str) -> Result<(), rusqli
     }
 }
 
+/// A live claim on one run's event stream.
+///
+/// The holder may append through [`Ledger::append_fenced`]; anyone else's
+/// fenced append fails. Claims carry the writer's pid and timestamp so a
+/// crashed process can be taken over instead of blocking the run forever.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterClaim {
+    pub run_id: String,
+    pub token: String,
+    pub pid: i64,
+    pub claimed_ms: i64,
+}
+
+/// True when `pid` names a live process. `/proc` is the Linux answer; on
+/// other platforms we assume the holder is alive, which fails closed (a
+/// false "busy" is recoverable by waiting, a false "dead" is not).
+pub(crate) fn pid_is_alive(pid: i64) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let proc = std::path::Path::new("/proc");
+    if proc.is_dir() {
+        proc.join(pid.to_string()).exists()
+    } else {
+        true
+    }
+}
+
 mod core_group;
+mod init_lock;
+pub use init_lock::{InitLock, lock_path as init_lock_path};
 mod misc_group;
 mod privacy;
 pub use audit::{audit_line, export_jsonl};
@@ -80,6 +110,7 @@ pub use collaboration::{
 pub use core_group::claims;
 pub use core_group::leases;
 pub use core_group::ledger;
+pub use core_group::ledger::ModelAttempt;
 pub use core_group::operations;
 pub use ideas::{
     FeedbackSignal, Idea, IdeaKind, IdeaStatus, IdeaStore, NewIdea, ScheduleSpec, TopicSignals,

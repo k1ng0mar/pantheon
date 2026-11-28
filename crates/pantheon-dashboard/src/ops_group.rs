@@ -1610,6 +1610,12 @@ pub mod runs {
                         TranscriptItem::Reasoning(t) => {
                             md.push_str(&format!("## Reasoning\n\n{}\n\n", redact(&t)));
                         }
+                        TranscriptItem::AgentNote { sender, text } => {
+                            md.push_str(&format!(
+                                "## Agent: {sender}\n\n{}\n\n",
+                                redact(&text)
+                            ));
+                        }
                         TranscriptItem::Ui {
                             ui_id, document, ..
                         } => {
@@ -1658,6 +1664,11 @@ pub mod runs {
                         TranscriptItem::Reasoning(t) => serde_json::json!({
                             "type": "reasoning",
                             "content": redact(&t),
+                        }),
+                        TranscriptItem::AgentNote { sender, text } => serde_json::json!({
+                            "type": "agent_note",
+                            "sender": sender,
+                            "content": redact(&text),
                         }),
                         TranscriptItem::Ui {
                             ui_id,

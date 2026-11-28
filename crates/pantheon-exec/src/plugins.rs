@@ -29,6 +29,23 @@ use pantheon_api::error::{Layer, PantheonError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Report a plugin discovery/seed problem without corrupting a full-screen
+/// TUI: the agent log when a sink is installed, stderr for plain CLI runs.
+/// A raw `eprintln!` from inside the TUI paints over the composer and leaves
+/// a stale status row behind.
+macro_rules! warn_plugin {
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        if pantheon_api::logging::installed() {
+            pantheon_api::logging::warn("plugins", msg);
+        } else {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "{msg}");
+        }
+    }};
+}
+
+
 fn merr(code: &str, cause: String) -> PantheonError {
     PantheonError::new(
         code,
@@ -239,7 +256,7 @@ pub struct DiscoveredPlugin {
 /// and ignored - discovery must never break.
 pub fn discover_plugins(data_dir: &Path, project_root: &Path) -> Vec<DiscoveredPlugin> {
     if let Err(e) = seed_bundled_plugins(data_dir) {
-        eprintln!("bundled plugins: seed failed, continuing with what is on disk: {e}");
+        warn_plugin!("bundled plugins: seed failed, continuing with what is on disk: {e}");
     }
     let mut out = Vec::new();
     let user_plugins = data_dir.join("plugins");
@@ -263,7 +280,7 @@ pub fn discover_plugins(data_dir: &Path, project_root: &Path) -> Vec<DiscoveredP
     let mut deduped: Vec<DiscoveredPlugin> = Vec::with_capacity(out.len());
     for p in out {
         if let Some(first) = deduped.iter().find(|q| q.manifest.name == p.manifest.name) {
-            eprintln!(
+            warn_plugin!(
                 "plugin name collision: '{}' at {} is ignored; '{}' at {} wins (rename one of them)",
                 p.manifest.name,
                 p.root.display(),
@@ -315,7 +332,7 @@ pub fn load_plugin(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin>
                 root: path.to_path_buf(),
             }),
             Err(e) => {
-                eprintln!("plugin {}: manifest parse error: {e}", path.display());
+                warn_plugin!("plugin {}: manifest parse error: {e}", path.display());
                 None
             }
         },
@@ -327,7 +344,7 @@ pub fn load_plugin(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugin>
             load_package_json(path, loc)
         }
         Err(e) => {
-            eprintln!("plugin {}: cannot read manifest: {e}", path.display());
+            warn_plugin!("plugin {}: cannot read manifest: {e}", path.display());
             None
         }
     }
@@ -398,7 +415,7 @@ fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugi
     if let Ok(serde_json::Value::Object(top)) = serde_json::from_str::<serde_json::Value>(&text) {
         if let Some(serde_json::Value::Object(block)) = top.get("pantheon") {
             if block.contains_key("key") {
-                eprintln!(
+                warn_plugin!(
                     "plugin {}: package.json pantheon block sets a `key`: API keys must never live in plugin manifests, which can be shared; declare the credential in `env_vars` and provide it through the secrets broker instead",
                     path.display()
                 );
@@ -409,7 +426,7 @@ fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugi
     let pkg: NpmPackage = match serde_json::from_str(&text) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("plugin {}: package.json parse error: {e}", path.display());
+            warn_plugin!("plugin {}: package.json parse error: {e}", path.display());
             return None;
         }
     };
@@ -436,7 +453,7 @@ fn load_package_json(path: &Path, loc: PluginLocation) -> Option<DiscoveredPlugi
     let runner = match make_runner(path, &runner) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("plugin {}: {e}", path.display());
+            warn_plugin!("plugin {}: {e}", path.display());
             return None;
         }
     };
@@ -1206,7 +1223,7 @@ fn seed_bundled_plugin(
         // so the operator knows it lost bundled trust (loaders now
         // require a third-party approval for non-canonical bundled dirs).
         if !verify_bundled_dir(&target) {
-            eprintln!(
+            warn_plugin!(
                 "bundled plugin '{}' at {} does not match the shipped registry; \
                  it is no longer trusted as bundled and needs a third-party approval to load",
                 entry.dir_name,

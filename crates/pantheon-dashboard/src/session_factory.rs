@@ -225,8 +225,21 @@ pub(crate) fn secrets_broker(cfg: Option<&Config>) -> pantheon_secrets::SecretsB
 
 /// maintenance-session policy, mirroring the TUI's `policy_for_config`:
 /// config preset, then `PANTHEON_POLICY`, then `PANTHEON_ALLOW_MEMORY`, then
-/// coder. The dashboard can't depend on the TUI crate, so this lives here.
-fn policy_for_config(cfg: Option<&Config>) -> Policy {
+/// coder, with the `policy.toml` overrides layered on top. The dashboard
+/// can't depend on the TUI crate, so this lives here.
+fn policy_for_config(cfg: Option<&Config>, data_dir: &Path) -> Policy {
+    let mut policy = preset_for_config(cfg);
+    match pantheon_api::config_schema::PolicyFile::load(data_dir) {
+        Ok(Some(file)) => {
+            file.apply(&mut policy);
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("[pantheon] policy.toml unreadable, preset only: {e}"),
+    }
+    policy
+}
+
+fn preset_for_config(cfg: Option<&Config>) -> Policy {
     if let Some(preset) = cfg.and_then(|c| c.policy) {
         return preset.to_policy();
     }
@@ -254,7 +267,7 @@ pub fn open_maintenance_session(data_dir: &Path) -> Result<Session, String> {
     // policy preset honored verbatim, same precedence as the TUI's
     // `policy_for_config`. A Reader config must stay read-only here, not
     // silently widen to coder.
-    let policy = policy_for_config(cfg_ref);
+    let policy = policy_for_config(cfg_ref, data_dir);
     let model_policy = model_policy(cfg_ref);
     let secrets = secrets_broker(cfg_ref);
     // `[memory]` wins over memory-backend.toml on load: sync BEFORE the

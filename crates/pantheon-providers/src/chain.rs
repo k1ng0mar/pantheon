@@ -277,6 +277,60 @@ pub(crate) fn backoff_delay(
 /// provider's catalog/env credential. Broker errors are swallowed the
 /// same way: a fallback key lookup must not fail a turn that the
 /// catalog credential could still serve.
+/// The wire key for a keyless endpoint. `Some("no-key-required")` when the
+/// provider is a custom endpoint or the base URL is loopback and no key is
+/// configured; `None` means the caller keeps its real key (or its error).
+/// Pure so the rule is pinned without a network stack.
+pub fn keyless_placeholder(key: &str, is_custom: bool, loopback: bool) -> Option<String> {
+    if key.trim().is_empty() && (is_custom || loopback) {
+        Some("no-key-required".to_string())
+    } else {
+        None
+    }
+}
+
+/// Warn once per provider when a declared `key_env` exists but is empty.
+/// Called from the request path, so a typo in config.toml is visible in the
+/// agent log instead of only as a 401 from the endpoint.
+pub fn warn_empty_declared_key(provider_id: &str, key_env: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static WARNED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = seen.lock() else { return };
+    if !seen.insert(format!("{provider_id}|{key_env}")) {
+        return;
+    }
+    pantheon_api::logging::warn(
+        "provider",
+        format!(
+            "{provider_id}: key_env {key_env} is declared but resolves empty; \
+             sending the keyless placeholder (custom/local endpoints only)"
+        ),
+    );
+}
+
+#[cfg(test)]
+mod keyless_tests {
+    use super::keyless_placeholder;
+
+    #[test]
+    fn keyless_custom_and_loopback_get_the_placeholder() {
+        assert_eq!(
+            keyless_placeholder("", true, false),
+            Some("no-key-required".to_string()),
+            "a custom endpoint with no key gets the placeholder"
+        );
+        assert_eq!(
+            keyless_placeholder("", false, true),
+            Some("no-key-required".to_string()),
+            "loopback endpoints get it too"
+        );
+        assert_eq!(keyless_placeholder("", false, false), None);
+        assert_eq!(keyless_placeholder("sk-real", true, true), None);
+    }
+}
+
 fn resolve_named_key(name: &str, broker: Option<&pantheon_secrets::SecretsBroker>) -> String {
     if let Some(b) = broker {
         match b.resolve(name) {
@@ -429,7 +483,7 @@ impl<T: ChatTransport> ProviderChain<T> {
             String::new()
         };
         let configured = configured.as_str();
-        let effective_key =
+        let mut effective_key =
             catalog::credential_for(&model.provider, configured, self.oauth_broker.as_ref());
         // No key anywhere for this provider: fail here naming the env
         // var, instead of sending an empty key and burning retries on
@@ -450,6 +504,35 @@ impl<T: ChatTransport> ProviderChain<T> {
                     || h.parse::<std::net::IpAddr>()
                         .is_ok_and(|ip| ip.is_loopback())
             });
+        let is_custom = catalog::provider(&model.provider)
+            .map(|p| p.tag == "custom")
+            .unwrap_or(false);
+        // Keyless endpoints: a custom provider with no key configured is a
+        // self-hosted server that wants *any* bearer token, not an empty one.
+        // Loopback servers get it too, since empty Authorization headers are
+        // what some of them reject.
+        let placeholder = keyless_placeholder(&effective_key, is_custom, loopback);
+        if let Some(p) = &placeholder {
+            effective_key = p.clone();
+        }
+        // A declared key that resolved empty: warn once, naming the variable.
+        // Fabricated `PANTHEON_KEY_*` names are not warned about - only a
+        // declared key_env can be a typo the operator made.
+        if placeholder.is_some() && is_custom {
+            if let Some(env) = catalog::provider(&model.provider)
+                .map(|p| p.key_env)
+                .filter(|e| !e.trim().is_empty())
+                .filter(|e| {
+                    std::env::var(e)
+                        .map(|v| v.trim().is_empty())
+                        .unwrap_or(true)
+                })
+            {
+                warn_empty_declared_key(&model.provider, &env);
+            }
+        }
+        // A declared key that resolves empty is almost always a typo or an
+        // unexported variable. Say so once per provider, not per request.
         if effective_key.trim().is_empty() && !loopback {
             let key_env = catalog::provider(&model.provider)
                 .map(|p| {

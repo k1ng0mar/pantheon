@@ -252,6 +252,36 @@ pub fn record_spawned(records: &mut Vec<SubAgentRecord>, parent_run_id: &str, ag
 /// live subagent count for the chrome (footer/tab): only Running records count.
 /// callers render nothing at 0 - no permanent empty indicator (base design
 /// layer 2)
+/// names of the running subagents, oldest spawn first, deduped by name so the
+/// status row never repeats an agent with two live records
+pub fn active_subagent_names(records: &[SubAgentRecord]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in records
+        .iter()
+        .filter(|r| r.status == SubAgentStatus::Running)
+    {
+        if !out.contains(&r.name) {
+            out.push(r.name.clone());
+        }
+    }
+    out
+}
+
+/// newest transcript note delivered by `agent`, if any. The sidebar shows
+/// what the subagent last reported; the full history stays in the transcript's
+/// `AgentNote` blocks.
+pub fn latest_note_for<'a>(
+    blocks: &'a [super::TranscriptBlock],
+    agent: &str,
+) -> Option<&'a str> {
+    blocks.iter().rev().find_map(|b| match &b.kind {
+        BlockKind::AgentNote { sender, text, .. } if sender == agent && !text.trim().is_empty() => {
+            Some(text.as_str())
+        }
+        _ => None,
+    })
+}
+
 pub fn active_subagent_count(records: &[SubAgentRecord]) -> usize {
     records
         .iter()
@@ -504,6 +534,18 @@ pub fn build_agent_view_lines(state: &TuiState, width: usize) -> Vec<Line<'stati
             Span::raw(" "),
             Span::styled(clip(&label, inner.saturating_sub(4)), dim),
         ]));
+        // What the agent last reported, clipped to one sidebar row. The full
+        // text stays in its transcript block; the sidebar is the glance.
+        if let Some(note) = latest_note_for(&state.blocks, &rec.name) {
+            let room = inner.saturating_sub(6);
+            let first = note.lines().next().unwrap_or("").trim();
+            if !first.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", clip(first, room)),
+                    body,
+                )));
+            }
+        }
     }
 
     // system metadata, moved here from the splash bottom line: available when
@@ -733,6 +775,62 @@ mod tests {
             Some(s.theme.failure),
             "meter must follow context_warn_pct"
         );
+    }
+
+    #[test]
+    fn latest_note_for_matches_sender_and_takes_the_newest() {
+        let blocks = vec![
+            TranscriptBlock {
+                kind: BlockKind::AgentNote {
+                    sender: "researcher".into(),
+                    kind: "progress".into(),
+                    text: "reading lib.rs".into(),
+                },
+            },
+            TranscriptBlock {
+                kind: BlockKind::AgentNote {
+                    sender: "coder".into(),
+                    kind: "progress".into(),
+                    text: "patching main.rs".into(),
+                },
+            },
+            TranscriptBlock {
+                kind: BlockKind::AgentNote {
+                    sender: "researcher".into(),
+                    kind: "result".into(),
+                    text: "found 3 call sites".into(),
+                },
+            },
+        ];
+        assert_eq!(
+            latest_note_for(&blocks, "researcher"),
+            Some("found 3 call sites"),
+            "newest note for that sender wins"
+        );
+        assert_eq!(latest_note_for(&blocks, "explorer"), None);
+    }
+
+    #[test]
+    fn sidebar_shows_the_running_agents_latest_note() {
+        let mut s = state();
+        s.session_id = "r1".into();
+        s.subagents.push(SubAgentRecord {
+            name: "researcher".into(),
+            status: SubAgentStatus::Running,
+            parent_run_id: "r1".into(),
+            spawned_ms: crate::session::bg::now_ms(),
+            finished_ms: None,
+        });
+        s.blocks.push(TranscriptBlock {
+            kind: BlockKind::AgentNote {
+                sender: "researcher".into(),
+                kind: "result".into(),
+                text: "found 3 call sites".into(),
+            },
+        });
+        let text = view_text(&s);
+        assert!(text.contains("SUBAGENT 01"), "{text}");
+        assert!(text.contains("found 3 call sites"), "{text}");
     }
 
     #[test]

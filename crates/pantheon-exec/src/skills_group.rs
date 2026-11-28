@@ -759,6 +759,100 @@ pub mod skills {
         }
     }
 
+    /// One way a skill body fails the intent contract. The contract is the
+    /// authoring standard, not a runtime gate: a skill that misses sections
+    /// still runs, it is just flagged so it can be fixed.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AnatomyIssue {
+        /// the required section this issue is about
+        pub section: &'static str,
+        /// what is wrong, phrased for the author
+        pub problem: String,
+    }
+
+    /// Check the intent anatomy of a skill body. Required:
+    ///   `## Ideal State`   - at least two testable outcomes
+    ///   `## Anti-criteria` - at least one "must never happen" bullet
+    /// This is the LifeOS intent standard, adapted: it tells the model what
+    /// done looks like and what must never happen, without scripting how to
+    /// think. Bodies without the sections are still valid skills.
+    pub fn check_anatomy(body: &str) -> Vec<AnatomyIssue> {
+        let mut ideal: Option<usize> = None;
+        let mut anti: Option<usize> = None;
+        let mut section: Option<&'static str> = None;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if let Some(heading) = trimmed.strip_prefix("## ") {
+                let h = heading.trim().to_ascii_lowercase();
+                section = if h == "ideal state" {
+                    ideal.get_or_insert(0);
+                    Some("Ideal State")
+                } else if h == "anti-criteria" || h == "anti criteria" {
+                    anti.get_or_insert(0);
+                    Some("Anti-criteria")
+                } else {
+                    None
+                };
+                continue;
+            }
+            if trimmed.starts_with("###") {
+                continue;
+            }
+            let is_bullet = trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("+ ")
+                || trimmed
+                    .split_once(". ")
+                    .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            if !is_bullet {
+                continue;
+            }
+            match section {
+                Some("Ideal State") => *ideal.get_or_insert(0) += 1,
+                Some("Anti-criteria") => *anti.get_or_insert(0) += 1,
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        match ideal {
+            None => out.push(AnatomyIssue {
+                section: "Ideal State",
+                problem: "missing: add `## Ideal State` with at least two testable outcomes"
+                    .into(),
+            }),
+            Some(n) if n < 2 => out.push(AnatomyIssue {
+                section: "Ideal State",
+                problem: format!("needs at least two testable outcomes (found {n})"),
+            }),
+            _ => {}
+        }
+        match anti {
+            None => out.push(AnatomyIssue {
+                section: "Anti-criteria",
+                problem: "missing: add `## Anti-criteria` naming what must never happen".into(),
+            }),
+            Some(0) => out.push(AnatomyIssue {
+                section: "Anti-criteria",
+                problem: "needs at least one \"must never happen\" bullet".into(),
+            }),
+            _ => {}
+        }
+        out
+    }
+
+    /// `check_anatomy` over an installed skill. An unreadable body is an
+    /// issue of its own; discovery already dropped unparseable files, so this
+    /// only catches a file deleted or chmod'ed after discovery.
+    pub fn anatomy_issues(skill: &Skill) -> Vec<AnatomyIssue> {
+        match skill_body(skill) {
+            Ok(body) => check_anatomy(&body),
+            Err(e) => vec![AnatomyIssue {
+                section: "body",
+                problem: format!("unreadable: {}", e.cause),
+            }],
+        }
+    }
+
     /// Where a skill was discovered from. Carried as provenance.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub enum SkillSource {
@@ -1974,6 +2068,32 @@ pub mod skills {
         /// The `network` flag travels in the tool arguments, so parsing it is
         /// the gate between "offline by default" and "the approval the
         /// operator saw".
+        #[test]
+        fn anatomy_accepts_a_body_with_both_sections() {
+            let body = "## Ideal State\n\n- parser handles CRLF\n- 376 tests pass\n\n## Anti-criteria\n\n- never drop a user message\n";
+            assert!(check_anatomy(body).is_empty());
+        }
+
+        #[test]
+        fn anatomy_reports_missing_and_thin_sections_honestly() {
+            let issues = check_anatomy("Just a body with no sections.\n");
+            assert_eq!(issues.len(), 2, "{issues:?}");
+            assert!(issues[0].problem.contains("missing"));
+            let issues = check_anatomy("## Ideal State\n- one outcome\n## Anti-criteria\n");
+            assert_eq!(issues.len(), 2, "{issues:?}");
+            assert!(issues[0].problem.contains("at least two"), "{issues:?}");
+            assert!(issues[1].problem.contains("at least one"), "{issues:?}");
+        }
+
+        #[test]
+        fn anatomy_counts_only_bullets_in_the_right_section() {
+            // bullets under other H2s must not count toward Ideal State
+            let body = "## Summary\n- not a criterion\n\n## Ideal State\n- a\n\n## Anti-criteria\n- b\n\n## Examples\n- x\n";
+            let issues = check_anatomy(body);
+            assert_eq!(issues.len(), 1, "{issues:?}");
+            assert_eq!(issues[0].section, "Ideal State");
+        }
+
         #[test]
         fn network_is_requested_only_by_an_explicit_true() {
             assert!(!crate::skill_exec::skill_exec_network_requested(""));

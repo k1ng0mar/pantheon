@@ -321,6 +321,7 @@ pub mod setup {
         };
 
         let fresh = Config {
+            runtime: None,
             agent: None,
             model: Some(ModelSection {
                 reasoning_budget: None,
@@ -334,6 +335,7 @@ pub mod setup {
                 fallbacks,
                 reasoning: None,
                 timeout_ms: None,
+                depth_directives: None,
             }),
             judge: None,
             embeddings: None,
@@ -529,6 +531,7 @@ pub mod setup {
             cfg.custom_providers.insert(
                 spec.name.clone(),
                 crate::config::CustomProviderSection {
+                    label: None,
                     base_url: spec.base_url.clone(),
                     api_mode: spec.api_mode.clone(),
                     key_env: spec.key_env.clone(),

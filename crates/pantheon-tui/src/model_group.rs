@@ -1050,6 +1050,7 @@ pub mod model {
             config::upsert_custom_row(
                 data_dir,
                 &choice.provider,
+                None,
                 base,
                 choice.api_mode,
                 &choice.key_env,
@@ -1078,6 +1079,9 @@ pub mod model {
                     fallbacks,
                     reasoning: prev.as_ref().and_then(|m| m.reasoning.clone()),
                     timeout_ms: prev.as_ref().and_then(|m| m.timeout_ms),
+                    // A model pick does not touch the depth-directive opt-in
+                    // either: carry the user's choice through.
+                    depth_directives: prev.as_ref().and_then(|m| m.depth_directives),
                 });
             }
             Target::Auxiliary(kind) => pin_aux_slot(&mut cfg, kind.as_str(), choice)?,
@@ -1124,6 +1128,45 @@ pub mod model {
         } else {
             Some((p, m, key_env))
         }
+    }
+
+    /// `id (Label)` when a display label is set and differs from the id.
+    pub(crate) fn custom_name(
+        s: &pantheon_api::config::CustomProviderSection,
+        id: &str,
+    ) -> String {
+        match s.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            Some(l) if l != id => format!("{id} ({l})"),
+            _ => id.to_string(),
+        }
+    }
+
+    /// Declared models with the current one marked; `None` when none are
+    /// declared. Context limits ride along, since that is what the switch
+    /// changes about the run.
+    pub(crate) fn custom_models_line(
+        s: &pantheon_api::config::CustomProviderSection,
+        current_model: Option<&str>,
+    ) -> Option<String> {
+        if s.models.is_empty() {
+            return None;
+        }
+        let ids: Vec<String> = s
+            .models
+            .iter()
+            .map(|m| {
+                let mark = if current_model == Some(m.id.as_str()) {
+                    "● "
+                } else {
+                    ""
+                };
+                match m.context_limit {
+                    Some(n) => format!("{mark}{} ({}k)", m.id, n / 1000),
+                    None => format!("{mark}{}", m.id),
+                }
+            })
+            .collect();
+        Some(ids.join("  "))
     }
 
     fn cmd_list() {
@@ -1178,10 +1221,16 @@ pub mod model {
             println!("custom providers:");
             let mut names: Vec<&String> = cfg.custom_providers.keys().collect();
             names.sort();
+            let (cur_provider, cur_model) = cfg
+                .model
+                .as_ref()
+                .map(|m| (m.provider.clone(), m.model.clone()))
+                .unwrap_or_default();
             for n in names {
                 let s = &cfg.custom_providers[n];
                 println!(
-                    "  {n}: {} ({})  [{}]",
+                    "  {}: {} ({})  [{}]",
+                    custom_name(s, n),
                     s.base_url,
                     s.api_mode,
                     key_status(s.key_env.as_deref().or(Some(&format!(
@@ -1189,6 +1238,12 @@ pub mod model {
                         config::sanitize_env_suffix(n)
                     ))))
                 );
+                if let Some(line) = custom_models_line(
+                    s,
+                    (cur_provider == *n).then_some(cur_model.as_str()),
+                ) {
+                    println!("      {line}");
+                }
             }
         }
         let default_provider = cfg
@@ -1939,7 +1994,28 @@ pub mod model {
         let scope: String = aux_section_name(&target).unwrap_or("default").to_string();
 
         // Non-interactive: --provider + --model (+ optional key/url pieces).
-        if let (Some(provider), Some(model)) = (flag(&rest, "--provider"), flag(&rest, "--model")) {
+        // `--model` on its own keeps the provider already in `[model]`, the
+        // same shorthand `/model <id>` gives inside the TUI.
+        let provider_flag = flag(&rest, "--provider");
+        let model_flag = flag(&rest, "--model").map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+        let provider_flag = match (provider_flag, &model_flag) {
+            (None, Some(_)) => {
+                let dd = data_dir();
+                config::init_env_and_catalog(&dd);
+                let current = Config::load(&dd).ok().and_then(|c| c.model).map(|m| m.provider);
+                match current.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+                    Some(p) => Some(p),
+                    None => {
+                        eprintln!(
+                            "no provider configured yet: pass --provider as well (or run `pantheon model`)"
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            }
+            (p, _) => p,
+        };
+        if let (Some(provider), Some(model)) = (provider_flag.clone(), model_flag.clone()) {
             let provider = provider.trim().to_string();
             let model = model.trim().to_string();
             if provider.is_empty() || model.is_empty() {
@@ -2021,7 +2097,7 @@ pub mod model {
             }
             return;
         }
-        if flag(&rest, "--provider").is_some()
+        if provider_flag.is_some()
             || flag(&rest, "--model").is_some()
             || flag(&rest, "--key").is_some()
             || !flags(&rest, "--set").is_empty()
@@ -2945,11 +3021,12 @@ pub mod provider {
     fn save_provider(
         data_dir: &std::path::Path,
         name: &str,
+        label: Option<&str>,
         base_url: &str,
         api_mode: ApiMode,
         key_env: &str,
     ) -> Result<bool, String> {
-        config::upsert_custom_row(data_dir, name, base_url, api_mode, key_env)
+        config::upsert_custom_row(data_dir, name, label, base_url, api_mode, key_env)
     }
 
     fn cmd_list() {
@@ -2959,10 +3036,16 @@ pub mod provider {
             println!("custom providers: none");
         } else {
             println!("custom providers:");
+            let (cur_provider, cur_model) = cfg
+                .model
+                .as_ref()
+                .map(|m| (m.provider.clone(), m.model.clone()))
+                .unwrap_or_default();
             for n in &names {
                 let s = &cfg.custom_providers[n];
                 println!(
-                    "  {n}: {} ({})  [{}]",
+                    "  {}: {} ({})  [{}]",
+                    crate::model::custom_name(s, n),
                     s.base_url,
                     s.api_mode,
                     key_status(s.key_env.as_deref().or(Some(&format!(
@@ -2970,6 +3053,13 @@ pub mod provider {
                         config::sanitize_env_suffix(n)
                     ))))
                 );
+                if let Some(line) = crate::model::custom_models_line(
+                    s,
+                    (cur_provider == *n).then_some(cur_model.as_str()),
+                )
+                {
+                    println!("      {line}");
+                }
                 print_template_status(n);
             }
         }
@@ -3102,6 +3192,17 @@ pub mod provider {
             }
         }
 
+        // Same endpoint under another name: say so, don't silently create a
+        // second row an operator will later wonder about.
+        if let Some(existing) = catalog::provider_for_endpoint(&url) {
+            if existing.id != name {
+                println!(
+                    "note: {url} is already registered as '{}'; keeping both rows",
+                    existing.id
+                );
+            }
+        }
+
         // 5. template values (`{region}` etc.).
         let sets = parse_sets(rest);
         if let Err(e) = ensure_template_vars(&dd, &name, &url, &sets, interactive) {
@@ -3109,7 +3210,8 @@ pub mod provider {
             std::process::exit(2);
         }
 
-        match save_provider(&dd, &name, &url, api_mode, &key_env) {
+        let label = flag(rest, "--label").filter(|l| !l.trim().is_empty());
+        match save_provider(&dd, &name, label.as_deref(), &url, api_mode, &key_env) {
             Ok(true) => println!(
                 "overrode builtin '{name}': {url}  [keys → {}]",
                 dd.join(".env").display()
@@ -3168,8 +3270,9 @@ pub mod provider {
 
     fn usage() -> ! {
         eprintln!("usage: pantheon provider <add|list|remove> [options]");
-        eprintln!("  add [--name N] [--base-url U|:port] [--api-mode openai|anthropic]");
-        eprintln!("      [--key K1,K2] [--api-key-env E] [--set VAR=VAL]...");
+        eprintln!("  add [--name N] [--label \"Display Name\"] [--base-url U|:port]");
+        eprintln!("      [--api-mode openai|anthropic] [--key K1,K2] [--api-key-env E]");
+        eprintln!("      [--set VAR=VAL]...");
         eprintln!("  list                        custom endpoints (builtins: pantheon providers)");
         eprintln!("  remove [NAME] [--delete-key]");
         std::process::exit(2);

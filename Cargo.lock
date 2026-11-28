@@ -2695,6 +2695,7 @@ dependencies = [
 name = "pantheon-storage"
 version = "1.2.0"
 dependencies = [
+ "fs2",
  "pantheon-api",
  "rusqlite",
  "serde",
@@ -2711,6 +2712,7 @@ dependencies = [
  "pantheon-extensions",
  "pantheon-memory",
  "pantheon-providers",
+ "pantheon-scheduler",
  "pantheon-secrets",
  "pantheon-storage",
  "portable-pty",

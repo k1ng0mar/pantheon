@@ -10,6 +10,8 @@
 //! tools go *through* `pantheon-exec` (process/fs engines) and exec knows
 //! nothing about the registry - that's what keeps `capability → tools → exec` acyclic.
 
+pub mod profiles;
+pub mod schedule_tool;
 pub mod tools;
 pub mod tools_group;
 
@@ -19,6 +21,7 @@ pub mod tools_group;
 pub mod builtins {
     pub use crate::tools_group::builtins::*;
 }
+pub mod arg_repair;
 pub mod code_mode {
     pub use crate::tools_group::code_mode::*;
 }

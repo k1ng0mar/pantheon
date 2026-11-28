@@ -144,6 +144,23 @@ pub mod config {
         apply_tool_enablement(session, cfg);
         apply_budget_tiers(session, cfg);
         apply_delegation_section(session, cfg);
+        apply_depth_directives(session, cfg);
+    }
+
+    /// `[model] depth_directives` (opt-in, default off). An explicit config
+    /// value wins over the runtime's env default, in both directions, so a
+    /// config that says `false` can turn off a `PANTHEON_DEPTH_DIRECTIVES=1`
+    /// environment.
+    pub fn apply_depth_directives(
+        session: &pantheon_runtime::session::Session,
+        cfg: Option<&Config>,
+    ) {
+        if let Some(on) = cfg
+            .and_then(|c| c.model.as_ref())
+            .and_then(|m| m.depth_directives)
+        {
+            session.set_depth_directives(on);
+        }
     }
 
     /// Resolve `[budget]` to the runtime [`pantheon_agent::Budget`].
@@ -258,7 +275,9 @@ pub mod config {
         let provider = match provider.map(str::trim).filter(|p| !p.is_empty()) {
             None => default.provider.clone(),
             Some(p) if p.eq_ignore_ascii_case("default") => default.provider.clone(),
-            Some(p) => p.to_string(),
+            // `custom:<name>` is accepted in aux sections too, and a bare
+            // `custom` recovers the one registered endpoint.
+            Some(p) => pantheon_providers::catalog::canonical_provider_id(p),
         };
         let model = model
             .map(str::trim)
@@ -575,6 +594,7 @@ pub mod config {
     pub fn upsert_custom_row(
         data_dir: &std::path::Path,
         name: &str,
+        label: Option<&str>,
         base_url: &str,
         api_mode: pantheon_providers::catalog::ApiMode,
         key_env: &str,
@@ -587,6 +607,15 @@ pub mod config {
         cfg.custom_providers.insert(
             name.to_string(),
             CustomProviderSection {
+                // None keeps whatever label the operator already set.
+                label: label
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .or_else(|| {
+                        cfg.custom_providers
+                            .get(name)
+                            .and_then(|s| s.label.clone())
+                    }),
                 base_url: base_url.to_string(),
                 api_mode: match api_mode {
                     Mode::OpenAi => "openai".into(),
@@ -656,6 +685,12 @@ pub mod config {
         if let Ok(cfg) = Config::load(data_dir) {
             register_custom_providers(&cfg);
             register_plugin_providers(data_dir, &cfg);
+            // Process-wide turn limits: `[runtime]` wins over the built-in
+            // default; the env var inside capacity::configure still overrides
+            // for one process.
+            if let Some(rt) = &cfg.runtime {
+                pantheon_runtime::capacity::configure(rt.max_concurrent_turns as usize);
+            }
         }
     }
 
@@ -779,7 +814,11 @@ pub mod config {
             pantheon_providers::catalog::register_custom_provider(
                 pantheon_providers::catalog::ProviderMeta {
                     id: name.clone(),
-                    label: name.clone(),
+                    label: sec
+                        .label
+                        .clone()
+                        .filter(|l| !l.trim().is_empty())
+                        .unwrap_or_else(|| name.clone()),
                     base_url: sec.base_url.trim().trim_end_matches('/').to_string(),
                     api_mode,
                     base_env: String::new(),
@@ -890,8 +929,16 @@ pub mod config {
         // `PANTHEON_PROVIDER`/`PANTHEON_MODEL` can't shadow it. The fallback chain
         // resolves through the same place, so TUI, dashboard and runtime can't
         // disagree.
-        let default = pantheon_api::config_resolve::resolve_default_model(cfg, provider, model);
-        let chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
+        let mut default = pantheon_api::config_resolve::resolve_default_model(cfg, provider, model);
+        let mut chain = pantheon_api::config_resolve::resolve_fallback_chain(cfg);
+        // Typed `custom:` namespace + bare-`custom` recovery. The catalogue
+        // registration has already run at this point, so a bare `custom`
+        // can resolve to the one configured custom endpoint instead of
+        // failing with "unknown provider custom".
+        default.provider = pantheon_providers::catalog::canonical_provider_id(&default.provider);
+        for f in &mut chain.fallbacks {
+            f.provider = pantheon_providers::catalog::canonical_provider_id(&f.provider);
+        }
         pantheon_api::model::ModelPolicy {
             reasoning_budget: resolve_reasoning_budget(cfg),
             reasoning: resolve_reasoning(cfg),
@@ -1232,6 +1279,56 @@ pub mod config {
         use super::*;
 
         #[test]
+        fn custom_provider_label_reaches_the_catalog() {
+            // The composer and pickers read the catalog label, not the
+            // config row. A provider id can stay machine-shaped
+            // (`llm-router`) while the UI shows the operator's name.
+            let cfg = Config {
+                custom_providers: [(
+                    "label-test-router".to_string(),
+                    crate::config::CustomProviderSection {
+                        label: Some("LLM Router".into()),
+                        base_url: "http://127.0.0.1:18015/v1".into(),
+                        api_mode: "openai".into(),
+                        key_env: None,
+                        models: Vec::new(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            };
+            register_custom_providers(&cfg);
+            let meta = pantheon_providers::catalog::provider("label-test-router")
+                .expect("registered");
+            assert_eq!(meta.label, "LLM Router");
+            assert_eq!(meta.base_url, "http://127.0.0.1:18015/v1");
+        }
+
+        #[test]
+        fn a_blank_label_falls_back_to_the_provider_id() {
+            let cfg = Config {
+                custom_providers: [(
+                    "label-test-blank".to_string(),
+                    crate::config::CustomProviderSection {
+                        label: Some("  ".into()),
+                        base_url: "http://127.0.0.1:18016/v1".into(),
+                        api_mode: "openai".into(),
+                        key_env: None,
+                        models: Vec::new(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            };
+            register_custom_providers(&cfg);
+            let meta =
+                pantheon_providers::catalog::provider("label-test-blank").expect("registered");
+            assert_eq!(meta.label, "label-test-blank");
+        }
+
+        #[test]
         fn apply_session_config_threads_budget_tiers() {
             // The regression this pins: headless turn paths built a Session
             // and never applied the config, so a [budget] cap the TUI
@@ -1283,11 +1380,32 @@ pub mod config_schema {
 
     pub use pantheon_api::config_schema::PolicyPreset;
 
-    /// Resolve the policy for a session.
+    /// Resolve the policy for a session: the preset from `config.toml` (or
+    /// the env/default), then the per-capability rules in `policy.toml`
+    /// layered on top. This is the one place both parts combine, so every
+    /// session entry point sees the same policy.
     ///
-    /// Config wins. With no config, `PANTHEON_ALLOW_MEMORY` only decides between
-    /// the two coder policies, and `PANTHEON_POLICY` picks the preset outright.
+    /// A malformed `policy.toml` yields the bare preset: the file can only
+    /// ever add rules, so failing to read it leaves the install no more
+    /// permissive than a fresh one.
     pub fn policy_for_config(
+        file_cfg: &Option<crate::config::Config>,
+    ) -> pantheon_api::capability::Policy {
+        let mut policy = preset_for_config(file_cfg);
+        match pantheon_api::config_schema::PolicyFile::load(&crate::terminal::data_dir()) {
+            Ok(Some(file)) => {
+                for problem in file.apply(&mut policy) {
+                    eprintln!("[pantheon] {problem}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("[pantheon] policy.toml unreadable, preset only: {e}"),
+        }
+        policy
+    }
+
+    /// The preset half of [`policy_for_config`], without `policy.toml`.
+    fn preset_for_config(
         file_cfg: &Option<crate::config::Config>,
     ) -> pantheon_api::capability::Policy {
         if let Some(preset) = file_cfg.as_ref().and_then(|c| c.policy) {
@@ -1301,7 +1419,7 @@ pub mod config_schema {
             // default, where a typo (`PANTHEON_POLICY=coder_memroy`) would look like
             // it worked.
             eprintln!(
-                "[pantheon] unknown PANTHEON_POLICY value '{p}' (expected reader, coder, or coder_memory); falling back to the coder default"
+                "[pantheon] unknown PANTHEON_POLICY value '{p}' (expected reader, coder, coder_memory, or custom); falling back to the coder default"
             );
         }
         let allow_memory = std::env::var("PANTHEON_ALLOW_MEMORY")
@@ -8911,7 +9029,6 @@ pub mod pipeline {
     use std::path::Path;
 
     use crate::config::Config;
-    use crate::config_schema::PolicyPreset;
     use pantheon_runtime::pipeline::{AcceptAllEvaluator, StageEvaluator, StageExecutor};
     use pantheon_runtime::pipeline_runner::PipelineRunner;
     use pantheon_runtime::Supervisor;
@@ -8919,13 +9036,10 @@ pub mod pipeline {
     use std::path::PathBuf;
 
     fn policy_for(cfg: Option<&Config>) -> pantheon_api::capability::Policy {
-        match cfg.and_then(|c| c.policy) {
-            Some(PolicyPreset::Reader) => pantheon_api::capability::Policy::researcher_readonly(),
-            Some(PolicyPreset::CoderMemory) => {
-                pantheon_api::capability::Policy::coder_with_memory()
-            }
-            _ => pantheon_api::capability::Policy::coder(),
-        }
+        // Same resolver the TUI itself uses, so a policy.toml rule can
+        // never apply to interactive turns but silently miss pipeline
+        // stages, which run as full sessions.
+        crate::config_schema::policy_for_config(&cfg.cloned())
     }
 
     /// Real executor: one Session per stage call, prompt framed per stage.

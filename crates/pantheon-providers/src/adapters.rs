@@ -172,6 +172,21 @@ pub mod anthropic {
             }
             rows.push(serde_json::json!({ "role": role, "content": blocks }));
         }
+        // Conversation-prefix caching: the system + tool block above caches
+        // the static head, and this breakpoint extends the cached prefix to
+        // the conversation so far. Next turn re-reads almost nothing even
+        // after a compaction rewrote the middle: the marker always sits on
+        // the newest row, so the cache never points into a rewritten region.
+        // Anthropic allows four breakpoints; this is the third.
+        if let Some(last) = rows.last_mut() {
+            if let Some(blocks) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                if let Some(block) = blocks.last_mut() {
+                    if block.is_object() {
+                        block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                    }
+                }
+            }
+        }
         let mut body = serde_json::json!({
             "model": model,
             "max_tokens": max_tokens,
@@ -879,6 +894,37 @@ pub mod anthropic {
                         .collect()
                 })
                 .unwrap_or_default()
+        }
+
+        #[test]
+        fn the_conversation_tail_carries_exactly_one_cache_breakpoint() {
+            // Multi-turn conversation: the newest row's last block is marked,
+            // so the next turn reuses everything up to it. A compaction
+            // rewrites the middle, and the marker moves with the newest row
+            // instead of pointing into the rewritten region.
+            let messages = vec![
+                Message::user("first"),
+                Message::assistant("second"),
+                Message::user("third"),
+            ];
+            let body = body_for(&messages, &[]);
+            let rows = body["messages"].as_array().expect("rows");
+            let mut markers = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                for (j, block) in row["content"].as_array().unwrap().iter().enumerate() {
+                    if block.get("cache_control").is_some() {
+                        markers.push((i, j));
+                    }
+                }
+            }
+            assert_eq!(markers.len(), 1, "one conversation breakpoint");
+            let (last_row, last_block) = markers[0];
+            assert_eq!(last_row, rows.len() - 1, "marker sits on the newest row");
+            assert_eq!(
+                last_block,
+                rows[last_row]["content"].as_array().unwrap().len() - 1,
+                "and on that row's last block"
+            );
         }
 
         #[test]

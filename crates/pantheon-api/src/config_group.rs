@@ -24,6 +24,19 @@ pub mod config_resolve {
     /// no model pantheon should choose on the user's behalf.
     pub const DEFAULT_MODEL: &str = "";
 
+    /// Drop a typed `custom:` prefix from a provider reference. The
+    /// namespace is Hermes-style config sugar: `custom:llm-router` names the
+    /// same provider as `llm-router`. Pure so it applies before any catalog
+    /// lookup (pantheon-api cannot see the provider catalog).
+    pub fn strip_custom_prefix(id: &str) -> String {
+        let t = id.trim();
+        let prefix = "custom:";
+        if t.len() > prefix.len() && t[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            return t[prefix.len()..].trim().to_string();
+        }
+        t.to_string()
+    }
+
     /// non-empty env var, trimmed. empty/whitespace reads as unset so it can't
     /// shadow a configured value.
     pub fn env_nonempty(name: &str) -> Option<String> {
@@ -60,6 +73,16 @@ pub mod config_resolve {
             .unwrap_or_else(|| default.to_string())
     }
 
+    #[test]
+    fn custom_prefix_is_stripped_from_provider_refs() {
+        assert_eq!(strip_custom_prefix("custom:llm-router"), "llm-router");
+        assert_eq!(strip_custom_prefix(" CUSTOM:My-Router "), "My-Router");
+        assert_eq!(strip_custom_prefix("openrouter"), "openrouter");
+        // a bare `custom` has no name to strip; it stays for the catalogue to
+        // recover against the single registered endpoint
+        assert_eq!(strip_custom_prefix("custom"), "custom");
+    }
+
     /// resolve the default chat model: explicit provider/model args >
     /// `[model]` > local default. env is deliberately not consulted: config is
     /// the single source of truth here, so a stale `PANTHEON_PROVIDER`/
@@ -71,12 +94,12 @@ pub mod config_resolve {
     ) -> DefaultModel {
         let section = cfg.and_then(|c| c.model.as_ref());
         DefaultModel {
-            provider: resolve_field(
+            provider: strip_custom_prefix(&resolve_field(
                 provider,
                 "",
                 section.map(|s| s.provider.as_str()),
                 DEFAULT_PROVIDER,
-            ),
+            )),
             model: resolve_field(model, "", section.map(|s| s.model.as_str()), DEFAULT_MODEL),
             key_env: None,
         }
@@ -91,7 +114,7 @@ pub mod config_resolve {
                 m.fallbacks
                     .iter()
                     .map(|f| DefaultModel {
-                        provider: f.provider.clone(),
+                        provider: strip_custom_prefix(&f.provider),
                         model: f.model.clone(),
                         key_env: f.key_env.clone(),
                     })
@@ -295,6 +318,11 @@ pub mod config_schema {
         Coder,
         /// coder plus memory tools enabled.
         CoderMemory,
+        /// no base preset: the capability rules in `policy.toml` are the
+        /// whole policy, and anything unlisted falls to the default deny.
+        /// Written by the `/permissions` panel when a rule is edited; every
+        /// other preset is a fixed baseline that edits layer on top of.
+        Custom,
     }
 
     impl PolicyPreset {
@@ -305,6 +333,7 @@ pub mod config_schema {
                 Self::Reader => "reader",
                 Self::Coder => "coder",
                 Self::CoderMemory => "coder_memory",
+                Self::Custom => "custom",
             }
         }
 
@@ -313,7 +342,24 @@ pub mod config_schema {
                 "reader" => Some(Self::Reader),
                 "coder" => Some(Self::Coder),
                 "coder_memory" => Some(Self::CoderMemory),
+                "custom" => Some(Self::Custom),
                 _ => None,
+            }
+        }
+
+        /// every preset's spelling, in the order a picker should list them
+        /// (least to most permissive, custom last since it is not a baseline).
+        pub fn all() -> [Self; 4] {
+            [Self::Reader, Self::Coder, Self::CoderMemory, Self::Custom]
+        }
+
+        /// one-line description, for `/permissions` and `pantheon config`.
+        pub fn describe(self) -> &'static str {
+            match self {
+                Self::Reader => "read-only: filesystem and memory read, nothing executes",
+                Self::Coder => "shell and edits allowed, risky actions park for approval",
+                Self::CoderMemory => "coder plus memory tools",
+                Self::Custom => "no baseline: only the rules in policy.toml apply",
             }
         }
 
@@ -325,6 +371,108 @@ pub mod config_schema {
                 Self::Reader => crate::capability::Policy::researcher_readonly(),
                 Self::Coder => crate::capability::Policy::coder(),
                 Self::CoderMemory => crate::capability::Policy::coder_with_memory(),
+                Self::Custom => crate::capability::Policy::default(),
+            }
+        }
+    }
+
+    /// One capability rule as written in `policy.toml`. `capability` is a
+    /// policy token ([`crate::capability::Capability::token`]); `decision` is
+    /// `allow`, `deny`, or `approval`.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct PolicyRule {
+        pub capability: String,
+        pub decision: String,
+    }
+
+    /// `<data_dir>/policy.toml`: per-capability overrides layered on the
+    /// preset from `config.toml`. This is the file the `/permissions` panel
+    /// writes; `config.toml` keeps only the preset name, so a preset switch
+    /// stays a one-word edit and the rules stay a readable list.
+    ///
+    /// Missing = no overrides (the preset is the whole policy). A malformed
+    /// file is reported and treated as empty rather than silently widening
+    /// the policy: the fallback direction is always "fewer permissions".
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct PolicyFile {
+        #[serde(default)]
+        pub rules: Vec<PolicyRule>,
+    }
+
+    impl PolicyFile {
+        pub fn path(data_dir: &std::path::Path) -> std::path::PathBuf {
+            data_dir.join("policy.toml")
+        }
+
+        /// Load the overrides. `Ok(None)` when the file is absent - that is
+        /// not an error, it is the common "never opened the panel" case.
+        pub fn load(data_dir: &std::path::Path) -> Result<Option<Self>, String> {
+            let path = Self::path(data_dir);
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            };
+            toml::from_str::<Self>(&text)
+                .map(Some)
+                .map_err(|e| format!("{}: {e}", path.display()))
+        }
+
+        /// Write the overrides atomically. An empty rule list removes the
+        /// file instead of leaving a stub, so "no overrides" has one
+        /// representation on disk.
+        pub fn save(&self, data_dir: &std::path::Path) -> Result<(), String> {
+            let path = Self::path(data_dir);
+            if self.rules.is_empty() {
+                return match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(format!("{}: {e}", path.display())),
+                };
+            }
+            let text = toml::to_string_pretty(self)
+                .map_err(|e| format!("serialize policy: {e}"))?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            let tmp = path.with_extension("toml.tmp");
+            std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+            std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+        }
+
+        /// Apply these overrides onto a base policy. Rules the file cannot
+        /// read (unknown token, unknown decision) are skipped: one bad line
+        /// must not throw away the whole list, and skipping can only leave a
+        /// capability at its base (stricter) decision, never widen it.
+        pub fn apply(&self, base: &mut crate::capability::Policy) -> Vec<String> {
+            let mut skipped = Vec::new();
+            for rule in &self.rules {
+                match crate::capability::Decision::parse(&rule.decision) {
+                    Some(decision) => {
+                        let cap = crate::capability::Capability::from_token(&rule.capability);
+                        base.set_decision(cap, decision);
+                    }
+                    None => skipped.push(format!(
+                        "policy.toml: {} -> {:?} is not allow|deny|approval; rule ignored",
+                        rule.capability, rule.decision
+                    )),
+                }
+            }
+            skipped
+        }
+
+        /// Render a policy back into the file's rule list (panel save path).
+        pub fn from_policy(policy: &crate::capability::Policy) -> Self {
+            Self {
+                rules: policy
+                    .entries()
+                    .into_iter()
+                    .map(|(cap, decision)| PolicyRule {
+                        capability: cap.token(),
+                        decision: decision.as_str().to_string(),
+                    })
+                    .collect(),
             }
         }
     }
@@ -1395,5 +1543,108 @@ pub mod ident {
             && name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }
+}
+
+#[cfg(test)]
+mod policy_file_tests {
+    use crate::capability::{Capability, Decision, Policy};
+    use crate::config_schema::{PolicyFile, PolicyPreset};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pantheon-policy-file-{}-{}-{tag}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn save_then_load_round_trips_every_rule() {
+        let dir = scratch_dir("roundtrip");
+        let mut policy = Policy::coder();
+        policy.set_decision(Capability::MemoryWrite, Decision::Allow);
+        policy.set_decision(Capability::ShellExecute, Decision::Deny);
+        PolicyFile::from_policy(&policy).save(&dir).unwrap();
+
+        let file = PolicyFile::load(&dir).unwrap().expect("file written");
+        let mut restored = Policy::coder();
+        let skipped = file.apply(&mut restored);
+        assert!(skipped.is_empty(), "no rule should be skipped: {skipped:?}");
+        assert_eq!(restored.check(&Capability::MemoryWrite), Decision::Allow);
+        assert_eq!(restored.check(&Capability::ShellExecute), Decision::Deny);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_rule_list_removes_the_file() {
+        let dir = scratch_dir("empty");
+        let path = PolicyFile::path(&dir);
+        PolicyFile::from_policy(&Policy::default()).save(&dir).unwrap();
+        assert!(!path.exists(), "empty overrides must leave no stub file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_file_is_none_not_an_error() {
+        let dir = scratch_dir("missing");
+        assert!(PolicyFile::load(&dir).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_file_is_an_error_so_the_caller_falls_back_to_the_preset() {
+        let dir = scratch_dir("malformed");
+        std::fs::write(PolicyFile::path(&dir), "not toml {{{").unwrap();
+        assert!(PolicyFile::load(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bad_decision_is_skipped_without_dropping_good_rules() {
+        let file: PolicyFile = toml::from_str(
+            r#"
+[[rules]]
+capability = "shell.execute"
+decision = "maybe"
+
+[[rules]]
+capability = "memory.write"
+decision = "allow"
+"#,
+        )
+        .unwrap();
+        let mut policy = Policy::default();
+        let skipped = file.apply(&mut policy);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(policy.check(&Capability::MemoryWrite), Decision::Allow);
+        // The unreadable rule never widened anything: unlisted stays deny.
+        assert_eq!(policy.check(&Capability::ShellExecute), Decision::Deny);
+    }
+
+    #[test]
+    fn custom_preset_starts_from_deny_everything() {
+        let policy = PolicyPreset::Custom.to_policy();
+        for cap in Capability::all_fixed() {
+            assert_eq!(
+                policy.check(&cap),
+                Decision::Deny,
+                "custom preset must not inherit {}",
+                cap.token()
+            );
+        }
+    }
+
+    #[test]
+    fn preset_spellings_round_trip() {
+        for preset in PolicyPreset::all() {
+            assert_eq!(PolicyPreset::parse(preset.as_str()), Some(preset));
+        }
     }
 }
