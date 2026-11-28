@@ -340,6 +340,7 @@ pub mod setup {
             judge: None,
             embeddings: None,
             image: None,
+            image_providers: Default::default(),
             search_synthesis: None,
             browser: browser.as_ref().map(browser_section),
             computer_use: computer.as_ref().map(|a| ComputerUseSection {

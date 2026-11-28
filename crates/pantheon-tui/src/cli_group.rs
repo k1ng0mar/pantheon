@@ -81,6 +81,7 @@ pub mod cli_surface {
         "doctor",
         "maintenance",
         "auth",
+        "image",
     ];
 
     /// One-line descriptions for `pantheon --help`, in the same order as
@@ -103,6 +104,7 @@ pub mod cli_surface {
         ("doctor", "preflight check, repair"),
         ("maintenance", "backup, reset, update, uninstall"),
         ("auth", "add/list/remove/priority/status provider keys"),
+        ("image", "generation services: list, test, add, select"),
     ];
 
     /// Historic top-level verbs. They still dispatch, but help no longer
@@ -193,6 +195,7 @@ pub mod cli_surface {
         "workspace",
         "worktree",
         "auth",
+        "image",
     ];
 
     /// Result of routing one argv before the legacy dispatcher runs.
@@ -518,7 +521,7 @@ pub mod cli_surface {
 
         #[test]
         fn public_surface_is_small_and_consistent() {
-            assert_eq!(PUBLIC_VERBS.len(), 14);
+            assert_eq!(PUBLIC_VERBS.len(), 15);
             let from_help: Vec<&str> = PUBLIC_COMMANDS.iter().map(|(name, _)| *name).collect();
             assert_eq!(from_help.as_slice(), PUBLIC_VERBS);
             assert_eq!(PUBLIC_VERBS.len() + LEGACY_VERBS.len(), ALL_VERBS.len());

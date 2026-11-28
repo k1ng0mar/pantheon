@@ -468,6 +468,47 @@ pub struct ImageSection {
     pub steps: Option<u32>,
 }
 
+/// `[image_providers.<id>]`: one image service, in its own catalogue.
+///
+/// Image services are not chat providers: they authenticate differently (fal
+/// wants `Authorization: Key ...`), they speak their own wire (a job queue, a
+/// synchronous endpoint, an SD server), they bill per image, and they serve no
+/// chat models. Parking them in `[custom_providers]` would make the model
+/// picker offer an image endpoint as a chat model. So: same shape as a provider
+/// row, separate table, and `[image].provider` names one of them.
+///
+/// Nothing about a row is vendor-specific - `backend` picks the protocol and
+/// `base_url`/`models` pick the service - so a hosted API, a keyless service
+/// and a local server are the same three lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ImageProviderSection {
+    /// display name for `pantheon image list`; absent = the table name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// protocol: openai_images | chat_image | a1111 | url_template | fal
+    #[serde(default)]
+    pub backend: String,
+    /// service root. for url_template this is the full URL with `{prompt}`.
+    #[serde(default)]
+    pub base_url: String,
+    /// env var holding the key. absent = keyless service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
+    /// header carrying the key; absent = `Authorization: Bearer <key>`
+    /// (fal and a few others want `Authorization: Key <key>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_header: Option<String>,
+    /// models this service serves; the first one is the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<CustomModel>,
+    /// passed to backends that take it (A1111, templates as `{steps}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    /// wall clock for one generation; absent = `[image].timeout_secs` or 120s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
 /// `[scheduled]`: model scheduled (background) runs execute with.
 /// absent = `auto` -> scheduled jobs run on the default model. pin a
 /// small/cheap one so background tasks stop fighting interactive chat.
@@ -2480,6 +2521,10 @@ pub struct Config {
     /// user-defined providers (`pantheon model` -> Custom provider). empty when unset.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub custom_providers: std::collections::HashMap<String, CustomProviderSection>,
+    /// image-generation services (`[image_providers.<id>]`), selected by
+    /// `[image].provider`. kept apart from chat providers on purpose.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub image_providers: std::collections::HashMap<String, ImageProviderSection>,
     /// durable per-agent identities (§4). empty = all runs anonymous, the
     /// pre-identity behavior (back-compat).
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -2535,6 +2580,7 @@ const KNOWN_CONFIG_KEYS: &[&str] = &[
     "search_synthesis",
     "vision",
     "image",
+    "image_providers",
     "video",
     "scheduled",
     "mcp_synthesis",
@@ -4497,6 +4543,10 @@ mod fix_pass4_leaf1_tests {
             )]),
             tui: Some(TuiSection::default()),
             custom_providers: HashMap::from([("x".to_string(), CustomProviderSection::default())]),
+            image_providers: HashMap::from([(
+                "x".to_string(),
+                ImageProviderSection::default(),
+            )]),
             agents: HashMap::from([("x".to_string(), AgentIdentity::default())]),
         };
         let value = toml::Value::try_from(&full).expect("Config serializes");

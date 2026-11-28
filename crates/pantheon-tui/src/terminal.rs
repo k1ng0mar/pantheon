@@ -2047,6 +2047,9 @@ timeout_ms = 5000
         "codebase" => {
             crate::codebase::cmd_codebase(&args[2..]);
         }
+        "image" => {
+            crate::image_cmd::start(&args[2..]);
+        }
         "providers" => {
             // List the providers a user can choose, plus the custom-provider
             // passthrough (any URL used with --provider URL). Development

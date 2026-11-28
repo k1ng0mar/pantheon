@@ -97,6 +97,7 @@ pub use render_group::widget::{
 pub use pantheon_api::dotenv;
 pub mod logo;
 mod markdown;
+pub mod image_cmd;
 pub mod terminal;
 
 // TUI-A: session tab bar (startup splash still lives in terminal)

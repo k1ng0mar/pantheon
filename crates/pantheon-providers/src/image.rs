@@ -270,6 +270,10 @@ pub enum Backend {
     /// (`{prompt}`, `{width}`, `{height}`, `{seed}`, `{steps}`). This is how a
     /// small self-hosted server or a keyless image service plugs in.
     UrlTemplate,
+    /// fal-style: `POST {base}/{model}` with `{"prompt": ...}` answers
+    /// synchronously with `{"images":[{"url": ...}]}`. The async queue API is
+    /// not used: one image per call does not need a job id.
+    Fal,
 }
 
 impl Backend {
@@ -280,6 +284,7 @@ impl Backend {
             "chat_image" | "chat" => Some(Self::ChatImage),
             "a1111" | "automatic1111" | "sdwebui" | "sd" => Some(Self::A1111),
             "url_template" | "template" | "url" => Some(Self::UrlTemplate),
+            "fal" | "fal_ai" => Some(Self::Fal),
             _ => None,
         }
     }
@@ -290,56 +295,31 @@ impl Backend {
             Self::ChatImage => "chat_image",
             Self::A1111 => "a1111",
             Self::UrlTemplate => "url_template",
+            Self::Fal => "fal",
         }
     }
 }
 
-/// An explicit `[image].backend` wins. Otherwise infer the only shape the
-/// settings can actually mean, and refuse rather than guess when they are
-/// ambiguous: a wrong guess here bills a provider for the wrong thing.
-pub fn resolve_backend(cfg: &Config) -> Result<Backend, PantheonError> {
-    let section = cfg.image.as_ref();
-    if let Some(name) = section.and_then(|s| s.backend.as_deref()) {
-        if let Some(b) = Backend::parse(name) {
-            return Ok(b);
-        }
-        if !name.trim().is_empty() && !name.trim().eq_ignore_ascii_case("auto") {
-            return Err(ierr(
-                "IMAGE_BAD_BACKEND",
-                format!(
-                    "unknown image backend {name:?} (openai_images|chat_image|a1111|url_template)"
-                ),
-            ));
-        }
-    }
-    let endpoint = section.and_then(|s| s.endpoint.as_deref()).unwrap_or("");
-    if endpoint.contains("{prompt}") {
-        return Ok(Backend::UrlTemplate);
-    }
-    if endpoint.contains("sdapi") {
-        return Ok(Backend::A1111);
-    }
-    let provider = provider_id(cfg, None);
-    let mode = wire_of(cfg, &provider);
-    match mode.as_str() {
-        "openai" => Ok(Backend::OpenAiImages),
-        "anthropic" => Err(ierr(
-            "IMAGE_UNSUPPORTED_WIRE",
-            format!(
-                "provider '{provider}' speaks anthropic, which has no image endpoint; \
-                 set [image].backend (chat_image|a1111|url_template) with an explicit endpoint"
-            ),
-        )),
-        other => Err(ierr(
-            "IMAGE_UNSUPPORTED_WIRE",
-            format!(
-                "provider '{provider}' speaks '{other}'; set [image].backend to one of \
-                 openai_images|chat_image|a1111|url_template"
-            ),
-        )),
-    }
+/// Everything one generation call needs, resolved from settings. Kept as a
+/// value so a caller can show the user *which* service a prompt would reach
+/// before anything is billed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageSpec {
+    /// id used in logs and tool results (a catalog row name, a provider id, or
+    /// `inline` for an endpoint configured directly in `[image]`).
+    pub provider: String,
+    pub label: String,
+    pub backend: Backend,
+    pub base: String,
+    pub model: Option<String>,
+    pub key_env: Option<String>,
+    pub key_header: Option<String>,
+    pub steps: Option<u32>,
+    pub timeout_secs: u64,
 }
 
+/// Which provider id a call should use: the request's, else `[image].provider`,
+/// else the chat provider (a router that also serves images).
 fn provider_id(cfg: &Config, explicit: Option<&str>) -> String {
     explicit
         .map(str::trim)
@@ -371,7 +351,256 @@ fn wire_of(cfg: &Config, provider: &str) -> String {
         .unwrap_or_else(|| "openai".to_string())
 }
 
-/// Split `1024x1024` into width/height. Absent or unparsable = the backend's
+/// Resolve the service a prompt would go to.
+///
+/// Order: an `[image_providers.<id>]` row (the image catalogue), then a chat
+/// provider that happens to serve images (a router), then an endpoint written
+/// straight into `[image]`. Refuses with a message naming the options rather
+/// than guessing - a wrong guess bills the wrong service.
+pub fn resolve_spec(cfg: &Config, req: &ImageRequest) -> Result<ImageSpec, PantheonError> {
+    let section = cfg.image.clone().unwrap_or_default();
+    let want = provider_id(cfg, req.provider.as_deref());
+    let explicit_backend = section.backend.as_deref().map(str::trim);
+    let endpoint_override = section
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty());
+
+    // 1. The image catalogue.
+    if let Some(row) = cfg.image_providers.get(&want) {
+        let backend = Backend::parse(&row.backend).ok_or_else(|| {
+            ierr(
+                "IMAGE_BAD_BACKEND",
+                format!(
+                    "image_providers.{want}.backend {:?} is not one of \
+                     openai_images|chat_image|a1111|url_template|fal",
+                    row.backend
+                ),
+            )
+        })?;
+        let base = endpoint_override
+            .map(str::to_string)
+            .unwrap_or_else(|| row.base_url.trim_end_matches('/').to_string());
+        if base.is_empty() {
+            return Err(ierr(
+                "IMAGE_NO_ENDPOINT",
+                format!("image_providers.{want}.base_url is empty"),
+            ));
+        }
+        let model = req
+            .model
+            .clone()
+            .or_else(|| row.models.first().map(|m| m.id.clone()));
+        return Ok(ImageSpec {
+            provider: want,
+            label: row.label.clone().unwrap_or_else(|| "image service".into()),
+            backend,
+            base,
+            model,
+            key_env: row.key_env.clone(),
+            key_header: row.key_header.clone(),
+            steps: row.steps.or(section.steps),
+            timeout_secs: row
+                .timeout_secs
+                .or(section.timeout_secs)
+                .filter(|s| *s > 0)
+                .unwrap_or(IMAGE_TIMEOUT_SECS),
+        });
+    }
+
+    // 2. A chat provider used for images (routers, OpenAI-wire endpoints).
+    let chat_endpoint = endpoint(cfg, &want);
+    let backend = match explicit_backend.and_then(Backend::parse) {
+        Some(b) => b,
+        None => {
+            if let Some(name) = explicit_backend.filter(|n| {
+                !n.is_empty() && !n.eq_ignore_ascii_case("auto")
+            }) {
+                return Err(ierr(
+                    "IMAGE_BAD_BACKEND",
+                    format!(
+                        "unknown image backend {name:?} \
+                         (openai_images|chat_image|a1111|url_template|fal)"
+                    ),
+                ));
+            }
+            let ep = endpoint_override.unwrap_or("");
+            if ep.contains("{prompt}") {
+                Backend::UrlTemplate
+            } else if ep.contains("sdapi") {
+                Backend::A1111
+            } else {
+                match wire_of(cfg, &want).as_str() {
+                    "openai" => Backend::OpenAiImages,
+                    other => {
+                        return Err(ierr(
+                            "IMAGE_UNSUPPORTED_WIRE",
+                            format!(
+                                "provider '{want}' speaks '{other}' and has no image endpoint; \
+                                 add an [image_providers.<id>] row and point [image].provider at it"
+                            ),
+                        ))
+                    }
+                }
+            }
+        }
+    };
+
+    // 3. An endpoint written straight into [image] (no catalog row).
+    let base = match endpoint_override {
+        Some(e) => e.trim_end_matches('/').to_string(),
+        None => match &chat_endpoint {
+            Some((b, _)) => b.clone(),
+            None => {
+                return Err(ierr(
+                    "IMAGE_NO_ENDPOINT",
+                    format!(
+                        "no image service configured: add [image_providers.<id>] with \
+                         backend/base_url and set [image].provider, or put endpoint directly \
+                         in [image] (provider '{want}' has no base URL)"
+                    ),
+                ))
+            }
+        },
+    };
+    let model = req
+        .model
+        .clone()
+        .or_else(|| section.model.clone())
+        .or_else(|| model_for(cfg, &want, None));
+    Ok(ImageSpec {
+        provider: want.clone(),
+        label: cfg
+            .custom_providers
+            .get(&catalog::canonical_provider_id(&want))
+            .and_then(|c| c.label.clone())
+            .unwrap_or_else(|| want.clone()),
+        backend,
+        base,
+        model,
+        key_env: section.key_env.clone().or_else(|| chat_endpoint.map(|(_, k)| k).unwrap_or(None)),
+        key_header: None,
+        steps: section.steps,
+        timeout_secs: section
+            .timeout_secs
+            .filter(|s| *s > 0)
+            .unwrap_or(IMAGE_TIMEOUT_SECS),
+    })
+}
+
+/// Backwards-compatible helper: the backend a prompt would use.
+pub fn resolve_backend(cfg: &Config) -> Result<Backend, PantheonError> {
+    let req = ImageRequest {
+        prompt: "x".into(),
+        size: None,
+        model: None,
+        provider: None,
+    };
+    resolve_spec(cfg, &req).map(|s| s.backend)
+}
+
+/// One row of `pantheon image list`: a configured service, or a preset worth
+/// copying into the config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageProviderInfo {
+    pub id: String,
+    pub label: String,
+    pub backend: String,
+    pub base: String,
+    pub models: Vec<String>,
+    pub key_env: Option<String>,
+    pub configured: bool,
+    /// Selected by `[image].provider` (or the chat provider when that is
+    /// absent), i.e. what a prompt would use right now.
+    pub selected: bool,
+}
+
+/// Presets shown by `pantheon image list` when the catalogue is empty. They are
+/// suggestions with the right wire, not enabled services: nothing here is
+/// used until the user writes a row and points `[image].provider` at it.
+pub fn presets() -> Vec<ImageProviderInfo> {
+    vec![
+        ImageProviderInfo {
+            id: "pollinations".into(),
+            label: "Pollinations (keyless)".into(),
+            backend: "url_template".into(),
+            base: "https://image.pollinations.ai/prompt/{prompt}?width={width}&height={height}&nologo=true&seed={seed}".into(),
+            models: vec![],
+            key_env: None,
+            configured: false,
+            selected: false,
+        },
+        ImageProviderInfo {
+            id: "fal".into(),
+            label: "fal.ai".into(),
+            backend: "fal".into(),
+            base: "https://fal.run".into(),
+            models: vec!["fal-ai/flux/schnell".into()],
+            key_env: Some("FAL_KEY".into()),
+            configured: false,
+            selected: false,
+        },
+        ImageProviderInfo {
+            id: "openai-images".into(),
+            label: "OpenAI-compatible images".into(),
+            backend: "openai_images".into(),
+            base: "https://api.openai.com/v1".into(),
+            models: vec!["gpt-image-1".into()],
+            key_env: Some("OPENAI_API_KEY".into()),
+            configured: false,
+            selected: false,
+        },
+        ImageProviderInfo {
+            id: "local-sd".into(),
+            label: "Local Stable-Diffusion (A1111/Forge)".into(),
+            backend: "a1111".into(),
+            base: "http://127.0.0.1:7860".into(),
+            models: vec![],
+            key_env: None,
+            configured: false,
+            selected: false,
+        },
+    ]
+}
+
+/// What `pantheon image list` prints: configured rows first, then presets the
+/// user has not set up, with the active one marked.
+pub fn catalog(cfg: &Config) -> Vec<ImageProviderInfo> {
+    let active = cfg
+        .image
+        .as_ref()
+        .and_then(|s| s.provider.as_deref())
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .or_else(|| cfg.model.as_ref().map(|m| m.provider.clone()));
+    let mut out: Vec<ImageProviderInfo> = cfg
+        .image_providers
+        .iter()
+        .map(|(id, row)| ImageProviderInfo {
+            id: id.clone(),
+            label: row.label.clone().unwrap_or_else(|| id.clone()),
+            backend: row.backend.clone(),
+            base: row.base_url.clone(),
+            models: row.models.iter().map(|m| m.id.clone()).collect(),
+            key_env: row.key_env.clone(),
+            configured: true,
+            selected: active.as_deref() == Some(id.as_str()),
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    for mut preset in presets() {
+        if cfg.image_providers.contains_key(&preset.id) {
+            continue;
+        }
+        preset.selected = active.as_deref() == Some(preset.id.as_str());
+        out.push(preset);
+    }
+    out
+}
+
+/// Split `1024x1024` into width/height./// Split `1024x1024` into width/height. Absent or unparsable = the backend's
 /// own default (each server has a different natural size).
 pub fn size_parts(size: Option<&str>) -> Option<(u32, u32)> {
     let s = size?.trim().to_ascii_lowercase().replace('*', "x");
@@ -410,16 +639,6 @@ pub fn fill_template(endpoint: &str, prompt: &str, size: Option<&str>, seed: u64
         .replace("{height}", &h.to_string())
         .replace("{seed}", &seed.to_string())
         .replace("{steps}", &steps.unwrap_or(0).to_string())
-}
-
-fn timeout_for(cfg: &Config) -> std::time::Duration {
-    let secs = cfg
-        .image
-        .as_ref()
-        .and_then(|s| s.timeout_secs)
-        .filter(|s| *s > 0)
-        .unwrap_or(IMAGE_TIMEOUT_SECS);
-    std::time::Duration::from_secs(secs)
 }
 
 /// One HTTP round trip with the image timeout applied. `headers` are
@@ -521,79 +740,59 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
     if req.prompt.trim().is_empty() {
         return Err(ierr("IMAGE_NO_PROMPT", "the prompt is empty".into()));
     }
-    let backend = resolve_backend(cfg)?;
-    let provider = provider_id(cfg, req.provider.as_deref());
+    let spec = resolve_spec(cfg, req)?;
+    let timeout = std::time::Duration::from_secs(spec.timeout_secs);
     let section = cfg.image.clone().unwrap_or_default();
-    let timeout = timeout_for(cfg);
-    let key = section
+    let key = spec
         .key_env
         .as_deref()
         .filter(|e| !e.trim().is_empty())
         .and_then(|e| std::env::var(e).ok())
         .or_else(|| {
-            let (_, key_env) = endpoint(cfg, &provider)?;
-            let k = key_for(cfg, &provider, key_env.as_deref());
+            let k = key_for(cfg, &spec.provider, spec.key_env.as_deref());
             (!k.is_empty()).then_some(k)
         });
 
-    match backend {
+    match spec.backend {
         Backend::UrlTemplate => {
-            let template = section
-                .endpoint
-                .as_deref()
-                .map(str::trim)
-                .filter(|e| !e.is_empty())
-                .ok_or_else(|| {
-                    ierr(
-                        "IMAGE_NO_ENDPOINT",
-                        "backend url_template needs [image].endpoint with {prompt}".into(),
-                    )
-                })?;
-            let lower = template.to_ascii_lowercase();
+            let lower = spec.base.to_ascii_lowercase();
             if !(lower.starts_with("http://") || lower.starts_with("https://")) {
                 return Err(ierr(
                     "IMAGE_BAD_URL",
-                    format!("url_template must be an http(s) URL: {template}"),
+                    format!("url_template must be an http(s) URL: {}", spec.base),
+                ));
+            }
+            if !spec.base.contains("{prompt}") {
+                return Err(ierr(
+                    "IMAGE_BAD_URL",
+                    format!(
+                        "backend url_template needs {{prompt}} in the endpoint: {}",
+                        spec.base
+                    ),
                 ));
             }
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64 % 1_000_000)
                 .unwrap_or(0);
-            let url = fill_template(template, &req.prompt, req.size.as_deref(), seed, section.steps);
+            let url = fill_template(&spec.base, &req.prompt, req.size.as_deref(), seed, spec.steps);
             let mut headers = vec![("accept".to_string(), "image/*".to_string())];
             if let Some(k) = key.clone() {
-                let (n, v) = crate::http::auth_header_pair(
-                    &catalog::key_header_for(&provider),
-                    &k,
-                );
+                let (n, v) = key_pair(&spec, &k);
                 headers.push((n, v));
             }
             let bytes = http_call("GET", &url, &headers, None, timeout)?;
             finish(
                 bytes,
                 None,
-                section.model.clone().unwrap_or_default(),
-                provider,
-                backend,
+                spec.model.clone().unwrap_or_default(),
+                spec.provider,
+                spec.backend,
                 None,
             )
         }
         Backend::A1111 => {
-            let base = section
-                .endpoint
-                .as_deref()
-                .map(str::trim)
-                .map(|e| e.trim_end_matches('/').to_string())
-                .filter(|e| !e.is_empty())
-                .or_else(|| endpoint(cfg, &provider).map(|(b, _)| b))
-                .ok_or_else(|| {
-                    ierr(
-                        "IMAGE_NO_ENDPOINT",
-                        "backend a1111 needs [image].endpoint (or a provider base URL)".into(),
-                    )
-                })?;
-            let (url, body) = a1111_request(&base, req, section.steps);
+            let (url, body) = a1111_request(&spec.base, req, spec.steps);
             let json = http_call(
                 "POST",
                 &url,
@@ -604,59 +803,83 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
             let v: serde_json::Value = serde_json::from_slice(&json)
                 .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
             let bytes = parse_a1111(&v)?;
-            finish(bytes, Some("image/png"), "sd".to_string(), provider, backend, None)
+            finish(
+                bytes,
+                Some("image/png"),
+                spec.model.clone().unwrap_or_else(|| "sd".into()),
+                spec.provider,
+                spec.backend,
+                None,
+            )
         }
-        Backend::ChatImage | Backend::OpenAiImages => {
-            let (base, key_env) = endpoint(cfg, &provider).ok_or_else(|| {
+        Backend::Fal => {
+            let model = spec.model.clone().ok_or_else(|| {
                 ierr(
-                    "IMAGE_NO_ENDPOINT",
-                    format!("provider '{provider}' has no base URL I can reach"),
+                    "IMAGE_NO_MODEL",
+                    format!(
+                        "image service '{}' has no model; name one (e.g. fal-ai/flux/schnell)",
+                        spec.provider
+                    ),
                 )
             })?;
-            let base = section
-                .endpoint
-                .as_deref()
-                .map(str::trim)
-                .filter(|e| !e.is_empty())
-                .map(|e| e.trim_end_matches('/').to_string())
-                .unwrap_or(base);
-            let model = req
-                .model
-                .clone()
-                .or_else(|| section.model.clone())
-                .or_else(|| model_for(cfg, &provider, None))
-                .ok_or_else(|| {
-                    ierr(
-                        "IMAGE_NO_MODEL",
-                        format!("no image model named; set [image].model (provider '{provider}' declares none)"),
-                    )
-                })?;
-            let key = key
-                .or_else(|| key_for(cfg, &provider, key_env.as_deref()).into())
-                .unwrap_or_default();
-            let (name, value) =
-                crate::http::auth_header_pair(&catalog::key_header_for(&provider), &key);
+            let (url, body) = fal_request(&spec.base, &model, req);
             let mut headers = vec![
                 ("content-type".to_string(), "application/json".to_string()),
                 ("accept".to_string(), "application/json".to_string()),
             ];
-            if !value.is_empty() {
-                headers.push((name, value));
+            if let Some(k) = key.clone() {
+                headers.push(("authorization".to_string(), format!("Key {k}")));
             }
-            let (url, body) = match backend {
+            let json = http_call("POST", &url, &headers, Some(&body), timeout)?;
+            let v: serde_json::Value = serde_json::from_slice(&json)
+                .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
+            let (bytes, claimed, remote) = parse_fal(&v)?;
+            let bytes = match remote {
+                None => bytes,
+                Some(link) => http_call("GET", &link, &[], None, timeout)?,
+            };
+            finish(
+                bytes,
+                Some(&claimed),
+                model,
+                spec.provider,
+                spec.backend,
+                None,
+            )
+        }
+        Backend::ChatImage | Backend::OpenAiImages => {
+            let model = spec.model.clone().ok_or_else(|| {
+                ierr(
+                    "IMAGE_NO_MODEL",
+                    format!(
+                        "no image model named; set [image].model or the provider row's models \
+                         (service '{}')",
+                        spec.provider
+                    ),
+                )
+            })?;
+            let mut headers = vec![
+                ("content-type".to_string(), "application/json".to_string()),
+                ("accept".to_string(), "application/json".to_string()),
+            ];
+            if let Some(k) = key.clone() {
+                let (n, v) = key_pair(&spec, &k);
+                headers.push((n, v));
+            }
+            let (url, body) = match spec.backend {
                 Backend::OpenAiImages => (
-                    format!("{base}/images/generations"),
+                    format!("{}/images/generations", spec.base),
                     request_body(&model, req).to_string(),
                 ),
                 _ => (
-                    format!("{base}/chat/completions"),
+                    format!("{}/chat/completions", spec.base),
                     chat_image_body(&model, &req.prompt).to_string(),
                 ),
             };
             let json = http_call("POST", &url, &headers, Some(&body), timeout)?;
             let v: serde_json::Value = serde_json::from_slice(&json)
                 .map_err(|e| ierr("IMAGE_BAD_JSON", format!("{url}: {e}")))?;
-            let parsed = match backend {
+            let parsed = match spec.backend {
                 Backend::OpenAiImages => parse_response(&v)?,
                 _ => parse_chat_image(&v)?,
             };
@@ -665,9 +888,71 @@ pub fn generate_image(cfg: &Config, req: &ImageRequest) -> Result<ImageOutput, P
                 None => bytes,
                 Some(link) => http_call("GET", &link, &[], None, timeout)?,
             };
-            finish(bytes, Some(&claimed), model, provider, backend, revised)
+            let _ = &section;
+            finish(bytes, Some(&claimed), model, spec.provider, spec.backend, revised)
         }
     }
+}
+
+/// Auth header for a service: the row's header when it names one, otherwise
+/// Bearer via the shared helper.
+fn key_pair(spec: &ImageSpec, key: &str) -> (String, String) {
+    match spec.key_header.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        Some(header) => {
+            let name = header.to_string();
+            let value = if name.eq_ignore_ascii_case("authorization") {
+                format!("Bearer {key}")
+            } else {
+                key.to_string()
+            };
+            (name, value)
+        }
+        None => crate::http::auth_header_pair(&catalog::key_header_for(&spec.provider), key),
+    }
+}
+
+/// fal: the model id is the path, the prompt is the body.
+pub fn fal_request(base: &str, model: &str, req: &ImageRequest) -> (String, String) {
+    let mut body = serde_json::json!({
+        "prompt": req.prompt,
+        "num_images": 1,
+    });
+    if let Some((w, h)) = size_parts(req.size.as_deref()) {
+        body["image_size"] = serde_json::json!({"width": w, "height": h});
+    }
+    (
+        format!("{}/{}", base.trim_end_matches('/'), model.trim_matches('/')),
+        body.to_string(),
+    )
+}
+
+/// `{"images":[{"url": "...", "content_type": "image/png"}]}` - or inline
+/// base64 for endpoints that return bytes.
+pub fn parse_fal(
+    v: &serde_json::Value,
+) -> Result<(Vec<u8>, String, Option<String>), PantheonError> {
+    let first = v
+        .get("images")
+        .and_then(|i| i.as_array())
+        .and_then(|a| a.first())
+        .ok_or_else(|| ierr("IMAGE_NO_DATA", format!("no images[0] in the answer: {v}")))?;
+    let mime = first
+        .get("content_type")
+        .and_then(|m| m.as_str())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    if let Some(url) = first.get("url").and_then(|u| u.as_str()) {
+        return Ok((Vec::new(), mime, Some(url.to_string())));
+    }
+    if let Some(b64) = first.get("b64_json").and_then(|b| b.as_str()) {
+        let bytes = b64decode(b64)
+            .ok_or_else(|| ierr("IMAGE_BAD_BASE64", "unreadable base64 from fal".into()))?;
+        return Ok((bytes, mime, None));
+    }
+    Err(ierr(
+        "IMAGE_NO_DATA",
+        "the fal answer had neither url nor b64_json".into(),
+    ))
 }
 
 /// Body for a chat model that emits images (`modalities: ["image","text"]`).
@@ -1025,6 +1310,148 @@ mod tests {
         assert_eq!(v["height"], 512);
         assert_eq!(v["steps"], 25);
         assert_eq!(v["override_settings"]["sd_model_checkpoint"], "sdxl");
+    }
+
+    fn with_pollinations_row(cfg: &mut Config) {
+        cfg.image_providers.insert(
+            "pollinations".into(),
+            pantheon_api::config::ImageProviderSection {
+                label: Some("Pollinations".into()),
+                backend: "url_template".into(),
+                base_url: "https://image.pollinations.ai/prompt/{prompt}".into(),
+                key_env: None,
+                key_header: None,
+                models: vec![],
+                steps: Some(4),
+                timeout_secs: Some(30),
+            },
+        );
+        cfg.image = Some(pantheon_api::config::ImageSection {
+            provider: Some("pollinations".into()),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn a_catalog_row_supplies_backend_endpoint_and_timeout() {
+        let mut c = cfg();
+        with_pollinations_row(&mut c);
+        let spec = resolve_spec(
+            &c,
+            &ImageRequest {
+                prompt: "x".into(),
+                size: None,
+                model: None,
+                provider: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(spec.provider, "pollinations");
+        assert_eq!(spec.backend, Backend::UrlTemplate);
+        assert_eq!(spec.base, "https://image.pollinations.ai/prompt/{prompt}");
+        assert_eq!(spec.steps, Some(4));
+        assert_eq!(spec.timeout_secs, 30);
+        assert_eq!(spec.label, "Pollinations");
+    }
+
+    #[test]
+    fn a_request_level_provider_beats_the_configured_one() {
+        // [image].provider says pollinations; the call names the chat provider,
+        // which is what a router-backed image endpoint looks like.
+        let mut c = cfg();
+        with_pollinations_row(&mut c);
+        let spec = resolve_spec(
+            &c,
+            &ImageRequest {
+                prompt: "x".into(),
+                size: None,
+                model: Some("m".into()),
+                provider: Some("llm-router".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(spec.provider, "llm-router");
+        assert_eq!(spec.backend, Backend::OpenAiImages, "openai-wire chat provider");
+        assert_eq!(spec.base, "http://127.0.0.1:8015/v1");
+        // A provider that exists nowhere is an error, not a silent fallback.
+        let e = resolve_spec(
+            &c,
+            &ImageRequest {
+                prompt: "x".into(),
+                size: None,
+                model: None,
+                provider: Some("nowhere".into()),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "IMAGE_NO_ENDPOINT");
+    }
+
+    #[test]
+    fn a_catalog_row_with_a_bad_backend_or_no_url_is_refused_by_name() {
+        let mut c = cfg();
+        with_pollinations_row(&mut c);
+        c.image_providers
+            .get_mut("pollinations")
+            .unwrap()
+            .backend = "dalle".into();
+        let e = resolve_spec(&c, &ImageRequest { prompt: "x".into(), size: None, model: None, provider: None })
+            .unwrap_err();
+        assert_eq!(e.code, "IMAGE_BAD_BACKEND");
+        assert!(e.cause.contains("image_providers.pollinations"), "{}", e.cause);
+
+        let mut c = cfg();
+        with_pollinations_row(&mut c);
+        c.image_providers.get_mut("pollinations").unwrap().base_url = String::new();
+        let e = resolve_spec(&c, &ImageRequest { prompt: "x".into(), size: None, model: None, provider: None })
+            .unwrap_err();
+        assert_eq!(e.code, "IMAGE_NO_ENDPOINT");
+    }
+
+    #[test]
+    fn the_catalog_lists_configured_rows_then_presets_and_marks_the_active_one() {
+        let mut c = cfg();
+        with_pollinations_row(&mut c);
+        let rows = catalog(&c);
+        assert_eq!(rows[0].id, "pollinations");
+        assert!(rows[0].configured);
+        assert!(rows[0].selected);
+        assert!(rows.iter().any(|r| r.id == "fal" && !r.configured));
+        assert!(rows.iter().filter(|r| r.selected).count() == 1);
+        assert!(presets().iter().any(|p| p.id == "local-sd"));
+    }
+
+    #[test]
+    fn a_fal_answer_is_read_from_url_or_inline_bytes() {
+        let v = serde_json::json!({"images":[{"url":"https://fal.test/a.png","content_type":"image/png"}]});
+        let (bytes, mime, remote) = parse_fal(&v).unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(mime, "image/png");
+        assert_eq!(remote.as_deref(), Some("https://fal.test/a.png"));
+        let png = [0x89u8, b'P', b'N', b'G'];
+        let v = serde_json::json!({"images":[{"b64_json": pantheon_api::message::b64encode(&png)}]});
+        let (bytes, _mime, remote) = parse_fal(&v).unwrap();
+        assert_eq!(bytes, png);
+        assert!(remote.is_none());
+    }
+
+    #[test]
+    fn a_fal_request_puts_the_model_in_the_path_and_the_prompt_in_the_body() {
+        let (url, body) = fal_request(
+            "https://fal.run/",
+            "fal-ai/flux/schnell",
+            &ImageRequest {
+                prompt: "a heron".into(),
+                size: Some("768x1024".into()),
+                model: None,
+                provider: None,
+            },
+        );
+        assert_eq!(url, "https://fal.run/fal-ai/flux/schnell");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["prompt"], "a heron");
+        assert_eq!(v["image_size"]["width"], 768);
+        assert_eq!(v["image_size"]["height"], 1024);
     }
 
     #[test]
